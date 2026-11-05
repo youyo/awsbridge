@@ -26,7 +26,7 @@ awsbridge（public）を `upstream` とする下流の private リポジトリ�
    - 既存でなければ `gh repo create <owner>/<name> --private` を実行する。既にあれば作らずにそれを使う。
    - awsbridge を clone し、`git remote rename origin upstream` で上流を `upstream` にして、`git remote add origin <下流の URL>` で下流を `origin` に足す。
 3. 下流のファイルを作る。値は手順 1 の入力で埋める。ロール ARN は手順 5 で決まるまで仮に空にしておく。
-   - `wrangler.<name>.jsonc`: 上流の `wrangler.jsonc` から `compatibility_date` / `compatibility_flags` / `main` / `observability` を写し、`name`（Worker 名）、`workers_dev: true`、`vars.AWS_PROFILES`（`default` と `profiles`。任意で `tools: ["call_aws"]`）を書く。`env` セクションは使わない。
+   - `wrangler.<name>.jsonc`: 上流の `wrangler.jsonc` から `compatibility_date` / `compatibility_flags` / `main` / `observability` を写し、`name`（Worker 名）、`workers_dev: true`、`vars.AWS_PROFILES`（`default` と `profiles`。`tools` は通常省略。指定するなら AWS MCP Server の実際のツール名（例 `aws___run_script`））を書く。`env` セクションは使わない。
    - `mise.<name>.toml`: `[env]` に `AWSBRIDGE_WRANGLER_CONFIG = "wrangler.<name>.jsonc"`、`AWSBRIDGE_WRANGLER_ENV = ""`（空 = `--env` を付けない）、`AWSBRIDGE_STACK_NAME = "<name>"`、`AWSBRIDGE_KEY_FILE = ".secrets/<name>-signing-key.json"` を書く。
    - `.miserc.toml`: `env = ["<name>"]`。
    - `mise.local.toml`（gitignore 済みか確認する。コミットしない）: `AWSBRIDGE_ALLOWED_SUBJECTS` / `AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS` / `AWSBRIDGE_ACCESS_TEAM_DOMAIN` / `AWSBRIDGE_POC_SUBJECT`（動作確認に使う利用者）と、必要なら `AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS` を書く。`AWSBRIDGE_ISSUER` は Worker をデプロイしてから決まるので、ここではまだ書かない。`AWS_PROFILES` を `vars` で持つので `AWSBRIDGE_PROFILES` は書かない。

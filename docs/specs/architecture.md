@@ -153,8 +153,7 @@ Access JWT の実物（開発環境）で確認した claim:
     "dev-debug":     { "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug" },
     "prod-readonly": { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
     "prod-debug":    { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
-  },
-  "tools": ["call_aws"]
+  }
 }
 ```
 

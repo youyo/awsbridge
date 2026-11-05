@@ -142,14 +142,13 @@ var（任意。既定値を上書きするときだけ）: `ISSUER`（deploy 時
     "dev-debug":     { "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug", "description": "開発（デバッグ）" },
     "prod-readonly": { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
     "prod-debug":    { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
-  },
-  "tools": ["call_aws"]
+  }
 }
 ```
 
 - プロファイル名: 英数字・`_`・`-` の 1〜32 文字（超えると 500 `server_misconfigured`）。
 - `default`: 必須。`aws_profile` を省略したとき、および `tools/list` など `tools/call` 以外で使うプロファイル。
-- `tools`: 任意。`aws_profile` の対象ツール（省略時は全ツール）。対象外ツールに付いた `aws_profile` は無視して取り除きます。
+- `tools`: 任意。`aws_profile` の対象ツール（省略時は全ツール。通常は省略でよい）。名前は AWS MCP Server が返す実際のツール名（例: `aws___run_script`。`tools/list` で確認できる）で、存在しない名前を書くと `aws_profile` が効きません。対象外ツールに付いた `aws_profile` は無視して取り除きます。
 - `aws_profile` は上流へ送る前に取り除きます。一覧にない名前は 400 `unknown_aws_profile`、文字列以外は 400 `invalid_aws_profile`。
 - JSON-RPC バッチは、対象ツールの `aws_profile` がすべて同じ（省略は `default`）ならそのロールで中継し、異なれば 400 `batch_not_supported`。
 - `AWS_PROFILES` が未設定・不正なら 500 `server_misconfigured`。
@@ -200,8 +199,7 @@ git remote add origin <private リポジトリの URL>   # 下流の push 先
         "dev-debug":     { "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug", "description": "development (debug)" },
         "prod-readonly": { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
         "prod-debug":    { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
-      },
-      "tools": ["call_aws"]
+      }
     }
   }
 }

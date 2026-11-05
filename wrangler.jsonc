@@ -14,7 +14,7 @@
   //     "dev-readonly": { "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly", "description": "development (read-only)" },
   //     "dev-debug":    { "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug", "description": "development (debug)" },
   //     "prod-readonly": { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
-  //     "prod-debug":    { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" } }, "tools": ["call_aws"] } }
+  //     "prod-debug":    { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" } } } }
   "env": {
     "dev": {
       "name": "awsbridge-dev",
