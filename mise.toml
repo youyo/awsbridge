@@ -2,15 +2,14 @@
 node = "24"
 "pipx:cfn-lint" = "1.59.0"
 pnpm = "11.28.5"
+terraform = "1.15.8"
+tflint = "0.64.0"
 
 [env]
-# 呼び出し側の環境変数を優先し、未設定のときだけ既定値を使う（別アカウントへは AWS_PROFILE=<対象> mise run deploy:aws）
-AWS_PROFILE = '{{ get_env(name="AWS_PROFILE", default="awsbridge") }}'
-AWSBRIDGE_AUDIENCE = '{{ get_env(name="AWSBRIDGE_AUDIENCE", default="awsbridge") }}'
-AWSBRIDGE_ROLE_NAME = '{{ get_env(name="AWSBRIDGE_ROLE_NAME", default="awsbridge") }}'
-AWSBRIDGE_STACK_NAME = '{{ get_env(name="AWSBRIDGE_STACK_NAME", default="awsbridge") }}'
-# wrangler の環境名（wrangler.jsonc の env.<名前>）。上流の開発用は dev。下流リポジトリは prod などを追加して切り替える
-AWSBRIDGE_WRANGLER_ENV = '{{ get_env(name="AWSBRIDGE_WRANGLER_ENV", default="dev") }}'
+# 上書きされうる既定値（AWS_PROFILE / AWSBRIDGE_AUDIENCE / AWSBRIDGE_ROLE_NAME / AWSBRIDGE_STACK_NAME / AWSBRIDGE_KEY_FILE /
+# AWSBRIDGE_WRANGLER_ENV / AWSBRIDGE_WRANGLER_CONFIG）はここに置かず、scripts/*.sh と scripts/poc/ 側の既定値で補う。
+# ここに置くと、下流の mise 設定ファイル（mise.<name>.toml）や環境変数で上書きしにくくなるため。
+# 下流の使い方は README「下流リポジトリでの運用」を参照。
 # 個人情報・アカウント固有値は mise.local.toml（gitignore）に置く:
 #   AWSBRIDGE_ISSUER           = "https://<worker>.<subdomain>.workers.dev"（Worker の URL = OIDC issuer）
 #   AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org"（ロールを引き受けられる利用者。カンマ区切り）
@@ -19,8 +18,7 @@ AWSBRIDGE_WRANGLER_ENV = '{{ get_env(name="AWSBRIDGE_WRANGLER_ENV", default="dev
 #   AWSBRIDGE_ACCESS_TEAM_DOMAIN = "https://team.example.cloudflareaccess.com"（Access のチームドメイン。secrets タスクが Worker secret ACCESS_TEAM_DOMAIN に登録）
 #   AWSBRIDGE_PROFILES         = '{"default":"dev","profiles":{"dev":{"roleArn":"arn:aws:iam::<アカウントID>:role/awsbridge"}}}'（JSON 文字列。各アカウントの deploy:aws 出力 RoleArn を並べる。secrets タスクが Worker secret AWS_PROFILES に登録）
 #   AWSBRIDGE_ACCESS_AUD       = "<Access アプリケーションの AUD タグ>"（secrets タスクが Worker secret ACCESS_AUD に登録）
-# 開発用署名鍵（秘密鍵 JWK）の置き場所。.secrets/ は gitignore
-AWSBRIDGE_KEY_FILE = "{{config_root}}/.secrets/dev-signing-key.json"
+#   AWSBRIDGE_KEY_FILE         = ".secrets/dev-signing-key.json"（任意。署名鍵 JWK の置き場所。既定はリポジトリルートのこのパス。.secrets/ は gitignore）
 
 [tasks.install]
 description = "依存パッケージのインストール"
@@ -42,9 +40,13 @@ run = "pnpm vitest run --config vitest.e2e.config.ts"
 description = "Unit + E2E"
 depends = ["test:unit", "test:e2e"]
 
+[tasks."lint:terraform"]
+description = "Cloudflare Access/Portal の Terraform サンプル（infra/cloudflare）の fmt・validate・tflint"
+run = "bash infra/cloudflare/check.sh"
+
 [tasks.lint]
-description = "lint・フォーマット検査・型チェック・CloudFormation テンプレート検査（cfn-lint）"
-depends = ["typecheck"]
+description = "lint・フォーマット検査・型チェック・CloudFormation テンプレート検査（cfn-lint）・Terraform サンプル検査"
+depends = ["typecheck", "lint:terraform"]
 run = ["pnpm biome check .", "cfn-lint infra/aws/awsbridge.yaml"]
 
 [tasks.fmt]
@@ -53,11 +55,11 @@ run = "pnpm biome check --write ."
 
 [tasks.build]
 description = "ビルド確認（デプロイせずにバンドル）"
-run = "pnpm wrangler deploy --dry-run --outdir dist --env ${AWSBRIDGE_WRANGLER_ENV}"
+run = "bash scripts/wrangler.sh deploy --dry-run --outdir dist"
 
 [tasks.dev]
 description = "ローカル起動"
-run = "pnpm wrangler dev --env ${AWSBRIDGE_WRANGLER_ENV}"
+run = "bash scripts/wrangler.sh dev"
 
 [tasks.keygen]
 description = "署名鍵（RSA、秘密鍵 JWK）を生成し .secrets/ に保存（既存なら上書きしない）"
@@ -70,7 +72,7 @@ run = "bash scripts/put-secrets.sh"
 [tasks."deploy:worker"]
 description = "Cloudflare 側のデプロイ: Worker を workers.dev へデプロイ（ISSUER = AWSBRIDGE_ISSUER）→ secret 登録。AWS は呼ばない"
 run = [
-  "pnpm wrangler deploy --env ${AWSBRIDGE_WRANGLER_ENV} --var \"ISSUER:${AWSBRIDGE_ISSUER:?mise.local.toml に AWSBRIDGE_ISSUER を設定してください}\"",
+  "bash scripts/wrangler.sh deploy --var \"ISSUER:${AWSBRIDGE_ISSUER:?mise.local.toml に AWSBRIDGE_ISSUER を設定してください}\"",
   "mise run secrets",
 ]
 

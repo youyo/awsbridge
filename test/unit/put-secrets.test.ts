@@ -1,5 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -66,7 +74,17 @@ describe("scripts/put-secrets.sh", () => {
     const r = run(s, baseEnv(s.keyFile));
     expect(r.status).toBe(0);
     const args = read(s.argsFile).split("\n").filter(Boolean);
-    expect(args).toEqual(expect.arrayContaining(["wrangler", "secret", "bulk", "--env", "dev"]));
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "wrangler",
+        "secret",
+        "bulk",
+        "--config",
+        "wrangler.jsonc",
+        "--env",
+        "dev",
+      ]),
+    );
     expect(JSON.parse(read(s.stdinFile))).toEqual({
       SIGNING_JWK: KEY_JSON,
       ACCESS_TEAM_DOMAIN: "https://team.example.cloudflareaccess.com",
@@ -94,11 +112,7 @@ describe("scripts/put-secrets.sh", () => {
     expect(JSON.parse(read(s.stdinFile)).ACCESS_AUD).toBe('a"b\\c');
   });
 
-  for (const name of [
-    "AWSBRIDGE_KEY_FILE",
-    "AWSBRIDGE_ACCESS_TEAM_DOMAIN",
-    "AWSBRIDGE_ACCESS_AUD",
-  ]) {
+  for (const name of ["AWSBRIDGE_ACCESS_TEAM_DOMAIN", "AWSBRIDGE_ACCESS_AUD"]) {
     it(`${name} が未設定なら終了コード 1 で mise.local.toml を案内し wrangler を呼ばない`, () => {
       const s = setup();
       const env: Record<string, string> = baseEnv(s.keyFile);
@@ -149,6 +163,49 @@ describe("scripts/put-secrets.sh", () => {
     const r = run(s, { ...baseEnv(s.keyFile), AWSBRIDGE_WRANGLER_ENV: "prod" });
     expect(r.status).toBe(0);
     expect(read(s.argsFile).split("\n")).toEqual(expect.arrayContaining(["--env", "prod"]));
+  });
+
+  it("AWSBRIDGE_WRANGLER_ENV が空なら --env を付けない", () => {
+    const s = setup();
+    const r = run(s, { ...baseEnv(s.keyFile), AWSBRIDGE_WRANGLER_ENV: "" });
+    expect(r.status).toBe(0);
+    expect(read(s.argsFile).split("\n")).not.toContain("--env");
+  });
+
+  it("AWSBRIDGE_WRANGLER_CONFIG を --config に反映する", () => {
+    const s = setup();
+    const r = run(s, { ...baseEnv(s.keyFile), AWSBRIDGE_WRANGLER_CONFIG: "wrangler.x.jsonc" });
+    expect(r.status).toBe(0);
+    expect(read(s.argsFile).split("\n")).toEqual(
+      expect.arrayContaining(["--config", "wrangler.x.jsonc"]),
+    );
+  });
+
+  it("AWSBRIDGE_KEY_FILE が未設定ならリポジトリルートの .secrets/dev-signing-key.json を使う", () => {
+    // スクリプトのルートは自身の位置から決まるので、仮のルートに scripts/ をコピーして検証する
+    const s = setup();
+    const fakeRoot = join(s.dir, "repo");
+    mkdirSync(join(fakeRoot, "scripts"), { recursive: true });
+    for (const f of ["put-secrets.sh", "wrangler.sh"]) {
+      copyFileSync(join(root, "scripts", f), join(fakeRoot, "scripts", f));
+    }
+    const env: Record<string, string> = baseEnv(s.keyFile);
+    delete env.AWSBRIDGE_KEY_FILE;
+    const exec = () =>
+      spawnSync("bash", [join(fakeRoot, "scripts/put-secrets.sh")], {
+        env: { PATH: `${s.dir}:${dirname(process.execPath)}:/usr/bin:/bin`, ...env },
+        encoding: "utf8",
+      });
+    const missing = exec();
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain(".secrets/dev-signing-key.json");
+    expect(missing.stderr).toContain("keygen");
+    expect(read(s.argsFile)).toBe("");
+    mkdirSync(join(fakeRoot, ".secrets"));
+    writeFileSync(join(fakeRoot, ".secrets/dev-signing-key.json"), KEY_JSON);
+    const ok = exec();
+    expect(ok.status, ok.stderr).toBe(0);
+    expect(JSON.parse(read(s.stdinFile)).SIGNING_JWK).toBe(KEY_JSON);
   });
 
   it("鍵ファイルが無ければ終了コード 1", () => {

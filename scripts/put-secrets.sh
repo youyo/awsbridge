@@ -3,7 +3,9 @@
 # 値は wrangler の標準入力に JSON で渡し、コマンドライン引数には載せない。
 # 値はすべて環境変数（mise.toml / mise.local.toml）から読む。AWS は呼ばない
 # AWS_PROFILES（default とプロファイル一覧）は JSON 文字列の AWSBRIDGE_PROFILES から読む
-# （各ロール ARN は CloudFormation の Output RoleArn）。デプロイ環境は AWSBRIDGE_WRANGLER_ENV（既定 dev）。
+# （各ロール ARN は CloudFormation の Output RoleArn）。wrangler の設定と環境は scripts/wrangler.sh が
+# AWSBRIDGE_WRANGLER_CONFIG（既定 wrangler.jsonc）/ AWSBRIDGE_WRANGLER_ENV（既定 dev、空なら --env なし）で決める。
+# AWSBRIDGE_KEY_FILE の既定はリポジトリルートの .secrets/dev-signing-key.json。
 set -euo pipefail
 
 need() {
@@ -12,12 +14,14 @@ need() {
     exit 1
   fi
 }
-for v in AWSBRIDGE_KEY_FILE AWSBRIDGE_ACCESS_TEAM_DOMAIN AWSBRIDGE_ACCESS_AUD; do
+root="$(cd "$(dirname "$0")/.." && pwd)"
+export AWSBRIDGE_KEY_FILE="${AWSBRIDGE_KEY_FILE:-${root}/.secrets/dev-signing-key.json}"
+for v in AWSBRIDGE_ACCESS_TEAM_DOMAIN AWSBRIDGE_ACCESS_AUD; do
   need "$v"
 done
 
 if [ ! -r "$AWSBRIDGE_KEY_FILE" ]; then
-  echo "署名鍵ファイルを読めません（AWSBRIDGE_KEY_FILE）。mise run keygen で生成してください。" >&2
+  echo "署名鍵ファイルを読めません（AWSBRIDGE_KEY_FILE、既定 .secrets/dev-signing-key.json）。mise run keygen で生成してください。" >&2
   exit 1
 fi
 
@@ -40,4 +44,4 @@ process.stdout.write(JSON.stringify({
   ACCESS_AUD: e.AWSBRIDGE_ACCESS_AUD,
   ...(e.AWSBRIDGE_PROFILES ? { AWS_PROFILES: e.AWSBRIDGE_PROFILES } : {}),
 }));
-' | pnpm exec wrangler secret bulk --env "${AWSBRIDGE_WRANGLER_ENV:-dev}"
+' | bash "${root}/scripts/wrangler.sh" secret bulk

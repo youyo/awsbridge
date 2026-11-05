@@ -11,3 +11,9 @@ coverage/
 .claude/settings.local.json
 .secrets/
 mise.local.toml
+
+# Terraform
+infra/cloudflare/.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars

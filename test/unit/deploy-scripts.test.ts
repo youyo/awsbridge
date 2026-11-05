@@ -13,29 +13,27 @@ afterAll(() => {
 
 // aws コマンドが呼ばれたら失敗するダミーを PATH の先頭に置き、実 AWS を絶対に呼ばない。
 // 渡された引数は 1 行 1 引数で args ファイルに記録する。
-function fakeBin(): { dir: string; argsFile: string } {
+function fakeBin(): { dir: string; argsFile: string; profileFile: string } {
   const dir = mkdtempSync(join(tmpdir(), "awsbridge-fakebin-"));
   tmpDirs.push(dir);
   const argsFile = join(dir, "args.txt");
   const aws = join(dir, "aws");
+  const profileFile = join(dir, "profile.txt");
   writeFileSync(
     aws,
-    `#!/bin/sh\necho "AWS_CALLED $*"\nfor a in "$@"; do printf '%s\\n' "$a" >> "${argsFile}"; done\nexit 99\n`,
+    `#!/bin/sh\necho "AWS_CALLED $*"\nprintf '%s' "\${AWS_PROFILE-UNSET}" > "${profileFile}"\nfor a in "$@"; do printf '%s\\n' "$a" >> "${argsFile}"; done\nexit 99\n`,
   );
   chmodSync(aws, 0o755);
-  return { dir, argsFile };
+  return { dir, argsFile, profileFile };
 }
 
 const full = {
   AWSBRIDGE_ISSUER: "https://awsbridge.example.workers.dev/",
-  AWSBRIDGE_AUDIENCE: "awsbridge",
-  AWSBRIDGE_ROLE_NAME: "awsbridge",
-  AWSBRIDGE_STACK_NAME: "awsbridge",
   AWSBRIDGE_ALLOWED_SUBJECTS: "user@example.com",
 };
 
 function run(script: string, env: Record<string, string>) {
-  const { dir, argsFile } = fakeBin();
+  const { dir, argsFile, profileFile } = fakeBin();
   const r = spawnSync("bash", [join(root, script)], {
     env: { PATH: `${dir}:/usr/bin:/bin`, ...env },
     encoding: "utf8",
@@ -46,7 +44,13 @@ function run(script: string, env: Record<string, string>) {
   } catch {
     // aws が呼ばれていない
   }
-  return { ...r, args };
+  let profile = "";
+  try {
+    profile = readFileSync(profileFile, "utf8");
+  } catch {
+    // aws が呼ばれていない
+  }
+  return { ...r, args, profile };
 }
 
 describe("scripts/deploy-aws.sh", () => {
@@ -127,12 +131,39 @@ describe("aws へ渡すパラメーター", () => {
   });
 });
 
+describe("上書き可能な既定値（mise.toml ではなくスクリプト側で効く）", () => {
+  it("deploy-aws.sh: 未設定なら awsbridge の既定値を使う", () => {
+    const r = run("scripts/deploy-aws.sh", full);
+    expect(r.args).toContain("Audience=awsbridge");
+    expect(r.args).toContain("RoleName=awsbridge");
+    expect(r.args).toContain("awsbridge"); // --stack-name の値
+    expect(r.profile).toBe("awsbridge");
+  });
+  it("deploy-aws.sh: 環境変数で上書きできる", () => {
+    const r = run("scripts/deploy-aws.sh", {
+      ...full,
+      AWSBRIDGE_AUDIENCE: "aud-x",
+      AWSBRIDGE_ROLE_NAME: "role-x",
+      AWSBRIDGE_STACK_NAME: "stack-x",
+      AWS_PROFILE: "profile-x",
+    });
+    expect(r.args).toContain("Audience=aud-x");
+    expect(r.args).toContain("RoleName=role-x");
+    expect(r.args).toContain("stack-x");
+    expect(r.args).not.toContain("awsbridge");
+    expect(r.profile).toBe("profile-x");
+  });
+});
+
 describe("scripts/destroy-aws.sh", () => {
-  it("AWSBRIDGE_STACK_NAME が未設定なら終了コード 1", () => {
+  it("AWSBRIDGE_STACK_NAME が未設定なら既定 awsbridge と AWS_PROFILE=awsbridge を使う", () => {
     const r = run("scripts/destroy-aws.sh", {});
-    expect(r.status).toBe(1);
-    expect(r.stderr).toContain("AWSBRIDGE_STACK_NAME");
-    expect(r.stderr).toContain("mise.local.toml");
-    expect(r.stdout + r.stderr).not.toContain("AWS_CALLED");
+    expect(r.args).toContain("awsbridge");
+    expect(r.profile).toBe("awsbridge");
+  });
+  it("環境変数で上書きできる", () => {
+    const r = run("scripts/destroy-aws.sh", { AWSBRIDGE_STACK_NAME: "stack-x", AWS_PROFILE: "p" });
+    expect(r.args).toContain("stack-x");
+    expect(r.profile).toBe("p");
   });
 });

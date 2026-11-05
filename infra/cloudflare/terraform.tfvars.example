@@ -1,0 +1,12 @@
+# コピーして terraform.tfvars にして使う（terraform.tfvars は gitignore 済み）。値はすべてダミー。
+account_id        = "00000000000000000000000000000000"
+worker_host       = "awsbridge.example.workers.dev"
+allowed_idp_ids   = ["00000000-0000-0000-0000-000000000000"]
+access_policy_ids = ["00000000-0000-0000-0000-000000000000"]
+
+# session_duration = "24h"
+
+# ポータルも作る場合
+# create_portal             = true
+# portal_hostname           = "mcp.example.com"
+# portal_oauth_allowed_uris = ["https://claude.ai/api/mcp/auth_callback"]

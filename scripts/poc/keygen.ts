@@ -1,9 +1,9 @@
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { calculateJwkThumbprint, exportJWK, generateKeyPair } from "jose";
-import { requireEnv } from "./env";
+import { keyFile } from "./env";
 
-const file = requireEnv("AWSBRIDGE_KEY_FILE");
+const file = keyFile();
 if (existsSync(file)) {
   console.log(`既存の鍵があるため上書きしません: ${file}`);
   process.exit(0);

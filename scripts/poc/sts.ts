@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { buildSessionName } from "../../src/oidc";
 import { parseStsResponse } from "../../src/sts-xml";
-import { requireEnv } from "./env";
+import { envOr, requireEnv } from "./env";
 import { mintToken } from "./token";
 
 const { values } = parseArgs({ options: { "role-arn": { type: "string" } } });
@@ -10,7 +10,7 @@ const subject = requireEnv("AWSBRIDGE_POC_SUBJECT");
 
 // --role-arn が無ければ CloudFormation スタックの Output RoleArn を使う
 function roleArnFromStack(): string {
-  const stack = requireEnv("AWSBRIDGE_STACK_NAME");
+  const stack = envOr("AWSBRIDGE_STACK_NAME", "awsbridge");
   return execFileSync(
     "aws",
     [
@@ -23,7 +23,7 @@ function roleArnFromStack(): string {
       "--output",
       "text",
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", env: { ...process.env, AWS_PROFILE: envOr("AWS_PROFILE", "awsbridge") } },
   ).trim();
 }
 const roleArn = values["role-arn"] ?? roleArnFromStack();

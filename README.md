@@ -37,7 +37,7 @@ AWS_PROFILE=<対象> mise run deploy:aws    # CloudFormation をデプロイ（�
 AWS_PROFILE=<対象> mise run destroy:aws   # 片付け: スタックを削除
 ```
 
-`AWS_PROFILE` は呼び出し側の値が優先されます（未設定なら `awsbridge`）。`AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_ROLE_NAME` / `AWSBRIDGE_AUDIENCE` も同様に環境変数で上書きできます。一方、`mise.local.toml` に書いた値は環境変数より優先されることがあります。その場合は、mise の環境を読み込んだうえで値を指定して直接実行してください。
+`AWS_PROFILE` は呼び出し側の値が優先されます（未設定なら `awsbridge`）。`AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_ROLE_NAME` / `AWSBRIDGE_AUDIENCE` も同様に環境変数で上書きできます（これらの既定値は `scripts/` 側にあり、`mise.toml` の `[env]` には置いていません）。一方、`mise.local.toml` や下流リポジトリの `mise.<name>.toml` に書いた値は、呼び出し側の環境変数より優先されます。対象アカウントを `AWS_PROFILE=<対象>` で切り替えたい場合は、`AWS_PROFILE` をこれらのファイルに書かないでください。
 
 ```
 mise exec -- env AWS_PROFILE=<対象> AWSBRIDGE_ALLOWED_SUBJECTS="user@example.com" bash scripts/deploy-aws.sh
@@ -86,7 +86,7 @@ AWSBRIDGE_ACCESS_AUD = "<Access アプリケーションの AUD タグ>"   # こ
 
 `AWSBRIDGE_MANAGED_POLICY_ARNS` は、ロールを引き受けた利用者が実行できる操作そのものになります。必要最小限の権限だけを付けてください（未設定なら何も付けません）。
 
-`mise.toml` の既定値（環境変数で上書き可）: `AWS_PROFILE`（`awsbridge`）、`AWSBRIDGE_AUDIENCE`（`awsbridge`）、`AWSBRIDGE_ROLE_NAME`（`awsbridge`）、`AWSBRIDGE_STACK_NAME`（`awsbridge`）。`AWSBRIDGE_KEY_FILE` は `.secrets/dev-signing-key.json` です。
+上書きできる既定値（`scripts/` 側で補います。環境変数・`mise.local.toml`・下流の mise 設定ファイルで変更可）: `AWS_PROFILE`（`awsbridge`）、`AWSBRIDGE_AUDIENCE`（`awsbridge`）、`AWSBRIDGE_ROLE_NAME`（`awsbridge`）、`AWSBRIDGE_STACK_NAME`（`awsbridge`）、`AWSBRIDGE_KEY_FILE`（リポジトリルートの `.secrets/dev-signing-key.json`）、`AWSBRIDGE_WRANGLER_CONFIG`（`wrangler.jsonc`）、`AWSBRIDGE_WRANGLER_ENV`（未設定なら `dev`。**空文字なら `--env` を付けない**）。
 
 ### Worker の設定
 
@@ -124,21 +124,92 @@ var（任意。既定値を上書きするときだけ）: `ISSUER`（deploy 時
 
 上流自身の開発用デプロイでは、`mise.local.toml` の `AWSBRIDGE_PROFILES`（上記 JSON の文字列）を `mise run secrets` が secret `AWS_PROFILES` として登録します。詳細は `docs/specs/architecture.md` の「マルチアカウント（aws_profile）」を参照してください。
 
+## Claude Code プラグイン
+
+下流の private リポジトリを対話しながらセットアップする Claude Code スキルを、プラグインとして同梱しています。
+
+```
+/plugin marketplace add youyo/awsbridge
+/plugin install awsbridge@awsbridge
+/awsbridge:setup-downstream <下流リポジトリ名>
+```
+
+スキルは、リポジトリ作成・Worker のデプロイ・CloudFormation・Cloudflare Access/Portal・動作確認を順に案内します。外部に影響する操作は、各段階で実行前に確認します。
+
 ## 下流リポジトリでの運用
 
-実運用は private の下流リポジトリで行う想定です。awsbridge を upstream として登録して更新を pull し続けます。下流固有の設定は上流と衝突しにくい場所に置きます。
+実運用は private の下流リポジトリで行う想定です。awsbridge を `upstream` として登録して更新を pull し続けます。**上流のファイルは一切編集せず、新しいファイルを足すだけ**で自分の環境にデプロイできます（`git pull` で衝突しません）。以下の `<name>` は環境名です（例 `awsbridge-mcp`）。
+
+1. 下流リポジトリを作り、上流を取り込む。
 
 ```
-git remote add upstream <awsbridge の URL>
-git pull upstream main                      # 上流の更新を取り込む
+git clone <awsbridge の URL> my-awsbridge && cd my-awsbridge
+git remote rename origin upstream
+git remote add origin <private リポジトリの URL>   # 下流の push 先
 ```
 
-1. 下流の `wrangler.jsonc` に環境（例 `env.prod`）を追加し、`vars.AWS_PROFILES` に上記の JSON をコミットする（ロール ARN は秘密ではない）。`name` / `workers_dev` などもその環境に書く。
-2. デプロイ環境は `AWSBRIDGE_WRANGLER_ENV` で切り替える（既定 `dev`）。
+2. `wrangler.<name>.jsonc` を足す（コミットする。ロール ARN は秘密ではない）。`main` などは上流の `wrangler.jsonc` と同じ値にし、`name` / `workers_dev` / `vars.AWS_PROFILES` だけ自分用にします。env セクションは使いません（値はダミーです）。
+
+```jsonc
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "awsbridge-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-21",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "workers_dev": true,
+  "vars": {
+    "AWS_PROFILES": {
+      "default": "dev",
+      "profiles": {
+        "dev":  { "roleArn": "arn:aws:iam::111111111111:role/awsbridge-mcp", "description": "development" },
+        "prod": { "roleArn": "arn:aws:iam::222222222222:role/awsbridge-mcp" }
+      },
+      "tools": ["call_aws"]
+    }
+  }
+}
+```
+
+3. 下流用の mise 設定ファイルを足す。`mise.<name>.toml` と、それを有効にする `.miserc.toml` の 2 つです（どちらもコミットする。秘密値は入れない）。
+
+```toml
+# mise.awsbridge-mcp.toml
+[env]
+AWSBRIDGE_WRANGLER_CONFIG = "wrangler.awsbridge-mcp.jsonc"
+AWSBRIDGE_WRANGLER_ENV = ""                      # 空 = --env を付けない（未設定だと上流の dev になる）
+AWSBRIDGE_STACK_NAME = "awsbridge-mcp"
+AWSBRIDGE_ROLE_NAME = "awsbridge-mcp"
+AWSBRIDGE_KEY_FILE = ".secrets/awsbridge-mcp-signing-key.json"   # 環境ごとに別の鍵にする
+# AWS_PROFILE = "<デプロイに使う AWS CLI プロファイル>"
+# AWSBRIDGE_AUDIENCE = "awsbridge"               # 変える場合は Worker の var STS_AUDIENCE も揃える
+```
+
+```toml
+# .miserc.toml
+env = ["awsbridge-mcp"]
+```
+
+4. 秘密値と環境固有値を `mise.local.toml`（gitignore。コミットしない）に書く。`AWSBRIDGE_ISSUER`（Worker の URL）、`AWSBRIDGE_ALLOWED_SUBJECTS`、`AWSBRIDGE_ACCESS_TEAM_DOMAIN`、`AWSBRIDGE_ACCESS_AUD` など（上の「`mise.local.toml` の変数」を参照）。`AWS_PROFILES` を `vars` で持つので `AWSBRIDGE_PROFILES` は設定しない（`secrets` が `AWS_PROFILES` を secret として二重登録しません）。
+
+5. デプロイする（初回）。
 
 ```
-AWSBRIDGE_WRANGLER_ENV=prod mise run build
-AWSBRIDGE_WRANGLER_ENV=prod mise run deploy:worker
+mise run keygen          # AWSBRIDGE_KEY_FILE に署名鍵を生成
+mise run deploy:worker   # wrangler.<name>.jsonc で Worker をデプロイ → secrets を登録
+AWS_PROFILE=<対象> mise run deploy:aws   # アカウントごとに CloudFormation を流し、出力 RoleArn を wrangler.<name>.jsonc の AWS_PROFILES に書く
 ```
 
-3. `AWS_PROFILES` を vars で持つ環境では、同名の secret と二重定義にならないよう `AWSBRIDGE_PROFILES` を設定せずに `mise run secrets` を使ってください（`AWS_PROFILES` は登録されません）。
+6. 上流の更新を取り込む。
+
+```
+git pull upstream main
+```
+
+注意:
+
+- **署名鍵は環境ごとに分ける。** 上流の開発用デプロイと同じ鍵・同じ issuer を使い回さないでください（`AWSBRIDGE_KEY_FILE` を別パスにする）。
+- **issuer（Worker の URL）が環境ごとに変わる**ので、IAM OIDC プロバイダーとロールを作る CloudFormation スタックも環境ごとに別です（`AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_ROLE_NAME` を分ける）。
+- mise は `mise.<name>.toml` を `mise.toml` より、`mise.local.toml` を `mise.<name>.toml` より優先します。`.config/mise/conf.d/*.toml` は `mise.toml` に負けるので使えません。
+- 上流の `wrangler.jsonc`（`name: awsbridge` / `env.dev`）は上流の開発用です。下流では使いません。

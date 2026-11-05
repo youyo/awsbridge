@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # CloudFormation で IAM OIDC プロバイダーと Worker 発行 JWT 用ロールをデプロイする。
-# 値はすべて環境変数（mise.toml / mise.local.toml）から読む。
+# 値は環境変数（mise.local.toml や下流の mise 設定ファイル）から読む。
+# 上書きできる既定値: AWS_PROFILE / AWSBRIDGE_AUDIENCE / AWSBRIDGE_ROLE_NAME / AWSBRIDGE_STACK_NAME（すべて awsbridge）
 set -euo pipefail
+
+export AWS_PROFILE="${AWS_PROFILE:-awsbridge}"
+AWSBRIDGE_AUDIENCE="${AWSBRIDGE_AUDIENCE:-awsbridge}"
+AWSBRIDGE_ROLE_NAME="${AWSBRIDGE_ROLE_NAME:-awsbridge}"
+AWSBRIDGE_STACK_NAME="${AWSBRIDGE_STACK_NAME:-awsbridge}"
 
 need() {
   if [ -z "${!1:-}" ]; then
@@ -9,7 +15,7 @@ need() {
     exit 1
   fi
 }
-for v in AWSBRIDGE_ISSUER AWSBRIDGE_AUDIENCE AWSBRIDGE_ROLE_NAME AWSBRIDGE_STACK_NAME AWSBRIDGE_ALLOWED_SUBJECTS; do
+for v in AWSBRIDGE_ISSUER AWSBRIDGE_ALLOWED_SUBJECTS; do
   need "$v"
 done
 
