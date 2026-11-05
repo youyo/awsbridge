@@ -1,7 +1,7 @@
 # awsbridge アーキテクチャ仕様（初版・設計合意メモ）
 
 - 作成日: 2026-11-05
-- 状態: 本体実装済み（実環境の正常系は未確認）。構成 A' の PoC は完了（2026-11-05、[PoC 結果](#poc-結果構成-a-2026-11-05) 参照）
+- 状態: 本体実装済み・実環境で通し確認済み（2026-11-05: Portal → Access → Worker → STS → AWS MCP、aws_profile による読み取り専用 / デバッグロールの切り替え、デバッグ専用権限が MCP 経由でのみ通ること）
 - 前身: [youyo/aws-mcp-gateway](https://github.com/youyo/aws-mcp-gateway)（Go 製。OIDC 認証付き AWS MCP Server リバースプロキシ）
 
 ## 目的
