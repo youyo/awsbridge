@@ -46,7 +46,12 @@ resource "cloudflare_zero_trust_access_application" "worker" {
       enabled                = true
       allow_any_on_localhost = true
       allow_any_on_loopback  = true
-      allowed_uris           = []
+      # Portal（<portal>/servers-callback）とダッシュボードが MCP サーバーとして OAuth 接続するためのコールバック。
+      # 無いと「Redirect URI not allowed by application configuration」になり、MCP サーバーが waiting のままになる。
+      allowed_uris = concat(
+        ["https://dash.cloudflare.com/${var.account_id}/one/access-controls/ai-controls/mcp-server/oauth-callback/*"],
+        var.portal_hostname == null ? [] : ["https://${var.portal_hostname}/servers-callback"],
+      )
     }
   }
 

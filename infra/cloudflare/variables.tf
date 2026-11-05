@@ -37,7 +37,7 @@ variable "create_portal" {
 }
 
 variable "portal_hostname" {
-  description = "ポータルのホスト名（スキーム・パスなし）。create_portal = true のとき必須"
+  description = "ポータルのホスト名（スキーム・パスなし）。create_portal = true のとき必須。既存のポータルを使う場合も指定すると、Worker 用アプリがそのポータルからの OAuth 接続（servers-callback）を許可する"
   type        = string
   default     = null
 
