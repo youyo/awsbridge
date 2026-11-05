@@ -2,7 +2,8 @@
 // 依存（fetch・Access の鍵解決・認証情報キャッシュ）は注入できる。設計: docs/specs/architecture.md。
 import type { JWK, JWTVerifyGetKey } from "jose";
 import { AccessJwtError, accessTokenFromRequest, verifyAccessJwt } from "./access";
-import { buildDiscovery, buildSessionName, publicJwks, signStsToken } from "./oidc";
+import { publicJwkOf } from "./keys";
+import { buildDiscovery, buildSessionName, publicJwksTolerant, signStsToken } from "./oidc";
 import {
   type ProfilesConfig,
   ProfilesConfigError,
@@ -20,6 +21,8 @@ import {
 export interface Env {
   // secret
   SIGNING_JWK?: string;
+  // 署名鍵のローテーション用。公開鍵 JWK の JSON 配列（任意）。JWKS に署名鍵の公開鍵と並べて出す。署名には使わない
+  ADDITIONAL_PUBLIC_JWKS?: string;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
   // AWS_PROFILES は wrangler の vars（オブジェクト）でも secret（JSON 文字列）でもよい。必須
@@ -62,12 +65,16 @@ const misconfigured = () => errorBody("server_misconfigured", 500);
 async function handleWellKnown(pathname: string, env: Env): Promise<Response> {
   if (!env.ISSUER) return misconfigured();
   if (pathname === "/.well-known/openid-configuration") return json(buildDiscovery(env.ISSUER));
+  // 値はログに出さない。どちらの設定が不正かだけを出す
+  let jwk: JWK;
   try {
-    const jwk = JSON.parse(env.SIGNING_JWK ?? "") as JWK;
-    return json(await publicJwks(jwk));
+    jwk = JSON.parse(env.SIGNING_JWK ?? "") as JWK;
+    await publicJwkOf(jwk);
   } catch {
+    console.error("config: invalid SIGNING_JWK");
     return misconfigured();
   }
+  return json(await publicJwksTolerant(jwk, env.ADDITIONAL_PUBLIC_JWKS));
 }
 
 function parseMaxAge(v: string | undefined): number | undefined | "invalid" {

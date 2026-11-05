@@ -91,7 +91,7 @@ mise run keygen          # 署名鍵を生成（.secrets/、既存なら上書�
 mise run deploy:worker   # wrangler deploy → secrets を順に実行（AWS は呼ばない）
 ```
 
-`secrets` は単独でも実行できます（`mise run secrets`）。`wrangler secret bulk` に標準入力で JSON を渡すので、値がコマンドライン引数に出ません。登録するのは `SIGNING_JWK` / `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD` / `AWS_PROFILES` で、`AWS_PROFILES` は `AWSBRIDGE_PROFILES`（JSON 文字列）から読みます。
+`secrets` は単独でも実行できます（`mise run secrets`）。`wrangler secret bulk` に標準入力で JSON を渡すので、値がコマンドライン引数に出ません。登録するのは `SIGNING_JWK` / `ADDITIONAL_PUBLIC_JWKS`（署名鍵のローテーション用。通常は `[]`）/ `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD` / `AWS_PROFILES` で、`AWS_PROFILES` は `AWSBRIDGE_PROFILES`（JSON 文字列）から読みます。
 
 検証: `mise run poc:sts`（正常 1 + 否定 4 ケース。実 AWS を呼ぶので明示的に実行したときだけ使います）。
 
@@ -107,7 +107,7 @@ AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS = "admin@example.com"       # デバッグロ�
 # AWSBRIDGE_READONLY_ROLE_NAME = "FederatedMcpReadOnly"      # 任意。ロール名（既定値）
 # AWSBRIDGE_DEBUG_ROLE_NAME = "FederatedMcpDebug"            # 任意。ロール名（既定値）
 # AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS = "arn:aws:iam::<アカウントID>:policy/<名前>" # 任意。デバッグロールに追加する管理ポリシー（カンマ区切り）
-AWSBRIDGE_PROFILES = '{"default":"dev-readonly","profiles":{"dev-readonly":{"roleArn":"arn:aws:iam::<アカウントID>:role/FederatedMcpReadOnly"},"dev-debug":{"roleArn":"arn:aws:iam::<アカウントID>:role/FederatedMcpDebug"}}}' # 各アカウントの deploy:aws の出力 ReadOnlyRoleArn / DebugRoleArn。secrets が AWS_PROFILES に登録
+AWSBRIDGE_PROFILES = '{"default":"dev-readonly","profiles":[{"name":"dev-readonly","roleArn":"arn:aws:iam::<アカウントID>:role/FederatedMcpReadOnly"},{"name":"dev-debug","roleArn":"arn:aws:iam::<アカウントID>:role/FederatedMcpDebug"}]}' # 各アカウントの deploy:aws の出力 ReadOnlyRoleArn / DebugRoleArn。secrets が AWS_PROFILES に登録
 AWSBRIDGE_POC_SUBJECT = "user@example.com"                   # poc:sts の正常ケースで使う利用者
 AWSBRIDGE_ACCESS_TEAM_DOMAIN = "https://team.example.cloudflareaccess.com" # Access のチームドメイン
 AWSBRIDGE_ACCESS_AUD = "<Access アプリケーションの AUD タグ>"   # このアプリケーションの AUD
@@ -117,39 +117,62 @@ AWSBRIDGE_ACCESS_AUD = "<Access アプリケーションの AUD タグ>"   # こ
 
 `AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS` で付ける管理ポリシーは、デバッグロールを引き受けた利用者が実行できる操作そのものになります。必要最小限の権限だけを付けてください（未設定なら何も付けません）。
 
-上書きできる既定値（`scripts/` 側で補います。環境変数・`mise.local.toml`・下流の mise 設定ファイルで変更可）: `AWS_PROFILE`（`awsbridge`）、`AWSBRIDGE_AUDIENCE`（`awsbridge`）、`AWSBRIDGE_STACK_NAME`（`awsbridge`）、`AWSBRIDGE_KEY_FILE`（リポジトリルートの `.secrets/dev-signing-key.json`）、`AWSBRIDGE_WRANGLER_CONFIG`（`wrangler.jsonc`）、`AWSBRIDGE_WRANGLER_ENV`（未設定なら `dev`。**空文字なら `--env` を付けない**）。
+上書きできる既定値（`scripts/` 側で補います。環境変数・`mise.local.toml`・下流の mise 設定ファイルで変更可）: `AWS_PROFILE`（`awsbridge`）、`AWSBRIDGE_AUDIENCE`（`awsbridge`）、`AWSBRIDGE_STACK_NAME`（`awsbridge`）、`AWSBRIDGE_KEY_FILE`（リポジトリルートの `.secrets/dev-signing-key.json`）、`AWSBRIDGE_NEXT_KEY_FILE` / `AWSBRIDGE_PREVIOUS_KEY_FILE`（鍵ローテーション用。既定は `AWSBRIDGE_KEY_FILE` の拡張子の前に `.next` / `.previous` を付けたもの）、`AWSBRIDGE_WRANGLER_CONFIG`（`wrangler.jsonc`）、`AWSBRIDGE_WRANGLER_ENV`（未設定なら `dev`。**空文字なら `--env` を付けない**）。
 
 ### Worker の設定
 
-secret（`mise run secrets` が登録）: `SIGNING_JWK`、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`AWS_PROFILES`（必須。vars で持つ場合は secret にしない）。
+secret（`mise run secrets` が登録）: `SIGNING_JWK`、`ADDITIONAL_PUBLIC_JWKS`（任意。署名鍵のローテーション用の追加の公開鍵）、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`AWS_PROFILES`（必須。vars で持つ場合は secret にしない）。
 
 var（任意。既定値を上書きするときだけ）: `ISSUER`（deploy 時に `--var` で設定）、`IDENTITY_CLAIM`（既定 `email`）、`ACCESS_MAX_TOKEN_AGE_SECONDS`、`STS_AUDIENCE`（既定 `awsbridge`）、`STS_REGION`（既定 `us-east-1`）、`STS_ENDPOINT`、`AWS_MCP_REGION`（既定 `us-east-1`）、`AWS_MCP_ENDPOINT`、`TARGET_AWS_REGION`（既定 `ap-northeast-1`）。
 
 `/mcp` のエラーは `{"error":"<code>"}` で返ります: `unauthorized`（401）、`forbidden`（403。ロールを引き受ける権限がない）、`upstream_auth_failed`（502。サーバー側の設定不整合）、`temporarily_unavailable`（503）、`server_misconfigured`（500）、`unknown_aws_profile` / `invalid_aws_profile` / `batch_not_supported`（400）。原因ごとの対応表は `docs/specs/architecture.md` の「エラーと HTTP ステータスの対応」を参照してください。
+
+## 署名鍵のローテーション
+
+Worker の署名鍵（secret `SIGNING_JWK`）を、止めずに入れ替える手順です。STS は JWKS をキャッシュするので、単純に差し替えると切り替え直後に検証が失敗します。そこで、新しい鍵の公開鍵を先に JWKS（`/.well-known/jwks.json`）へ載せ、STS が取り込んでから署名を切り替えます。
+
+```
+mise run key:prepare    # 1. 次の鍵を生成（AWSBRIDGE_NEXT_KEY_FILE。既にあれば中止）
+mise run secrets        #    次の鍵の公開鍵を JWKS に載せる（署名は現行の鍵のまま）
+# ── 最低 1 時間（安全側に 24 時間）待つ: STS の JWKS キャッシュが切れるまで ──
+mise run key:activate   # 2. 現行 → PREVIOUS、NEXT → 現行
+mise run secrets        #    署名を新しい鍵に切り替える（JWKS には前の鍵の公開鍵も残る）
+# ── JWT の有効期限（5 分）以上待つ ──
+mise run key:retire     # 3. 前の鍵（PREVIOUS）を削除
+mise run secrets        #    古い公開鍵を JWKS から外す
+```
+
+- STS の JWKS キャッシュの長さは公開されていないため、待ち時間は目安です。1 回目の待ちは最低 1 時間、確実にするなら 24 時間。2 回目の待ちは JWT の有効期限（5 分）以上で、`/.well-known/jwks.json` の `cache-control: max-age=300` も考慮して余裕を見てください。
+- `mise run secrets` は、`AWSBRIDGE_NEXT_KEY_FILE` / `AWSBRIDGE_PREVIOUS_KEY_FILE`（既定は `AWSBRIDGE_KEY_FILE` の拡張子の前に `.next` / `.previous` を付けたもの）のファイルがあれば、その**公開鍵だけ**を secret `ADDITIONAL_PUBLIC_JWKS` に登録します（秘密成分は secret に入れません）。どちらも無ければ空配列 `[]` を登録し、前回の追加鍵を消します。署名は常に `SIGNING_JWK`（現行の鍵）だけで行います。
+- 鍵ファイルは 0600 で作り、上書きしません。各タスクは操作の前に存在を確認し、条件に合わなければ何も動かさず中止します（`key:prepare`: NEXT が既にある、`key:activate`: NEXT が無い・PREVIOUS が既にある）。`key:retire` は PREVIOUS が無ければ何もしません。
+- `ADDITIONAL_PUBLIC_JWKS` の**要素**が不正（短い鍵・壊れた base64url・RSA 以外など）なら、Worker はその要素だけを捨てて `jwks: invalid additional key skipped (index=<n>)` を warn で出し、署名鍵の公開鍵と正しい追加鍵は返します（JWKS 全体は止まりません）。JSON として壊れている・配列でない場合も、追加鍵なしで 200 を返します。`SIGNING_JWK` が不正なときだけ 500 `server_misconfigured` です。なお捨てられた鍵で署名しても STS は検証できないので、`mise run secrets` は next / previous の鍵ファイルを同じ検証にかけ、通らなければ登録せずに止まります。
+- 仕組みの詳細は `docs/specs/architecture.md` の「署名鍵のローテーション」を参照してください。
 
 ## マルチアカウント
 
 複数の AWS アカウントを、MCP の `tools/call` の引数 `aws_profile` で切り替えられます。Worker は選ばれたアカウントのロールを AssumeRoleWithWebIdentity で直接引き受けます（チェーンしません）。誰がどのアカウントを使えるかは各アカウントの信頼ポリシー（`AllowedSubjects` / `DebugAllowedSubjects`）で決まり、許可外は 403 `forbidden` になります。
 
 1. 対象アカウントごとに `AWS_PROFILE=<対象> mise run deploy:aws` を流し、出力 `ReadOnlyRoleArn` / `DebugRoleArn` を控える。
-2. 環境変数 `AWS_PROFILES`（必須。wrangler の vars の JSON オブジェクトでも、secret の JSON 文字列でも可）にプロファイル一覧を書く（値はプレースホルダー）。
+2. 環境変数 `AWS_PROFILES`（必須。wrangler の vars の JSON オブジェクトでも、secret の JSON 文字列でも可）にプロファイル一覧を書く（値はプレースホルダー）。`profiles` は配列で書くのを推奨します。配列の順がそのまま `aws_profile` の enum の順になります。
 
 ```json
 {
   "default": "dev-readonly",
-  "profiles": {
-    "dev-readonly":  { "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly", "description": "開発（読み取り専用）" },
-    "dev-debug":     { "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug", "description": "開発（デバッグ）" },
-    "prod-readonly": { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
-    "prod-debug":    { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
-  }
+  "profiles": [
+    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly", "description": "開発（読み取り専用）" },
+    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug", "description": "開発（デバッグ）" },
+    { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
+    { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
+  ]
 }
 ```
 
-- プロファイル名: 英数字・`_`・`-` の 1〜32 文字（超えると 500 `server_misconfigured`）。
+`profiles` はオブジェクト（`"profiles": { "dev-readonly": { "roleArn": "..." }, ... }`）でも書けます（従来の形式）。ただしオブジェクトのキーの順は、Worker に届くまでの経路で保たれないことがあります（原因は未特定。実環境で、`dev-readonly` → `dev-debug` と書いたのに Portal の enum が名前順になった例があります）。順を意図するなら配列で書いてください。配列形式の `name` は必須で、重複は 500 `server_misconfigured` です。
+
+- プロファイル名: 英数字・`_`・`-` の 1〜32 文字（超えると 500 `server_misconfigured`）。数字だけの名前はオブジェクトの規則で数値順に先に並ぶので、順を意図するなら避けてください。
 - `default`: 必須。`aws_profile` を省略したとき、および `tools/list` など `tools/call` 以外で使うプロファイル。
 - `tools`: 任意。`aws_profile` の対象ツール（省略時は全ツール。通常は省略でよい）。名前は AWS MCP Server が返す実際のツール名（例: `aws___run_script`。`tools/list` で確認できる）で、存在しない名前を書くと `aws_profile` が効きません。対象外ツールに付いた `aws_profile` は無視して取り除きます。
-- `tools/list` の応答には、対象ツールの `inputSchema.properties.aws_profile`（`enum` はプロファイル名を設定順に、`description` に既定値と各説明）を注入します。これでクライアント（Claude など）がツール定義からプロファイルを選べます（省略可。`required` には入れません）。上流が既に `aws_profile` を持つツールは注入しません。応答を加工できないときは原文のまま返します。MCP Server Portal は管理者の資格で `tools/list` を同期・キャッシュしますが、プロファイル一覧は全員共通なので問題ありません。デプロイやプロファイル変更の後は、Portal 側でツール一覧を再同期してください。
+- `tools/list` の応答には、対象ツールの `inputSchema.properties.aws_profile`（`enum` は `default` を先頭にして残りを設定の順（配列形式なら配列の順）に、`description` に既定値と各説明）を注入します。これでクライアント（Claude など）がツール定義からプロファイルを選べます（省略可。`required` には入れません）。上流が既に `aws_profile` を持つツールは注入しません。応答を加工できないときは原文のまま返します。MCP Server Portal は管理者の資格で `tools/list` を同期・キャッシュしますが、プロファイル一覧は全員共通なので問題ありません。デプロイやプロファイル変更の後は、Portal 側でツール一覧を再同期してください。
 - `aws_profile` は上流へ送る前に取り除きます。一覧にない名前は 400 `unknown_aws_profile`、文字列以外は 400 `invalid_aws_profile`。
 - JSON-RPC バッチは、対象ツールの `aws_profile` がすべて同じ（省略は `default`）ならそのロールで中継し、異なれば 400 `batch_not_supported`。
 - `AWS_PROFILES` が未設定・不正なら 500 `server_misconfigured`。
@@ -195,12 +218,12 @@ git remote add origin <private リポジトリの URL>   # 下流の push 先
   "vars": {
     "AWS_PROFILES": {
       "default": "dev-readonly",
-      "profiles": {
-        "dev-readonly":  { "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly", "description": "development (read-only)" },
-        "dev-debug":     { "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug", "description": "development (debug)" },
-        "prod-readonly": { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
-        "prod-debug":    { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
-      }
+      "profiles": [
+        { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly", "description": "development (read-only)" },
+        { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug", "description": "development (debug)" },
+        { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
+        { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
+      ]
     }
   }
 }
@@ -242,7 +265,7 @@ git pull --no-rebase upstream main
 
 注意:
 
-- **署名鍵は環境ごとに分ける。** 上流の開発用デプロイと同じ鍵・同じ issuer を使い回さないでください（`AWSBRIDGE_KEY_FILE` を別パスにする）。
+- **署名鍵は環境ごとに分ける。** 上流の開発用デプロイと同じ鍵・同じ issuer を使い回さないでください（`AWSBRIDGE_KEY_FILE` を別パスにする）。鍵の入れ替えは「署名鍵のローテーション」の手順（`mise run key:prepare` → `secrets` → 待つ → `key:activate` → `secrets` → 待つ → `key:retire` → `secrets`）で止めずに行えます。
 - **issuer（Worker の URL）が環境ごとに変わる**ので、IAM OIDC プロバイダーとロールを作る CloudFormation スタックも環境ごとに別です（`AWSBRIDGE_STACK_NAME` を分ける）。同じアカウントに複数の環境を置くときはロール名も分ける（`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME`）。
 - mise は `mise.<name>.toml` を `mise.toml` より、`mise.local.toml` を `mise.<name>.toml` より優先します。`.config/mise/conf.d/*.toml` は `mise.toml` に負けるので使えません。
 - 上流の `wrangler.jsonc`（`name: awsbridge` / `env.dev`）は上流の開発用です。下流では使いません。

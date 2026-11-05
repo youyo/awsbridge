@@ -52,6 +52,25 @@ describe("rewriteToolsListResponse: JSON 応答", () => {
     expect(tools[0].inputSchema.properties.x).toEqual({ type: "string" });
   });
 
+  it("enum は default を先頭にし、残りを設定の順にする", async () => {
+    const res = await rewriteToolsListResponse(
+      jsonRes(listBody([tool("a", {})])),
+      config({
+        default: "stg",
+        profiles: {
+          prod: { roleArn: ROLE },
+          dev: { roleArn: ROLE },
+          stg: { roleArn: ROLE, description: "検証" },
+        },
+      }),
+      1,
+    );
+    const p = (await toolsOf(res))[0].inputSchema.properties.aws_profile;
+    expect(p.enum).toEqual(["stg", "prod", "dev"]);
+    expect(p.description.indexOf("stg")).toBeLessThan(p.description.indexOf("prod"));
+    expect(p.description.indexOf("prod")).toBeLessThan(p.description.indexOf("dev"));
+  });
+
   it("description に default と各プロファイルの説明（無ければ名前だけ）を入れる", async () => {
     const res = await rewriteToolsListResponse(jsonRes(listBody([tool("a", {})])), config(), 1);
     const d: string = (await toolsOf(res))[0].inputSchema.properties.aws_profile.description;

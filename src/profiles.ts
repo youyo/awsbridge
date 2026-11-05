@@ -1,5 +1,5 @@
 // 複数 AWS アカウントの切り替え（aws_profile）。設計: docs/specs/architecture.md「マルチアカウント（aws_profile）」。
-// 設定は環境変数 AWS_PROFILES（オブジェクトまたは JSON 文字列）。ここは副作用のない純粋関数だけを置く。
+// 設定は環境変数 AWS_PROFILES（オブジェクトまたは JSON 文字列）。profiles は配列（[{ name, roleArn, description? }]）でもオブジェクトでもよい。ここは副作用のない純粋関数だけを置く。
 
 export type ProfileEntry = { roleArn: string; description?: string };
 
@@ -16,6 +16,7 @@ export type ProfilesConfigErrorKind =
   | "shape"
   | "profiles_empty"
   | "profile_name"
+  | "duplicate"
   | "role_arn"
   | "tools"
   | "default";
@@ -37,14 +38,30 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 const has = (o: object, k: string) => Object.hasOwn(o, k);
 
+/** profiles をオブジェクト形式・配列形式のどちらでも [名前, 値] の列にする（順は書いた順）。 */
+function entriesOf(rawProfiles: unknown): [string, unknown][] {
+  if (Array.isArray(rawProfiles)) {
+    const seen = new Set<string>();
+    return rawProfiles.map((item) => {
+      if (!isObj(item)) throw new ProfilesConfigError("shape");
+      if (typeof item.name !== "string" || !NAME_RE.test(item.name))
+        throw new ProfilesConfigError("profile_name");
+      if (seen.has(item.name)) throw new ProfilesConfigError("duplicate");
+      seen.add(item.name);
+      return [item.name, item];
+    });
+  }
+  if (isObj(rawProfiles)) return Object.entries(rawProfiles);
+  throw new ProfilesConfigError("shape");
+}
+
 function validate(raw: unknown): ProfilesConfig {
-  if (!isObj(raw) || !isObj(raw.profiles)) throw new ProfilesConfigError("shape");
-  const names = Object.keys(raw.profiles);
-  if (names.length === 0) throw new ProfilesConfigError("profiles_empty");
+  if (!isObj(raw)) throw new ProfilesConfigError("shape");
+  const entries = entriesOf(raw.profiles);
+  if (entries.length === 0) throw new ProfilesConfigError("profiles_empty");
   const profiles: Record<string, ProfileEntry> = Object.create(null);
-  for (const name of names) {
+  for (const [name, e] of entries) {
     if (!NAME_RE.test(name)) throw new ProfilesConfigError("profile_name");
-    const e = (raw.profiles as Record<string, unknown>)[name];
     if (!isObj(e)) throw new ProfilesConfigError("shape");
     if (typeof e.roleArn !== "string" || !ROLE_ARN_RE.test(e.roleArn))
       throw new ProfilesConfigError("role_arn");
@@ -68,6 +85,15 @@ function validate(raw: unknown): ProfilesConfig {
   if (typeof raw.default !== "string" || !has(profiles, raw.default))
     throw new ProfilesConfigError("default");
   return { default: raw.default, profiles, ...(tools ? { tools } : {}) };
+}
+
+/**
+ * aws_profile の enum などに使う名前の並び: default を先頭に、残りは設定の順。
+ * 注意: JS のオブジェクトは「0 以上の整数に見える名前」を数値順で先に並べる（名前が数字だけのときだけ）。
+ */
+export function profileNames(config: ProfilesConfig): string[] {
+  const rest = Object.keys(config.profiles).filter((n) => n !== config.default);
+  return [config.default, ...rest];
 }
 
 // isolate 内キャッシュ（オブジェクトは同一参照、文字列は直近の 1 件）

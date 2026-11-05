@@ -148,18 +148,23 @@ Access JWT の実物（開発環境）で確認した claim:
 ```json
 {
   "default": "dev-readonly",
-  "profiles": {
-    "dev-readonly":  { "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly", "description": "任意" },
-    "dev-debug":     { "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug" },
-    "prod-readonly": { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
-    "prod-debug":    { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
-  }
+  "profiles": [
+    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly", "description": "任意" },
+    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug" },
+    { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
+    { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
+  ]
 }
 ```
 
-- `default`: 必須。`profiles` のキー名。`aws_profile` を指定しないときに使う。
+- `profiles` は**配列（推奨）**でもオブジェクト（`{ "<名前>": { "roleArn": ... } }`）でもよい。配列の順がそのまま `aws_profile` の enum の順になる。オブジェクト形式は従来どおり受け付け、その場合はキーの順になる。
+  - 配列形式を推奨する理由: 実環境で、vars のオブジェクトに `dev-readonly` → `dev-debug` の順で書いたのに、Portal に同期された enum が名前順（`dev-debug`, `dev-readonly`）になった。Worker のコード（`src/profiles.ts` / `src/toolslist.ts`）は順を変えない（unit テストで確認済み）。原因は特定できていないが、Worker に届く前の経路（vars の保存・受け渡しなど）でオブジェクトのキーが並べ替えられた可能性が高い（推定）。配列なら順が値の一部なので、どの経路でも保たれる。
+  - さらに enum は**常に `default` を先頭**にし、残りを設定の順に並べる。並べ替えが起きても `default` は先頭に来る。
+  - 配列形式の `name` は必須で、重複は 500 `server_misconfigured`（種別 `duplicate`）。
+  - 名前が数字だけのプロファイル（`"1"`, `"10"` など）は、JS のオブジェクトの規則で数値順に先に並ぶ。順を意図するなら数字だけの名前は避ける。
+- `default`: 必須。`profiles` の名前。`aws_profile` を指定しないときに使う。
 - `tools`: 任意。`aws_profile` の対象ツール。省略時は全ツール。
-- 検証: 名前は `^[A-Za-z0-9_-]{1,32}$`（STS の `RoleSessionName` 64 文字に `gw-<利用者>-<名前>` を収めるため 32 文字まで）、`roleArn` は `^arn:aws[a-z-]*:iam::\d{12}:role/[\w+=,.@/-]{1,128}$`、`profiles` は 1 件以上、`tools` は空配列不可、`default` は `profiles` に存在すること。違反は 500 `server_misconfigured`（ログには `config: invalid AWS_PROFILES: <種別>` のみ。値は出さない）。
+- 検証: 名前は `^[A-Za-z0-9_-]{1,32}$`（STS の `RoleSessionName` 64 文字に `gw-<利用者>-<名前>` を収めるため 32 文字まで）、`roleArn` は `^arn:aws[a-z-]*:iam::\d{12}:role/[\w+=,.@/-]{1,128}$`、`profiles` は 1 件以上で名前の重複なし、`tools` は空配列不可、`default` は `profiles` に存在すること。違反は 500 `server_misconfigured`（ログには `config: invalid AWS_PROFILES: <種別>` のみ。値は出さない）。
 
 ### 選び方
 
@@ -202,6 +207,37 @@ Access JWT の実物（開発環境）で確認した claim:
 6. 署名鍵は環境ごとに分ける。issuer（Worker の URL）が環境ごとに変わるため、IAM OIDC プロバイダーとロールの CloudFormation スタックも環境ごとに別になる。
 7. 各アカウントに `AWS_PROFILE=<対象> mise run deploy:aws` で CloudFormation を流し、出力 `ReadOnlyRoleArn` / `DebugRoleArn` を、1 アカウントにつき `<env>-readonly` と `<env>-debug` の 2 プロファイルとして `AWS_PROFILES` に追記する（default は readonly 側）。
 8. 上流自身の開発用デプロイは、`mise.local.toml` の `AWSBRIDGE_PROFILES`（JSON 文字列）を `mise run secrets` が secret `AWS_PROFILES` として登録する。vars で `AWS_PROFILES` を持つ環境では、secret と二重定義にならないよう `AWSBRIDGE_PROFILES` を設定せずに `mise run secrets` を使う（`AWS_PROFILES` は登録されない）。
+
+## 署名鍵のローテーション
+
+Worker は secret `SIGNING_JWK`（RSA 秘密鍵 JWK）で STS 向け JWT に署名し、`/.well-known/jwks.json` に公開鍵を出す。STS（IAM OIDC プロバイダー）は JWKS をキャッシュするが、その長さは公開されていない。単純に鍵を差し替えると、キャッシュが古い間は新しい鍵で署名した JWT が検証できず、`InvalidIdentityToken`（→ 502 `upstream_auth_failed`）になる。そこで、**新しい鍵の公開鍵を先に JWKS に載せ、STS が取り込んでから署名を切り替える**。
+
+### 仕組み
+
+- secret `ADDITIONAL_PUBLIC_JWKS`（任意。公開鍵 JWK の JSON 配列の文字列）を追加した。JWKS は「`SIGNING_JWK` の公開鍵（先頭）+ `ADDITIONAL_PUBLIC_JWKS` の公開鍵」を返す。
+- 追加分は公開成分（`kty`, `n`, `e`）だけを取り出し、`kid`（RFC 7638 thumbprint）・`use: "sig"`・`alg: "RS256"` を付け直す。秘密成分が入っていても出さない。`kid` が重複する鍵は除く。
+- 不正な追加鍵は個別に捨てる（JWKS 全体は止めない）。`ADDITIONAL_PUBLIC_JWKS` の要素が RSA 公開鍵として使えない（短い・base64url が壊れている・RSA 以外・オブジェクトでない）場合は、その要素だけを除き `console.warn("jwks: invalid additional key skipped (index=<n>)")` を出す。署名鍵の公開鍵（先頭）と正しい追加鍵は返す。JSON として壊れている・配列でない場合は追加鍵なしで 200 を返し warn を出す。値はログにも応答にも出さない。`SIGNING_JWK` が不正なときだけ `/.well-known/jwks.json` は 500 `server_misconfigured`（ログは `config: invalid SIGNING_JWK`）。理由: 追加鍵の不備で署名鍵の公開鍵まで消えると、STS の検証が全停止するため。
+- 署名は常に `SIGNING_JWK` だけで行う。追加鍵では署名しない。
+- 鍵ファイルは `AWSBRIDGE_KEY_FILE`（現行。既定 `.secrets/dev-signing-key.json`）、`AWSBRIDGE_NEXT_KEY_FILE`（既定 `<KEY_FILE の拡張子の前>.next.json`）、`AWSBRIDGE_PREVIOUS_KEY_FILE`（既定 `<...>.previous.json`）。`mise run secrets`（`scripts/put-secrets.sh`）は next / previous のファイルがあればその**公開鍵だけ**を `ADDITIONAL_PUBLIC_JWKS` に登録する。登録前に Worker と同じ検証関数（`src/keys.ts` の `publicJwkOf`、`scripts/check-public-jwk.ts` 経由）で確かめ、通らなければファイルを示して終了コード 1 で止まる（wrangler は呼ばない）。どちらも無ければ空配列 `[]` を登録する（前回の追加鍵を確実に消すため）。
+- mise タスク（`scripts/key-rotate.ts`。ファイルは 0600、上書きせず、操作の前に存在を確認する）:
+  - `key:prepare`: 次の鍵を生成して NEXT に保存。NEXT が既にあれば中止。
+  - `key:activate`: 現行 → PREVIOUS、NEXT → 現行。NEXT が無い、または PREVIOUS が既にあれば中止。
+  - `key:retire`: PREVIOUS を削除。無ければ何もしない。
+
+### 手順と待ち時間
+
+| 段階 | 操作 | JWKS の中身 | 署名する鍵 | 次に進む前に待つ |
+|---|---|---|---|---|
+| 0 | （通常） | 現行 | 現行 | |
+| 1 | `mise run key:prepare` → `mise run secrets` | 現行 + 次 | 現行 | **最低 1 時間（安全側に 24 時間）**。STS の JWKS キャッシュが切れて次の鍵の公開鍵を取り込むまで |
+| 2 | `mise run key:activate` → `mise run secrets` | 次（新しい現行）+ 前 | 新しい現行 | **JWT の有効期限（5 分）以上**。旧鍵で署名した JWT がすべて失効するまで。実際には `/.well-known/jwks.json` の `cache-control: max-age=300`（5 分）も考慮して余裕を見る |
+| 3 | `mise run key:retire` → `mise run secrets` | 新しい現行 | 新しい現行 | |
+
+- 段階 1 の待ち時間は、STS が JWKS を何時間キャッシュするかが公開されていないための目安。経験的な下限として 1 時間、確実にするなら 24 時間待つ。短いと、段階 2 のあと STS が次の鍵をまだ知らず検証に失敗する。
+- 段階 2 のあと、認証情報キャッシュ（isolate 内、有効期限の手前まで）に旧鍵で取得した認証情報が残るのは問題ない（STS が払い出し済みで、検証は取得時に済んでいる）。
+- 段階 3 の `retire` を急ぐ理由は無いが、前の鍵の秘密鍵ファイルを手元に残し続けないために、確認が済んだら実施する。
+- 手順の途中で中止したいとき: 段階 1 の途中なら NEXT を手で削除して `mise run secrets`（追加鍵が `[]` になる）。段階 2 のあとに問題が出たら、`mise run secrets` で PREVIOUS の公開鍵が JWKS に残っているうちは、現行と PREVIOUS のファイルを手で入れ替えて `mise run secrets` すれば署名を戻せる。
+- 環境ごとに鍵ファイルのパスが違う場合（下流リポジトリ）は、`mise.<name>.toml` の `AWSBRIDGE_KEY_FILE` に従って NEXT / PREVIOUS も同じ場所に作られる。
 
 ## MCP Server Portal 背後に置くことの制約
 
@@ -270,7 +306,7 @@ AWS_PROFILE=<対象> mise run deploy:aws   # CloudFormation（OIDC プロバイ�
 
 # Cloudflare 側（ロール ARN の反映）
 # mise.local.toml に AWSBRIDGE_PROFILES（JSON 文字列。出力 ReadOnlyRoleArn / DebugRoleArn を並べる）を設定
-mise run secrets            # Worker secret を一括登録（SIGNING_JWK / ACCESS_TEAM_DOMAIN / ACCESS_AUD / AWS_PROFILES）
+mise run secrets            # Worker secret を一括登録（SIGNING_JWK / ADDITIONAL_PUBLIC_JWKS / ACCESS_TEAM_DOMAIN / ACCESS_AUD / AWS_PROFILES）
 
 mise run poc:sts            # 正常 1 + 否定 4 ケース（--role-arn 省略時はスタックの Output ReadOnlyRoleArn。AWS_PROFILE で対象を選ぶ）
 AWS_PROFILE=<対象> mise run destroy:aws  # 後片付け（CloudFormation スタックの削除）
@@ -294,7 +330,7 @@ AWS_PROFILE=<対象> mise run destroy:aws  # 後片付け（CloudFormation ス�
 ```
 
 - `authorization_endpoint` / `token_endpoint` は URL として存在するだけで、中身は実装していない（404）
-- JWKS は RSA 2048 の公開鍵 1 本。`kid` は JWK thumbprint（RFC 7638）、`use: "sig"`, `alg: "RS256"`
+- JWKS は RSA 2048 の公開鍵 1 本（ローテーション中は署名鍵の公開鍵 + 追加の公開鍵。[署名鍵のローテーション](#署名鍵のローテーション)）。`kid` は JWK thumbprint（RFC 7638）、`use: "sig"`, `alg: "RS256"`
 - `issuer` は末尾スラッシュなし。JWT の `iss` とバイト単位で一致させる
 
 ### IAM 側
@@ -334,7 +370,7 @@ AWS_PROFILE=<対象> mise run destroy:aws  # 後片付け（CloudFormation ス�
 ### 気づいたこと
 
 - workers.dev のサブドメインはアカウント名と一致するとは限らない。issuer はデプロイ結果の URL を正とする
-- 署名鍵をローテーションすると、STS 側の JWKS キャッシュにより一時的に検証失敗が起きうる。ローテーション時は新旧 2 本を JWKS に並べる期間を設ける必要がある（本実装の検討事項）
+- 署名鍵を単純に差し替えると、STS 側の JWKS キャッシュにより切り替え直後に検証失敗が起きうる。このため JWKS に新旧の鍵を並べる無停止のローテーションを実装した（[署名鍵のローテーション](#署名鍵のローテーション)）
 
 ## 未決事項
 

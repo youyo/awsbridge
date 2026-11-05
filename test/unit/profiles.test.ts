@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { ProfilesConfigError, parseProfilesConfig, selectProfile } from "../../src/profiles";
+import {
+  ProfilesConfigError,
+  parseProfilesConfig,
+  profileNames,
+  selectProfile,
+} from "../../src/profiles";
 
 const A = "arn:aws:iam::111111111111:role/awsbridge";
 const B = "arn:aws:iam::222222222222:role/awsbridge";
@@ -56,7 +61,8 @@ describe("parseProfilesConfig", () => {
     expect(kindOf([])).toBe("shape");
     expect(kindOf(42)).toBe("shape");
     expect(kindOf({})).toBe("shape");
-    expect(kindOf({ profiles: [] })).toBe("shape");
+    expect(kindOf({ profiles: "x" })).toBe("shape");
+    expect(kindOf({ profiles: [] })).toBe("profiles_empty"); // 配列形式が有効になったため空配列は profiles_empty
     expect(kindOf({ profiles: {} })).toBe("profiles_empty");
     expect(kindOf({ profiles: { "bad name": { roleArn: A } } })).toBe("profile_name");
     expect(kindOf({ profiles: { "": { roleArn: A } } })).toBe("profile_name");
@@ -213,5 +219,97 @@ describe("selectProfile", () => {
         code: "invalid_aws_profile",
       });
     });
+  });
+});
+
+describe("profiles の配列形式", () => {
+  const arr = {
+    default: "dev-readonly",
+    profiles: [
+      { name: "dev-readonly", roleArn: A, description: "ro" },
+      { name: "dev-debug", roleArn: B },
+      { name: "prod", roleArn: A },
+    ],
+  };
+
+  it("配列形式を受け付け、オブジェクト形式と同じ ProfilesConfig になり、順が保たれる", () => {
+    const cfg = parseProfilesConfig(arr);
+    expect(Object.keys(cfg.profiles)).toEqual(["dev-readonly", "dev-debug", "prod"]);
+    expect(cfg.profiles["dev-readonly"]).toEqual({ roleArn: A, description: "ro" });
+    expect(cfg.profiles["dev-debug"]).toEqual({ roleArn: B });
+    expect(parseProfilesConfig(JSON.stringify(arr))).toEqual(cfg);
+  });
+
+  it("オブジェクト形式も従来どおり（キーの順）", () => {
+    const cfg = parseProfilesConfig(valid);
+    expect(Object.keys(cfg.profiles)).toEqual(["dev", "prod-1_x"]);
+  });
+
+  it("配列形式の不正は種別つきエラー", () => {
+    const e = (profiles: unknown, d = "a") => kindOf({ default: d, profiles });
+    expect(e([])).toBe("profiles_empty");
+    expect(e([null])).toBe("shape");
+    expect(e(["a"])).toBe("shape");
+    expect(e([{ roleArn: A }])).toBe("profile_name");
+    expect(e([{ name: 1, roleArn: A }])).toBe("profile_name");
+    expect(e([{ name: "bad name", roleArn: A }])).toBe("profile_name");
+    expect(e([{ name: "a", roleArn: "x" }])).toBe("role_arn");
+    expect(e([{ name: "a", roleArn: A, description: 1 }])).toBe("shape");
+    expect(e([{ name: "b", roleArn: A }])).toBe("default");
+  });
+
+  it("名前の重複は duplicate エラー", () => {
+    expect(
+      kindOf({
+        default: "a",
+        profiles: [
+          { name: "a", roleArn: A },
+          { name: "a", roleArn: B },
+        ],
+      }),
+    ).toBe("duplicate");
+  });
+
+  it("prototype 由来の名前（__proto__ など）でも配列形式で壊れない", () => {
+    const cfg = parseProfilesConfig({
+      default: "a",
+      profiles: [{ name: "a", roleArn: A }],
+    });
+    expect(Object.hasOwn(cfg.profiles, "toString")).toBe(false);
+  });
+});
+
+describe("profileNames", () => {
+  it("default を先頭に、残りを設定の順に並べる", () => {
+    const cfg = parseProfilesConfig({
+      default: "b",
+      profiles: [
+        { name: "a", roleArn: A },
+        { name: "b", roleArn: A },
+        { name: "c", roleArn: A },
+      ],
+    });
+    expect(profileNames(cfg)).toEqual(["b", "a", "c"]);
+  });
+
+  it("default が先頭ならそのまま", () => {
+    expect(profileNames(parseProfilesConfig(valid))).toEqual(["dev", "prod-1_x"]);
+  });
+});
+
+describe("配列形式での selectProfile", () => {
+  it("aws_profile で配列形式のプロファイルを選べる", () => {
+    const cfg = parseProfilesConfig({
+      default: "a",
+      profiles: [
+        { name: "a", roleArn: A },
+        { name: "b", roleArn: B },
+      ],
+    });
+    const rpc = {
+      method: "tools/call",
+      params: { name: "call_aws", arguments: { aws_profile: "b" } },
+    };
+    expect(selectProfile(cfg, rpc)).toEqual({ kind: "profile", name: "b", roleArn: B });
   });
 });

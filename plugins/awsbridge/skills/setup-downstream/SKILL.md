@@ -26,7 +26,7 @@ awsbridge（public）を `upstream` とする下流の private リポジトリ�
    - 既存でなければ `gh repo create <owner>/<name> --private` を実行する。既にあれば作らずにそれを使う。
    - awsbridge を clone し、`git remote rename origin upstream` で上流を `upstream` にして、`git remote add origin <下流の URL>` で下流を `origin` に足す。
 3. 下流のファイルを作る。値は手順 1 の入力で埋める。ロール ARN は手順 5 で決まるまで仮に空にしておく。
-   - `wrangler.<name>.jsonc`: 上流の `wrangler.jsonc` から `compatibility_date` / `compatibility_flags` / `main` / `observability` を写し、`name`（Worker 名）、`workers_dev: true`、`vars.AWS_PROFILES`（`default` と `profiles`。`tools` は通常省略。指定するなら AWS MCP Server の実際のツール名（例 `aws___run_script`））を書く。`env` セクションは使わない。
+   - `wrangler.<name>.jsonc`: 上流の `wrangler.jsonc` から `compatibility_date` / `compatibility_flags` / `main` / `observability` を写し、`name`（Worker 名）、`workers_dev: true`、`vars.AWS_PROFILES`（`default` と `profiles`。`profiles` は `[{ "name": "<env>-readonly", "roleArn": "...", "description": "..." }, ...]` の配列で書く。配列の順がそのまま `aws_profile` の enum の順になる。オブジェクト形式も受け付けるが、キーの順が途中で保たれないことがある。`tools` は通常省略。指定するなら AWS MCP Server の実際のツール名（例 `aws___run_script`））を書く。`env` セクションは使わない。
    - `mise.<name>.toml`: `[env]` に `AWSBRIDGE_WRANGLER_CONFIG = "wrangler.<name>.jsonc"`、`AWSBRIDGE_WRANGLER_ENV = ""`（空 = `--env` を付けない）、`AWSBRIDGE_STACK_NAME = "<name>"`、`AWSBRIDGE_KEY_FILE = ".secrets/<name>-signing-key.json"` を書く。
    - `.miserc.toml`: `env = ["<name>"]`。
    - `mise.local.toml`（gitignore 済みか確認する。コミットしない）: `AWSBRIDGE_ALLOWED_SUBJECTS` / `AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS` / `AWSBRIDGE_ACCESS_TEAM_DOMAIN` / `AWSBRIDGE_POC_SUBJECT`（動作確認に使う利用者）と、必要なら `AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS` を書く。`AWSBRIDGE_ISSUER` は Worker をデプロイしてから決まるので、ここではまだ書かない。`AWS_PROFILES` を `vars` で持つので `AWSBRIDGE_PROFILES` は書かない。
@@ -67,6 +67,7 @@ awsbridge（public）を `upstream` とする下流の private リポジトリ�
 - 外部に影響する操作（リポジトリ作成、Worker のデプロイ、CloudFormation、secret 登録、Terraform の apply、push）は、各段階で実行前に利用者に確認する。
 - 署名鍵（`.secrets/`）と `mise.local.toml` をコミットしない。
 - 開発用と本番用、または環境どうしで署名鍵を共有しない。上流の開発用デプロイの鍵・issuer も使い回さない。
+- 署名鍵を入れ替えるときは、止めずに入れ替える手順に従う: `mise run key:prepare` → `mise run secrets` → 待つ（最低 1 時間、安全側に 24 時間。STS の JWKS キャッシュが切れるまで）→ `mise run key:activate` → `mise run secrets` → 待つ（JWT の有効期限 5 分以上）→ `mise run key:retire` → `mise run secrets`。`secrets` や `key:*` は外部に影響するので、各段階で実行前に利用者に確認する。
 - public な upstream（awsbridge）のファイルにアカウント ID や実在のドメインを書かない。下流は private なので、ロール ARN を含むプロファイル一覧のコミットは可。
 - STS や MCP のエラー本文、署名鍵、トークン、認証情報を会話に貼らない。
-- 存在しないコマンドを書かない。使うのは `mise run keygen` / `deploy:worker` / `deploy:aws` / `secrets` / `poc:sts` / `test` など、リポジトリの `mise.toml` にあるタスクだけ。
+- 存在しないコマンドを書かない。使うのは `mise run keygen` / `key:prepare` / `key:activate` / `key:retire` / `deploy:worker` / `deploy:aws` / `secrets` / `poc:sts` / `test` など、リポジトリの `mise.toml` にあるタスクだけ。

@@ -28,6 +28,13 @@ describe("mise.toml のデプロイタスク", () => {
   it("secrets は単独タスクとして残る", () => {
     expect(section("tasks.secrets")).toContain("scripts/put-secrets.sh");
   });
+  it("鍵ローテーションのタスク（key:prepare / key:activate / key:retire）は scripts/key-rotate.ts を呼び、wrangler・aws を呼ばない", () => {
+    for (const cmd of ["prepare", "activate", "retire"]) {
+      const run = /^run\s*=.*$/m.exec(section(`tasks."key:${cmd}"`))?.[0] ?? "";
+      expect(run, cmd).toContain(`scripts/key-rotate.ts ${cmd}`);
+      expect(run, cmd).not.toMatch(/wrangler|\baws\b|secrets/);
+    }
+  });
   it("deploy:aws / destroy:aws は Cloudflare を呼ばない", () => {
     for (const n of ['tasks."deploy:aws"', 'tasks."destroy:aws"']) {
       expect(section(n)).not.toMatch(/wrangler|deploy:worker|secrets/);

@@ -13,6 +13,9 @@ let proc: ChildProcess | undefined;
 let tmp = "";
 let base = "";
 let privateJwk: Awaited<ReturnType<typeof exportJWK>>;
+// 署名鍵のローテーション用: JWKS に載せる追加の鍵（次の鍵は公開成分のみ、前の鍵は秘密成分つきで渡して除去を確かめる）
+let nextJwk: Awaited<ReturnType<typeof exportJWK>>;
+let previousJwk: Awaited<ReturnType<typeof exportJWK>>;
 let logs = "";
 
 const ALLOWED_SUB = "user@example.com";
@@ -23,7 +26,12 @@ const ROLE_A = "arn:aws:iam::111111111111:role/awsbridge";
 const ROLE_B = "arn:aws:iam::222222222222:role/awsbridge";
 const AWS_PROFILES = JSON.stringify({
   default: "a",
-  profiles: { a: { roleArn: ROLE_A }, b: { roleArn: ROLE_B, description: "second" } },
+  // 配列形式。順は z → b → a（default は a）
+  profiles: [
+    { name: "z", roleArn: ROLE_B },
+    { name: "b", roleArn: ROLE_B, description: "second" },
+    { name: "a", roleArn: ROLE_A },
+  ],
   tools: ["call_aws"],
 });
 const FAKE_CREDS = {
@@ -266,6 +274,10 @@ async function waitReady(url: string): Promise<void> {
 beforeAll(async () => {
   const { privateKey } = await generateKeyPair("RS256", { extractable: true });
   privateJwk = await exportJWK(privateKey);
+  const nextKp = await generateKeyPair("RS256", { extractable: true });
+  nextJwk = await exportJWK(nextKp.privateKey);
+  const prevKp = await generateKeyPair("RS256", { extractable: true });
+  previousJwk = await exportJWK(prevKp.privateKey);
   await startFake();
   tmp = mkdtempSync(join(tmpdir(), "awsbridge-e2e-"));
   const varsFile = join(tmp, "dev.vars");
@@ -273,6 +285,7 @@ beforeAll(async () => {
     varsFile,
     [
       `SIGNING_JWK='${JSON.stringify(privateJwk)}'`,
+      `ADDITIONAL_PUBLIC_JWKS='${JSON.stringify([{ kty: "RSA", n: nextJwk.n, e: nextJwk.e }, previousJwk])}'`,
       `ACCESS_TEAM_DOMAIN='${fakeBase}'`,
       `ACCESS_AUD='${FAKE_AUD}'`,
       `AWS_PROFILES='${AWS_PROFILES}'`,
@@ -359,6 +372,27 @@ describe("wrangler dev e2e", () => {
   it("JWKS に秘密成分が含まれない", async () => {
     const text = await (await fetch(`${base}/.well-known/jwks.json`)).text();
     for (const f of ['"d"', '"p"', '"q"', '"dp"', '"dq"', '"qi"']) expect(text).not.toContain(f);
+  });
+
+  it("署名鍵のローテーション: JWKS は現行鍵 + 追加の公開鍵で、どちらの鍵で署名したトークンも擬似 STS 相当の検証（リモート JWKS）が通る", async () => {
+    const jwksUri = `${base}/.well-known/jwks.json`;
+    const jwks = (await (await fetch(jwksUri)).json()) as { keys: Record<string, string>[] };
+    expect(jwks.keys).toHaveLength(3);
+    for (const k of jwks.keys) {
+      expect(Object.keys(k).sort()).toEqual(["alg", "e", "kid", "kty", "n", "use"]);
+    }
+    expect(jwks.keys[0]?.n).toBe(privateJwk.n);
+    const remote = createRemoteJWKSet(new URL(jwksUri));
+    for (const k of [privateJwk, nextJwk, previousJwk]) {
+      const token = await signStsToken({
+        privateJwk: k,
+        issuer: base,
+        audience: "awsbridge",
+        subject: "user@example.com",
+      });
+      const { payload } = await jwtVerify(token, remote, { issuer: base, audience: "awsbridge" });
+      expect(payload.sub).toBe("user@example.com");
+    }
   });
 
   it("未知パスは 404", async () => {
@@ -613,12 +647,13 @@ describe("マルチアカウント（aws_profile）", () => {
     expect(mcpSeen[0]?.headers.accept).toBe("application/json");
     const [callAws, other] = body.result.tools;
     const prop = callAws?.inputSchema?.properties?.aws_profile;
-    expect(prop.enum).toEqual(["a", "b"]);
+    // default（a）が先頭、残りは設定（配列）の順: z → b
+    expect(prop.enum).toEqual(["a", "z", "b"]);
     expect(prop.description).toContain("b: second");
     expect(other?.inputSchema).toBeUndefined();
 
     stsRoles = [];
-    expect((await callTool(token, { aws_profile: prop.enum[1] })).status).toBe(200);
+    expect((await callTool(token, { aws_profile: prop.enum[2] })).status).toBe(200);
     expect(stsRoles).toContain(ROLE_B);
   });
 

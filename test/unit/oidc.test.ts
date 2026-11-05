@@ -1,6 +1,11 @@
 import { calculateJwkThumbprint, createLocalJWKSet, jwtVerify } from "jose";
 import { describe, expect, it } from "vitest";
-import { buildDiscovery, publicJwks, signStsToken } from "../../src/oidc";
+import {
+  buildDiscovery,
+  parseAdditionalPublicJwks,
+  publicJwks,
+  signStsToken,
+} from "../../src/oidc";
 import { newPrivateJwk } from "./helpers";
 
 describe("buildDiscovery", () => {
@@ -38,6 +43,102 @@ describe("publicJwks", () => {
     expect(k.kid).toBe(
       await calculateJwkThumbprint({ kty: "RSA", n: priv.n as string, e: priv.e as string }),
     );
+  });
+});
+
+describe("publicJwks（追加の公開鍵）", () => {
+  const PRIVATE_FIELDS = ["d", "p", "q", "dp", "dq", "qi"];
+  const thumb = (k: { n?: string; e?: string }) =>
+    calculateJwkThumbprint({ kty: "RSA", n: k.n as string, e: k.e as string });
+
+  it("署名鍵の公開鍵を先頭に、追加の公開鍵を並べる（kid・use・alg を付け直す）", async () => {
+    const cur = await newPrivateJwk();
+    const next = await newPrivateJwk();
+    const { keys } = await publicJwks(cur, [
+      {
+        kty: "RSA",
+        n: next.n as string,
+        e: next.e as string,
+        kid: "ignored",
+        use: "enc",
+        alg: "RS512",
+      },
+    ]);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]?.kid).toBe(await thumb(cur));
+    expect(keys[1]).toEqual({
+      kty: "RSA",
+      n: next.n,
+      e: next.e,
+      kid: await thumb(next),
+      use: "sig",
+      alg: "RS256",
+    });
+  });
+
+  it("追加鍵に秘密成分が入っていても出さない", async () => {
+    const cur = await newPrivateJwk();
+    const next = await newPrivateJwk();
+    const { keys } = await publicJwks(cur, [next]);
+    for (const k of keys) {
+      for (const f of PRIVATE_FIELDS) expect(k).not.toHaveProperty(f);
+      expect(Object.keys(k).sort()).toEqual(["alg", "e", "kid", "kty", "n", "use"]);
+    }
+  });
+
+  it("kid が重複する鍵（署名鍵と同じもの・追加どうし）は除く", async () => {
+    const cur = await newPrivateJwk();
+    const other = await newPrivateJwk();
+    const { keys } = await publicJwks(cur, [cur, other, other]);
+    expect(keys.map((k) => k.kid)).toEqual([await thumb(cur), await thumb(other)]);
+  });
+
+  it("追加鍵が不正なら例外（RSA でない・n/e 欠落・値が不正）", async () => {
+    const cur = await newPrivateJwk();
+    for (const bad of [
+      { kty: "oct", k: "abc" },
+      { kty: "RSA", e: "AQAB" },
+      { kty: "RSA", n: "abc" },
+      { kty: "RSA", n: "!!!", e: "AQAB" },
+      "string",
+      null,
+    ]) {
+      await expect(publicJwks(cur, [bad as never])).rejects.toThrow();
+    }
+  });
+
+  it("追加鍵で署名したトークンも、現行鍵で署名したトークンも、同じ JWKS で検証できる", async () => {
+    const cur = await newPrivateJwk();
+    const next = await newPrivateJwk();
+    const jwks = createLocalJWKSet(await publicJwks(cur, [next]));
+    const base = { issuer: "https://iss.example", audience: "awsbridge", subject: "u" };
+    for (const k of [cur, next]) {
+      const token = await signStsToken({ privateJwk: k, ...base });
+      await jwtVerify(token, jwks, { issuer: base.issuer, audience: base.audience });
+    }
+  });
+});
+
+describe("parseAdditionalPublicJwks", () => {
+  it("未設定・空文字・空配列は []", () => {
+    expect(parseAdditionalPublicJwks(undefined)).toEqual([]);
+    expect(parseAdditionalPublicJwks("")).toEqual([]);
+    expect(parseAdditionalPublicJwks("[]")).toEqual([]);
+  });
+
+  it("JSON 配列（文字列）を返す", () => {
+    expect(parseAdditionalPublicJwks('[{"kty":"RSA"}]')).toEqual([{ kty: "RSA" }]);
+  });
+
+  it("JSON でない・配列でない・要素がオブジェクトでないなら例外（値をメッセージに含めない）", () => {
+    for (const bad of ["{not json SECRETVALUE", '{"kty":"RSA"}', '"x"', "[1]", "[null]", "[[]]"]) {
+      expect(() => parseAdditionalPublicJwks(bad), bad).toThrow();
+      try {
+        parseAdditionalPublicJwks(bad);
+      } catch (e) {
+        expect((e as Error).message).not.toContain("SECRETVALUE");
+      }
+    }
   });
 });
 

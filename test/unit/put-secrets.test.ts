@@ -10,7 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { exportJWK, generateKeyPair } from "jose";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const root = new URL("../../", import.meta.url).pathname;
 const tmpDirs: string[] = [];
@@ -87,6 +88,7 @@ describe("scripts/put-secrets.sh", () => {
     );
     expect(JSON.parse(read(s.stdinFile))).toEqual({
       SIGNING_JWK: KEY_JSON,
+      ADDITIONAL_PUBLIC_JWKS: "[]",
       ACCESS_TEAM_DOMAIN: "https://team.example.cloudflareaccess.com",
       ACCESS_AUD: "aud-tag-example",
       AWS_PROFILES: PROFILES,
@@ -213,5 +215,119 @@ describe("scripts/put-secrets.sh", () => {
     const r = run(s, { ...baseEnv(s.keyFile), AWSBRIDGE_KEY_FILE: join(s.dir, "missing.json") });
     expect(r.status).toBe(1);
     expect(read(s.argsFile)).toBe("");
+  });
+
+  describe("署名鍵のローテーション（ADDITIONAL_PUBLIC_JWKS）", () => {
+    // 実在の RSA 2048 公開成分（検証関数を通るもの）。テスト実行ごとに生成する
+    const N: Record<string, string> = {};
+    beforeAll(async () => {
+      for (const name of ["NEXTN", "PREVN", "IGNORED"]) {
+        const { publicKey } = await generateKeyPair("RS256", { extractable: true });
+        N[name] = (await exportJWK(publicKey)).n as string;
+      }
+    });
+    const PRIV = (name: string) =>
+      JSON.stringify({
+        kty: "RSA",
+        n: N[name],
+        e: "AQAB",
+        d: `PRIVATE-D-${name}`,
+        p: `PRIVATE-P-${name}`,
+        q: `PRIVATE-Q-${name}`,
+        dp: "x",
+        dq: "y",
+        qi: "z",
+        kid: `kid-${name}`,
+        alg: "RS256",
+      });
+    const additional = (s: ReturnType<typeof setup>) =>
+      JSON.parse(JSON.parse(read(s.stdinFile)).ADDITIONAL_PUBLIC_JWKS);
+
+    it("next / previous が無ければ空配列 [] を登録する（前回の追加鍵を消すため）", () => {
+      const s = setup();
+      const r = run(s, baseEnv(s.keyFile));
+      expect(r.status).toBe(0);
+      expect(JSON.parse(read(s.stdinFile)).ADDITIONAL_PUBLIC_JWKS).toBe("[]");
+    });
+
+    it("既定のパス（KEY_FILE の拡張子の前に .next / .previous）のファイルから公開鍵だけを登録する", () => {
+      const s = setup();
+      writeFileSync(join(s.dir, "key.next.json"), PRIV("NEXTN"));
+      writeFileSync(join(s.dir, "key.previous.json"), PRIV("PREVN"));
+      const r = run(s, baseEnv(s.keyFile));
+      expect(r.status, r.stderr).toBe(0);
+      const keys = additional(s);
+      expect(keys).toHaveLength(2);
+      expect(keys.map((k: { n: string }) => k.n)).toEqual([N.NEXTN, N.PREVN]);
+      for (const k of keys) {
+        expect(Object.keys(k).sort()).toEqual(["e", "kty", "n"]);
+      }
+      const all = read(s.stdinFile);
+      // SIGNING_JWK 以外に秘密成分が出ない
+      expect(JSON.parse(all).ADDITIONAL_PUBLIC_JWKS).not.toMatch(/PRIVATE|"d"|"p"|"q"/);
+      expect(r.stdout + r.stderr).not.toContain("PRIVATE");
+      expect(read(s.argsFile)).not.toContain("PRIVATE");
+    });
+
+    it("next だけ・previous だけでも登録する", () => {
+      const s = setup();
+      writeFileSync(join(s.dir, "key.previous.json"), PRIV("PREVN"));
+      expect(run(s, baseEnv(s.keyFile)).status).toBe(0);
+      expect(additional(s).map((k: { n: string }) => k.n)).toEqual([N.PREVN]);
+      const s2 = setup();
+      writeFileSync(join(s2.dir, "key.next.json"), PRIV("NEXTN"));
+      expect(run(s2, baseEnv(s2.keyFile)).status).toBe(0);
+      expect(additional(s2).map((k: { n: string }) => k.n)).toEqual([N.NEXTN]);
+    });
+
+    it("AWSBRIDGE_NEXT_KEY_FILE / AWSBRIDGE_PREVIOUS_KEY_FILE で場所を変えられる", () => {
+      const s = setup();
+      writeFileSync(join(s.dir, "n.json"), PRIV("NEXTN"));
+      writeFileSync(join(s.dir, "p.json"), PRIV("PREVN"));
+      writeFileSync(join(s.dir, "key.next.json"), PRIV("IGNORED"));
+      const r = run(s, {
+        ...baseEnv(s.keyFile),
+        AWSBRIDGE_NEXT_KEY_FILE: join(s.dir, "n.json"),
+        AWSBRIDGE_PREVIOUS_KEY_FILE: join(s.dir, "p.json"),
+      });
+      expect(r.status, r.stderr).toBe(0);
+      expect(additional(s).map((k: { n: string }) => k.n)).toEqual([N.NEXTN, N.PREVN]);
+    });
+
+    it("next が JSON でない・RSA 公開成分が無いなら終了コード 1 で wrangler を呼ばない（中身は出さない）", () => {
+      for (const bad of [
+        "{SECRET-NOT-JSON",
+        '{"kty":"oct","k":"SECRET-K"}',
+        '{"kty":"RSA","e":"AQAB"}',
+      ]) {
+        const s = setup();
+        writeFileSync(join(s.dir, "key.next.json"), bad);
+        const r = run(s, baseEnv(s.keyFile));
+        expect(r.status, bad).toBe(1);
+        expect(r.stderr).toContain("NEXT_KEY_FILE");
+        expect(r.stderr + r.stdout).not.toContain("SECRET");
+        expect(read(s.argsFile)).toBe("");
+      }
+    });
+
+    it("next / previous が Worker と同じ検証を通らない鍵（短い・壊れた base64url・RSA 以外）なら、どのファイルかを示して終了コード 1、wrangler を呼ばない", () => {
+      const bads = [
+        '{"kty":"RSA","n":"SECRET-SHORT","e":"AQAB"}',
+        `{"kty":"RSA","n":"${"!".repeat(342)}","e":"AQAB","d":"SECRET-D"}`,
+        '{"kty":"oct","k":"SECRET-K"}',
+      ];
+      for (const which of ["next", "previous"] as const) {
+        for (const bad of bads) {
+          const s = setup();
+          const file = join(s.dir, `key.${which}.json`);
+          writeFileSync(file, bad);
+          const r = run(s, baseEnv(s.keyFile));
+          expect(r.status, `${which} ${bad}`).toBe(1);
+          expect(r.stderr).toContain(file);
+          expect(r.stderr + r.stdout).not.toContain("SECRET");
+          expect(read(s.argsFile)).toBe("");
+        }
+      }
+    });
   });
 });

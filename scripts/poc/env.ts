@@ -22,3 +22,20 @@ export function keyFile(): string {
     resolve(dirname(fileURLToPath(import.meta.url)), "../../.secrets/dev-signing-key.json"),
   );
 }
+
+// 署名鍵のローテーションで使う次の鍵・前の鍵の置き場所。
+// 既定は現行の鍵ファイルの拡張子の前に .next / .previous を付けたもの（.secrets/dev-signing-key.next.json など）。
+export function rotationKeyFiles(env: NodeJS.ProcessEnv = process.env): {
+  current: string;
+  next: string;
+  previous: string;
+} {
+  const current = env.AWSBRIDGE_KEY_FILE || keyFile();
+  const m = /^(.*?)(\.[^./\\]+)?$/.exec(current);
+  const stem = m?.[1] ?? current;
+  return {
+    current,
+    next: env.AWSBRIDGE_NEXT_KEY_FILE || `${stem}.next.json`,
+    previous: env.AWSBRIDGE_PREVIOUS_KEY_FILE || `${stem}.previous.json`,
+  };
+}

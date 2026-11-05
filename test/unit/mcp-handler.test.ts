@@ -130,6 +130,22 @@ describe("/mcp 成功経路", () => {
     expect(decodeJwt(form.get("WebIdentityToken") as string).sub).toBe("user@example.com");
   });
 
+  it("ADDITIONAL_PUBLIC_JWKS があっても、STS 向け JWT の署名は SIGNING_JWK のまま", async () => {
+    const extra = await newPrivateJwk();
+    const { handler, calls } = makeDeps();
+    const res = await handler(
+      await mcpRequest(),
+      makeEnv({ ADDITIONAL_PUBLIC_JWKS: JSON.stringify([extra]) }),
+    );
+    expect(res.status).toBe(200);
+    const form = new URLSearchParams(String(stsCalls(calls)[0]?.init?.body));
+    const token = form.get("WebIdentityToken") as string;
+    const header = JSON.parse(Buffer.from(token.split(".")[0] as string, "base64url").toString());
+    expect(header.kid).toBe((await publicJwks(signingJwk)).keys[0]?.kid);
+    // 現行鍵だけの JWKS で検証できる（追加鍵では署名していない）
+    await jwtVerify(token, createLocalJWKSet(await publicJwks(signingJwk)), { issuer: ISSUER });
+  });
+
   it("Access JWT 検証 → Worker JWT 発行 → STS → SigV4 中継", async () => {
     const { handler, calls } = makeDeps();
     const res = await handler(await mcpRequest(), makeEnv());
@@ -557,6 +573,22 @@ describe("aws_profile によるアカウント切り替え", () => {
     expect(roleOf(stsCalls(calls)[0])).toBe(ROLE_PROD);
   });
 
+  it("profiles を配列形式で渡しても aws_profile で選べる", async () => {
+    const { handler, calls } = makeDeps();
+    const env = makeEnv({
+      AWS_PROFILES: {
+        default: "dev",
+        profiles: [
+          { name: "dev", roleArn: ROLE },
+          { name: "prod", roleArn: ROLE_PROD },
+        ],
+      } as never,
+    });
+    const res = await handler(await post(toolCall({ aws_profile: "prod" })), env);
+    expect(res.status).toBe(200);
+    expect(roleOf(stsCalls(calls)[0])).toBe(ROLE_PROD);
+  });
+
   it("32 文字のプロファイル名でも sessionName は 64 文字以内で -<name> で終わる", async () => {
     const name = "n".repeat(32);
     const { handler, calls } = makeDeps();
@@ -602,6 +634,13 @@ describe("aws_profile によるアカウント切り替え", () => {
       { default: "x", profiles: { dev: { roleArn: ROLE } } },
       { default: "dev", profiles: { dev: { roleArn: "SECRET-ARN" } } },
       { default: "dev", profiles: { dev: { roleArn: ROLE } }, tools: [] },
+      {
+        default: "dev",
+        profiles: [
+          { name: "dev", roleArn: ROLE },
+          { name: "dev", roleArn: ROLE },
+        ],
+      },
       { default: "n".repeat(33), profiles: { ["n".repeat(33)]: { roleArn: ROLE } } },
     ];
     for (const v of bad) {
@@ -646,5 +685,40 @@ describe("/mcp tools/list への aws_profile 注入", () => {
     expect(body.result.tools[0]?.inputSchema.properties.aws_profile.enum).toEqual(["dev", "prod"]);
     // PROFILES.tools = ["call_aws"] なので other には入らない
     expect(body.result.tools[1]?.inputSchema).toBeUndefined();
+  });
+
+  it("配列形式の profiles は enum が default 先頭・残りは配列順", async () => {
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      if (request.url.startsWith(STS)) return new Response(creds());
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "call_aws" }] } }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const handler = createHandler({
+      fetch: fakeFetch,
+      getKey: accessJwks,
+      cache: createCredentialCache(),
+    });
+    const env = makeEnv({
+      AWS_PROFILES: {
+        default: "dev-readonly",
+        profiles: [
+          { name: "prod-readonly", roleArn: ROLE_PROD },
+          { name: "dev-readonly", roleArn: ROLE },
+          { name: "dev-debug", roleArn: ROLE },
+        ],
+      } as never,
+    });
+    const res = await handler(await mcpRequest(), env);
+    const body = (await res.json()) as {
+      result: { tools: { inputSchema?: { properties: { aws_profile: { enum: string[] } } } }[] };
+    };
+    expect(body.result.tools[0]?.inputSchema?.properties.aws_profile.enum).toEqual([
+      "dev-readonly",
+      "prod-readonly",
+      "dev-debug",
+    ]);
   });
 });
