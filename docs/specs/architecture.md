@@ -341,7 +341,7 @@ AWS_PROFILE=<対象> mise run destroy:aws  # 後片付け（CloudFormation ス�
 1. ~~**PoC 残り**: Worker が出す discovery / JWKS を IAM が受理するか、Worker 発行 JWT で `AssumeRoleWithWebIdentity` が成功するか~~ → **解決**（[PoC 結果](#poc-結果構成-a-2026-11-05)）
 2. ~~`aws_profile` を継承するか~~ → **解決**: 継承。各アカウントへ直接 AssumeRoleWithWebIdentity（[マルチアカウント](#マルチアカウントaws_profile)）
 3. ~~`/mcp/assumerole/...` を廃止するか~~ → **解決**: 廃止（`aws_profile` に一本化）
-4. 会社のセキュリティ方針上、A'（Worker 鍵を AWS が信頼）が許容されるか。不可なら C
+4. ~~会社のセキュリティ方針上、A'（Worker 鍵を AWS が信頼）が許容されるか。不可なら C~~ → **解決**（2026-11-05、許容される。構成 A' で確定し、案 C には切り替えない）
 
 ## 参考
 
