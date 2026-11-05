@@ -133,13 +133,15 @@ Access JWT の実物（開発環境）で確認した claim:
 再現手順（値は `mise.local.toml` に置く。アカウント ID・email・Worker の URL はリポジトリに入れない）:
 
 ```
-mise run poc:keygen        # 開発用 RSA 鍵を .secrets/ に生成
-mise run deploy:dev        # ISSUER を --var で渡してデプロイ
-mise run poc:secret        # 秘密鍵 JWK を Worker secret SIGNING_JWK に登録
-mise run poc:aws:setup     # IAM OIDC プロバイダー + 検証用ロール（権限ポリシーなし）
-mise run poc:sts           # 正常 1 + 否定 4 ケース
-mise run poc:aws:teardown  # 後片付け
+mise run keygen             # 開発用 RSA 鍵を .secrets/ に生成
+mise run deploy:worker      # Worker をデプロイ
+mise run secret:signing-key # 秘密鍵 JWK を Worker secret SIGNING_JWK に登録（Worker 作成後）
+mise run deploy:aws         # CloudFormation（OIDC プロバイダー + ロール）をデプロイ
+mise run poc:sts            # 正常 1 + 否定 4 ケース（ロールはスタックの Output RoleArn）
+mise run destroy:aws        # 後片付け（CloudFormation スタックの削除）
 ```
+
+2 回目以降は `mise run deploy`（`deploy:worker` → `deploy:aws` を順に実行）でよい。IAM 側のリソースは `infra/aws/awsbridge.yaml`（CloudFormation）で作る。
 
 ### Worker が公開した discovery（IAM が受理した内容）
 

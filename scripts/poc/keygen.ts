@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { calculateJwkThumbprint, exportJWK, generateKeyPair } from "jose";
 import { requireEnv } from "./env";
 
-const file = requireEnv("AWSBRIDGE_POC_KEY_FILE");
+const file = requireEnv("AWSBRIDGE_KEY_FILE");
 if (existsSync(file)) {
   console.log(`既存の鍵があるため上書きしません: ${file}`);
   process.exit(0);

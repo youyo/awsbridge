@@ -1,19 +1,21 @@
 [tools]
 node = "24"
+"pipx:cfn-lint" = "1.59.0"
 pnpm = "11.28.5"
 
 [env]
 # 開発用 AWS アカウントの認証情報（~/.aws/config に設定済み）
 AWS_PROFILE = "awsbridge"
-# PoC（未決事項 1）で使う値
-AWSBRIDGE_POC_AUDIENCE = "awsbridge"
-AWSBRIDGE_POC_ROLE_NAME = "awsbridge-poc"
+AWSBRIDGE_AUDIENCE = "awsbridge"
+AWSBRIDGE_ROLE_NAME = "awsbridge"
+AWSBRIDGE_STACK_NAME = "awsbridge"
 # 個人情報・アカウント固有値は mise.local.toml（gitignore）に置く:
-#   AWSBRIDGE_POC_ISSUER     = "https://<worker>.<subdomain>.workers.dev"（Worker の URL = OIDC issuer）
-#   AWSBRIDGE_POC_SUBJECT    = "<テストに使う email>"
-#   AWSBRIDGE_POC_ACCOUNT_ID = "<AWS アカウント ID>"
+#   AWSBRIDGE_ISSUER           = "https://<worker>.<subdomain>.workers.dev"（Worker の URL = OIDC issuer）
+#   AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org"（ロールを引き受けられる利用者。カンマ区切り）
+#   AWSBRIDGE_MANAGED_POLICY_ARNS = "arn:aws:iam::aws:policy/ReadOnlyAccess"（任意。ロールに付ける管理ポリシー。カンマ区切り）
+#   AWSBRIDGE_POC_SUBJECT      = "user@example.com"（poc:sts の正常ケースで使う利用者）
 # 開発用署名鍵（秘密鍵 JWK）の置き場所。.secrets/ は gitignore
-AWSBRIDGE_POC_KEY_FILE = "{{config_root}}/.secrets/dev-signing-key.json"
+AWSBRIDGE_KEY_FILE = "{{config_root}}/.secrets/dev-signing-key.json"
 
 [tasks.install]
 description = "依存パッケージのインストール"
@@ -36,9 +38,9 @@ description = "Unit + E2E"
 depends = ["test:unit", "test:e2e"]
 
 [tasks.lint]
-description = "lint・フォーマット検査・型チェック"
+description = "lint・フォーマット検査・型チェック・CloudFormation テンプレート検査（cfn-lint）"
 depends = ["typecheck"]
-run = "pnpm biome check ."
+run = ["pnpm biome check .", "cfn-lint infra/aws/awsbridge.yaml"]
 
 [tasks.fmt]
 description = "フォーマット"
@@ -52,32 +54,36 @@ run = "pnpm wrangler deploy --dry-run --outdir dist --env dev"
 description = "ローカル起動"
 run = "pnpm wrangler dev --env dev"
 
-[tasks."deploy:dev"]
-description = "開発環境（workers.dev）へデプロイ"
-run = "pnpm wrangler deploy --env dev --var \"ISSUER:${AWSBRIDGE_POC_ISSUER:?mise.local.toml に AWSBRIDGE_POC_ISSUER を設定してください}\""
-
-# ---- PoC（未決事項 1）: IAM が Worker を OIDC プロバイダーとして受理するか ----
-
-[tasks."poc:keygen"]
-description = "開発用 RSA 署名鍵を生成し .secrets/ に保存（既存なら上書きしない）"
+[tasks.keygen]
+description = "署名鍵（RSA、秘密鍵 JWK）を生成し .secrets/ に保存（既存なら上書きしない）"
 run = "pnpm tsx scripts/poc/keygen.ts"
 
-[tasks."poc:secret"]
-description = "開発用署名鍵を Worker secret SIGNING_JWK に登録"
-run = "pnpm wrangler secret put SIGNING_JWK --env dev < \"$AWSBRIDGE_POC_KEY_FILE\""
+[tasks."secret:signing-key"]
+description = "署名鍵を Worker secret SIGNING_JWK に登録"
+run = "pnpm wrangler secret put SIGNING_JWK --env dev < \"$AWSBRIDGE_KEY_FILE\""
+
+[tasks."deploy:worker"]
+description = "Worker を workers.dev へデプロイ（ISSUER = AWSBRIDGE_ISSUER）"
+run = "pnpm wrangler deploy --env dev --var \"ISSUER:${AWSBRIDGE_ISSUER:?mise.local.toml に AWSBRIDGE_ISSUER を設定してください}\""
+
+[tasks."deploy:aws"]
+description = "CloudFormation で IAM OIDC プロバイダーとロールをデプロイ"
+run = "bash scripts/deploy-aws.sh"
+
+[tasks."destroy:aws"]
+description = "CloudFormation スタックを削除"
+run = "bash scripts/destroy-aws.sh"
+
+[tasks.deploy]
+description = "Worker → CloudFormation の順にデプロイ（depends は並列なので run に順に書く）"
+run = ["mise run deploy:worker", "mise run deploy:aws"]
+
+# ---- 検証用（PoC 由来）。実 AWS を呼ぶので明示的に実行したときだけ使う ----
 
 [tasks."poc:mint"]
-description = "開発用署名鍵で STS 向け JWT を発行して標準出力に出す"
+description = "署名鍵で STS 向け JWT を発行して標準出力に出す"
 run = "pnpm tsx scripts/poc/mint.ts"
 
 [tasks."poc:sts"]
-description = "Worker 発行 JWT で AssumeRoleWithWebIdentity（fetch + XML）を実行し、否定ケースも確認"
+description = "Worker 発行 JWT で AssumeRoleWithWebIdentity を実行し、否定ケースも確認（--role-arn 省略時はスタックの Output RoleArn）"
 run = "pnpm tsx scripts/poc/sts.ts"
-
-[tasks."poc:aws:setup"]
-description = "IAM OIDC プロバイダー（Worker の URL）と検証用ロール（権限なし）を作成"
-run = "bash scripts/poc/aws-setup.sh"
-
-[tasks."poc:aws:teardown"]
-description = "PoC の IAM ロールと OIDC プロバイダーを削除"
-run = "bash scripts/poc/aws-teardown.sh"
