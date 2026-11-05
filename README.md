@@ -204,7 +204,7 @@ AWS_PROFILE=<対象> mise run deploy:aws   # アカウントごとに CloudForma
 6. 上流の更新を取り込む。
 
 ```
-git pull upstream main
+git pull --no-rebase upstream main
 ```
 
 注意:

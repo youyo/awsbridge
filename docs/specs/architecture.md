@@ -154,7 +154,7 @@ Access JWT の実物（開発環境）で確認した claim:
 
 実運用は private の下流リポジトリで行う。awsbridge を git の upstream として登録し、更新を pull し続ける。下流固有の設定は上流と衝突しにくい場所に置く。
 
-1. `git remote add upstream <awsbridge の URL>` → `git pull upstream main` で追従する。**上流のファイルは編集せず、ファイルを足すだけ**にして衝突を避ける。
+1. `git remote add upstream <awsbridge の URL>` → `git pull --no-rebase upstream main` で追従する。**上流のファイルは編集せず、ファイルを足すだけ**にして衝突を避ける。
 2. `wrangler.<name>.jsonc`（例 `wrangler.awsbridge-mcp.jsonc`）を足す。`name` / `workers_dev` / `vars.AWS_PROFILES` を持ち、env セクションは使わない（ロール ARN は秘密ではないのでコミットしてよい）。
 3. 下流用の mise 設定として `mise.<name>.toml` と `.miserc.toml`（`env = ["<name>"]`）を足し、`AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV`（空 = `--env` を付けない）/ `AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_ROLE_NAME` / `AWSBRIDGE_KEY_FILE` などを与える。秘密値は `mise.local.toml`（gitignore）に置く。
 4. 上書きできる既定値は `mise.toml` の `[env]` ではなくスクリプト側（`scripts/*.sh`、`scripts/poc/`）の `${VAR:-default}` で補う。理由: mise は `mise.<env>.toml` を `mise.toml` より優先するが `.config/mise/conf.d/*.toml` は `mise.toml` に負けるうえ、`[env]` に既定値があると呼び出し側の環境変数や下流ファイルでの上書きが難しくなるため（実験で確認）。優先順位は `mise.local.toml` > `mise.<name>.toml` > `mise.toml`。
