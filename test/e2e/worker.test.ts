@@ -164,7 +164,18 @@ async function startFake(): Promise<void> {
           JSON.stringify({
             jsonrpc: "2.0",
             id: rpc.id,
-            result: { echo: rpc.method, params: rpc.params },
+            result: {
+              echo: rpc.method,
+              params: rpc.params,
+              ...(rpc.method === "tools/list"
+                ? {
+                    tools: [
+                      { name: "call_aws", inputSchema: { type: "object", properties: {} } },
+                      { name: "other_tool" },
+                    ],
+                  }
+                : {}),
+            },
           }),
         );
         return;
@@ -588,6 +599,27 @@ describe("マルチアカウント（aws_profile）", () => {
     const res = await rpc("tools/list", await accessJwt(PROFILE_SUBS[2] as string));
     expect(res.status).toBe(200);
     expect(stsRoles).toEqual([ROLE_A]);
+  });
+
+  it("tools/list 応答の対象ツールに aws_profile の enum が入り、その値で tools/call すると対応するロールが使われる", async () => {
+    mcpSeen = [];
+    stsRoles = [];
+    const token = await accessJwt(PROFILE_SUBS[0] as string);
+    const res = await rpc("tools/list", token);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { tools: { name: string; inputSchema?: { properties?: Record<string, any> } }[] };
+    };
+    expect(mcpSeen[0]?.headers.accept).toBe("application/json");
+    const [callAws, other] = body.result.tools;
+    const prop = callAws?.inputSchema?.properties?.aws_profile;
+    expect(prop.enum).toEqual(["a", "b"]);
+    expect(prop.description).toContain("b: second");
+    expect(other?.inputSchema).toBeUndefined();
+
+    stsRoles = [];
+    expect((await callTool(token, { aws_profile: prop.enum[1] })).status).toBe(200);
+    expect(stsRoles).toContain(ROLE_B);
   });
 
   it("バッチで aws_profile が混在すれば 400 batch_not_supported", async () => {

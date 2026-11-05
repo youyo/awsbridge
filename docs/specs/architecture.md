@@ -175,6 +175,17 @@ Access JWT の実物（開発環境）で確認した claim:
 
 エラー: `aws_profile` が文字列でない → 400 `invalid_aws_profile`、一覧にない（`__proto__` 等の prototype 由来の名前も不可）→ 400 `unknown_aws_profile`。どちらも認証後に判定し、STS・上流は呼ばない。
 
+### tools/list への注入
+
+クライアントがツール定義から `aws_profile` を選べるよう、`tools/list` の応答に注入する（`src/toolslist.ts`）。
+
+- 対象: POST の単一 JSON-RPC リクエストで `method === "tools/list"`（バッチは対象外）。上流へは `accept: application/json` で要求し、JSON 応答を得る。
+- 注入内容: 対象ツール（`tools` 設定のもの。省略時は全ツール）の `inputSchema.properties.aws_profile = { type: "string", enum: [プロファイル名（設定順）], description }`。`required` には加えない。`inputSchema` / `properties` が無ければ `type: "object"` で作る。`description` は既定値と各プロファイルの説明（長い説明は切り詰め、全体を数百文字に収める）。
+- 既に `aws_profile` を持つツールは注入せず `console.warn("tools_list: aws_profile conflict")`。
+- 応答の扱い: `application/json` は注入して返す。`text/event-stream`（上流が Accept を無視した場合）は、イベントが 1 つで `data:` の JSON-RPC 応答の id が一致し `result.tools` を持つときだけ注入して再シリアライズする。それ以外（複数イベント・パース不能・id 不一致）、非 200、その他の content-type、壊れた JSON は原文のまま流す（fail-safe。認可は `tools/call` 側なので、注入失敗で経路を止めない）。
+- 加工時は `content-encoding` と `content-length` を応答から外す（Workers の fetch は gzip を展開済みで、長さも変わるため）。
+- Portal 背後では、Portal が管理者資格で `tools/list` を同期・キャッシュするが、プロファイル一覧は全員共通なので問題ない。デプロイやプロファイル変更の後は Portal 側でツール一覧の再同期が必要。
+
 ### キャッシュと CloudTrail
 
 認証情報キャッシュのキーは `(利用者, roleArn)`。プロファイルごとに別エントリになる。STS の `RoleSessionName` は `gw-<利用者>-<プロファイル名>`（長い利用者名は利用者側を切り詰める）。CloudTrail でどのプロファイルのセッションか見分けられる。
@@ -196,7 +207,7 @@ Access JWT の実物（開発環境）で確認した claim:
 
 1. ポータル側の **Require user auth は Enabled 必須**（Terraform では portal の `servers[].on_behalf = true`。Disabled だと管理者資格を全員で共用し、全員が管理者の身元で AWS のロールを引き受ける。2026-11-05 に実環境で `false` のまま登録してしまい、利用者ごとの Sign Out が出ないことで気づいた）
 2. awsbridge 自体を self-hosted Access アプリにする（直 URL アクセスを Access で塞ぐ）。既存の `x-reader-mcp` / `seekio-mcp` と同じ構成
-3. ポータルは tools 一覧を管理者資格で同期・キャッシュするため、`tools/list` への**ユーザー別** `aws_profile` enum 注入は効かない。認可は `tools/call` 側で強制する
+3. ポータルは tools 一覧を管理者資格で同期・キャッシュするため、利用者ごとに異なる `aws_profile` の enum は効かない。全員共通の enum（`AWS_PROFILES` の一覧）は効くので注入している（[tools/list への注入](#toolslist-への注入)）。デプロイ後はポータル側でツール一覧の再同期が必要。認可は `tools/call` 側（と各アカウントの信頼ポリシー）で強制する
 4. ポータルの Code Mode（Required）では tools が 2 つに集約されるため、`aws_profile` 引数の説明が届きにくい
 
 ## セキュリティ上の注意

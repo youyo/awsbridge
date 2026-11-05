@@ -615,3 +615,36 @@ describe("aws_profile によるアカウント切り替え", () => {
     spy.mockRestore();
   });
 });
+
+describe("/mcp tools/list への aws_profile 注入", () => {
+  it("Worker 経由の tools/list 応答に AWS_PROFILES の enum が入り、上流へは accept: application/json", async () => {
+    const calls: Request[] = [];
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      if (request.url.startsWith(STS)) return new Response(creds());
+      calls.push(request);
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            tools: [{ name: "call_aws", inputSchema: { type: "object" } }, { name: "other" }],
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const handler = createHandler({
+      fetch: fakeFetch,
+      getKey: accessJwks,
+      cache: createCredentialCache(),
+    });
+    const res = await handler(await mcpRequest(), makeEnv());
+    expect(res.status).toBe(200);
+    expect(calls[0]?.headers.get("accept")).toBe("application/json");
+    const body = (await res.json()) as { result: { tools: { inputSchema?: any }[] } };
+    expect(body.result.tools[0]?.inputSchema.properties.aws_profile.enum).toEqual(["dev", "prod"]);
+    // PROFILES.tools = ["call_aws"] なので other には入らない
+    expect(body.result.tools[1]?.inputSchema).toBeUndefined();
+  });
+});

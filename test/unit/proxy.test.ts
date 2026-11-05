@@ -455,3 +455,58 @@ describe("proxyToAwsMcp: 本文を呼び出し側が先に読んだ場合", () =
     expect(parse((calls[0] as Captured).body).params._meta.AWS_REGION).toBe("eu-west-1");
   });
 });
+
+describe("proxyToAwsMcp: tools/list への aws_profile 注入", () => {
+  const profiles = {
+    default: "dev",
+    profiles: {
+      dev: { roleArn: "arn:aws:iam::111111111111:role/r" },
+      prod: { roleArn: "arn:aws:iam::222222222222:role/r" },
+    },
+  };
+  const listRpc = { jsonrpc: "2.0", id: 3, method: "tools/list" };
+  const listRes = () =>
+    new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        result: { tools: [{ name: "t", inputSchema: {} }] },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  const post = (rpcObj: unknown) =>
+    new Request("https://bridge.example.com/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(rpcObj),
+    });
+
+  it("tools/list は accept を application/json にし、応答へ enum を注入する", async () => {
+    const { fn, calls } = fakeFetch(listRes);
+    const res = await proxyToAwsMcp(post(listRpc), opts(fn, { rpc: listRpc, profiles }));
+    expect(calls[0]?.headers.get("accept")).toBe("application/json");
+    const json = (await res.json()) as { result: { tools: { inputSchema: any }[] } };
+    expect(json.result.tools[0]?.inputSchema.properties.aws_profile.enum).toEqual(["dev", "prod"]);
+  });
+
+  it("tools/list 以外は accept を変えず、応答も加工しない", async () => {
+    const callRpc = { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "t" } };
+    const { fn, calls } = fakeFetch(listRes);
+    const res = await proxyToAwsMcp(post(callRpc), opts(fn, { rpc: callRpc, profiles }));
+    expect(calls[0]?.headers.get("accept")).toBe("application/json, text/event-stream");
+    expect(JSON.stringify(await res.json())).not.toContain("aws_profile");
+  });
+
+  it("profiles 未指定なら tools/list でも accept を変えない", async () => {
+    const { fn, calls } = fakeFetch(listRes);
+    await proxyToAwsMcp(post(listRpc), opts(fn, { rpc: listRpc }));
+    expect(calls[0]?.headers.get("accept")).toBe("application/json, text/event-stream");
+  });
+
+  it("バッチは対象外", async () => {
+    const batch = [listRpc];
+    const { fn, calls } = fakeFetch(listRes);
+    await proxyToAwsMcp(post(batch), opts(fn, { rpc: batch, profiles }));
+    expect(calls[0]?.headers.get("accept")).toBe("application/json, text/event-stream");
+  });
+});

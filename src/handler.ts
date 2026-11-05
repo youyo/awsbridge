@@ -184,6 +184,7 @@ async function handleMcp(request: Request, env: Env, deps: HandlerDeps): Promise
     targetRegion: env.TARGET_AWS_REGION ?? "ap-northeast-1",
     ...(bodyText !== undefined ? { body: bodyText } : {}),
     ...(rpc !== undefined ? { rpc } : {}),
+    profiles,
     ...(deps.fetch ? { fetch: deps.fetch } : {}),
   });
 }

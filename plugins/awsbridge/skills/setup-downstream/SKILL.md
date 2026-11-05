@@ -53,6 +53,7 @@ awsbridge（public）を `upstream` とする下流の private リポジトリ�
    - Portal 経由の正常系（`tools/list`、`aws_profile` を付けた `tools/call`）は利用者に試してもらう。
 8. 下流リポジトリにコミットし、利用者の確認後に push する。
    - コミットするのは `wrangler.<name>.jsonc` / `mise.<name>.toml` / `.miserc.toml`。`mise.local.toml` と `.secrets/` は含まれていないことを `git status` で確認する。
+   - `mise run deploy:worker` のあとは、Portal のツール一覧を再同期する（Cloudflare ダッシュボードの AI controls → MCP servers でこのサーバーを同期）。Portal は `tools/list` をキャッシュしており、注入された `aws_profile` の enum（プロファイル一覧）は再同期するまで反映されない。
    - 上流の更新を取り込むときは `git pull --no-rebase upstream main` （下流のコミットを付け直さないよう rebase せず merge する。push 済みの履歴と食い違わない）→ `mise run test` → `mise run deploy:worker`。
 
 ## 止まる条件

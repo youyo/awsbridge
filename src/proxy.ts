@@ -1,4 +1,6 @@
 import { AwsClient } from "aws4fetch";
+import type { ProfilesConfig } from "./profiles";
+import { rewriteToolsListResponse } from "./toolslist";
 
 export interface ProxyCredentials {
   accessKeyId: string;
@@ -20,6 +22,8 @@ export interface ProxyOptions {
   body?: string;
   /** `body` を JSON パースしたもの（呼び出し側が加工済みでもよい）。あれば再パースせずこれに注入して 1 回だけ直列化する。 */
   rpc?: unknown;
+  /** 指定すると、単一の tools/list リクエストの応答に aws_profile を注入する（accept も JSON にする）。 */
+  profiles?: ProfilesConfig;
   fetch?: typeof fetch;
 }
 
@@ -99,6 +103,10 @@ export function injectMetaAwsRegion(
   return out === undefined ? body : JSON.stringify(out);
 }
 
+function isToolsList(rpc: unknown): rpc is Record<string, unknown> {
+  return isPlainObject(rpc) && rpc.method === "tools/list";
+}
+
 function badGateway(): Response {
   return new Response("Bad Gateway", { status: 502 });
 }
@@ -117,7 +125,10 @@ export async function proxyToAwsMcp(request: Request, opts: ProxyOptions): Promi
     const v = request.headers.get(name);
     if (v !== null) headers.set(name, v);
   }
-  headers.set("accept", "application/json, text/event-stream");
+  // tools/list は応答を加工するため、JSON 応答を求める（SSE は扱えるが加工が単純な JSON を優先する）
+  const listRpc = isToolsList(opts.rpc) ? opts.rpc : undefined;
+  const rewrite = method === "POST" && opts.profiles !== undefined && listRpc !== undefined;
+  headers.set("accept", rewrite ? "application/json" : "application/json, text/event-stream");
 
   let body: string | null = null;
   if (method === "POST") {
@@ -148,6 +159,12 @@ export async function proxyToAwsMcp(request: Request, opts: ProxyOptions): Promi
 
   try {
     const upstream = await doFetch(signed);
+    if (rewrite && opts.profiles && listRpc) {
+      const res = await rewriteToolsListResponse(upstream, opts.profiles, listRpc.id);
+      const h = new Headers(res.headers);
+      for (const name of DROP_RESPONSE_HEADERS) h.delete(name);
+      return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
+    }
     const outHeaders = new Headers(upstream.headers);
     for (const name of DROP_RESPONSE_HEADERS) outHeaders.delete(name);
     return new Response(upstream.body, {
