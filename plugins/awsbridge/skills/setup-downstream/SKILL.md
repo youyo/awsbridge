@@ -31,7 +31,7 @@ awsbridge（public）を `upstream` とする下流の private リポジトリ�
    - `.miserc.toml`: `env = ["<name>"]`。
    - `mise.local.toml`（gitignore 済みか確認する。コミットしない）: `AWSBRIDGE_ALLOWED_SUBJECTS` / `AWSBRIDGE_ACCESS_TEAM_DOMAIN` / `AWSBRIDGE_POC_SUBJECT`（動作確認に使う利用者）と、必要なら `AWSBRIDGE_MANAGED_POLICY_ARNS` を書く。`AWSBRIDGE_ISSUER` は Worker をデプロイしてから決まるので、ここではまだ書かない。`AWS_PROFILES` を `vars` で持つので `AWSBRIDGE_PROFILES` は書かない。
 4. Cloudflare 側（Worker）を先にデプロイする。デプロイは外部に影響するので、実行前に利用者に確認する。
-   - `mise install`
+   - `mise install`（初回は `mise trust` が必要なことがある）→ `mise run install`（clone 直後は依存パッケージが無い）
    - `mise run keygen`（`AWSBRIDGE_KEY_FILE` に署名鍵を生成する。環境ごとに別の鍵にする。既存なら上書きされない）
    - `deploy:worker` は `AWSBRIDGE_ISSUER`（Worker の URL）が必須。URL は Cloudflare アカウントの workers.dev サブドメインで決まり、名前からは推測できないので、利用者にサブドメイン（Cloudflare ダッシュボードの Workers & Pages で確認できる）を聞く。`wrangler login` 済みであることも確認する。
    - `mise.local.toml` に `AWSBRIDGE_ISSUER = "https://<Worker 名>.<サブドメイン>.workers.dev"` を設定し、`mise run deploy:worker`（wrangler deploy → secrets 登録）を実行する。この時点では Access アプリがまだ無く AUD が決まっていない。`secrets` は `AWSBRIDGE_ACCESS_AUD` が空だと止まるので、利用者に断ったうえで仮の値（`pending` など）を `mise.local.toml` に置く。仮の値のままでは `/mcp` は 401 になるだけで、手順 6 で本物に差し替える。
