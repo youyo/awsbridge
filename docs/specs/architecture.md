@@ -194,7 +194,7 @@ Access JWT の実物（開発環境）で確認した claim:
 
 ## MCP Server Portal 背後に置くことの制約
 
-1. ポータル側の **Require user auth は Enabled 必須**（Disabled だと管理者資格で全員が接続する）
+1. ポータル側の **Require user auth は Enabled 必須**（Terraform では portal の `servers[].on_behalf = true`。Disabled だと管理者資格を全員で共用し、全員が管理者の身元で AWS のロールを引き受ける。2026-11-05 に実環境で `false` のまま登録してしまい、利用者ごとの Sign Out が出ないことで気づいた）
 2. awsbridge 自体を self-hosted Access アプリにする（直 URL アクセスを Access で塞ぐ）。既存の `x-reader-mcp` / `seekio-mcp` と同じ構成
 3. ポータルは tools 一覧を管理者資格で同期・キャッシュするため、`tools/list` への**ユーザー別** `aws_profile` enum 注入は効かない。認可は `tools/call` 側で強制する
 4. ポータルの Code Mode（Required）では tools が 2 つに集約されるため、`aws_profile` 引数の説明が届きにくい

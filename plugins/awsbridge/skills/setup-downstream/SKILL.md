@@ -43,7 +43,7 @@ awsbridge（public）を `upstream` とする下流の private リポジトリ�
    - すべてのアカウントを流したら、`mise run deploy:worker` で一覧を反映する（利用者に確認）。
 6. Cloudflare Access / MCP Server Portal を用意する。
    - 利用者が既に Cloudflare の IaC を持っているなら、そちらに足す。必要なものは、Worker 用の self-hosted Access アプリ（Managed OAuth 有効。動的クライアント登録の許可 URI に `https://dash.cloudflare.com/<アカウント ID>/one/access-controls/ai-controls/mcp-server/oauth-callback/*` と `https://<portal のホスト>/servers-callback` を入れる。無いと MCP サーバーの認証が「Redirect URI not allowed」で失敗し waiting のままになる）、`/.well-known/openid-configuration` と `/.well-known/jwks.json` を対象外にする bypass（AWS IAM / STS が認証なしで取りに来る）、MCP サーバー（`https://<worker_host>/mcp`、`auth_type = "oauth"`）、`type = "mcp"` のアプリ、Portal への登録。
-   - IaC が無ければ、上流の `infra/cloudflare/`（README と `main.tf` / `variables.tf` / `terraform.tfvars.example`）を参考にする。これは参考実装で、作者は apply を検証していないと利用者に伝える。`terraform plan` の差分を読んでから apply する。Portal の Require user auth は Enabled にする。
+   - IaC が無ければ、上流の `infra/cloudflare/`（README と `main.tf` / `variables.tf` / `terraform.tfvars.example`）を参考にする。これは参考実装で、作者は apply を検証していないと利用者に伝える。`terraform plan` の差分を読んでから apply する。Portal の Require user auth は Enabled にする（Terraform では portal の `servers[].on_behalf = true`。既存の IaC に足す場合も同じ。`false` だと管理者の資格を全員で共用し、全員が管理者の身元で AWS に入る）。手順 7 で、Portal の画面でこのサーバーに利用者ごとの「Sign Out」が出ることを確認する。
    - MCP サーバーは作成直後 waiting なので、管理者が Cloudflare ダッシュボード（AI controls → MCP servers）で一度認証し、Portal のツール一覧を同期する。
    - Worker 用 Access アプリの AUD タグを `mise.local.toml` の `AWSBRIDGE_ACCESS_AUD` に設定する（MCP アプリや Portal の AUD ではない）。利用者に確認して `mise run secrets` で Worker secret に登録する。
 7. 動作を確認する。

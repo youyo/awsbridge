@@ -181,6 +181,9 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_portal" "this" {
   servers = [
     {
       server_id = cloudflare_zero_trust_access_ai_controls_mcp_server.this.id
+      # 必ず true（利用者ごとの認証）。false だと Portal が管理者の資格を全員で共用して接続し、
+      # 全員が管理者の身元で AWS のロールを引き受けてしまう（awsbridge は利用者本人の身元で権限を決める）。
+      on_behalf = true
     },
   ]
 

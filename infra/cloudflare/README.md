@@ -61,7 +61,7 @@ terraform apply
 
 ## MCP Server Portal 側の注意
 
-- ポータルの **Require user auth は Enabled にする**。Disabled だと管理者の資格で全員が接続する。
+- ポータルの **Require user auth は Enabled にする**（Terraform では portal の `servers[].on_behalf = true`）。Disabled（`false`）だと Portal が管理者の資格を全員で共用して接続し、全員が管理者の身元で AWS のロールを引き受けてしまう。既存のポータルに足す場合も必ず `on_behalf = true` にする。ポータルの画面で、このサーバーに利用者ごとの「Sign Out」が出ていれば利用者ごとの認証になっている。
 - ポータルは `tools/list` を管理者の資格で同期・キャッシュするため、利用者ごとの `aws_profile` enum の注入は効かない。認可は `tools/call` 側で強制される。
 - Code Mode（Required）では tools が 2 つに集約され、`aws_profile` 引数の説明が届きにくい。
 
