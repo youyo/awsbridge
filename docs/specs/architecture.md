@@ -1,7 +1,7 @@
 # awsbridge アーキテクチャ仕様（初版・設計合意メモ）
 
 - 作成日: 2026-11-05
-- 状態: 設計合意済み / 構成 A' の PoC 完了（2026-11-05、[PoC 結果](#poc-結果構成-a-2026-11-05) 参照）
+- 状態: 本体実装済み（実環境の正常系は未確認）。構成 A' の PoC は完了（2026-11-05、[PoC 結果](#poc-結果構成-a-2026-11-05) 参照）
 - 前身: [youyo/aws-mcp-gateway](https://github.com/youyo/aws-mcp-gateway)（Go 製。OIDC 認証付き AWS MCP Server リバースプロキシ）
 
 ## 目的
@@ -155,19 +155,28 @@ STS の `invalid_token` を 401 ではなく 502 `upstream_auth_failed` にし�
 
 未決事項 1 の検証。Worker（`*.workers.dev`）を OIDC issuer として IAM に登録し、Worker と同じ署名コード（`src/oidc.ts` の `signStsToken`）で発行した JWT で STS を呼んだ。**構成 A' は成立する。**
 
-再現手順（値は `mise.local.toml` に置く。アカウント ID・email・Worker の URL はリポジトリに入れない）:
+再現手順（値は `mise.local.toml` に置く。アカウント ID・email・Worker の URL はリポジトリに入れない）。Cloudflare 側（Worker）と AWS 側（CloudFormation）は分離しており、Worker のデプロイは AWS を呼ばず、CloudFormation のデプロイは Cloudflare を呼ばない。対象 AWS アカウントには CloudFormation だけを流す。
+
+初回は Worker の URL が issuer になるため、Worker → CloudFormation → secret の順に進める。
 
 ```
+# Cloudflare 側（1 回）
 mise run keygen             # 開発用 RSA 鍵を .secrets/ に生成
-mise run deploy             # deploy:worker → deploy:aws → secrets の順に実行
-                            #   deploy:worker  Worker をデプロイ
-                            #   deploy:aws     CloudFormation（OIDC プロバイダー + ロール）をデプロイ
-                            #   secrets        Worker secret を一括登録（SIGNING_JWK / ACCESS_TEAM_DOMAIN / ACCESS_AUD / FEDERATED_ROLE_ARN。ロール ARN は Output RoleArn）
-mise run poc:sts            # 正常 1 + 否定 4 ケース（ロールはスタックの Output RoleArn）
-mise run destroy:aws        # 後片付け（CloudFormation スタックの削除）
+mise run deploy:worker      # wrangler deploy → secrets を順に実行（AWS は呼ばない）。初回は URL を確定させるために先に実行する
+                            #   AWSBRIDGE_ROLE_ARN が未設定だと secrets が失敗するので、下の手順のあとに mise run secrets を実行し直す
+
+# AWS 側（対象アカウントごと。何度でも別アカウントに流せる）
+AWS_PROFILE=<対象> mise run deploy:aws   # CloudFormation（OIDC プロバイダー + ロール）をデプロイ。出力 RoleArn を控える
+
+# Cloudflare 側（ロール ARN の反映）
+# mise.local.toml に AWSBRIDGE_ROLE_ARN を設定
+mise run secrets            # Worker secret を一括登録（SIGNING_JWK / ACCESS_TEAM_DOMAIN / ACCESS_AUD / FEDERATED_ROLE_ARN）
+
+mise run poc:sts            # 正常 1 + 否定 4 ケース（--role-arn 省略時はスタックの Output RoleArn。AWS_PROFILE で対象を選ぶ）
+AWS_PROFILE=<対象> mise run destroy:aws  # 後片付け（CloudFormation スタックの削除）
 ```
 
-`mise.local.toml` には `AWSBRIDGE_ISSUER` などに加えて `AWSBRIDGE_ACCESS_TEAM_DOMAIN`・`AWSBRIDGE_ACCESS_AUD` が要る。初回も 2 回目以降も上の 2 手順（`keygen` → `deploy`）で足りる。IAM 側のリソースは `infra/aws/awsbridge.yaml`（CloudFormation）で作る。
+`mise.local.toml` には `AWSBRIDGE_ISSUER` などに加えて `AWSBRIDGE_ACCESS_TEAM_DOMAIN`・`AWSBRIDGE_ACCESS_AUD`・`AWSBRIDGE_ROLE_ARN` が要る。IAM 側のリソースは `infra/aws/awsbridge.yaml`（CloudFormation）で作る。マネジメントコンソールや StackSets でテンプレートを直接流してもよい（パラメーターは README の「AWS 側」を参照）。`AWS_PROFILE` と `AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_ROLE_NAME` / `AWSBRIDGE_AUDIENCE` は呼び出し側の環境変数が優先される（`mise.toml` は未設定時の既定値のみ）。
 
 ### Worker が公開した discovery（IAM が受理した内容）
 

@@ -4,17 +4,18 @@ node = "24"
 pnpm = "11.28.5"
 
 [env]
-# 開発用 AWS アカウントの認証情報（~/.aws/config に設定済み）
-AWS_PROFILE = "awsbridge"
-AWSBRIDGE_AUDIENCE = "awsbridge"
-AWSBRIDGE_ROLE_NAME = "awsbridge"
-AWSBRIDGE_STACK_NAME = "awsbridge"
+# 呼び出し側の環境変数を優先し、未設定のときだけ既定値を使う（別アカウントへは AWS_PROFILE=<対象> mise run deploy:aws）
+AWS_PROFILE = '{{ get_env(name="AWS_PROFILE", default="awsbridge") }}'
+AWSBRIDGE_AUDIENCE = '{{ get_env(name="AWSBRIDGE_AUDIENCE", default="awsbridge") }}'
+AWSBRIDGE_ROLE_NAME = '{{ get_env(name="AWSBRIDGE_ROLE_NAME", default="awsbridge") }}'
+AWSBRIDGE_STACK_NAME = '{{ get_env(name="AWSBRIDGE_STACK_NAME", default="awsbridge") }}'
 # 個人情報・アカウント固有値は mise.local.toml（gitignore）に置く:
 #   AWSBRIDGE_ISSUER           = "https://<worker>.<subdomain>.workers.dev"（Worker の URL = OIDC issuer）
 #   AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org"（ロールを引き受けられる利用者。カンマ区切り）
 #   AWSBRIDGE_MANAGED_POLICY_ARNS = "arn:aws:iam::aws:policy/ReadOnlyAccess"（任意。ロールに付ける管理ポリシー。カンマ区切り）
 #   AWSBRIDGE_POC_SUBJECT      = "user@example.com"（poc:sts の正常ケースで使う利用者）
 #   AWSBRIDGE_ACCESS_TEAM_DOMAIN = "https://team.example.cloudflareaccess.com"（Access のチームドメイン。secrets タスクが Worker secret ACCESS_TEAM_DOMAIN に登録）
+#   AWSBRIDGE_ROLE_ARN         = "arn:aws:iam::<アカウントID>:role/awsbridge"（deploy:aws の出力 RoleArn。secrets タスクが Worker secret FEDERATED_ROLE_ARN に登録）
 #   AWSBRIDGE_ACCESS_AUD       = "<Access アプリケーションの AUD タグ>"（secrets タスクが Worker secret ACCESS_AUD に登録）
 # 開発用署名鍵（秘密鍵 JWK）の置き場所。.secrets/ は gitignore
 AWSBRIDGE_KEY_FILE = "{{config_root}}/.secrets/dev-signing-key.json"
@@ -61,12 +62,15 @@ description = "署名鍵（RSA、秘密鍵 JWK）を生成し .secrets/ に保�
 run = "pnpm tsx scripts/poc/keygen.ts"
 
 [tasks.secrets]
-description = "Worker secret（SIGNING_JWK / ACCESS_TEAM_DOMAIN / ACCESS_AUD / FEDERATED_ROLE_ARN）を一括登録。ロール ARN は CloudFormation の Output RoleArn から取る"
+description = "Worker secret（SIGNING_JWK / ACCESS_TEAM_DOMAIN / ACCESS_AUD / FEDERATED_ROLE_ARN）を一括登録。ロール ARN は AWSBRIDGE_ROLE_ARN から読む（AWS は呼ばない）"
 run = "bash scripts/put-secrets.sh"
 
 [tasks."deploy:worker"]
-description = "Worker を workers.dev へデプロイ（ISSUER = AWSBRIDGE_ISSUER）"
-run = "pnpm wrangler deploy --env dev --var \"ISSUER:${AWSBRIDGE_ISSUER:?mise.local.toml に AWSBRIDGE_ISSUER を設定してください}\""
+description = "Cloudflare 側のデプロイ: Worker を workers.dev へデプロイ（ISSUER = AWSBRIDGE_ISSUER）→ secret 登録。AWS は呼ばない"
+run = [
+  "pnpm wrangler deploy --env dev --var \"ISSUER:${AWSBRIDGE_ISSUER:?mise.local.toml に AWSBRIDGE_ISSUER を設定してください}\"",
+  "mise run secrets",
+]
 
 [tasks."deploy:aws"]
 description = "CloudFormation で IAM OIDC プロバイダーとロールをデプロイ"
@@ -75,10 +79,6 @@ run = "bash scripts/deploy-aws.sh"
 [tasks."destroy:aws"]
 description = "CloudFormation スタックを削除"
 run = "bash scripts/destroy-aws.sh"
-
-[tasks.deploy]
-description = "Worker → CloudFormation → secret 登録の順にデプロイ（depends は並列なので run に順に書く）"
-run = ["mise run deploy:worker", "mise run deploy:aws", "mise run secrets"]
 
 # ---- 検証用（PoC 由来）。実 AWS を呼ぶので明示的に実行したときだけ使う ----
 

@@ -14,7 +14,7 @@ const KEY_JSON = '{"kty":"RSA","n":"abc","e":"AQAB","d":"PRIVATE-D-VALUE"}';
 const ROLE_ARN = "arn:aws:iam::123456789012:role/awsbridge";
 
 // 偽 pnpm（`pnpm exec wrangler ...` を受けて引数と標準入力を記録する）と偽 aws を PATH 先頭に置く。
-function setup(awsOutput = ROLE_ARN) {
+function setup() {
   const dir = mkdtempSync(join(tmpdir(), "awsbridge-put-secrets-"));
   tmpDirs.push(dir);
   const argsFile = join(dir, "wrangler-args.txt");
@@ -28,7 +28,7 @@ function setup(awsOutput = ROLE_ARN) {
   );
   writeFileSync(
     join(dir, "aws"),
-    `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a" >> "${awsArgsFile}"; done\nprintf '%s\\n' '${awsOutput}'\n`,
+    `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a" >> "${awsArgsFile}"; done\nexit 99\n`,
   );
   chmodSync(join(dir, "pnpm"), 0o755);
   chmodSync(join(dir, "aws"), 0o755);
@@ -54,7 +54,7 @@ const baseEnv = (keyFile: string) => ({
   AWSBRIDGE_KEY_FILE: keyFile,
   AWSBRIDGE_ACCESS_TEAM_DOMAIN: "https://team.example.cloudflareaccess.com",
   AWSBRIDGE_ACCESS_AUD: "aud-tag-example",
-  AWSBRIDGE_STACK_NAME: "awsbridge",
+  AWSBRIDGE_ROLE_ARN: ROLE_ARN,
 });
 
 describe("scripts/put-secrets.sh", () => {
@@ -77,13 +77,11 @@ describe("scripts/put-secrets.sh", () => {
     expect(r.stdout + r.stderr).not.toContain("PRIVATE-D-VALUE");
   });
 
-  it("describe-stacks でスタックの Output RoleArn を取得する", () => {
+  it("aws を一切呼ばない（Worker のデプロイは AWS に依存しない）", () => {
     const s = setup();
-    run(s, baseEnv(s.keyFile));
-    const aws = read(s.awsArgsFile);
-    expect(aws).toContain("describe-stacks");
-    expect(aws).toContain("awsbridge");
-    expect(aws).toContain("RoleArn");
+    const r = run(s, baseEnv(s.keyFile));
+    expect(r.status).toBe(0);
+    expect(read(s.awsArgsFile)).toBe("");
   });
 
   it("特殊文字を含む値も JSON として安全にエスケープされる", () => {
@@ -97,7 +95,7 @@ describe("scripts/put-secrets.sh", () => {
     "AWSBRIDGE_KEY_FILE",
     "AWSBRIDGE_ACCESS_TEAM_DOMAIN",
     "AWSBRIDGE_ACCESS_AUD",
-    "AWSBRIDGE_STACK_NAME",
+    "AWSBRIDGE_ROLE_ARN",
   ]) {
     it(`${name} が未設定なら終了コード 1 で mise.local.toml を案内し wrangler を呼ばない`, () => {
       const s = setup();
@@ -114,13 +112,6 @@ describe("scripts/put-secrets.sh", () => {
   it("鍵ファイルが無ければ終了コード 1", () => {
     const s = setup();
     const r = run(s, { ...baseEnv(s.keyFile), AWSBRIDGE_KEY_FILE: join(s.dir, "missing.json") });
-    expect(r.status).toBe(1);
-    expect(read(s.argsFile)).toBe("");
-  });
-
-  it("RoleArn が取得できなければ終了コード 1", () => {
-    const s = setup("None");
-    const r = run(s, baseEnv(s.keyFile));
     expect(r.status).toBe(1);
     expect(read(s.argsFile)).toBe("");
   });

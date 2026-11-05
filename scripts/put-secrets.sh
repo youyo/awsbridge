@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Worker secret（SIGNING_JWK / ACCESS_TEAM_DOMAIN / ACCESS_AUD / FEDERATED_ROLE_ARN）を一括登録する。
 # 値は wrangler の標準入力に JSON で渡し、コマンドライン引数には載せない。
-# 値はすべて環境変数（mise.toml / mise.local.toml）と CloudFormation スタックの Output から読む。
+# 値はすべて環境変数（mise.toml / mise.local.toml）から読む。AWS は呼ばない
+# （FEDERATED_ROLE_ARN は CloudFormation の Output RoleArn を AWSBRIDGE_ROLE_ARN に控えておく）。
 set -euo pipefail
 
 need() {
@@ -10,7 +11,7 @@ need() {
     exit 1
   fi
 }
-for v in AWSBRIDGE_KEY_FILE AWSBRIDGE_ACCESS_TEAM_DOMAIN AWSBRIDGE_ACCESS_AUD AWSBRIDGE_STACK_NAME; do
+for v in AWSBRIDGE_KEY_FILE AWSBRIDGE_ACCESS_TEAM_DOMAIN AWSBRIDGE_ACCESS_AUD AWSBRIDGE_ROLE_ARN; do
   need "$v"
 done
 
@@ -19,17 +20,8 @@ if [ ! -r "$AWSBRIDGE_KEY_FILE" ]; then
   exit 1
 fi
 
-role_arn="$(aws cloudformation describe-stacks \
-  --stack-name "$AWSBRIDGE_STACK_NAME" \
-  --query "Stacks[0].Outputs[?OutputKey=='RoleArn'].OutputValue" \
-  --output text)"
-if [ -z "$role_arn" ] || [ "$role_arn" = "None" ]; then
-  echo "スタック ${AWSBRIDGE_STACK_NAME} の Output RoleArn を取得できません。mise run deploy:aws を先に実行してください。" >&2
-  exit 1
-fi
-
 # JSON は node で組み立てる（bash の文字列連結ではエスケープが保証できない）。値は環境変数で渡す。
-AWSBRIDGE_ROLE_ARN="$role_arn" node -e '
+node -e '
 const fs = require("node:fs");
 const e = process.env;
 process.stdout.write(JSON.stringify({
