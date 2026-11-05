@@ -13,6 +13,9 @@ for v in AWSBRIDGE_ISSUER AWSBRIDGE_AUDIENCE AWSBRIDGE_ROLE_NAME AWSBRIDGE_STACK
   need "$v"
 done
 
+# email は小文字に正規化して照合するため、許可リストも小文字にそろえる（Worker 側は identity を小文字化する）
+AWSBRIDGE_ALLOWED_SUBJECTS="$(printf '%s' "$AWSBRIDGE_ALLOWED_SUBJECTS" | tr '[:upper:]' '[:lower:]')"
+
 # 信頼ポリシーは JSON 文字列として組むため、値を厳格に検証する（全員許可・JSON 破壊の防止）。
 # ローカル部はワイルドカード可、ドメイン部は不可。前後の空白と空要素はエラー。
 subject_re='^[A-Za-z0-9._%+*?-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$'

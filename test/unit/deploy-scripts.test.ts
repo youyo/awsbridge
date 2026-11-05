@@ -99,6 +99,18 @@ describe("AWSBRIDGE_ALLOWED_SUBJECTS の検証", () => {
   }
 });
 
+describe("AWSBRIDGE_ALLOWED_SUBJECTS の小文字化", () => {
+  it("大文字混じりの入力は小文字にして検証・CloudFormation に渡す", () => {
+    const r = run("scripts/deploy-aws.sh", {
+      ...full,
+      AWSBRIDGE_ALLOWED_SUBJECTS: "User@Example.COM,*@Example.Org",
+    });
+    expect(r.status).toBe(99);
+    expect(r.args).toContain("AllowedSubjects=user@example.com,*@example.org");
+    expect(r.args.some((a) => /AllowedSubjects=.*[A-Z]/.test(a))).toBe(false);
+  });
+});
+
 describe("aws へ渡すパラメーター", () => {
   it("IssuerHost は https:// と末尾 / を除去する", () => {
     const r = run("scripts/deploy-aws.sh", full);

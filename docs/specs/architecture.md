@@ -120,6 +120,31 @@ Access JWT の実物（開発環境）で確認した claim:
 - Access JWT は長寿命（観測値 ~30 日）。Access から外した利用者のトークンが残存しうるため、`iat` が古すぎるトークンの拒否や Access アプリのセッション短縮を検討
 - `aws:SourceIp` 条件は実質使えない（Cloudflare egress）
 
+### email の正規化
+
+利用者識別子が `email`（既定）のとき、Worker は identity と STS 向け JWT の `sub` を小文字に正規化して照合する。email は大文字小文字を区別しない値で、IdP や入力経路によって表記が揺れても IAM 信頼ポリシーの `StringLike` 照合（大文字小文字を区別する）とずれないようにするため。`deploy:aws` も `AWSBRIDGE_ALLOWED_SUBJECTS` を小文字にして検証・CloudFormation に渡す。`sub` と `custom.*`（例: Entra の `oid`）は不透明な ID なので正規化しない。
+
+### 認証情報キャッシュの残余リスク
+
+Access JWT の検証は毎リクエスト行う。一方、STS から取得済みの認証情報は isolate 内にキャッシュされ、最大「有効期限 − 5 分」まで使われる。このため、Access から外した（または trust policy から外した）利用者でも、キャッシュ済みの認証情報は残り時間のあいだ有効なままになりうる。ただしその利用者は Access JWT の検証で弾かれるので、Worker 経由では使えない。リスクは「認証情報が Worker の外に漏れた場合」に限られる。`DurationSeconds` が 900 秒なら、最大で約 10 分。これを許容できないなら `DurationSeconds` を短くするか、キャッシュを無効にする。
+
+### エラーと HTTP ステータスの対応
+
+`/mcp` のエラー応答は `{"error":"<code>"}`。内部の詳細（STS の本文、例外メッセージ）は返さず、原因の種別だけをログに残す。
+
+| 状況 | HTTP | code |
+|---|---|---|
+| Access JWT が無い・署名/iss/aud/exp が不正・Cookie のみ | 401 | `unauthorized` |
+| 利用者識別子（既定 email）の claim が無い | 403 | `forbidden` |
+| STS が `AccessDenied`（trust policy が利用者を許可していない） | 403 | `forbidden` |
+| STS が Worker 発行 JWT を拒否（`InvalidIdentityToken` 等） | 502 | `upstream_auth_failed` |
+| STS の一時障害・ネットワーク失敗 | 503 | `temporarily_unavailable` |
+| 必須設定の欠落・署名鍵が不正 | 500 | `server_misconfigured` |
+| 上流 AWS MCP への署名失敗・接続失敗 | 502 | （本文 `Bad Gateway`。ログは `proxy: sign_failed` / `proxy: fetch_failed`） |
+| 未対応メソッド | 405 | （本文 `Method Not Allowed`） |
+
+STS の `invalid_token` を 401 ではなく 502 `upstream_auth_failed` にした理由: Worker 自身が発行した JWT が AWS に拒否されるのは、署名鍵・issuer・JWKS 公開・IAM OIDC プロバイダーなどサーバー側の設定不整合であり、利用者が Access で再認証し直しても直らない。401 を返すとクライアントが再認証を繰り返すだけになる。前身の aws-mcp-gateway はこれを 401 にしていたが、原因が利用者側にないので意図的に変えた。
+
 ## テスト方針
 
 - Unit: vitest + `@cloudflare/vitest-pool-workers`。JWT 検証・JWT 発行・STS XML パース・SigV4・claim マッピング（Google / Entra フィクスチャ）
@@ -134,14 +159,15 @@ Access JWT の実物（開発環境）で確認した claim:
 
 ```
 mise run keygen             # 開発用 RSA 鍵を .secrets/ に生成
-mise run deploy:worker      # Worker をデプロイ
-mise run secret:signing-key # 秘密鍵 JWK を Worker secret SIGNING_JWK に登録（Worker 作成後）
-mise run deploy:aws         # CloudFormation（OIDC プロバイダー + ロール）をデプロイ
+mise run deploy             # deploy:worker → deploy:aws → secrets の順に実行
+                            #   deploy:worker  Worker をデプロイ
+                            #   deploy:aws     CloudFormation（OIDC プロバイダー + ロール）をデプロイ
+                            #   secrets        Worker secret を一括登録（SIGNING_JWK / ACCESS_TEAM_DOMAIN / ACCESS_AUD / FEDERATED_ROLE_ARN。ロール ARN は Output RoleArn）
 mise run poc:sts            # 正常 1 + 否定 4 ケース（ロールはスタックの Output RoleArn）
 mise run destroy:aws        # 後片付け（CloudFormation スタックの削除）
 ```
 
-2 回目以降は `mise run deploy`（`deploy:worker` → `deploy:aws` を順に実行）でよい。IAM 側のリソースは `infra/aws/awsbridge.yaml`（CloudFormation）で作る。
+`mise.local.toml` には `AWSBRIDGE_ISSUER` などに加えて `AWSBRIDGE_ACCESS_TEAM_DOMAIN`・`AWSBRIDGE_ACCESS_AUD` が要る。初回も 2 回目以降も上の 2 手順（`keygen` → `deploy`）で足りる。IAM 側のリソースは `infra/aws/awsbridge.yaml`（CloudFormation）で作る。
 
 ### Worker が公開した discovery（IAM が受理した内容）
 
