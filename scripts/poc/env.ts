@@ -16,10 +16,10 @@ export function envOr(name: string, fallback: string): string {
 }
 
 // 署名鍵の既定の置き場所（リポジトリルート相対の .secrets/dev-signing-key.json）
-export function keyFile(): string {
-  return envOr(
-    "AWSBRIDGE_KEY_FILE",
-    resolve(dirname(fileURLToPath(import.meta.url)), "../../.secrets/dev-signing-key.json"),
+export function keyFile(env: NodeJS.ProcessEnv = process.env): string {
+  return (
+    env.AWSBRIDGE_KEY_FILE ||
+    resolve(dirname(fileURLToPath(import.meta.url)), "../../.secrets/dev-signing-key.json")
   );
 }
 
@@ -30,7 +30,7 @@ export function rotationKeyFiles(env: NodeJS.ProcessEnv = process.env): {
   next: string;
   previous: string;
 } {
-  const current = env.AWSBRIDGE_KEY_FILE || keyFile();
+  const current = keyFile(env);
   const m = /^(.*?)(\.[^./\\]+)?$/.exec(current);
   const stem = m?.[1] ?? current;
   return {
