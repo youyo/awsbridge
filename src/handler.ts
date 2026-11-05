@@ -3,7 +3,13 @@
 import type { JWK, JWTVerifyGetKey } from "jose";
 import { AccessJwtError, accessTokenFromRequest, verifyAccessJwt } from "./access";
 import { buildDiscovery, buildSessionName, publicJwks, signStsToken } from "./oidc";
-import { proxyToAwsMcp } from "./proxy";
+import {
+  type ProfilesConfig,
+  ProfilesConfigError,
+  parseProfilesConfig,
+  selectProfile,
+} from "./profiles";
+import { isJsonContentType, proxyToAwsMcp } from "./proxy";
 import {
   type AssumedCredentials,
   assumeRoleWithWebIdentity,
@@ -16,7 +22,8 @@ export interface Env {
   SIGNING_JWK?: string;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
-  FEDERATED_ROLE_ARN?: string;
+  // AWS_PROFILES は wrangler の vars（オブジェクト）でも secret（JSON 文字列）でもよい。必須
+  AWS_PROFILES?: string | Record<string, unknown>;
   // var（ISSUER は deploy 時の --var、以降は任意の上書き用）
   ISSUER?: string;
   IDENTITY_CLAIM?: string;
@@ -70,9 +77,18 @@ function parseMaxAge(v: string | undefined): number | undefined | "invalid" {
 }
 
 async function handleMcp(request: Request, env: Env, deps: HandlerDeps): Promise<Response> {
-  const { ISSUER, SIGNING_JWK, ACCESS_TEAM_DOMAIN, ACCESS_AUD, FEDERATED_ROLE_ARN } = env;
-  if (!ISSUER || !SIGNING_JWK || !ACCESS_TEAM_DOMAIN || !ACCESS_AUD || !FEDERATED_ROLE_ARN) {
+  const { ISSUER, SIGNING_JWK, ACCESS_TEAM_DOMAIN, ACCESS_AUD } = env;
+  if (!ISSUER || !SIGNING_JWK || !ACCESS_TEAM_DOMAIN || !ACCESS_AUD) {
     console.error("config: required setting missing");
+    return misconfigured();
+  }
+  let profiles: ProfilesConfig;
+  try {
+    profiles = parseProfilesConfig(env.AWS_PROFILES);
+  } catch (e) {
+    console.error(
+      `config: ${e instanceof ProfilesConfigError ? e.message : "invalid AWS_PROFILES"}`,
+    );
     return misconfigured();
   }
   const maxAge = parseMaxAge(env.ACCESS_MAX_TOKEN_AGE_SECONDS);
@@ -104,7 +120,25 @@ async function handleMcp(request: Request, env: Env, deps: HandlerDeps): Promise
     return errorBody("unauthorized", 401);
   }
 
-  const cacheKey = { identity: who.identity, roleArn: FEDERATED_ROLE_ARN };
+  // POST 本文は 1 回だけ読み、プロファイル選択（aws_profile の除去を含む）と中継で使い回す
+  const contentType = request.headers.get("content-type");
+  let bodyText: string | undefined;
+  let rpc: unknown;
+  if (request.method.toUpperCase() === "POST") {
+    bodyText = await request.text();
+    if (isJsonContentType(contentType)) {
+      try {
+        rpc = JSON.parse(bodyText);
+      } catch {
+        rpc = undefined;
+      }
+    }
+  }
+  const selection = selectProfile(profiles, rpc);
+  if (selection.kind === "error") return errorBody(selection.code, 400);
+  const roleArn = selection.roleArn;
+
+  const cacheKey = { identity: who.identity, roleArn };
   let credentials: AssumedCredentials | undefined = deps.cache.get(cacheKey);
   if (!credentials) {
     let token: string;
@@ -123,8 +157,8 @@ async function handleMcp(request: Request, env: Env, deps: HandlerDeps): Promise
     try {
       credentials = await assumeRoleWithWebIdentity({
         token,
-        roleArn: FEDERATED_ROLE_ARN,
-        sessionName: buildSessionName("gw-", who.identity, ""),
+        roleArn,
+        sessionName: buildSessionName("gw-", who.identity, `-${selection.name}`),
         region: env.STS_REGION ?? "us-east-1",
         ...(env.STS_ENDPOINT ? { endpoint: env.STS_ENDPOINT } : {}),
         ...(deps.fetch ? { fetch: deps.fetch } : {}),
@@ -148,6 +182,8 @@ async function handleMcp(request: Request, env: Env, deps: HandlerDeps): Promise
     upstreamUrl: env.AWS_MCP_ENDPOINT ?? `https://aws-mcp.${mcpRegion}.api.aws/mcp`,
     signingRegion: mcpRegion,
     targetRegion: env.TARGET_AWS_REGION ?? "ap-northeast-1",
+    ...(bodyText !== undefined ? { body: bodyText } : {}),
+    ...(rpc !== undefined ? { rpc } : {}),
     ...(deps.fetch ? { fetch: deps.fetch } : {}),
   });
 }

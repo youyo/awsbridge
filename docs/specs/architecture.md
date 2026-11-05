@@ -26,7 +26,7 @@ awsbridge Worker（self-hosted Access アプリ / Managed OAuth 有効）
    │ 2. 利用者識別子（既定: email）を取り出す
    │ 3. Worker 自身の鍵で短命 JWT を発行（iss = Worker の URL, 有効期限 ~5 分）
    │ 4. その JWT で STS AssumeRoleWithWebIdentity（署名不要・fetch のみ）
-   │ 5. 必要ならチェーン AssumeRole（ASSUME_ROLE_ARN / aws_profile）
+   │ 5. aws_profile（省略時は default）が指すロールを AssumeRoleWithWebIdentity で直接引き受ける（チェーンしない）
    │ 6. aws4fetch で SigV4 署名（service="aws-mcp"）し、AWS MCP Server へストリーム中継
    ▼
 AWS MCP Server（us-east-1 / eu-central-1）
@@ -98,13 +98,67 @@ Access JWT の実物（開発環境）で確認した claim:
 | 機能 | 扱い |
 |---|---|
 | `IAM_MODE=federated` | 唯一のモードとして継承 |
-| `ASSUME_ROLE_ARN`（チェーン） | 継承。起点は federated ロール。チェーンのセッションは最大 1 時間 |
+| `ASSUME_ROLE_ARN`（チェーン） | 廃止。ロールは `AWS_PROFILES` で指定し、チェーンせず直接引き受ける |
 | `_meta` への AWS リージョン注入 | 継承 |
 | `ALLOWED_DOMAINS` / `ALLOWED_EMAILS` | 廃止（Access ポリシーに一本化） |
 | `COOKIE_SECRET` / `SIGNING_KEY_HEX`(OAuth 用) / DynamoDB ストア | 廃止（OAuth を持たない） |
-| `aws_profile` | **未決**（下記）。継承する場合は federated ロール起点のチェーンに再設計 |
-| `/mcp/assumerole/...` パスルーティング | **未決**（推奨: 廃止して `aws_profile` に一本化） |
-| `AWS_PROFILE_CONFIG_S3` | 継承する場合は KV か wrangler var に移す（S3 を読む認証情報が無いため） |
+| `aws_profile` | 継承。各アカウントのロールを AssumeRoleWithWebIdentity で直接引き受ける（[マルチアカウント](#マルチアカウントaws_profile)） |
+| `/mcp/assumerole/...` パスルーティング | 廃止（`aws_profile` に一本化） |
+| `AWS_PROFILE_CONFIG_S3` / users 対応表 | 廃止。プロファイル一覧は環境変数 `AWS_PROFILES`。誰がどのアカウントを使えるかは各アカウントの信頼ポリシーで AWS 側が判定する |
+| `FEDERATED_ROLE_ARN`（基点ロール） | 廃止。`AWS_PROFILES` の `default` に一本化 |
+
+## マルチアカウント（aws_profile）
+
+複数の AWS アカウントを `tools/call` の引数 `aws_profile` で切り替える。前身の `aws_profile` を引き継ぐが、users 対応表と S3 読み込みは持たない。
+
+### 決定
+
+- **各アカウント**: 対象アカウントごとに `infra/aws/awsbridge.yaml` を流し、Worker を信頼するロールを作る。Worker は選ばれたロールを **AssumeRoleWithWebIdentity で直接**引き受ける（チェーン AssumeRole はしない）。
+- **認可は AWS 側**: 誰がどのアカウントを使えるかは各アカウントの信頼ポリシー（`AllowedSubjects`）で決まる。許可外は STS の `AccessDenied` → 403 `forbidden`。Worker に users 対応表は持たない。
+- **設定**: 環境変数 `AWS_PROFILES`（**必須**）。wrangler の vars（JSON オブジェクト）でも secret（JSON 文字列）でも受け付ける。基点ロール `FEDERATED_ROLE_ARN` は廃止し、設定経路をこれに一本化した。
+
+```json
+{
+  "default": "dev",
+  "profiles": {
+    "dev":  { "roleArn": "arn:aws:iam::111111111111:role/awsbridge", "description": "任意" },
+    "prod": { "roleArn": "arn:aws:iam::222222222222:role/awsbridge" }
+  },
+  "tools": ["call_aws"]
+}
+```
+
+- `default`: 必須。`profiles` のキー名。`aws_profile` を指定しないときに使う。
+- `tools`: 任意。`aws_profile` の対象ツール。省略時は全ツール。
+- 検証: 名前は `^[A-Za-z0-9_-]{1,32}$`（STS の `RoleSessionName` 64 文字に `gw-<利用者>-<名前>` を収めるため 32 文字まで）、`roleArn` は `^arn:aws[a-z-]*:iam::\d{12}:role/[\w+=,.@/-]{1,128}$`、`profiles` は 1 件以上、`tools` は空配列不可、`default` は `profiles` に存在すること。違反は 500 `server_misconfigured`（ログには `config: invalid AWS_PROFILES: <種別>` のみ。値は出さない）。
+
+### 選び方
+
+| リクエスト | 使うロール |
+|---|---|
+| 対象ツールの `tools/call` で `params.arguments.aws_profile` が一覧にある | そのプロファイル |
+| 対象ツールの `tools/call` で `aws_profile` なし | `default` |
+| 対象外ツールの `tools/call`（`aws_profile` が付いていても検証せず無視） | `default` |
+| `initialize` / `tools/list` / `ping` / notifications など `tools/call` 以外、GET / DELETE | `default` |
+| JSON-RPC バッチ | 対象ツールの `tools/call` が指す `aws_profile` がすべて同じ（省略は `default` 扱い）ならそのロール。異なれば 400 `batch_not_supported` |
+
+`aws_profile` は上流へ送る前にすべての `tools/call` の arguments から取り除く（対象・対象外とも）。本文は handler で 1 回だけ読み、パース結果に対して `aws_profile` の除去と `_meta.AWS_REGION` の注入を行い、直列化は 1 回にする。本文が JSON でない・Content-Type が JSON でない場合は `default` でそのまま中継する。
+
+エラー: `aws_profile` が文字列でない → 400 `invalid_aws_profile`、一覧にない（`__proto__` 等の prototype 由来の名前も不可）→ 400 `unknown_aws_profile`。どちらも認証後に判定し、STS・上流は呼ばない。
+
+### キャッシュと CloudTrail
+
+認証情報キャッシュのキーは `(利用者, roleArn)`。プロファイルごとに別エントリになる。STS の `RoleSessionName` は `gw-<利用者>-<プロファイル名>`（長い利用者名は利用者側を切り詰める）。CloudTrail でどのプロファイルのセッションか見分けられる。
+
+### 下流リポジトリでの運用（fork 的運用）
+
+実運用は private の下流リポジトリで行う。awsbridge を git の upstream として登録し、更新を pull し続ける。下流固有の設定は上流と衝突しにくい場所に置く。
+
+1. `git remote add upstream <awsbridge の URL>` → `git pull upstream main` で追従する。
+2. 自分の `wrangler.jsonc` に環境（例 `env.prod`）を追加し、`vars.AWS_PROFILES` に上記 JSON をコミットする（ロール ARN は秘密ではない）。`wrangler.jsonc` の `env.dev` にはダミー値のコメントがある。
+3. `AWSBRIDGE_WRANGLER_ENV=prod` を付けて `build` / `dev` / `deploy:worker` を実行する（既定は `dev`）。
+4. 各アカウントに `AWS_PROFILE=<対象> mise run deploy:aws` で CloudFormation を流し、出力 `RoleArn` を `AWS_PROFILES` に追記する。
+5. 上流自身の開発用デプロイは、`mise.local.toml` の `AWSBRIDGE_PROFILES`（JSON 文字列）を `mise run secrets` が secret `AWS_PROFILES` として登録する。vars で `AWS_PROFILES` を持つ環境では、secret と二重定義にならないよう `AWSBRIDGE_PROFILES` を設定せずに `mise run secrets` を使う（`AWS_PROFILES` は登録されない）。
 
 ## MCP Server Portal 背後に置くことの制約
 
@@ -139,7 +193,10 @@ Access JWT の検証は毎リクエスト行う。一方、STS から取得済�
 | STS が `AccessDenied`（trust policy が利用者を許可していない） | 403 | `forbidden` |
 | STS が Worker 発行 JWT を拒否（`InvalidIdentityToken` 等） | 502 | `upstream_auth_failed` |
 | STS の一時障害・ネットワーク失敗 | 503 | `temporarily_unavailable` |
-| 必須設定の欠落・署名鍵が不正 | 500 | `server_misconfigured` |
+| 必須設定（`AWS_PROFILES` 含む）の欠落・不正・署名鍵が不正 | 500 | `server_misconfigured` |
+| `aws_profile` が一覧にない | 400 | `unknown_aws_profile` |
+| `aws_profile` が文字列でない | 400 | `invalid_aws_profile` |
+| JSON-RPC バッチで対象ツールの `aws_profile` が混在 | 400 | `batch_not_supported` |
 | 上流 AWS MCP への署名失敗・接続失敗 | 502 | （本文 `Bad Gateway`。ログは `proxy: sign_failed` / `proxy: fetch_failed`） |
 | 未対応メソッド | 405 | （本文 `Method Not Allowed`） |
 
@@ -163,20 +220,20 @@ STS の `invalid_token` を 401 ではなく 502 `upstream_auth_failed` にし�
 # Cloudflare 側（1 回）
 mise run keygen             # 開発用 RSA 鍵を .secrets/ に生成
 mise run deploy:worker      # wrangler deploy → secrets を順に実行（AWS は呼ばない）。初回は URL を確定させるために先に実行する
-                            #   AWSBRIDGE_ROLE_ARN が未設定だと secrets が失敗するので、下の手順のあとに mise run secrets を実行し直す
+                            #   プロファイル一覧を secret で持つ場合は、下の手順で AWSBRIDGE_PROFILES を設定したあと mise run secrets を実行し直す
 
 # AWS 側（対象アカウントごと。何度でも別アカウントに流せる）
 AWS_PROFILE=<対象> mise run deploy:aws   # CloudFormation（OIDC プロバイダー + ロール）をデプロイ。出力 RoleArn を控える
 
 # Cloudflare 側（ロール ARN の反映）
-# mise.local.toml に AWSBRIDGE_ROLE_ARN を設定
-mise run secrets            # Worker secret を一括登録（SIGNING_JWK / ACCESS_TEAM_DOMAIN / ACCESS_AUD / FEDERATED_ROLE_ARN）
+# mise.local.toml に AWSBRIDGE_PROFILES（JSON 文字列。出力 RoleArn を並べる）を設定
+mise run secrets            # Worker secret を一括登録（SIGNING_JWK / ACCESS_TEAM_DOMAIN / ACCESS_AUD / AWS_PROFILES）
 
 mise run poc:sts            # 正常 1 + 否定 4 ケース（--role-arn 省略時はスタックの Output RoleArn。AWS_PROFILE で対象を選ぶ）
 AWS_PROFILE=<対象> mise run destroy:aws  # 後片付け（CloudFormation スタックの削除）
 ```
 
-`mise.local.toml` には `AWSBRIDGE_ISSUER` などに加えて `AWSBRIDGE_ACCESS_TEAM_DOMAIN`・`AWSBRIDGE_ACCESS_AUD`・`AWSBRIDGE_ROLE_ARN` が要る。IAM 側のリソースは `infra/aws/awsbridge.yaml`（CloudFormation）で作る。マネジメントコンソールや StackSets でテンプレートを直接流してもよい（パラメーターは README の「AWS 側」を参照）。`AWS_PROFILE` と `AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_ROLE_NAME` / `AWSBRIDGE_AUDIENCE` は呼び出し側の環境変数が優先される（`mise.toml` は未設定時の既定値のみ）。
+`mise.local.toml` には `AWSBRIDGE_ISSUER` などに加えて `AWSBRIDGE_ACCESS_TEAM_DOMAIN`・`AWSBRIDGE_ACCESS_AUD`・`AWSBRIDGE_PROFILES` が要る。IAM 側のリソースは `infra/aws/awsbridge.yaml`（CloudFormation）で作る。マネジメントコンソールや StackSets でテンプレートを直接流してもよい（パラメーターは README の「AWS 側」を参照）。`AWS_PROFILE` と `AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_ROLE_NAME` / `AWSBRIDGE_AUDIENCE` は呼び出し側の環境変数が優先される（`mise.toml` は未設定時の既定値のみ）。
 
 ### Worker が公開した discovery（IAM が受理した内容）
 
@@ -239,8 +296,8 @@ AWS_PROFILE=<対象> mise run destroy:aws  # 後片付け（CloudFormation ス�
 ## 未決事項
 
 1. ~~**PoC 残り**: Worker が出す discovery / JWKS を IAM が受理するか、Worker 発行 JWT で `AssumeRoleWithWebIdentity` が成功するか~~ → **解決**（[PoC 結果](#poc-結果構成-a-2026-11-05)）
-2. `aws_profile` を継承するか
-3. `/mcp/assumerole/...` を廃止するか
+2. ~~`aws_profile` を継承するか~~ → **解決**: 継承。各アカウントへ直接 AssumeRoleWithWebIdentity（[マルチアカウント](#マルチアカウントaws_profile)）
+3. ~~`/mcp/assumerole/...` を廃止するか~~ → **解決**: 廃止（`aws_profile` に一本化）
 4. 会社のセキュリティ方針上、A'（Worker 鍵を AWS が信頼）が許容されるか。不可なら C
 
 ## 参考

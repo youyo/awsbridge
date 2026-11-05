@@ -36,4 +36,14 @@ describe("mise.toml のデプロイタスク", () => {
       /^AWS_PROFILE\s*=\s*'\{\{\s*get_env\(name="AWS_PROFILE", default="awsbridge"\)\s*\}\}'/m,
     );
   });
+  it("wrangler の環境名は AWSBRIDGE_WRANGLER_ENV（既定 dev）で切り替え、--env dev を固定しない", () => {
+    expect(toml).toMatch(
+      /^AWSBRIDGE_WRANGLER_ENV\s*=\s*'\{\{\s*get_env\(name="AWSBRIDGE_WRANGLER_ENV", default="dev"\)\s*\}\}'/m,
+    );
+    for (const n of ["tasks.build", "tasks.dev", 'tasks."deploy:worker"']) {
+      const s = section(n);
+      expect(s).toContain("--env ${AWSBRIDGE_WRANGLER_ENV");
+      expect(s).not.toMatch(/--env dev/);
+    }
+  });
 });

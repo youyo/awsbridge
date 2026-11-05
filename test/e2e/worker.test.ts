@@ -16,8 +16,16 @@ let privateJwk: Awaited<ReturnType<typeof exportJWK>>;
 let logs = "";
 
 const ALLOWED_SUB = "user@example.com";
+// プロファイルのテスト用（isolate 内キャッシュに当たらないよう、テストごとに別の利用者を使う）
+const PROFILE_SUBS = ["p1@example.com", "p2@example.com", "p3@example.com"];
 const DENIED_SUB = "denied@example.com";
-const ROLE_ARN = "arn:aws:iam::123456789012:role/awsbridge";
+const ROLE_A = "arn:aws:iam::111111111111:role/awsbridge";
+const ROLE_B = "arn:aws:iam::222222222222:role/awsbridge";
+const AWS_PROFILES = JSON.stringify({
+  default: "a",
+  profiles: { a: { roleArn: ROLE_A }, b: { roleArn: ROLE_B, description: "second" } },
+  tools: ["call_aws"],
+});
 const FAKE_CREDS = {
   accessKeyId: "ASIAE2EEXAMPLE",
   secretAccessKey: "e2e-secret-access-key",
@@ -37,6 +45,8 @@ type McpSeen = {
 };
 let mcpSeen: McpSeen[] = [];
 let stsCount = 0;
+// 擬似 STS が受けた RoleArn の記録
+let stsRoles: string[] = [];
 
 const stsXml =
   () => `<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><AssumeRoleWithWebIdentityResult>
@@ -106,13 +116,15 @@ async function startFake(): Promise<void> {
       if (path === "/sts") {
         stsCount++;
         const form = new URLSearchParams(body.toString());
+        stsRoles.push(form.get("RoleArn") ?? "");
         try {
           const { payload } = await jwtVerify(
             form.get("WebIdentityToken") ?? "",
             createRemoteJWKSet(new URL(`${base}/.well-known/jwks.json`)),
             { issuer: base, audience: "awsbridge" },
           );
-          if (payload.sub !== ALLOWED_SUB) throw new Error("denied");
+          if (payload.sub !== ALLOWED_SUB && !PROFILE_SUBS.includes(String(payload.sub)))
+            throw new Error("denied");
           res.setHeader("content-type", "text/xml");
           res.end(stsXml());
         } catch (e) {
@@ -252,7 +264,7 @@ beforeAll(async () => {
       `SIGNING_JWK='${JSON.stringify(privateJwk)}'`,
       `ACCESS_TEAM_DOMAIN='${fakeBase}'`,
       `ACCESS_AUD='${FAKE_AUD}'`,
-      `FEDERATED_ROLE_ARN='${ROLE_ARN}'`,
+      `AWS_PROFILES='${AWS_PROFILES}'`,
       "",
     ].join("\n"),
   );
@@ -507,5 +519,93 @@ describe("/mcp 通し（擬似 Access / STS / AWS MCP）", () => {
       const res = await rpc("tools/list", await accessJwt("User@Example.COM"));
       expect(res.status).toBe(200);
     });
+  });
+});
+
+describe("マルチアカウント（aws_profile）", () => {
+  const callTool = (token: string, args: Record<string, unknown>, name = "call_aws") =>
+    fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-access-jwt-assertion": token },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 9,
+        method: "tools/call",
+        params: { name, arguments: args },
+      }),
+    });
+
+  it("引数なしは default（a）のロールで、aws_profile 無しの本文が上流へ届く", async () => {
+    stsRoles = [];
+    mcpSeen = [];
+    const res = await callTool(await accessJwt(ALLOWED_SUB), {
+      cli_command: "aws sts get-caller-identity",
+    });
+    expect(res.status).toBe(200);
+    expect(stsRoles.every((r) => r === ROLE_A)).toBe(true);
+    const seen = mcpSeen[0] as McpSeen;
+    expect(seen.sigv4Ok).toBe(true);
+    expect(JSON.parse(seen.body).params.arguments).toEqual({
+      cli_command: "aws sts get-caller-identity",
+    });
+  });
+
+  it("aws_profile: b は b のロールを直接引き受け、a に戻すと a のロール。上流本文に aws_profile は無い", async () => {
+    stsRoles = [];
+    mcpSeen = [];
+    const token = await accessJwt(PROFILE_SUBS[1] as string);
+    expect((await callTool(token, { aws_profile: "b", x: 1 })).status).toBe(200);
+    expect((await callTool(token, { aws_profile: "a", x: 2 })).status).toBe(200);
+    expect(stsRoles).toEqual([ROLE_B, ROLE_A]);
+    expect(mcpSeen).toHaveLength(2);
+    for (const m of mcpSeen) {
+      expect(m.sigv4Ok).toBe(true);
+      expect(m.body).not.toContain("aws_profile");
+    }
+    expect(JSON.parse((mcpSeen[0] as McpSeen).body).params.arguments).toEqual({ x: 1 });
+    expect(JSON.parse((mcpSeen[0] as McpSeen).body).params._meta.AWS_REGION).toBe("ap-northeast-1");
+  });
+
+  it("未知の aws_profile は 400 unknown_aws_profile で、STS にも上流にも行かない", async () => {
+    stsRoles = [];
+    mcpSeen = [];
+    const res = await callTool(await accessJwt(ALLOWED_SUB), { aws_profile: "nope" });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "unknown_aws_profile" });
+    expect(stsRoles).toHaveLength(0);
+    expect(mcpSeen).toHaveLength(0);
+  });
+
+  it("文字列以外は 400 invalid_aws_profile", async () => {
+    const res = await callTool(await accessJwt(ALLOWED_SUB), { aws_profile: 1 });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid_aws_profile" });
+  });
+
+  it("tools/list は default のロール", async () => {
+    stsRoles = [];
+    mcpSeen = [];
+    const res = await rpc("tools/list", await accessJwt(PROFILE_SUBS[2] as string));
+    expect(res.status).toBe(200);
+    expect(stsRoles).toEqual([ROLE_A]);
+  });
+
+  it("バッチで aws_profile が混在すれば 400 batch_not_supported", async () => {
+    const mk = (p: string) => ({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "call_aws", arguments: { aws_profile: p } },
+    });
+    const res = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-access-jwt-assertion": await accessJwt(ALLOWED_SUB),
+      },
+      body: JSON.stringify([mk("a"), mk("b")]),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "batch_not_supported" });
   });
 });

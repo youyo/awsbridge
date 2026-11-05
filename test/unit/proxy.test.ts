@@ -396,3 +396,62 @@ describe("proxyToAwsMcp の堅牢化", () => {
     expect(JSON.stringify(spy.mock.calls)).not.toContain(credentials.secretAccessKey);
   });
 });
+
+describe("proxyToAwsMcp: 本文を呼び出し側が先に読んだ場合", () => {
+  const post = async () => {
+    const req = new Request("https://bridge.example.com/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: rpc,
+    });
+    await req.text(); // 呼び出し側が消費済み（2 回目は読めない）
+    return req;
+  };
+
+  it("body（生テキスト）を渡すと request を読まずに AWS_REGION を注入する", async () => {
+    const { fn, calls } = fakeFetch();
+    const res = await proxyToAwsMcp(await post(), opts(fn, { body: rpc }));
+    expect(res.status).toBe(200);
+    expect(parse((calls[0] as Captured).body).params._meta.AWS_REGION).toBe("ap-northeast-1");
+  });
+
+  it("body が非 JSON なら原文のまま送る", async () => {
+    const { fn, calls } = fakeFetch();
+    await proxyToAwsMcp(await post(), opts(fn, { body: "not json" }));
+    expect((calls[0] as Captured).body).toBe("not json");
+  });
+
+  it("rpc（パース済み）を渡すと、それに AWS_REGION を注入して 1 回だけ直列化する", async () => {
+    const { fn, calls } = fakeFetch();
+    const parsed = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "x", arguments: { a: 1 } },
+    };
+    await proxyToAwsMcp(await post(), opts(fn, { body: rpc, rpc: parsed }));
+    expect(parse((calls[0] as Captured).body)).toEqual({
+      ...parsed,
+      params: { ...parsed.params, _meta: { AWS_REGION: "ap-northeast-1" } },
+    });
+  });
+
+  it("rpc がバッチ（配列）なら注入せずそのまま直列化する", async () => {
+    const { fn, calls } = fakeFetch();
+    const batch = [{ jsonrpc: "2.0", id: 1, method: "tools/list" }];
+    await proxyToAwsMcp(await post(), opts(fn, { body: "ignored", rpc: batch }));
+    expect(parse((calls[0] as Captured).body)).toEqual(batch);
+  });
+
+  it("rpc の既存 _meta.AWS_REGION は尊重する", async () => {
+    const { fn, calls } = fakeFetch();
+    const parsed = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "x",
+      params: { _meta: { AWS_REGION: "eu-west-1" } },
+    };
+    await proxyToAwsMcp(await post(), opts(fn, { rpc: parsed }));
+    expect(parse((calls[0] as Captured).body).params._meta.AWS_REGION).toBe("eu-west-1");
+  });
+});

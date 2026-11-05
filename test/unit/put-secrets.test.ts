@@ -11,7 +11,10 @@ afterAll(() => {
 });
 
 const KEY_JSON = '{"kty":"RSA","n":"abc","e":"AQAB","d":"PRIVATE-D-VALUE"}';
-const ROLE_ARN = "arn:aws:iam::123456789012:role/awsbridge";
+const PROFILES = JSON.stringify({
+  default: "dev",
+  profiles: { dev: { roleArn: "arn:aws:iam::111111111111:role/awsbridge" } },
+});
 
 // 偽 pnpm（`pnpm exec wrangler ...` を受けて引数と標準入力を記録する）と偽 aws を PATH 先頭に置く。
 function setup() {
@@ -54,7 +57,7 @@ const baseEnv = (keyFile: string) => ({
   AWSBRIDGE_KEY_FILE: keyFile,
   AWSBRIDGE_ACCESS_TEAM_DOMAIN: "https://team.example.cloudflareaccess.com",
   AWSBRIDGE_ACCESS_AUD: "aud-tag-example",
-  AWSBRIDGE_ROLE_ARN: ROLE_ARN,
+  AWSBRIDGE_PROFILES: PROFILES,
 });
 
 describe("scripts/put-secrets.sh", () => {
@@ -68,10 +71,10 @@ describe("scripts/put-secrets.sh", () => {
       SIGNING_JWK: KEY_JSON,
       ACCESS_TEAM_DOMAIN: "https://team.example.cloudflareaccess.com",
       ACCESS_AUD: "aud-tag-example",
-      FEDERATED_ROLE_ARN: ROLE_ARN,
+      AWS_PROFILES: PROFILES,
     });
     const argText = args.join("\n");
-    for (const v of ["PRIVATE-D-VALUE", "aud-tag-example", "cloudflareaccess", ROLE_ARN]) {
+    for (const v of ["PRIVATE-D-VALUE", "aud-tag-example", "cloudflareaccess", "111111111111"]) {
       expect(argText).not.toContain(v);
     }
     expect(r.stdout + r.stderr).not.toContain("PRIVATE-D-VALUE");
@@ -95,7 +98,6 @@ describe("scripts/put-secrets.sh", () => {
     "AWSBRIDGE_KEY_FILE",
     "AWSBRIDGE_ACCESS_TEAM_DOMAIN",
     "AWSBRIDGE_ACCESS_AUD",
-    "AWSBRIDGE_ROLE_ARN",
   ]) {
     it(`${name} が未設定なら終了コード 1 で mise.local.toml を案内し wrangler を呼ばない`, () => {
       const s = setup();
@@ -108,6 +110,46 @@ describe("scripts/put-secrets.sh", () => {
       expect(read(s.argsFile)).toBe("");
     });
   }
+
+  for (const v of [undefined, ""]) {
+    it(`AWSBRIDGE_PROFILES が${v === "" ? "空" : "未設定"}なら AWS_PROFILES を登録せず 1 行表示する`, () => {
+      const s = setup();
+      const env: Record<string, string> = baseEnv(s.keyFile);
+      if (v === undefined) delete env.AWSBRIDGE_PROFILES;
+      else env.AWSBRIDGE_PROFILES = v;
+      const r = run(s, env);
+      expect(r.status).toBe(0);
+      expect(JSON.parse(read(s.stdinFile))).not.toHaveProperty("AWS_PROFILES");
+      expect(r.stderr).toContain("AWS_PROFILES");
+      expect(read(s.argsFile)).toContain("bulk");
+    });
+  }
+
+  it("FEDERATED_ROLE_ARN は登録しない（廃止）", () => {
+    const s = setup();
+    const r = run(s, {
+      ...baseEnv(s.keyFile),
+      AWSBRIDGE_ROLE_ARN: "arn:aws:iam::111111111111:role/x",
+    });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(read(s.stdinFile))).not.toHaveProperty("FEDERATED_ROLE_ARN");
+  });
+
+  it("AWSBRIDGE_PROFILES が JSON として不正なら終了コード 1 で wrangler を呼ばない（値は出さない）", () => {
+    const s = setup();
+    const r = run(s, { ...baseEnv(s.keyFile), AWSBRIDGE_PROFILES: "{SECRET-NOT-JSON" });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("AWSBRIDGE_PROFILES");
+    expect(r.stderr).not.toContain("SECRET-NOT-JSON");
+    expect(read(s.argsFile)).toBe("");
+  });
+
+  it("AWSBRIDGE_WRANGLER_ENV でデプロイ環境を切り替えられる（既定 dev）", () => {
+    const s = setup();
+    const r = run(s, { ...baseEnv(s.keyFile), AWSBRIDGE_WRANGLER_ENV: "prod" });
+    expect(r.status).toBe(0);
+    expect(read(s.argsFile).split("\n")).toEqual(expect.arrayContaining(["--env", "prod"]));
+  });
 
   it("鍵ファイルが無ければ終了コード 1", () => {
     const s = setup();

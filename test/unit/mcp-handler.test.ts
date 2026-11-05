@@ -16,7 +16,13 @@ import { newPrivateJwk } from "./helpers";
 const ISSUER = "https://awsbridge.example.workers.dev";
 const TEAM = "https://team.example.cloudflareaccess.com";
 const AUD = "aud-tag-example";
-const ROLE = "arn:aws:iam::123456789012:role/awsbridge";
+const ROLE = "arn:aws:iam::111111111111:role/awsbridge";
+const ROLE_PROD = "arn:aws:iam::222222222222:role/awsbridge";
+const PROFILES = {
+  default: "dev",
+  profiles: { dev: { roleArn: ROLE }, prod: { roleArn: ROLE_PROD } },
+  tools: ["call_aws"],
+};
 const STS = "https://sts.test.example/";
 const MCP = "https://mcp.test.example/mcp";
 
@@ -62,7 +68,7 @@ function makeEnv(over: Partial<Env> = {}): Env {
     SIGNING_JWK: JSON.stringify(signingJwk),
     ACCESS_TEAM_DOMAIN: TEAM,
     ACCESS_AUD: AUD,
-    FEDERATED_ROLE_ARN: ROLE,
+    AWS_PROFILES: PROFILES,
     STS_ENDPOINT: STS,
     AWS_MCP_ENDPOINT: MCP,
     ...over,
@@ -107,6 +113,7 @@ async function mcpRequest(path = "/mcp", init: RequestInit = {}, token?: string 
   });
 }
 
+const roleOf = (c: Call | undefined) => new URLSearchParams(String(c?.init?.body)).get("RoleArn");
 const stsCalls = (calls: Call[]) => calls.filter((c) => c.url.startsWith(STS));
 const mcpCalls = (calls: Call[]) => calls.filter((c) => c.url === MCP);
 
@@ -119,7 +126,7 @@ describe("/mcp 成功経路", () => {
     );
     expect(res.status).toBe(200);
     const form = new URLSearchParams(String(stsCalls(calls)[0]?.init?.body));
-    expect(form.get("RoleSessionName")).toBe("gw-user@example.com");
+    expect(form.get("RoleSessionName")).toBe("gw-user@example.com-dev");
     expect(decodeJwt(form.get("WebIdentityToken") as string).sub).toBe("user@example.com");
   });
 
@@ -134,7 +141,7 @@ describe("/mcp 成功経路", () => {
     const form = new URLSearchParams(String(sts[0]?.init?.body));
     expect(form.get("Action")).toBe("AssumeRoleWithWebIdentity");
     expect(form.get("RoleArn")).toBe(ROLE);
-    expect(form.get("RoleSessionName")).toBe("gw-user@example.com");
+    expect(form.get("RoleSessionName")).toBe("gw-user@example.com-dev");
     const token = form.get("WebIdentityToken") as string;
     const { payload } = await jwtVerify(token, createLocalJWKSet(await publicJwks(signingJwk)), {
       issuer: ISSUER,
@@ -338,7 +345,7 @@ describe("エラー応答", () => {
     "SIGNING_JWK",
     "ACCESS_TEAM_DOMAIN",
     "ACCESS_AUD",
-    "FEDERATED_ROLE_ARN",
+    "AWS_PROFILES",
   ] as const) {
     it(`${missing} 欠落は 500 server_misconfigured（どれかは返さない）`, async () => {
       const { handler, calls } = makeDeps();
@@ -383,5 +390,228 @@ describe("ルーティング", () => {
       expect(res.status, p).toBe(200);
     }
     expect(calls).toHaveLength(0);
+  });
+});
+
+// ---- マルチアカウント（aws_profile） ----
+
+async function expectError(res: Response, status: number, code: string) {
+  expect(res.status).toBe(status);
+  expect(await res.json()).toEqual({ error: code });
+}
+
+const toolCall = (args?: Record<string, unknown>, name = "call_aws", method = "tools/call") => ({
+  jsonrpc: "2.0",
+  id: 1,
+  method,
+  params: { name, ...(args ? { arguments: args } : {}) },
+});
+
+const post = async (body: unknown, token?: string | null) =>
+  mcpRequest("/mcp", { body: typeof body === "string" ? body : JSON.stringify(body) }, token);
+
+const sentBody = async (calls: Call[]) =>
+  JSON.parse((await mcpCalls(calls)[0]?.request?.text()) ?? "null");
+
+describe("aws_profile によるアカウント切り替え", () => {
+  it("aws_profile 指定なしは default のロールで、sessionName に -<profile> が付く", async () => {
+    const { handler, calls } = makeDeps();
+    const res = await handler(await post(toolCall({ cli_command: "x" })), makeEnv());
+    expect(res.status).toBe(200);
+    expect(roleOf(stsCalls(calls)[0])).toBe(ROLE);
+    const form = new URLSearchParams(String(stsCalls(calls)[0]?.init?.body));
+    expect(form.get("RoleSessionName")).toBe("gw-user@example.com-dev");
+  });
+
+  it("aws_profile で選んだロールを直接 AssumeRoleWithWebIdentity し、上流本文から消える", async () => {
+    const { handler, calls } = makeDeps();
+    const res = await handler(
+      await post(toolCall({ cli_command: "x", aws_profile: "prod" })),
+      makeEnv(),
+    );
+    expect(res.status).toBe(200);
+    expect(roleOf(stsCalls(calls)[0])).toBe(ROLE_PROD);
+    expect(new URLSearchParams(String(stsCalls(calls)[0]?.init?.body)).get("RoleSessionName")).toBe(
+      "gw-user@example.com-prod",
+    );
+    const sent = await sentBody(calls);
+    expect(JSON.stringify(sent)).not.toContain("aws_profile");
+    expect(sent.params.arguments).toEqual({ cli_command: "x" });
+    expect(sent.params._meta.AWS_REGION).toBe("ap-northeast-1");
+  });
+
+  it("_meta.AWS_REGION の注入と併用できる（TARGET_AWS_REGION・既存 _meta を尊重）", async () => {
+    const { handler, calls } = makeDeps();
+    const body = toolCall({ aws_profile: "prod" });
+    (body.params as Record<string, unknown>)._meta = { other: 1 };
+    await handler(await post(body), makeEnv({ TARGET_AWS_REGION: "us-west-2" }));
+    const sent = await sentBody(calls);
+    expect(sent.params._meta).toEqual({ other: 1, AWS_REGION: "us-west-2" });
+  });
+
+  it("未知の aws_profile は 400 unknown_aws_profile（STS・上流を呼ばない）", async () => {
+    const { handler, calls } = makeDeps();
+    const res = await handler(await post(toolCall({ aws_profile: "nope" })), makeEnv());
+    await expectError(res, 400, "unknown_aws_profile");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("文字列以外は 400 invalid_aws_profile", async () => {
+    const { handler, calls } = makeDeps();
+    const res = await handler(await post(toolCall({ aws_profile: 1 })), makeEnv());
+    await expectError(res, 400, "invalid_aws_profile");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("対象外ツールは default。aws_profile は検証せず取り除く", async () => {
+    const { handler, calls } = makeDeps();
+    const res = await handler(
+      await post(toolCall({ aws_profile: "nope" }, "other_tool")),
+      makeEnv(),
+    );
+    expect(res.status).toBe(200);
+    expect(roleOf(stsCalls(calls)[0])).toBe(ROLE);
+    expect(JSON.stringify(await sentBody(calls))).not.toContain("aws_profile");
+  });
+
+  it("tools/call 以外（tools/list・initialize・ping・notifications）は default", async () => {
+    for (const method of ["tools/list", "initialize", "ping", "notifications/initialized"]) {
+      const { handler, calls } = makeDeps();
+      const res = await handler(await post({ jsonrpc: "2.0", id: 1, method }), makeEnv());
+      expect(res.status, method).toBe(200);
+      expect(roleOf(stsCalls(calls)[0]), method).toBe(ROLE);
+    }
+  });
+
+  it("GET / DELETE は default", async () => {
+    for (const method of ["GET", "DELETE"]) {
+      const { handler, calls } = makeDeps();
+      const res = await handler(await mcpRequest("/mcp", { method, body: null }), makeEnv());
+      expect(res.status, method).toBe(200);
+      expect(roleOf(stsCalls(calls)[0]), method).toBe(ROLE);
+    }
+  });
+
+  it("バッチ: プロファイルがそろっていればそのロール、混在は 400 batch_not_supported", async () => {
+    const ok = makeDeps();
+    const res = await ok.handler(
+      await post([
+        { jsonrpc: "2.0", id: 1, method: "tools/list" },
+        toolCall({ aws_profile: "prod" }),
+        toolCall({ aws_profile: "prod" }),
+      ]),
+      makeEnv(),
+    );
+    expect(res.status).toBe(200);
+    expect(roleOf(stsCalls(ok.calls)[0])).toBe(ROLE_PROD);
+    const sent = await sentBody(ok.calls);
+    expect(Array.isArray(sent)).toBe(true);
+    expect(JSON.stringify(sent)).not.toContain("aws_profile");
+
+    const ng = makeDeps();
+    const res2 = await ng.handler(
+      await post([toolCall({ aws_profile: "prod" }), toolCall({})]),
+      makeEnv(),
+    );
+    await expectError(res2, 400, "batch_not_supported");
+    expect(ng.calls).toHaveLength(0);
+  });
+
+  it("本文が JSON でない・Content-Type が JSON でないときは default でそのまま中継", async () => {
+    const a = makeDeps();
+    expect((await a.handler(await post("not json"), makeEnv())).status).toBe(200);
+    expect(roleOf(stsCalls(a.calls)[0])).toBe(ROLE);
+    expect(await mcpCalls(a.calls)[0]?.request?.text()).toBe("not json");
+
+    const b = makeDeps();
+    const raw = JSON.stringify(toolCall({ aws_profile: "prod" }));
+    const req = await mcpRequest("/mcp", { body: raw, headers: { "content-type": "text/plain" } });
+    expect((await b.handler(req, makeEnv())).status).toBe(200);
+    expect(roleOf(stsCalls(b.calls)[0])).toBe(ROLE);
+  });
+
+  it("認証情報キャッシュはプロファイルのロールごとに分かれる", async () => {
+    const { handler, calls } = makeDeps();
+    const env = makeEnv();
+    await handler(await post(toolCall({ aws_profile: "dev" })), env);
+    await handler(await post(toolCall({ aws_profile: "prod" })), env);
+    expect(stsCalls(calls)).toHaveLength(2);
+    await handler(await post(toolCall({ aws_profile: "prod" })), env);
+    await handler(await post(toolCall({})), env);
+    expect(stsCalls(calls)).toHaveLength(2);
+  });
+
+  it("STS が AccessDenied なら 403 forbidden（許可の判定は AWS 側）", async () => {
+    const { handler } = makeDeps(() => new Response(stsError("AccessDenied"), { status: 403 }));
+    const res = await handler(await post(toolCall({ aws_profile: "prod" })), makeEnv());
+    await expectError(res, 403, "forbidden");
+  });
+
+  it("AWS_PROFILES を JSON 文字列（secret）で渡しても動く", async () => {
+    const { handler, calls } = makeDeps();
+    const res = await handler(
+      await post(toolCall({ aws_profile: "prod" })),
+      makeEnv({ AWS_PROFILES: JSON.stringify(PROFILES) }),
+    );
+    expect(res.status).toBe(200);
+    expect(roleOf(stsCalls(calls)[0])).toBe(ROLE_PROD);
+  });
+
+  it("32 文字のプロファイル名でも sessionName は 64 文字以内で -<name> で終わる", async () => {
+    const name = "n".repeat(32);
+    const { handler, calls } = makeDeps();
+    const env = makeEnv({
+      AWS_PROFILES: { default: name, profiles: { [name]: { roleArn: ROLE } } } as never,
+    });
+    const res = await handler(await post(toolCall({ cli_command: "x" })), env);
+    expect(res.status).toBe(200);
+    const sn = new URLSearchParams(String(stsCalls(calls)[0]?.init?.body)).get("RoleSessionName");
+    expect(sn?.length).toBeLessThanOrEqual(64);
+    expect(sn?.endsWith(`-${name}`)).toBe(true);
+  });
+
+  it("tools/call の name が文字列でなくても aws_profile は上流へ送らない（default 扱い）", async () => {
+    const bodies = [
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: 123, arguments: { aws_profile: "prod" } },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { arguments: { aws_profile: "prod" } },
+      },
+    ];
+    for (const b of bodies) {
+      const { handler, calls } = makeDeps();
+      const res = await handler(await post(b), makeEnv());
+      expect(res.status).toBe(200);
+      expect(roleOf(stsCalls(calls)[0])).toBe(ROLE);
+      expect(JSON.stringify(await sentBody(calls))).not.toContain("aws_profile");
+    }
+  });
+
+  it("不正な AWS_PROFILES は 500 server_misconfigured（設定値をログに出さない）", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const bad: unknown[] = [
+      "{not json",
+      { default: "dev", profiles: {} },
+      { default: "x", profiles: { dev: { roleArn: ROLE } } },
+      { default: "dev", profiles: { dev: { roleArn: "SECRET-ARN" } } },
+      { default: "dev", profiles: { dev: { roleArn: ROLE } }, tools: [] },
+      { default: "n".repeat(33), profiles: { ["n".repeat(33)]: { roleArn: ROLE } } },
+    ];
+    for (const v of bad) {
+      const { handler, calls } = makeDeps();
+      const res = await handler(await post(toolCall()), makeEnv({ AWS_PROFILES: v as never }));
+      await expectError(res, 500, "server_misconfigured");
+      expect(calls).toHaveLength(0);
+    }
+    expect(JSON.stringify(spy.mock.calls)).not.toContain("SECRET-ARN");
+    expect(JSON.stringify(spy.mock.calls)).toContain("invalid AWS_PROFILES");
+    spy.mockRestore();
   });
 });

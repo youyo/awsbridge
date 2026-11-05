@@ -16,6 +16,10 @@ export interface ProxyOptions {
   service?: string;
   /** `_meta.AWS_REGION` に注入する操作対象リージョン。 */
   targetRegion: string;
+  /** 呼び出し側が先に読んだ POST 本文（Request の本文は 2 回読めない）。省略時は request から読む。 */
+  body?: string;
+  /** `body` を JSON パースしたもの（呼び出し側が加工済みでもよい）。あれば再パースせずこれに注入して 1 回だけ直列化する。 */
+  rpc?: unknown;
   fetch?: typeof fetch;
 }
 
@@ -47,38 +51,52 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * JSON-RPC リクエストの params._meta.AWS_REGION に region を注入する。
  * 不正な形状・非 JSON は原文をそのまま返す（fail-safe）。既存の AWS_REGION は尊重する。
  */
+export function isJsonContentType(contentType: string | null): boolean {
+  if (!contentType) return true;
+  return (contentType.split(";")[0] ?? "").trim().toLowerCase() === "application/json";
+}
+
+/**
+ * パース済みの JSON-RPC リクエストに params._meta.AWS_REGION を注入した新しいオブジェクトを返す。
+ * 注入できない形状（jsonrpc 無し・params/_meta が object 以外・配列）は undefined。既存の AWS_REGION は尊重する。
+ */
+export function withMetaAwsRegion(rpc: unknown, region: string): unknown | undefined {
+  if (!isPlainObject(rpc) || !("jsonrpc" in rpc) || rpc.jsonrpc === undefined) return undefined;
+
+  let params: Record<string, unknown> = {};
+  if ("params" in rpc) {
+    if (!isPlainObject(rpc.params)) return undefined; // null・配列・プリミティブは対象外
+    params = rpc.params;
+  }
+
+  let meta: Record<string, unknown> = {};
+  if ("_meta" in params && params._meta !== null) {
+    if (!isPlainObject(params._meta)) return undefined;
+    meta = params._meta;
+  }
+
+  if (!("AWS_REGION" in meta)) meta = { ...meta, AWS_REGION: region };
+  return { ...rpc, params: { ...params, _meta: meta } };
+}
+
+/**
+ * JSON-RPC リクエスト本文の params._meta.AWS_REGION に region を注入する。
+ * 不正な形状・非 JSON は原文をそのまま返す（fail-safe）。
+ */
 export function injectMetaAwsRegion(
   body: string,
   contentType: string | null,
   region: string,
 ): string {
-  if (contentType) {
-    const mediaType = (contentType.split(";")[0] ?? "").trim().toLowerCase();
-    if (mediaType !== "application/json") return body;
-  }
-
+  if (!isJsonContentType(contentType)) return body;
   let rpc: unknown;
   try {
     rpc = JSON.parse(body);
   } catch {
     return body;
   }
-  if (!isPlainObject(rpc) || !("jsonrpc" in rpc) || rpc.jsonrpc === undefined) return body;
-
-  let params: Record<string, unknown> = {};
-  if ("params" in rpc) {
-    if (!isPlainObject(rpc.params)) return body; // null・配列・プリミティブは原文
-    params = rpc.params;
-  }
-
-  let meta: Record<string, unknown> = {};
-  if ("_meta" in params && params._meta !== null) {
-    if (!isPlainObject(params._meta)) return body;
-    meta = params._meta;
-  }
-
-  if (!("AWS_REGION" in meta)) meta = { ...meta, AWS_REGION: region };
-  return JSON.stringify({ ...rpc, params: { ...params, _meta: meta } });
+  const out = withMetaAwsRegion(rpc, region);
+  return out === undefined ? body : JSON.stringify(out);
 }
 
 function badGateway(): Response {
@@ -103,8 +121,12 @@ export async function proxyToAwsMcp(request: Request, opts: ProxyOptions): Promi
 
   let body: string | null = null;
   if (method === "POST") {
-    const text = await request.text();
-    body = injectMetaAwsRegion(text, request.headers.get("content-type"), opts.targetRegion);
+    if (opts.rpc !== undefined) {
+      body = JSON.stringify(withMetaAwsRegion(opts.rpc, opts.targetRegion) ?? opts.rpc);
+    } else {
+      const text = opts.body ?? (await request.text());
+      body = injectMetaAwsRegion(text, request.headers.get("content-type"), opts.targetRegion);
+    }
   }
 
   const doFetch = opts.fetch ?? fetch;
