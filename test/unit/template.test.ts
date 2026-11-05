@@ -131,9 +131,28 @@ describe("権限", () => {
       HasDebugAdditionalPolicies: additional.length > 0 ? "true" : "false",
     });
 
-  it("ReadOnlyRole は ReadOnlyAccess だけ（パーティションは AWS::Partition）", () => {
+  it("ReadOnlyRole の管理ポリシーは ReadOnlyAccess だけ（パーティションは AWS::Partition）", () => {
     expect(managed("ReadOnlyRole")).toEqual([readOnlyAccess("aws-cn")]);
-    expect(tpl.Resources.ReadOnlyRole.Properties.Policies).toBeUndefined();
+  });
+  it("ReadOnlyRole は SSM パラメータの取得を明示 Deny する（条件なし・DebugRole には付けない）", () => {
+    const policies = tpl.Resources.ReadOnlyRole.Properties.Policies;
+    expect(policies).toHaveLength(1);
+    const doc = policies[0].PolicyDocument;
+    expect(doc.Version).toBe("2012-10-17");
+    expect(doc.Statement).toHaveLength(1);
+    const st = doc.Statement[0];
+    expect(st.Effect).toBe("Deny");
+    expect([...st.Action].sort()).toEqual([
+      "ssm:GetParameter",
+      "ssm:GetParameterHistory",
+      "ssm:GetParameters",
+      "ssm:GetParametersByPath",
+    ]);
+    expect(st.Resource).toBe("*");
+    expect(st.Condition).toBeUndefined();
+    // DebugRole のインラインポリシーに Deny は無い（SecretRead で読める設計のまま）
+    const debugStatements = tpl.Resources.DebugRole.Properties.Policies[0].PolicyDocument.Statement;
+    expect(JSON.stringify(debugStatements)).not.toContain('"Deny"');
   });
   it("DebugAdditionalPolicyArns は空なら付けず、あれば ReadOnlyAccess に加えて DebugRole だけに付く", () => {
     const p = tpl.Parameters.DebugAdditionalPolicyArns;

@@ -64,9 +64,10 @@ function remoteJwks(teamDomain: string): JWTVerifyGetKey {
 /**
  * リクエストから Access JWT を取り出す。
  *
- * `Cf-Access-Jwt-Assertion` ヘッダーだけを信頼し、Cookie `CF_Authorization` は使わない。
- * Cookie はブラウザが自動送信するため CSRF 的な悪用余地があり、MCP クライアントは
- * Access（Portal）がヘッダーに載せたトークンで来る前提だから。
+ * `Cf-Access-Jwt-Assertion` ヘッダーだけを信頼し、Cookie `CF_Authorization` は直接は読まない。
+ * ただし self_hosted の Access は、ブラウザの Cookie を検証したうえでこのヘッダーを Worker に差し込む。
+ * つまり Cookie 由来のブラウザ通信でもヘッダーは付くので、「ヘッダーだけ見る」ことは CSRF 対策にならない。
+ * CSRF は handler 側の Origin 検査（ALLOWED_ORIGINS）と POST の Content-Type 制限（application/json のみ）で防ぐ。
  */
 export function accessTokenFromRequest(req: Request): string {
   const token = req.headers.get(ACCESS_JWT_HEADER);

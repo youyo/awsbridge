@@ -533,17 +533,11 @@ describe("aws_profile によるアカウント切り替え", () => {
     expect(ng.calls).toHaveLength(0);
   });
 
-  it("本文が JSON でない・Content-Type が JSON でないときは default でそのまま中継", async () => {
+  it("本文が JSON でなくても Content-Type が JSON なら default で原文を中継（パース不能は fail-safe）", async () => {
     const a = makeDeps();
     expect((await a.handler(await post("not json"), makeEnv())).status).toBe(200);
     expect(roleOf(stsCalls(a.calls)[0])).toBe(ROLE);
     expect(await mcpCalls(a.calls)[0]?.request?.text()).toBe("not json");
-
-    const b = makeDeps();
-    const raw = JSON.stringify(toolCall({ aws_profile: "prod" }));
-    const req = await mcpRequest("/mcp", { body: raw, headers: { "content-type": "text/plain" } });
-    expect((await b.handler(req, makeEnv())).status).toBe(200);
-    expect(roleOf(stsCalls(b.calls)[0])).toBe(ROLE);
   });
 
   it("認証情報キャッシュはプロファイルのロールごとに分かれる", async () => {
@@ -720,5 +714,94 @@ describe("/mcp tools/list への aws_profile 注入", () => {
       "prod-readonly",
       "dev-debug",
     ]);
+  });
+});
+
+describe("/mcp の CSRF 対策（Origin 検査と Content-Type 制限）", () => {
+  const body = JSON.stringify(toolCall({ aws_profile: "prod" }));
+  const noUpstream = (calls: Call[]) => expect(calls).toHaveLength(0);
+
+  it("許可リストに無い Origin は全メソッドで 403 forbidden_origin（STS も呼ばない）", async () => {
+    for (const method of ["POST", "GET", "DELETE"]) {
+      const { handler, calls } = makeDeps();
+      const init: RequestInit = { method, headers: { origin: "https://evil.example" } };
+      init.body = method === "POST" ? body : null;
+      const res = await handler(await mcpRequest("/mcp", init), makeEnv());
+      await expectError(res, 403, "forbidden_origin");
+      noUpstream(calls);
+    }
+  });
+
+  it("ALLOWED_ORIGINS に完全一致する Origin は通る（カンマ区切り・前後の空白は無視）", async () => {
+    const env = makeEnv({ ALLOWED_ORIGINS: "https://a.example, https://b.example" });
+    for (const origin of ["https://a.example", "https://b.example"]) {
+      const { handler } = makeDeps();
+      const req = await mcpRequest("/mcp", { body, headers: { origin } });
+      expect((await handler(req, env)).status).toBe(200);
+    }
+  });
+
+  it("Origin の部分一致・大文字違い・末尾スラッシュ違いは拒否する", async () => {
+    const env = makeEnv({ ALLOWED_ORIGINS: "https://a.example" });
+    for (const origin of [
+      "https://a.example/",
+      "https://a.example.evil.example",
+      "http://a.example",
+      "https://A.example",
+      "null",
+    ]) {
+      const { handler, calls } = makeDeps();
+      const req = await mcpRequest("/mcp", { body, headers: { origin } });
+      await expectError(await handler(req, env), 403, "forbidden_origin");
+      noUpstream(calls);
+    }
+  });
+
+  it("Origin が無ければ通る（MCP クライアント・Portal のサーバー間通信）", async () => {
+    const { handler } = makeDeps();
+    expect((await handler(await mcpRequest("/mcp", { body }), makeEnv())).status).toBe(200);
+  });
+
+  it("Origin 検査は Access JWT の検証より前（不正な Origin はトークン無しでも 403）", async () => {
+    const { handler } = makeDeps();
+    const req = await mcpRequest("/mcp", { headers: { origin: "https://evil.example" } }, null);
+    await expectError(await handler(req, makeEnv()), 403, "forbidden_origin");
+  });
+
+  it("POST の Content-Type が無い・application/json 以外は 415（STS も呼ばない）", async () => {
+    for (const ct of [
+      null,
+      "text/plain",
+      "application/x-www-form-urlencoded",
+      "application/jsonx",
+    ]) {
+      const { handler, calls } = makeDeps();
+      const req = await mcpRequest("/mcp", { body });
+      if (ct === null) req.headers.delete("content-type");
+      else req.headers.set("content-type", ct);
+      const res = await handler(req, makeEnv());
+      await expectError(res, 415, "unsupported_media_type");
+      noUpstream(calls);
+    }
+  });
+
+  it("application/json はパラメータ付き・大文字小文字違いでも通る", async () => {
+    for (const ct of [
+      "application/json; charset=utf-8",
+      "Application/JSON",
+      "application/json;charset=UTF-8",
+    ]) {
+      const { handler } = makeDeps();
+      const req = await mcpRequest("/mcp", { body, headers: { "content-type": ct } });
+      expect((await handler(req, makeEnv())).status).toBe(200);
+    }
+  });
+
+  it("GET / DELETE は Content-Type が無くても通る", async () => {
+    for (const method of ["GET", "DELETE"]) {
+      const { handler } = makeDeps();
+      const res = await handler(await mcpRequest("/mcp", { method, body: null }), makeEnv());
+      expect(res.status).toBe(200);
+    }
   });
 });

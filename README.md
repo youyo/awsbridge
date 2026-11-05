@@ -62,7 +62,7 @@ mise exec -- env AWS_PROFILE=<対象> AWSBRIDGE_ALLOWED_SUBJECTS="user@example.c
 
 | ロール | 権限 |
 |---|---|
-| `FederatedMcpReadOnly` | AWS 管理ポリシー `ReadOnlyAccess` のみ |
+| `FederatedMcpReadOnly` | AWS 管理ポリシー `ReadOnlyAccess` + SSM パラメーター取得（`ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`）の明示 Deny（条件なし） |
 | `FederatedMcpDebug` | `ReadOnlyAccess` + インラインポリシー（調査の読み取り強化・秘密値の参照・軽い運用操作・接続と実行。`aws:CalledViaAWSMCP = aws-mcp.amazonaws.com` の条件付き）+ 任意の `DebugAdditionalPolicyArns` |
 
 デバッグロールのインラインポリシーは、次のグループに分かれています（すべて `aws:CalledViaAWSMCP = aws-mcp.amazonaws.com` の条件付き、Resource は `*`）。削除系・IAM 変更・組織変更は含みません。
@@ -79,6 +79,7 @@ Athena のクエリは結果バケットへの書き込み（`s3:PutObject`）�
 - **デバッグロールはリモート実行相当の権限を含みます。** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` はリモートシェルと同等で、秘密情報や認証情報、ファイルの内容が見えてしまうことがあります。`SecretRead` も秘密値そのものを読めます。`Operations` と `lambda:InvokeFunction`・`states:StartExecution`・`sqs:SendMessage`・`sns:Publish` は副作用のある処理を実行します。
 - **権限昇格の経路は塞いでいます。** `iam:PassRole` を `*` に付けると、任意のロールでタスクを動かせてしまうため、既定では付けず、`DebugPassableEcsTaskRoleArns` で明示したロールだけに限ります。また `lambda:UpdateFunctionConfiguration`（実行ロールや環境変数の差し替え）と `autoscaling:UpdateAutoScalingGroup`（起動テンプレートの差し替え）は付けていません。
 - **残るリスク:** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` / EC2 Instance Connect は、対象のインスタンスやタスクに付いたロールの権限で動けます。権限の強いインスタンス・タスクが同じアカウントにあると、その権限を借りられます。本番ではタグ条件や SSM ドキュメントで対象を絞ってください。
+- **読み取り専用ロールは `ReadOnlyAccess` を含むため、SSM パラメーター以外の秘密値は読めてしまいます。** `ReadOnlyAccess`（v191）は `ssm:Get*` を含み、SecureString も `aws/ssm` キー経由で復号できてしまうため、読み取り専用ロールでは SSM パラメーター取得を明示 Deny しています（秘密値の参照はデバッグロールの `SecretRead` だけ）。一方、Lambda の環境変数（`lambda:Get*` / `ListFunctions`）や `s3:GetObject` などは調査で日常的に使うため Deny していません。ここに秘密値があるなら、`AllowedSubjects` を絞るか、権限境界・SCP で独自に Deny してください。
 - **`ReadOnlyAccess` は MCP 経由に限定されません。** AWS 管理ポリシーには IAM 条件を付けられないため、セッションの認証情報で直接 API を呼んでも読み取り権限は有効です。`aws:CalledViaAWSMCP` で絞られるのはインラインポリシーの操作だけです。
 - 本番では `Resource` を特定の ARN・タグ・SSM ドキュメントに絞り、セッションログ（SSM Session Manager のログ、ECS Exec のログ、Lambda の CloudWatch Logs）を必ず有効にしてください。CloudTrail だけでは足りません。
 - 利用者はロールごとに `AllowedSubjects`（読み取り専用）と `DebugAllowedSubjects`（デバッグ）で分けます。`DebugAllowedSubjects` は読み取り専用より狭くしてください。
@@ -123,7 +124,9 @@ AWSBRIDGE_ACCESS_AUD = "<Access アプリケーションの AUD タグ>"   # こ
 
 secret（`mise run secrets` が登録）: `SIGNING_JWK`、`ADDITIONAL_PUBLIC_JWKS`（任意。署名鍵のローテーション用の追加の公開鍵）、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`AWS_PROFILES`（必須。vars で持つ場合は secret にしない）。
 
-var（任意。既定値を上書きするときだけ）: `ISSUER`（deploy 時に `--var` で設定）、`IDENTITY_CLAIM`（既定 `email`）、`ACCESS_MAX_TOKEN_AGE_SECONDS`、`STS_AUDIENCE`（既定 `awsbridge`）、`STS_REGION`（既定 `us-east-1`）、`STS_ENDPOINT`、`AWS_MCP_REGION`（既定 `us-east-1`）、`AWS_MCP_ENDPOINT`、`TARGET_AWS_REGION`（既定 `ap-northeast-1`）。
+var（任意。既定値を上書きするときだけ）: `ISSUER`（deploy 時に `--var` で設定）、`IDENTITY_CLAIM`（既定 `email`）、`ACCESS_MAX_TOKEN_AGE_SECONDS`、`STS_AUDIENCE`（既定 `awsbridge`）、`STS_REGION`（既定 `us-east-1`）、`STS_ENDPOINT`、`AWS_MCP_REGION`（既定 `us-east-1`）、`AWS_MCP_ENDPOINT`、`TARGET_AWS_REGION`（既定 `ap-northeast-1`）、`ALLOWED_ORIGINS`（カンマ区切りの完全一致オリジン。既定は空）。
+
+`/mcp` は CSRF 対策として、`Origin` ヘッダーが付いたリクエスト（ブラウザ由来）を `ALLOWED_ORIGINS` に含まれない限り 403 `forbidden_origin` で拒否します。`Origin` が無い MCP クライアント・Portal のサーバー間通信は通ります。また POST は `Content-Type` が `application/json`（`; charset=utf-8` などのパラメーター可）のときだけ受け付け、それ以外（Content-Type 無しを含む）は 415 `unsupported_media_type` です。Access はブラウザの Cookie を検証して `Cf-Access-Jwt-Assertion` を差し込むため、認証だけでは CSRF を防げません。
 
 `/mcp` のエラーは `{"error":"<code>"}` で返ります: `unauthorized`（401）、`forbidden`（403。ロールを引き受ける権限がない）、`upstream_auth_failed`（502。サーバー側の設定不整合）、`temporarily_unavailable`（503）、`server_misconfigured`（500）、`unknown_aws_profile` / `invalid_aws_profile` / `batch_not_supported`（400）。原因ごとの対応表は `docs/specs/architecture.md` の「エラーと HTTP ステータスの対応」を参照してください。
 

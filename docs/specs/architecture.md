@@ -113,7 +113,7 @@ Access JWT の実物（開発環境）で確認した claim:
 
 | ロール（既定名） | 目的 | 権限 | 利用者 |
 |---|---|---|---|
-| `FederatedMcpReadOnly` | 普段の調査・参照 | AWS 管理ポリシー `ReadOnlyAccess` のみ | `AllowedSubjects` |
+| `FederatedMcpReadOnly` | 普段の調査・参照 | AWS 管理ポリシー `ReadOnlyAccess` + インラインの明示 Deny（`ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`、Resource `*`、条件なし） | `AllowedSubjects` |
 | `FederatedMcpDebug` | 障害調査（秘密値の参照・運用操作・実行を伴う） | `ReadOnlyAccess` + インラインポリシー + 任意の追加管理ポリシー（`DebugAdditionalPolicyArns`） | `DebugAllowedSubjects` |
 
 - インラインポリシーは Statement をグループ（Sid）に分けて持つ。すべて `StringEquals aws:CalledViaAWSMCP = aws-mcp.amazonaws.com`、Resource は `*`。削除系・IAM 変更・組織変更は含めない。
@@ -132,6 +132,7 @@ Access JWT の実物（開発環境）で確認した claim:
 - **デバッグロールはリモート実行相当の権限と秘密値の参照を含む。** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` はリモートシェルと同等で、秘密情報・認証情報・ファイルが見えうる。`SecretRead` は秘密値そのものを読める。`Operations` や `lambda:InvokeFunction` などは副作用のある処理を実行する。
 - **権限昇格の経路は塞いでいる。** `iam:PassRole` を `*` に付けると任意のロールでタスクを動かせるため、既定では付けず `DebugPassableEcsTaskRoleArns` の明示ロールに限る。`lambda:UpdateFunctionConfiguration`（実行ロール・環境変数の差し替え）と `autoscaling:UpdateAutoScalingGroup`（起動テンプレートの差し替え）は付けない。テストで両 Action の不在と PassRole の既定なしを確かめている。
 - **残るリスク:** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` / EC2 Instance Connect は、対象インスタンス・タスクのロールの権限で動ける。強いロールを持つ対象が同一アカウントにあるとその権限を借りられる。本番ではタグ条件や SSM ドキュメントで対象を絞る。
+- **読み取り専用ロールの SSM Deny と残余リスク。** `ReadOnlyAccess`（v191）は `ssm:Get*` を含み、SecureString も `aws/ssm` キーの key policy により SSM 経由で復号できる。設計上、秘密値の参照はデバッグロール（`SecretRead`）専用なので、読み取り専用ロールには SSM パラメーター取得の明示 Deny を付ける（MCP 経由かどうかに関わらず拒否。デバッグロールには付けない）。Lambda の環境変数（`lambda:Get*` / `ListFunctions`）や `s3:GetObject` も `ReadOnlyAccess` に含まれるが、調査で日常的に使うため Deny しない。この残余リスクは許容し、必要なら利用者側で `AllowedSubjects` を絞る・権限境界や SCP で Deny する。
 - **`ReadOnlyAccess` は MCP 経由に限定されない。** AWS 管理ポリシーには IAM 条件を付けられないため、セッションの認証情報で直接 API を呼んでも読み取りは効く。`aws:CalledViaAWSMCP` で絞られるのはインラインの操作だけ。
 - 本番では Resource を ARN・タグ・SSM ドキュメントで絞り、セッションログ（SSM Session Manager、ECS Exec、Lambda の CloudWatch Logs）を必ず有効にする。CloudTrail だけでは足りない。`DebugAllowedSubjects` は読み取り専用より絞る。
 
@@ -176,7 +177,7 @@ Access JWT の実物（開発環境）で確認した claim:
 | `initialize` / `tools/list` / `ping` / notifications など `tools/call` 以外、GET / DELETE | `default` |
 | JSON-RPC バッチ | 対象ツールの `tools/call` が指す `aws_profile` がすべて同じ（省略は `default` 扱い）ならそのロール。異なれば 400 `batch_not_supported` |
 
-`aws_profile` は上流へ送る前にすべての `tools/call` の arguments から取り除く（対象・対象外とも）。本文は handler で 1 回だけ読み、パース結果に対して `aws_profile` の除去と `_meta.AWS_REGION` の注入を行い、直列化は 1 回にする。本文が JSON でない・Content-Type が JSON でない場合は `default` でそのまま中継する。
+`aws_profile` は上流へ送る前にすべての `tools/call` の arguments から取り除く（対象・対象外とも）。本文は handler で 1 回だけ読み、パース結果に対して `aws_profile` の除去と `_meta.AWS_REGION` の注入を行い、直列化は 1 回にする。`/mcp` の POST は Content-Type が `application/json` のものだけ受け付けるので（後述「CSRF 対策」）、本文が JSON としてパースできない場合（fail-safe）だけ `default` でそのまま中継する。
 
 エラー: `aws_profile` が文字列でない → 400 `invalid_aws_profile`、一覧にない（`__proto__` 等の prototype 由来の名前も不可）→ 400 `unknown_aws_profile`。どちらも認証後に判定し、STS・上流は呼ばない。
 
@@ -253,6 +254,13 @@ Worker は secret `SIGNING_JWK`（RSA 秘密鍵 JWK）で STS 向け JWT に署�
 - Access JWT は長寿命（観測値 ~30 日）。Access から外した利用者のトークンが残存しうるため、`iat` が古すぎるトークンの拒否や Access アプリのセッション短縮を検討
 - `aws:SourceIp` 条件は実質使えない（Cloudflare egress）
 
+### CSRF 対策（Origin 検査と Content-Type 制限）
+
+self_hosted の Access は、ブラウザの `CF_Authorization` Cookie を検証して `Cf-Access-Jwt-Assertion` ヘッダーを Worker に差し込む。Worker がヘッダーだけを見ていても、Cookie 由来のブラウザ通信にはヘッダーが付くため、それだけでは CSRF を防げない。ブラウザはプリフライト無しで Content-Type 無し・`text/plain` の POST を送れる。そこで `/mcp` に次の 2 つを課す。どちらも本文の読み取り・STS 呼び出しより前に判定する。
+
+- **Origin 検査（全メソッド）**: `Origin` ヘッダーがあるとき、環境変数 `ALLOWED_ORIGINS`（カンマ区切りの完全一致。未設定なら空）に含まれなければ 403 `forbidden_origin`。`Origin` が無い（MCP クライアント・Portal のサーバー間通信）なら通す。
+- **POST の Content-Type 制限**: メディアタイプが `application/json`（大小無視、`; charset=...` 等のパラメーター可）のときだけ受け付け、それ以外（Content-Type 無しを含む）は 415 `unsupported_media_type`。以前の「Content-Type 無し・非 JSON は `default` で原文中継」は廃止した。
+
 ### email の正規化
 
 利用者識別子が `email`（既定）のとき、Worker は identity と STS 向け JWT の `sub` を小文字に正規化して照合する。email は大文字小文字を区別しない値で、IdP や入力経路によって表記が揺れても IAM 信頼ポリシーの `StringLike` 照合（大文字小文字を区別する）とずれないようにするため。`deploy:aws` も `AWSBRIDGE_ALLOWED_SUBJECTS` を小文字にして検証・CloudFormation に渡す。`sub` と `custom.*`（例: Entra の `oid`）は不透明な ID なので正規化しない。
@@ -268,6 +276,8 @@ Access JWT の検証は毎リクエスト行う。一方、STS から取得済�
 | 状況 | HTTP | code |
 |---|---|---|
 | Access JWT が無い・署名/iss/aud/exp が不正・Cookie のみ | 401 | `unauthorized` |
+| `Origin` ヘッダーがあり `ALLOWED_ORIGINS` に無い | 403 | `forbidden_origin` |
+| POST の Content-Type が `application/json` でない（無い場合を含む） | 415 | `unsupported_media_type` |
 | 利用者識別子（既定 email）の claim が無い | 403 | `forbidden` |
 | STS が `AccessDenied`（trust policy が利用者を許可していない） | 403 | `forbidden` |
 | STS が Worker 発行 JWT を拒否（`InvalidIdentityToken` 等） | 502 | `upstream_auth_failed` |

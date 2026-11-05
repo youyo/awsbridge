@@ -6,10 +6,21 @@ Description: >-
 
 # Role layout (see docs/specs/architecture.md "ロール構成"):
 #
-#   ReadOnlyRole  AWS managed ReadOnlyAccess only.
+#   ReadOnlyRole  AWS managed ReadOnlyAccess + an inline explicit Deny on ssm:GetParameter* (see below).
 #   DebugRole     ReadOnlyAccess + an inline policy in groups (Investigation / SecretRead /
 #                 Operations / Execution, all gated by aws:CalledViaAWSMCP)
 #                 (+ optional extra managed policies via DebugAdditionalPolicyArns).
+#
+# WARNING (ReadOnlyRole):
+# - ReadOnlyAccess (v191) includes ssm:Get*, so by itself it can read SSM parameters, and SecureString
+#   values are decryptable through SSM with the aws/ssm key. Secret values are meant to be read only by
+#   the debug role (SecretRead), so the inline policy explicitly denies ssm:GetParameter, GetParameters,
+#   GetParametersByPath and GetParameterHistory. The Deny has no condition: it applies whether or not the
+#   call goes through the AWS MCP server. The debug role does not get this Deny.
+# - Residual risk: ReadOnlyAccess also lets this role read Lambda function environment variables
+#   (lambda:Get*, ListFunctions), S3 objects (s3:GetObject) and similar data. They are used daily for
+#   investigation, so they are NOT denied here. If secrets live there, narrow AllowedSubjects or add your
+#   own Deny (e.g. through a permissions boundary or an SCP).
 #
 # Users are scoped per role: AllowedSubjects (read-only) and DebugAllowedSubjects (debug).
 #
@@ -124,6 +135,19 @@ Resources:
         Ref: MaxSessionDuration
       ManagedPolicyArns:
         - Fn::Sub: "arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess"
+      Policies:
+        - PolicyName: DenySsmParameterRead
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: DenySsmParameterRead
+                Effect: Deny
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                  - ssm:GetParameterHistory
+                Resource: "*"
       # The condition keys contain the issuer host, and CloudFormation cannot use
       # intrinsic functions in mapping keys, so the policy is built as a JSON string.
       AssumeRolePolicyDocument:

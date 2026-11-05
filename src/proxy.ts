@@ -52,11 +52,11 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 /**
- * JSON-RPC リクエストの params._meta.AWS_REGION に region を注入する。
- * 不正な形状・非 JSON は原文をそのまま返す（fail-safe）。既存の AWS_REGION は尊重する。
+ * Content-Type のメディアタイプが application/json か（大小無視・パラメータ可）。
+ * Content-Type が無い（null・空）ものは false。CSRF 対策で、ブラウザがプリフライト無しで送れる形を JSON 扱いしない。
  */
 export function isJsonContentType(contentType: string | null): boolean {
-  if (!contentType) return true;
+  if (!contentType) return false;
   return (contentType.split(";")[0] ?? "").trim().toLowerCase() === "application/json";
 }
 

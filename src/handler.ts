@@ -37,6 +37,8 @@ export interface Env {
   AWS_MCP_REGION?: string;
   AWS_MCP_ENDPOINT?: string;
   TARGET_AWS_REGION?: string;
+  // ブラウザ由来の /mcp リクエスト（Origin ヘッダー付き）を許可するオリジン。カンマ区切りの完全一致。未設定なら空（Origin 付きは全拒否）
+  ALLOWED_ORIGINS?: string;
 }
 
 export interface HandlerDeps {
@@ -83,7 +85,30 @@ function parseMaxAge(v: string | undefined): number | undefined | "invalid" {
   return Number.isFinite(n) && n >= 0 ? n : "invalid";
 }
 
+function isAllowedOrigin(origin: string, allowed: string | undefined): boolean {
+  return (allowed ?? "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter((o) => o !== "")
+    .includes(origin);
+}
+
 async function handleMcp(request: Request, env: Env, deps: HandlerDeps): Promise<Response> {
+  // CSRF 対策。Access はブラウザの Cookie からも Cf-Access-Jwt-Assertion を差し込むため、
+  // 認証だけでは防げない。Origin が付いている（ブラウザ由来）なら許可リストに無い限り拒否する。
+  // Origin が無い MCP クライアント・Portal のサーバー間通信は通す。STS 呼び出し・本文読み取りより前に判定する。
+  const origin = request.headers.get("origin");
+  if (origin !== null && !isAllowedOrigin(origin, env.ALLOWED_ORIGINS)) {
+    console.error("csrf: forbidden_origin");
+    return errorBody("forbidden_origin", 403);
+  }
+  // POST は application/json だけ受け付ける（Content-Type 無し・text/plain はプリフライト無しでブラウザから送れる）
+  if (
+    request.method.toUpperCase() === "POST" &&
+    !isJsonContentType(request.headers.get("content-type"))
+  ) {
+    return errorBody("unsupported_media_type", 415);
+  }
   const { ISSUER, SIGNING_JWK, ACCESS_TEAM_DOMAIN, ACCESS_AUD } = env;
   if (!ISSUER || !SIGNING_JWK || !ACCESS_TEAM_DOMAIN || !ACCESS_AUD) {
     console.error("config: required setting missing");
@@ -128,17 +153,14 @@ async function handleMcp(request: Request, env: Env, deps: HandlerDeps): Promise
   }
 
   // POST 本文は 1 回だけ読み、プロファイル選択（aws_profile の除去を含む）と中継で使い回す
-  const contentType = request.headers.get("content-type");
   let bodyText: string | undefined;
   let rpc: unknown;
   if (request.method.toUpperCase() === "POST") {
     bodyText = await request.text();
-    if (isJsonContentType(contentType)) {
-      try {
-        rpc = JSON.parse(bodyText);
-      } catch {
-        rpc = undefined;
-      }
+    try {
+      rpc = JSON.parse(bodyText);
+    } catch {
+      rpc = undefined;
     }
   }
   const selection = selectProfile(profiles, rpc);

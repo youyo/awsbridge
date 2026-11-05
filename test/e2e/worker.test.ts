@@ -289,6 +289,7 @@ beforeAll(async () => {
       `ACCESS_TEAM_DOMAIN='${fakeBase}'`,
       `ACCESS_AUD='${FAKE_AUD}'`,
       `AWS_PROFILES='${AWS_PROFILES}'`,
+      `ALLOWED_ORIGINS='https://allowed.example'`,
       "",
     ].join("\n"),
   );
@@ -674,5 +675,64 @@ describe("マルチアカウント（aws_profile）", () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "batch_not_supported" });
+  });
+});
+
+describe("/mcp の CSRF 対策（Origin 検査と Content-Type 制限）", () => {
+  const rpcBody = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+  const send = async (headers: Record<string, string>, method = "POST") =>
+    fetch(`${base}/mcp`, {
+      method,
+      headers: { "cf-access-jwt-assertion": await accessJwt(ALLOWED_SUB), ...headers },
+      ...(method === "POST" ? { body: rpcBody } : {}),
+    });
+
+  it("許可リストに無い Origin は 403 forbidden_origin で、上流（STS・AWS MCP）に届かない", async () => {
+    mcpSeen = [];
+    const sts = stsCount;
+    for (const method of ["POST", "GET", "DELETE"]) {
+      const res = await send(
+        { origin: "https://evil.example", "content-type": "application/json" },
+        method,
+      );
+      expect(res.status, method).toBe(403);
+      expect(await res.json()).toEqual({ error: "forbidden_origin" });
+    }
+    expect(mcpSeen).toHaveLength(0);
+    expect(stsCount).toBe(sts);
+  });
+
+  it("ALLOWED_ORIGINS に含まれる Origin は通る", async () => {
+    const res = await send({
+      origin: "https://allowed.example",
+      "content-type": "application/json",
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("Content-Type 無しの POST は 415 unsupported_media_type", async () => {
+    mcpSeen = [];
+    // fetch は文字列本文に text/plain を自動付与するため、Blob（type 無し）で Content-Type 無しを再現する
+    const res = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { "cf-access-jwt-assertion": await accessJwt(ALLOWED_SUB) },
+      body: new Blob([rpcBody]),
+    });
+    expect(res.status).toBe(415);
+    expect(await res.json()).toEqual({ error: "unsupported_media_type" });
+    expect(mcpSeen).toHaveLength(0);
+  });
+
+  it("text/plain の POST は 415 で、上流に届かない", async () => {
+    mcpSeen = [];
+    const res = await send({ "content-type": "text/plain" });
+    expect(res.status).toBe(415);
+    expect(await res.json()).toEqual({ error: "unsupported_media_type" });
+    expect(mcpSeen).toHaveLength(0);
+  });
+
+  it("application/json; charset=utf-8 は通る", async () => {
+    const res = await send({ "content-type": "application/json; charset=utf-8" });
+    expect(res.status).toBe(200);
   });
 });

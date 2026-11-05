@@ -1,23 +1,37 @@
 import { AwsClient } from "aws4fetch";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { injectMetaAwsRegion, proxyToAwsMcp } from "../../src/proxy";
+import { injectMetaAwsRegion, isJsonContentType, proxyToAwsMcp } from "../../src/proxy";
 
 const JSON_CT = "application/json";
 const parse = (s: string) => JSON.parse(s);
+
+describe("isJsonContentType", () => {
+  it("application/json（大小無視・パラメータ可）だけ true", () => {
+    for (const ct of ["application/json", "Application/JSON", "application/json; charset=utf-8"])
+      expect(isJsonContentType(ct), ct).toBe(true);
+  });
+  it("null・空・その他は false（Content-Type 無しを JSON 扱いしない）", () => {
+    for (const ct of [
+      null,
+      "",
+      "text/plain",
+      "application/jsonx",
+      "application/x-www-form-urlencoded",
+    ])
+      expect(isJsonContentType(ct), String(ct)).toBe(false);
+  });
+});
 
 describe("injectMetaAwsRegion", () => {
   it("非 JSON の Content-Type は原文を返す", () => {
     const body = '{"jsonrpc":"2.0","method":"x"}';
     expect(injectMetaAwsRegion(body, "text/plain", "ap-northeast-1")).toBe(body);
+    expect(injectMetaAwsRegion(body, null, "ap-northeast-1")).toBe(body);
   });
 
-  it("Content-Type が空(null)でも JSON-RPC なら注入を試みる", () => {
-    const out = injectMetaAwsRegion(
-      '{"jsonrpc":"2.0","method":"x","params":{}}',
-      null,
-      "us-west-2",
-    );
-    expect(parse(out).params._meta.AWS_REGION).toBe("us-west-2");
+  it("Content-Type が空(null)は JSON 扱いしないので原文を返す（仕様変更: 以前は注入を試みていた）", () => {
+    const body = '{"jsonrpc":"2.0","method":"x","params":{}}';
+    expect(injectMetaAwsRegion(body, null, "us-west-2")).toBe(body);
   });
 
   it("charset 付きの application/json は JSON として扱う", () => {
