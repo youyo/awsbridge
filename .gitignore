@@ -1,0 +1,13 @@
+node_modules/
+.wrangler/
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+dist/
+coverage/
+.DS_Store
+.claude/handover/
+.claude/settings.local.json
+.secrets/
+mise.local.toml

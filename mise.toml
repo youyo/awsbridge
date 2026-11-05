@@ -1,0 +1,83 @@
+[tools]
+node = "24"
+pnpm = "11.28.5"
+
+[env]
+# 開発用 AWS アカウントの認証情報（~/.aws/config に設定済み）
+AWS_PROFILE = "awsbridge"
+# PoC（未決事項 1）で使う値
+AWSBRIDGE_POC_AUDIENCE = "awsbridge"
+AWSBRIDGE_POC_ROLE_NAME = "awsbridge-poc"
+# 個人情報・アカウント固有値は mise.local.toml（gitignore）に置く:
+#   AWSBRIDGE_POC_ISSUER     = "https://<worker>.<subdomain>.workers.dev"（Worker の URL = OIDC issuer）
+#   AWSBRIDGE_POC_SUBJECT    = "<テストに使う email>"
+#   AWSBRIDGE_POC_ACCOUNT_ID = "<AWS アカウント ID>"
+# 開発用署名鍵（秘密鍵 JWK）の置き場所。.secrets/ は gitignore
+AWSBRIDGE_POC_KEY_FILE = "{{config_root}}/.secrets/dev-signing-key.json"
+
+[tasks.install]
+description = "依存パッケージのインストール"
+run = "pnpm install"
+
+[tasks.typecheck]
+description = "型チェック"
+run = "pnpm tsc --noEmit"
+
+[tasks."test:unit"]
+description = "Unit テスト"
+run = "pnpm vitest run --config vitest.config.ts"
+
+[tasks."test:e2e"]
+description = "E2E テスト（wrangler dev を起動して検証）"
+run = "pnpm vitest run --config vitest.e2e.config.ts"
+
+[tasks.test]
+description = "Unit + E2E"
+depends = ["test:unit", "test:e2e"]
+
+[tasks.lint]
+description = "lint・フォーマット検査・型チェック"
+depends = ["typecheck"]
+run = "pnpm biome check ."
+
+[tasks.fmt]
+description = "フォーマット"
+run = "pnpm biome check --write ."
+
+[tasks.build]
+description = "ビルド確認（デプロイせずにバンドル）"
+run = "pnpm wrangler deploy --dry-run --outdir dist --env dev"
+
+[tasks.dev]
+description = "ローカル起動"
+run = "pnpm wrangler dev --env dev"
+
+[tasks."deploy:dev"]
+description = "開発環境（workers.dev）へデプロイ"
+run = "pnpm wrangler deploy --env dev --var \"ISSUER:${AWSBRIDGE_POC_ISSUER:?mise.local.toml に AWSBRIDGE_POC_ISSUER を設定してください}\""
+
+# ---- PoC（未決事項 1）: IAM が Worker を OIDC プロバイダーとして受理するか ----
+
+[tasks."poc:keygen"]
+description = "開発用 RSA 署名鍵を生成し .secrets/ に保存（既存なら上書きしない）"
+run = "pnpm tsx scripts/poc/keygen.ts"
+
+[tasks."poc:secret"]
+description = "開発用署名鍵を Worker secret SIGNING_JWK に登録"
+run = "pnpm wrangler secret put SIGNING_JWK --env dev < \"$AWSBRIDGE_POC_KEY_FILE\""
+
+[tasks."poc:mint"]
+description = "開発用署名鍵で STS 向け JWT を発行して標準出力に出す"
+run = "pnpm tsx scripts/poc/mint.ts"
+
+[tasks."poc:sts"]
+description = "Worker 発行 JWT で AssumeRoleWithWebIdentity（fetch + XML）を実行し、否定ケースも確認"
+run = "pnpm tsx scripts/poc/sts.ts"
+
+[tasks."poc:aws:setup"]
+description = "IAM OIDC プロバイダー（Worker の URL）と検証用ロール（権限なし）を作成"
+run = "bash scripts/poc/aws-setup.sh"
+
+[tasks."poc:aws:teardown"]
+description = "PoC の IAM ロールと OIDC プロバイダーを削除"
+run = "bash scripts/poc/aws-teardown.sh"

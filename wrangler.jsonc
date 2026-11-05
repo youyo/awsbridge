@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "awsbridge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-21",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  // ISSUER (public URL of the Worker) is passed at deploy time with `--var ISSUER:<url>`; it is not stored in this repo.
+  // Secret SIGNING_JWK (RSA private key as a JWK JSON string) is set with `wrangler secret put`.
+  "env": {
+    "dev": {
+      "name": "awsbridge-dev",
+      "workers_dev": true
+    }
+  }
+}

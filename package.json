@@ -1,0 +1,24 @@
+{
+  "name": "awsbridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Access identity to per-user STS credentials, relayed to AWS MCP.",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@11.28.5",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "jose": "^6.1.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.3.0",
+    "@cloudflare/workers-types": "5.20260920.1",
+    "@types/node": "^24.13.6",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
+    "wrangler": "4.112.0"
+  }
+}

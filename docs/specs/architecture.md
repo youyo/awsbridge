@@ -1,7 +1,7 @@
 # awsbridge アーキテクチャ仕様（初版・設計合意メモ）
 
 - 作成日: 2026-11-05
-- 状態: 設計合意済み / PoC 未完了（[未決事項](#未決事項) 参照）
+- 状態: 設計合意済み / 構成 A' の PoC 完了（2026-11-05、[PoC 結果](#poc-結果構成-a-2026-11-05) 参照）
 - 前身: [youyo/aws-mcp-gateway](https://github.com/youyo/aws-mcp-gateway)（Go 製。OIDC 認証付き AWS MCP Server リバースプロキシ）
 
 ## 目的
@@ -42,18 +42,18 @@ Worker は IAM 向けに以下を公開する（この 2 パスのみ Access を
 
 Access の application token（`Cf-Access-Jwt-Assertion`）をそのまま STS に渡す案（構成 A）は **IAM が拒否した**。
 
-- `https://youyo.cloudflareaccess.com/.well-known/openid-configuration` は存在するが、中身は `issuer` と `jwks_uri` のみ
-- IAM の OIDC プロバイダー登録で `Please check .well-known/openid-configuration of provider: https://youyo.cloudflareaccess.com is valid.` エラー（2026-11-05 確認）
+- `https://<team>.cloudflareaccess.com/.well-known/openid-configuration` は存在するが、中身は `issuer` と `jwks_uri` のみ
+- IAM の OIDC プロバイダー登録で `Please check .well-known/openid-configuration of provider: https://<team>.cloudflareaccess.com is valid.` エラー（2026-11-05 確認）
 - 推定原因: OIDC Discovery 必須項目（`response_types_supported` / `subject_types_supported` / `id_token_signing_alg_values_supported` / `authorization_endpoint`）の欠落
 
 Access JWT の実物（開発環境）で確認した claim:
 
 | claim | 値の例 | 備考 |
 |---|---|---|
-| `iss` | `https://youyo.cloudflareaccess.com` | |
-| `aud` | `["d5ad…"]` | **配列** |
+| `iss` | `https://<team>.cloudflareaccess.com` | |
+| `aud` | `["<application AUD>"]` | **配列** |
 | `sub` | UUID | Access が払い出す ID。IdP の ID ではない |
-| `email` | `…@gmail.com` | IdP によらず必ず入る |
+| `email` | `user@example.com` | IdP によらず必ず入る |
 | `type` | `app` | |
 | `exp - iat` | 約 30 日 | cloudflared 経由で取得したトークン。長寿命 |
 
@@ -72,7 +72,7 @@ Access JWT の実物（開発環境）で確認した claim:
 | 認証 | Cloudflare Access に委譲（awsbridge は OAuth/ログインを実装しない） |
 | AWS が信頼する IdP | awsbridge Worker 自身（自前の OIDC issuer） |
 | 利用者識別子 | 既定 `email`。設定で `sub` / `custom.<claim>`（例: Entra の `oid`）に切替可能 |
-| 環境 | 開発 = 個人 Zero Trust `youyo`（IdP: Google）、本番 = 会社 Zero Trust（IdP: Entra ID）。差分は wrangler の環境設定のみ |
+| 環境 | 開発 = 個人 Zero Trust `<team>`（IdP: Google）、本番 = 会社 Zero Trust（IdP: Entra ID）。差分は wrangler の環境設定のみ |
 | 署名鍵 | 環境ごとに別鍵（開発鍵で本番 AWS に入れないこと）。Worker secret / Secrets Store に保管 |
 | SigV4 | `aws4fetch`。aws-sdk-js-v3 は使わない |
 | STS | `fetch` + XML パース。`AssumeRoleWithWebIdentity` は署名不要 |
@@ -126,9 +126,82 @@ Access JWT の実物（開発環境）で確認した claim:
 - E2E: `wrangler dev` + mock（JWKS を出す擬似 Access、擬似 STS、SigV4 を検証する擬似 MCP Server）。STS / MCP エンドポイントは env で差し替え可能にする
 - コマンドは `mise run test` / `test:unit` / `test:e2e` / `lint` / `fmt` / `build` / `dev`
 
+## PoC 結果（構成 A'、2026-11-05）
+
+未決事項 1 の検証。Worker（`*.workers.dev`）を OIDC issuer として IAM に登録し、Worker と同じ署名コード（`src/oidc.ts` の `signStsToken`）で発行した JWT で STS を呼んだ。**構成 A' は成立する。**
+
+再現手順（値は `mise.local.toml` に置く。アカウント ID・email・Worker の URL はリポジトリに入れない）:
+
+```
+mise run poc:keygen        # 開発用 RSA 鍵を .secrets/ に生成
+mise run deploy:dev        # ISSUER を --var で渡してデプロイ
+mise run poc:secret        # 秘密鍵 JWK を Worker secret SIGNING_JWK に登録
+mise run poc:aws:setup     # IAM OIDC プロバイダー + 検証用ロール（権限ポリシーなし）
+mise run poc:sts           # 正常 1 + 否定 4 ケース
+mise run poc:aws:teardown  # 後片付け
+```
+
+### Worker が公開した discovery（IAM が受理した内容）
+
+```json
+{
+  "issuer": "https://<worker>.<subdomain>.workers.dev",
+  "jwks_uri": "https://<worker>.<subdomain>.workers.dev/.well-known/jwks.json",
+  "authorization_endpoint": "https://<worker>.<subdomain>.workers.dev/oauth/authorize",
+  "token_endpoint": "https://<worker>.<subdomain>.workers.dev/oauth/token",
+  "response_types_supported": ["id_token"],
+  "subject_types_supported": ["public"],
+  "id_token_signing_alg_values_supported": ["RS256"],
+  "claims_supported": ["sub", "aud", "exp", "iat", "iss", "email"]
+}
+```
+
+- `authorization_endpoint` / `token_endpoint` は URL として存在するだけで、中身は実装していない（404）
+- JWKS は RSA 2048 の公開鍵 1 本。`kid` は JWK thumbprint（RFC 7638）、`use: "sig"`, `alg: "RS256"`
+- `issuer` は末尾スラッシュなし。JWT の `iss` とバイト単位で一致させる
+
+### IAM 側
+
+- `aws iam create-open-id-connect-provider --url https://<worker host> --client-id-list awsbridge` で登録できた。**thumbprint の指定は不要**（IAM が信頼済み CA で検証する）
+- 登録は CLI（API）で行った。マネジメントコンソールからの登録（構成 A で discovery エラーが出た経路）は今回試していない
+- 信頼ポリシーの条件キーは `<worker host>:aud` と `<worker host>:sub`（`StringEquals`）
+
+```json
+{
+  "Effect": "Allow",
+  "Principal": { "Federated": "arn:aws:iam::<account>:oidc-provider/<worker host>" },
+  "Action": "sts:AssumeRoleWithWebIdentity",
+  "Condition": {
+    "StringEquals": {
+      "<worker host>:aud": "awsbridge",
+      "<worker host>:sub": "<利用者の email>"
+    }
+  }
+}
+```
+
+### STS の結果
+
+署名なし `fetch`（`POST https://sts.amazonaws.com/`）+ XML パースで実行。`RoleSessionName` は aws-mcp-gateway と同じ `gw-<email>`（64 文字以内に切り詰め）。
+
+| ケース | 結果 | HTTP | エラーコード |
+|---|---|---|---|
+| 正常（JWT の `exp - iat` = 300 秒） | 成功。`assumed-role/awsbridge-poc/gw-<email>`、返却された認証情報で `GetCallerIdentity` も成功 | 200 | - |
+| `aud` 違い | 拒否 | 400 | `InvalidIdentityToken`（could not be validated） |
+| 期限切れ | 拒否 | 400 | `ExpiredTokenException` |
+| JWKS に無い鍵で署名 | 拒否 | 400 | `InvalidIdentityToken`（Couldn't retrieve verification key） |
+| `sub` が信頼ポリシーと不一致 | 拒否 | 403 | `AccessDenied` |
+
+エラーの分類は aws-mcp-gateway の `classifyFederatedError` と対応づけられる: `InvalidIdentityToken` / `ExpiredTokenException` → トークン不正（Worker 側の再発行で回復しうる）、`AccessDenied` → ロール設定または利用者が許可されていない。
+
+### 気づいたこと
+
+- workers.dev のサブドメインはアカウント名と一致するとは限らない。issuer はデプロイ結果の URL を正とする
+- 署名鍵をローテーションすると、STS 側の JWKS キャッシュにより一時的に検証失敗が起きうる。ローテーション時は新旧 2 本を JWKS に並べる期間を設ける必要がある（本実装の検討事項）
+
 ## 未決事項
 
-1. **PoC 残り**: Worker が出す discovery / JWKS を IAM が受理するか、Worker 発行 JWT で `AssumeRoleWithWebIdentity` が成功するか（開発用 AWS アカウントの認証情報待ち）
+1. ~~**PoC 残り**: Worker が出す discovery / JWKS を IAM が受理するか、Worker 発行 JWT で `AssumeRoleWithWebIdentity` が成功するか~~ → **解決**（[PoC 結果](#poc-結果構成-a-2026-11-05)）
 2. `aws_profile` を継承するか
 3. `/mcp/assumerole/...` を廃止するか
 4. 会社のセキュリティ方針上、A'（Worker 鍵を AWS が信頼）が許容されるか。不可なら C
