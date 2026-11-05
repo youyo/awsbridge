@@ -6,31 +6,15 @@ import { describe, expect, it } from "vitest";
 const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const read = (p: string) => readFileSync(join(root, p), "utf8");
 
-const marketplacePath = ".claude-plugin/marketplace.json";
-const pluginPath = "plugins/awsbridge/.claude-plugin/plugin.json";
-const skillPath = "plugins/awsbridge/skills/setup-downstream/SKILL.md";
-
-describe("marketplace.json", () => {
-  it("JSON として読め、awsbridge プラグインを plugins/awsbridge から配る", () => {
-    const m = JSON.parse(read(marketplacePath));
-    expect(m.name).toBe("awsbridge");
-    expect(typeof m.description).toBe("string");
-    expect(m.owner?.name).toBeTruthy();
-    expect(m.plugins).toEqual([{ name: "awsbridge", source: "./plugins/awsbridge" }]);
-    expect(existsSync(join(root, "plugins/awsbridge"))).toBe(true);
-  });
-});
-
-describe("plugin.json", () => {
-  it("name・version・description を持つ", () => {
-    const p = JSON.parse(read(pluginPath));
-    expect(p.name).toBe("awsbridge");
-    expect(p.version).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(p.description.length).toBeGreaterThan(0);
-  });
-});
+const skillPath = ".claude/skills/setup-downstream/SKILL.md";
 
 describe("setup-downstream の SKILL.md", () => {
+  it("プロジェクトスキルとして .claude/skills/ に置く（プラグイン定義は持たない）", () => {
+    expect(existsSync(join(root, skillPath))).toBe(true);
+    expect(existsSync(join(root, ".claude-plugin"))).toBe(false);
+    expect(existsSync(join(root, "plugins"))).toBe(false);
+  });
+
   const text = read(skillPath);
   const fm = /^---\n([\s\S]*?)\n---\n/.exec(text)?.[1] ?? "";
   const body = text.slice(text.indexOf("\n---\n", 3) + 5);
@@ -61,7 +45,7 @@ describe("setup-downstream の SKILL.md", () => {
 
   it("実在しそうな 12 桁のアカウント ID を含まない（ダミーのみ可）", () => {
     const dummy = /^(\d)\1{11}$|^123456789012$/;
-    for (const f of [marketplacePath, pluginPath, skillPath]) {
+    for (const f of [skillPath]) {
       for (const m of read(f).matchAll(/(?<!\d)\d{12}(?!\d)/g)) {
         expect(m[0], `${f}: ${m[0]}`).toMatch(dummy);
       }
