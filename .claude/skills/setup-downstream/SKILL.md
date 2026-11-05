@@ -9,7 +9,7 @@ disable-model-invocation: true
 
 下流リポジトリ名: $ARGUMENTS
 
-awsbridge（public）を `upstream` とする下流の private リポジトリを作り、デプロイまで進めます。以下の `<name>` は下流リポジトリ名（環境名）です。下流は上流のファイルを編集せず、3 つのファイル（`wrangler.<name>.jsonc` / `mise.<name>.toml` / `.miserc.toml`）を足すだけで動きます。詳しくは awsbridge の README「デプロイ」「下流リポジトリでの運用」「マルチアカウント」を参照してください。
+awsbridge（public）を `upstream` とする下流の private リポジトリを作り、デプロイまで進めます。以下の `<name>` は下流リポジトリ名（環境名）です。下流は上流のファイルを編集せず、3 つのファイル（`wrangler.<name>.jsonc` / `mise.<name>.toml` / `.miserc.toml`）を足すだけで動きます。このスキルは awsbridge を clone した作業ツリー（これが下流リポジトリになる）の中で実行する前提です。詳しくは README「デプロイ」「下流リポジトリでの運用」「マルチアカウント」を参照してください。
 
 ## 手順
 
@@ -23,8 +23,9 @@ awsbridge（public）を `upstream` とする下流の private リポジトリ�
    - Cloudflare Access のチームドメイン（`https://<team>.cloudflareaccess.com`）
    - デバッグロールに追加する管理ポリシー `DebugAdditionalPolicyArns`（任意。必要最小限にする）
 2. リポジトリを作る。外部に作る操作なので、実行前に owner・名前・private であることを利用者に確認する。
+   - 前提を確認する: カレントが awsbridge の clone であること（`git remote -v`）。`origin` が youyo/awsbridge なら上流のまま、`upstream` が youyo/awsbridge で `origin` が下流なら付け替え済み。どちらでもなければ（上流そのものの開発用 clone など）利用者に伝えて止まる。
    - 既存でなければ `gh repo create <owner>/<name> --private` を実行する。既にあれば作らずにそれを使う。
-   - awsbridge を clone し、`git remote rename origin upstream` で上流を `upstream` にして、`git remote add origin <下流の URL>` で下流を `origin` に足す。
+   - 未付け替えなら、`git remote rename origin upstream` で上流を `upstream` にして、`git remote add origin <下流の URL>` で下流を `origin` に足す。
 3. 下流のファイルを作る。値は手順 1 の入力で埋める。ロール ARN は手順 5 で決まるまで仮に空にしておく。
    - `wrangler.<name>.jsonc`: 上流の `wrangler.jsonc` から `compatibility_date` / `compatibility_flags` / `main` / `observability` を写し、`name`（Worker 名）、`workers_dev: true`、`vars.AWS_PROFILES`（`default` と `profiles`。`profiles` は `[{ "name": "<env>-readonly", "roleArn": "...", "description": "..." }, ...]` の配列で書く。配列の順がそのまま `aws_profile` の enum の順になる。オブジェクト形式も受け付けるが、キーの順が途中で保たれないことがある。`tools` は通常省略。指定するなら AWS MCP Server の実際のツール名（例 `aws___run_script`））を書く。`env` セクションは使わない。
    - `mise.<name>.toml`: `[env]` に `AWSBRIDGE_WRANGLER_CONFIG = "wrangler.<name>.jsonc"`、`AWSBRIDGE_WRANGLER_ENV = ""`（空 = `--env` を付けない）、`AWSBRIDGE_STACK_NAME = "<name>"`、`AWSBRIDGE_KEY_FILE = ".secrets/<name>-signing-key.json"` を書く。

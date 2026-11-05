@@ -1,6 +1,0 @@
-{
-  "name": "awsbridge",
-  "description": "awsbridge を下流の private リポジトリにセットアップする Claude Code スキル",
-  "owner": { "name": "youyo" },
-  "plugins": [{ "name": "awsbridge", "source": "./plugins/awsbridge" }]
-}

@@ -180,17 +180,17 @@ mise run secrets        #    古い公開鍵を JWKS から外す
 
 上流自身の開発用デプロイでは、`mise.local.toml` の `AWSBRIDGE_PROFILES`（上記 JSON の文字列）を `mise run secrets` が secret `AWS_PROFILES` として登録します。詳細は `docs/specs/architecture.md` の「マルチアカウント（aws_profile）」を参照してください。
 
-## Claude Code プラグイン
+## セットアップ用スキル（Claude Code）
 
-下流の private リポジトリを対話しながらセットアップする Claude Code スキルを、プラグインとして同梱しています。
+下流の private リポジトリを対話しながらセットアップする Claude Code スキルを `.claude/skills/setup-downstream/` に同梱しています。awsbridge を clone すればそのまま使えます（初回はフォルダーの信頼を求められます）。
 
 ```
-/plugin marketplace add youyo/awsbridge
-/plugin install awsbridge@awsbridge
-/awsbridge:setup-downstream <下流リポジトリ名>
+git clone https://github.com/youyo/awsbridge <下流リポジトリ名>
+cd <下流リポジトリ名> && claude
+/setup-downstream <下流リポジトリ名>
 ```
 
-スキルは、リポジトリ作成・Worker のデプロイ・CloudFormation・Cloudflare Access/Portal・動作確認を順に案内します。外部に影響する操作は、各段階で実行前に確認します。
+スキルは、リモートの付け替え（`origin` → `upstream`）・下流リポジトリの作成・Worker のデプロイ・CloudFormation・Cloudflare Access/Portal・動作確認を順に案内します。外部に影響する操作は、各段階で実行前に確認します。スキルはコードと一緒に版管理されるので、`git pull --no-rebase upstream main` で下流にも更新が届きます。
 
 ## 下流リポジトリでの運用
 
