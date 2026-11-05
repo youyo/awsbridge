@@ -3,7 +3,7 @@
 # 値は wrangler の標準入力に JSON で渡し、コマンドライン引数には載せない。
 # 値はすべて環境変数（mise.toml / mise.local.toml）から読む。AWS は呼ばない
 # AWS_PROFILES（default とプロファイル一覧）は JSON 文字列の AWSBRIDGE_PROFILES から読む
-# （各ロール ARN は CloudFormation の Output RoleArn）。wrangler の設定と環境は scripts/wrangler.sh が
+# （各ロール ARN は CloudFormation の Output ReadOnlyRoleArn）。wrangler の設定と環境は scripts/wrangler.sh が
 # AWSBRIDGE_WRANGLER_CONFIG（既定 wrangler.jsonc）/ AWSBRIDGE_WRANGLER_ENV（既定 dev、空なら --env なし）で決める。
 # AWSBRIDGE_KEY_FILE の既定はリポジトリルートの .secrets/dev-signing-key.json。
 set -euo pipefail

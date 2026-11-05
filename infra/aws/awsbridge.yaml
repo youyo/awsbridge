@@ -1,7 +1,33 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  awsbridge - IAM OIDC provider (issuer = awsbridge Worker) and a role that
-  the Worker-issued JWT can assume with sts:AssumeRoleWithWebIdentity.
+  awsbridge - IAM OIDC provider (issuer = awsbridge Worker) and two roles that
+  the Worker-issued JWT can assume with sts:AssumeRoleWithWebIdentity:
+  a read-only role (FederatedMcpReadOnly) and a debug role (FederatedMcpDebug).
+
+# Role layout (see docs/specs/architecture.md "ロール構成"):
+#
+#   ReadOnlyRole  AWS managed ReadOnlyAccess only.
+#   DebugRole     ReadOnlyAccess + an inline policy in groups (Investigation / SecretRead /
+#                 Operations / Execution, all gated by aws:CalledViaAWSMCP)
+#                 (+ optional extra managed policies via DebugAdditionalPolicyArns).
+#
+# Users are scoped per role: AllowedSubjects (read-only) and DebugAllowedSubjects (debug).
+#
+# WARNING (DebugRole):
+# - ReadOnlyAccess is NOT restricted to the AWS MCP path. AWS managed policies cannot carry
+#   IAM conditions, so its read permissions apply even to direct API calls with the session.
+#   Only the inline policy below is gated by aws:CalledViaAWSMCP.
+# - The inline policy grants remote-execution-equivalent permissions: ssm:SendCommand and
+#   ecs:ExecuteCommand are equivalent to a remote shell (secrets, credentials and files can
+#   be exposed); lambda:InvokeFunction runs business logic that may have side effects.
+# - Escalation paths closed: iam:PassRole is not granted unless DebugPassableEcsTaskRoleArns lists
+#   specific roles, and lambda:UpdateFunctionConfiguration / autoscaling:UpdateAutoScalingGroup
+#   (which can swap in a more privileged execution role / launch template) are not granted.
+#   Remaining risk: SSM SendCommand / StartSession, ECS Exec and EC2 Instance Connect run with the
+#   instance or task role's permissions. Restrict them by tags or SSM documents in production.
+# - Resource "*" is simplified. In production, scope it to specific ARNs, tags or SSM
+#   documents, and enable session logging (SSM Session Manager logs to S3/CloudWatch Logs,
+#   ECS Exec logging in the task definition, Lambda function logs). CloudTrail alone is not enough.
 
 Parameters:
   IssuerHost:
@@ -17,32 +43,64 @@ Parameters:
   AllowedSubjects:
     Type: CommaDelimitedList
     Description: >-
-      Users (JWT sub = email) allowed to assume the role, comma separated.
+      Users (JWT sub = email) allowed to assume the read-only role, comma separated.
       Wildcards allowed in the local part only (e.g. user@example.com,*@example.org).
     AllowedPattern: '^[A-Za-z0-9._%+*?-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$'
     ConstraintDescription: Each entry must look like user@example.com or *@example.com. A bare * or a wildcard in the domain is not allowed.
-  RoleName:
+  DebugAllowedSubjects:
+    Type: CommaDelimitedList
+    Description: >-
+      Users (JWT sub = email) allowed to assume the debug role, comma separated.
+      The debug role can run commands remotely, so keep this narrower than AllowedSubjects.
+    AllowedPattern: '^[A-Za-z0-9._%+*?-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$'
+    ConstraintDescription: Each entry must look like user@example.com or *@example.com. A bare * or a wildcard in the domain is not allowed.
+  ReadOnlyRoleName:
     Type: String
-    Default: awsbridge
-    Description: Name of the IAM role.
+    Default: FederatedMcpReadOnly
+    Description: Name of the read-only IAM role.
     AllowedPattern: '^[\w+=,.@-]{1,64}$'
     ConstraintDescription: 1-64 characters of alphanumerics and _+=,.@-
-  ManagedPolicyArns:
+  DebugRoleName:
+    Type: String
+    Default: FederatedMcpDebug
+    Description: Name of the debug IAM role.
+    AllowedPattern: '^[\w+=,.@-]{1,64}$'
+    ConstraintDescription: 1-64 characters of alphanumerics and _+=,.@-
+  DebugAdditionalPolicyArns:
     Type: CommaDelimitedList
     Default: ""
-    Description: Managed policy ARNs to attach to the role, comma separated. Empty means none.
+    Description: >-
+      Extra managed policy ARNs to attach to the debug role in addition to ReadOnlyAccess
+      and the inline policy, comma separated. Empty means none.
+    AllowedPattern: '^(arn:aws[a-z-]*:iam::(aws|\d{12}):policy/[\w+=,.@/-]+)?$'
+    ConstraintDescription: Each entry must be an IAM managed policy ARN (arn:aws:iam::aws:policy/... or arn:aws:iam::<account>:policy/...).
+  DebugPassableEcsTaskRoleArns:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: >-
+      IAM role ARNs that the debug role may pass to ECS tasks with ecs:RunTask (iam:PassRole,
+      only to ecs-tasks.amazonaws.com), comma separated. Empty means iam:PassRole is not granted
+      (ecs:RunTask then works only for task definitions without a task role).
+    AllowedPattern: '^(arn:aws[a-z-]*:iam::\d{12}:role/[\w+=,.@/-]+)?$'
+    ConstraintDescription: Each entry must be an IAM role ARN (arn:aws:iam::<account>:role/...). Wildcards are not allowed.
   MaxSessionDuration:
     Type: Number
     Default: 3600
     MinValue: 3600
     MaxValue: 43200
-    Description: Maximum session duration of the role in seconds.
+    Description: Maximum session duration of the roles in seconds.
 
 Conditions:
-  HasManagedPolicies:
+  HasDebugAdditionalPolicies:
     Fn::Not:
       - Fn::Equals:
-          - Fn::Join: ["", { Ref: ManagedPolicyArns }]
+          - Fn::Join: ["", { Ref: DebugAdditionalPolicyArns }]
+          - ""
+
+  HasDebugPassableEcsTaskRoles:
+    Fn::Not:
+      - Fn::Equals:
+          - Fn::Join: ["", { Ref: DebugPassableEcsTaskRoleArns }]
           - ""
 
 Resources:
@@ -57,18 +115,15 @@ Resources:
         - Key: project
           Value: awsbridge
 
-  Role:
+  ReadOnlyRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName:
-        Ref: RoleName
+        Ref: ReadOnlyRoleName
       MaxSessionDuration:
         Ref: MaxSessionDuration
       ManagedPolicyArns:
-        Fn::If:
-          - HasManagedPolicies
-          - Ref: ManagedPolicyArns
-          - Ref: AWS::NoValue
+        - Fn::Sub: "arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess"
       # The condition keys contain the issuer host, and CloudFormation cannot use
       # intrinsic functions in mapping keys, so the policy is built as a JSON string.
       AssumeRolePolicyDocument:
@@ -96,11 +151,181 @@ Resources:
         - Key: project
           Value: awsbridge
 
+  DebugRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Ref: DebugRoleName
+      MaxSessionDuration:
+        Ref: MaxSessionDuration
+      # ReadOnlyAccess, plus DebugAdditionalPolicyArns when given.
+      # CloudFormation has no list concatenation, so build one comma-separated string and split it.
+      ManagedPolicyArns:
+        Fn::If:
+          - HasDebugAdditionalPolicies
+          - Fn::Split:
+              - ","
+              - Fn::Sub:
+                  - "arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess,${Additional}"
+                  - Additional:
+                      Fn::Join: [",", { Ref: DebugAdditionalPolicyArns }]
+          - - Fn::Sub: "arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess"
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |-
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": { "Federated": "${OidcProvider}" },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": { "${IssuerHost}:aud": "${Audience}" },
+                    "StringLike": { "${IssuerHost}:sub": ["${SubjectList}"] }
+                  }
+                }
+              ]
+            }
+          - SubjectList:
+              Fn::Join:
+                - '","'
+                - Ref: DebugAllowedSubjects
+      Policies:
+        - PolicyName: OperationalAccessViaMCP
+          PolicyDocument:
+            Version: "2012-10-17"
+            # Every statement is gated by aws:CalledViaAWSMCP. Keep it that way when adding Actions,
+            # and prefer narrowing Resource over adding broad Actions. No delete, IAM-write or
+            # organizations actions here. Inline policy size limit is 10,240 characters.
+            Statement:
+              # Investigation: deeper read access than ReadOnlyAccess (queries, traces, live tail, console output, Config).
+              # Athena also needs s3:PutObject on its result bucket; that is intentionally NOT granted here.
+              # Add it with DebugAdditionalPolicyArns when needed.
+              - Sid: Investigation
+                Effect: Allow
+                Action:
+                  - logs:StartQuery
+                  - logs:StopQuery
+                  - logs:GetQueryResults
+                  - logs:FilterLogEvents
+                  - logs:GetLogEvents
+                  - logs:GetLogRecord
+                  - logs:StartLiveTail
+                  - xray:GetTraceSummaries
+                  - xray:BatchGetTraces
+                  - xray:GetInsightSummaries
+                  - cloudtrail:LookupEvents
+                  - cloudtrail:StartQuery
+                  - cloudtrail:GetQueryResults
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                  - ec2:GetConsoleOutput
+                  - ec2:GetConsoleScreenshot
+                  - config:SelectResourceConfig
+                  - config:GetResourceConfigHistory
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
+              # SecretRead: reads secret values. Treat as equivalent in risk to the Execution group.
+              - Sid: SecretRead
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
+              # SecretDecrypt: kms:Decrypt only when the call comes through Secrets Manager or SSM,
+              # so keys cannot be used to decrypt arbitrary data.
+              - Sid: SecretDecrypt
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
+                  StringLike:
+                    "kms:ViaService":
+                      - "secretsmanager.*.amazonaws.com"
+                      - "ssm.*.amazonaws.com"
+              # Operations: light, reversible-ish operational actions with side effects. No delete actions.
+              - Sid: Operations
+                Effect: Allow
+                Action:
+                  - ecs:UpdateService
+                  - ecs:StopTask
+                  - ec2:RebootInstances
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                  - lambda:PutFunctionConcurrency
+                  - autoscaling:SetDesiredCapacity
+                  - rds:RebootDBInstance
+                  - elasticache:RebootCacheCluster
+                  - cloudfront:CreateInvalidation
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
+              # Execution: remote-execution equivalent (see the warning at the top). ssm:SendCommand / StartSession and
+              # ecs:ExecuteCommand are remote shells; lambda:InvokeFunction, states:StartExecution, sqs:SendMessage,
+              # sns:Publish and rds-db:connect run business logic or write data.
+              - Sid: Execution
+                Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                  - ssm:GetCommandInvocation
+                  - ssm:StartSession
+                  - ssm:ResumeSession
+                  - ssm:TerminateSession
+                  - ec2-instance-connect:SendSSHPublicKey
+                  - ecs:ExecuteCommand
+                  - ecs:RunTask
+                  - lambda:InvokeFunction
+                  - states:StartExecution
+                  - sqs:SendMessage
+                  - sns:Publish
+                  - rds-db:connect
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
+              # PassRoleForEcsRunTask: lets ecs:RunTask pass the listed roles, only to ECS tasks.
+              # Omitted entirely unless DebugPassableEcsTaskRoleArns is given (iam:PassRole on "*" is a
+              # privilege escalation path: a task can run with any role in the account).
+              - Fn::If:
+                  - HasDebugPassableEcsTaskRoles
+                  - Sid: PassRoleForEcsRunTask
+                    Effect: Allow
+                    Action:
+                      - iam:PassRole
+                    Resource:
+                      Ref: DebugPassableEcsTaskRoleArns
+                    Condition:
+                      StringEquals:
+                        "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
+                        "iam:PassedToService": ecs-tasks.amazonaws.com
+                  - Ref: AWS::NoValue
+      Tags:
+        - Key: project
+          Value: awsbridge
+
 Outputs:
-  RoleArn:
-    Description: ARN of the role assumed with the Worker-issued JWT.
+  ReadOnlyRoleArn:
+    Description: ARN of the read-only role assumed with the Worker-issued JWT.
     Value:
-      Fn::GetAtt: [Role, Arn]
+      Fn::GetAtt: [ReadOnlyRole, Arn]
+  DebugRoleArn:
+    Description: ARN of the debug role assumed with the Worker-issued JWT.
+    Value:
+      Fn::GetAtt: [DebugRole, Arn]
   OidcProviderArn:
     Description: ARN of the IAM OIDC provider.
     Value:

@@ -18,18 +18,18 @@ awsbridge（public）を `upstream` とする下流の private リポジトリ�
    - GitHub の owner（個人または Organization）
    - private リポジトリを新規に作るか、既存のものを使うか
    - Worker 名（既定は下流リポジトリ名）
-   - 対象の AWS アカウントのプロファイル一覧: aws_profile として使う名前（英数字・`_`・`-` の 1〜32 文字）、デプロイに使う AWS CLI プロファイル、説明（任意）、default にするもの
-   - ロールを使える利用者 `AllowedSubjects`（`user@example.com` または `*@example.com`。ドメイン部のワイルドカードと `*` 単独は不可）
+   - 対象の AWS アカウントのプロファイル一覧: aws_profile として使う名前（英数字・`_`・`-` の 1〜32 文字。1 アカウントにつき `<env>-readonly` と `<env>-debug` の 2 つ。例 `dev-readonly` / `dev-debug`）、デプロイに使う AWS CLI プロファイル、説明（任意）、default にするもの（readonly 側を勧める）
+   - 読み取り専用ロールを使える利用者 `AllowedSubjects`、デバッグロールを使える利用者 `DebugAllowedSubjects`（どちらも `user@example.com` または `*@example.com`。ドメイン部のワイルドカードと `*` 単独は不可。デバッグはリモート実行相当の権限を含むので、読み取り専用より絞ることを勧める）
    - Cloudflare Access のチームドメイン（`https://<team>.cloudflareaccess.com`）
-   - ロールに付ける管理ポリシー（任意。必要最小限にする）
+   - デバッグロールに追加する管理ポリシー `DebugAdditionalPolicyArns`（任意。必要最小限にする）
 2. リポジトリを作る。外部に作る操作なので、実行前に owner・名前・private であることを利用者に確認する。
    - 既存でなければ `gh repo create <owner>/<name> --private` を実行する。既にあれば作らずにそれを使う。
    - awsbridge を clone し、`git remote rename origin upstream` で上流を `upstream` にして、`git remote add origin <下流の URL>` で下流を `origin` に足す。
 3. 下流のファイルを作る。値は手順 1 の入力で埋める。ロール ARN は手順 5 で決まるまで仮に空にしておく。
    - `wrangler.<name>.jsonc`: 上流の `wrangler.jsonc` から `compatibility_date` / `compatibility_flags` / `main` / `observability` を写し、`name`（Worker 名）、`workers_dev: true`、`vars.AWS_PROFILES`（`default` と `profiles`。任意で `tools: ["call_aws"]`）を書く。`env` セクションは使わない。
-   - `mise.<name>.toml`: `[env]` に `AWSBRIDGE_WRANGLER_CONFIG = "wrangler.<name>.jsonc"`、`AWSBRIDGE_WRANGLER_ENV = ""`（空 = `--env` を付けない）、`AWSBRIDGE_STACK_NAME = "<name>"`、`AWSBRIDGE_ROLE_NAME = "<name>"`、`AWSBRIDGE_KEY_FILE = ".secrets/<name>-signing-key.json"` を書く。
+   - `mise.<name>.toml`: `[env]` に `AWSBRIDGE_WRANGLER_CONFIG = "wrangler.<name>.jsonc"`、`AWSBRIDGE_WRANGLER_ENV = ""`（空 = `--env` を付けない）、`AWSBRIDGE_STACK_NAME = "<name>"`、`AWSBRIDGE_KEY_FILE = ".secrets/<name>-signing-key.json"` を書く。
    - `.miserc.toml`: `env = ["<name>"]`。
-   - `mise.local.toml`（gitignore 済みか確認する。コミットしない）: `AWSBRIDGE_ALLOWED_SUBJECTS` / `AWSBRIDGE_ACCESS_TEAM_DOMAIN` / `AWSBRIDGE_POC_SUBJECT`（動作確認に使う利用者）と、必要なら `AWSBRIDGE_MANAGED_POLICY_ARNS` を書く。`AWSBRIDGE_ISSUER` は Worker をデプロイしてから決まるので、ここではまだ書かない。`AWS_PROFILES` を `vars` で持つので `AWSBRIDGE_PROFILES` は書かない。
+   - `mise.local.toml`（gitignore 済みか確認する。コミットしない）: `AWSBRIDGE_ALLOWED_SUBJECTS` / `AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS` / `AWSBRIDGE_ACCESS_TEAM_DOMAIN` / `AWSBRIDGE_POC_SUBJECT`（動作確認に使う利用者）と、必要なら `AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS` を書く。`AWSBRIDGE_ISSUER` は Worker をデプロイしてから決まるので、ここではまだ書かない。`AWS_PROFILES` を `vars` で持つので `AWSBRIDGE_PROFILES` は書かない。
 4. Cloudflare 側（Worker）を先にデプロイする。デプロイは外部に影響するので、実行前に利用者に確認する。
    - `mise install`（初回は `mise trust` が必要なことがある）→ `mise run install`（clone 直後は依存パッケージが無い）
    - `mise run keygen`（`AWSBRIDGE_KEY_FILE` に署名鍵を生成する。環境ごとに別の鍵にする。既存なら上書きされない）
@@ -39,7 +39,7 @@ awsbridge（public）を `upstream` とする下流の private リポジトリ�
    - この時点で `/mcp` が 500（プロファイル未登録）か 401 になるのは正常。
 5. AWS 側を、対象アカウントごとに流す。CloudFormation の実行は外部に影響するので、アカウントごとに利用者に確認する。
    - `AWS_PROFILE=<対象> mise run deploy:aws`
-   - 出力（`aws cloudformation describe-stacks` でも取れる）の `RoleArn` を、`wrangler.<name>.jsonc` の `vars.AWS_PROFILES.profiles.<aws_profile名>.roleArn` に反映する。`default` は必須。
+   - 出力（`aws cloudformation describe-stacks` でも取れる）の `ReadOnlyRoleArn` と `DebugRoleArn` を、`wrangler.<name>.jsonc` の `vars.AWS_PROFILES.profiles` に 2 つのプロファイル（例 `<env>-readonly` に ReadOnlyRoleArn、`<env>-debug` に DebugRoleArn）として反映する。`default` は必須（readonly 側を勧める）。
    - すべてのアカウントを流したら、`mise run deploy:worker` で一覧を反映する（利用者に確認）。
 6. Cloudflare Access / MCP Server Portal を用意する。
    - 利用者が既に Cloudflare の IaC を持っているなら、そちらに足す。必要なものは、Worker 用の self-hosted Access アプリ（Managed OAuth 有効）、`/.well-known/openid-configuration` と `/.well-known/jwks.json` を対象外にする bypass（AWS IAM / STS が認証なしで取りに来る）、MCP サーバー（`https://<worker_host>/mcp`、`auth_type = "oauth"`）、`type = "mcp"` のアプリ、Portal への登録。
@@ -48,7 +48,7 @@ awsbridge（public）を `upstream` とする下流の private リポジトリ�
 7. 動作を確認する。
    - Access ヘッダー無しで `/mcp` が 401 を返す。
    - `/.well-known/openid-configuration` が 200 を返す。
-   - 各ロールについて `mise run poc:sts -- --role-arn <RoleArn>` を実行する（`AWSBRIDGE_POC_SUBJECT` が必要。実 AWS を呼ぶので利用者に確認する。結果の合否だけを報告し、エラー本文や認証情報は貼らない）。
+   - 各ロール（ReadOnlyRoleArn と DebugRoleArn）について `mise run poc:sts -- --role-arn <ロール ARN>` を実行する（`--role-arn` を省略すると ReadOnlyRoleArn を使う）（`AWSBRIDGE_POC_SUBJECT` が必要。実 AWS を呼ぶので利用者に確認する。結果の合否だけを報告し、エラー本文や認証情報は貼らない）。
    - Portal 経由の正常系（`tools/list`、`aws_profile` を付けた `tools/call`）は利用者に試してもらう。
 8. 下流リポジトリにコミットし、利用者の確認後に push する。
    - コミットするのは `wrangler.<name>.jsonc` / `mise.<name>.toml` / `.miserc.toml`。`mise.local.toml` と `.secrets/` は含まれていないことを `git status` で確認する。

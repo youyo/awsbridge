@@ -8,7 +8,7 @@ import { mintToken } from "./token";
 const { values } = parseArgs({ options: { "role-arn": { type: "string" } } });
 const subject = requireEnv("AWSBRIDGE_POC_SUBJECT");
 
-// --role-arn が無ければ CloudFormation スタックの Output RoleArn を使う
+// --role-arn が無ければ CloudFormation スタックの Output ReadOnlyRoleArn を使う
 function roleArnFromStack(): string {
   const stack = envOr("AWSBRIDGE_STACK_NAME", "awsbridge");
   return execFileSync(
@@ -19,7 +19,7 @@ function roleArnFromStack(): string {
       "--stack-name",
       stack,
       "--query",
-      "Stacks[0].Outputs[?OutputKey=='RoleArn'].OutputValue",
+      "Stacks[0].Outputs[?OutputKey=='ReadOnlyRoleArn'].OutputValue",
       "--output",
       "text",
     ],

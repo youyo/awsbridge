@@ -6,17 +6,19 @@ terraform = "1.15.8"
 tflint = "0.64.0"
 
 [env]
-# 上書きされうる既定値（AWS_PROFILE / AWSBRIDGE_AUDIENCE / AWSBRIDGE_ROLE_NAME / AWSBRIDGE_STACK_NAME / AWSBRIDGE_KEY_FILE /
+# 上書きされうる既定値（AWS_PROFILE / AWSBRIDGE_AUDIENCE / AWSBRIDGE_STACK_NAME / AWSBRIDGE_KEY_FILE /
 # AWSBRIDGE_WRANGLER_ENV / AWSBRIDGE_WRANGLER_CONFIG）はここに置かず、scripts/*.sh と scripts/poc/ 側の既定値で補う。
 # ここに置くと、下流の mise 設定ファイル（mise.<name>.toml）や環境変数で上書きしにくくなるため。
 # 下流の使い方は README「下流リポジトリでの運用」を参照。
 # 個人情報・アカウント固有値は mise.local.toml（gitignore）に置く:
 #   AWSBRIDGE_ISSUER           = "https://<worker>.<subdomain>.workers.dev"（Worker の URL = OIDC issuer）
-#   AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org"（ロールを引き受けられる利用者。カンマ区切り）
-#   AWSBRIDGE_MANAGED_POLICY_ARNS = "arn:aws:iam::aws:policy/ReadOnlyAccess"（任意。ロールに付ける管理ポリシー。カンマ区切り）
+#   AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org"（読み取り専用ロールを引き受けられる利用者。カンマ区切り）
+#   AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS = "admin@example.com"（デバッグロールを引き受けられる利用者。カンマ区切り。読み取り専用より絞る）
+#   AWSBRIDGE_READONLY_ROLE_NAME / AWSBRIDGE_DEBUG_ROLE_NAME（任意。ロール名。既定は FederatedMcpReadOnly / FederatedMcpDebug）
+#   AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS = "arn:aws:iam::<アカウントID>:policy/<名前>"（任意。デバッグロールに追加する管理ポリシー。カンマ区切り）
 #   AWSBRIDGE_POC_SUBJECT      = "user@example.com"（poc:sts の正常ケースで使う利用者）
 #   AWSBRIDGE_ACCESS_TEAM_DOMAIN = "https://team.example.cloudflareaccess.com"（Access のチームドメイン。secrets タスクが Worker secret ACCESS_TEAM_DOMAIN に登録）
-#   AWSBRIDGE_PROFILES         = '{"default":"dev","profiles":{"dev":{"roleArn":"arn:aws:iam::<アカウントID>:role/awsbridge"}}}'（JSON 文字列。各アカウントの deploy:aws 出力 RoleArn を並べる。secrets タスクが Worker secret AWS_PROFILES に登録）
+#   AWSBRIDGE_PROFILES         = '{"default":"dev-readonly","profiles":{"dev-readonly":{"roleArn":"arn:aws:iam::<アカウントID>:role/FederatedMcpReadOnly"},"dev-debug":{"roleArn":"arn:aws:iam::<アカウントID>:role/FederatedMcpDebug"}}}'（JSON 文字列。各アカウントの deploy:aws 出力 ReadOnlyRoleArn / DebugRoleArn を並べる。secrets タスクが Worker secret AWS_PROFILES に登録）
 #   AWSBRIDGE_ACCESS_AUD       = "<Access アプリケーションの AUD タグ>"（secrets タスクが Worker secret ACCESS_AUD に登録）
 #   AWSBRIDGE_KEY_FILE         = ".secrets/dev-signing-key.json"（任意。署名鍵 JWK の置き場所。既定はリポジトリルートのこのパス。.secrets/ は gitignore）
 
@@ -91,5 +93,5 @@ description = "署名鍵で STS 向け JWT を発行して標準出力に出す"
 run = "pnpm tsx scripts/poc/mint.ts"
 
 [tasks."poc:sts"]
-description = "Worker 発行 JWT で AssumeRoleWithWebIdentity を実行し、否定ケースも確認（--role-arn 省略時はスタックの Output RoleArn）"
+description = "Worker 発行 JWT で AssumeRoleWithWebIdentity を実行し、否定ケースも確認（--role-arn 省略時はスタックの Output ReadOnlyRoleArn）"
 run = "pnpm tsx scripts/poc/sts.ts"

@@ -107,22 +107,52 @@ Access JWT の実物（開発環境）で確認した claim:
 | `AWS_PROFILE_CONFIG_S3` / users 対応表 | 廃止。プロファイル一覧は環境変数 `AWS_PROFILES`。誰がどのアカウントを使えるかは各アカウントの信頼ポリシーで AWS 側が判定する |
 | `FEDERATED_ROLE_ARN`（基点ロール） | 廃止。`AWS_PROFILES` の `default` に一本化 |
 
+## ロール構成
+
+各 AWS アカウントに、IAM OIDC プロバイダー 1 つとロール 2 つを作る（`infra/aws/awsbridge.yaml`）。どちらのロールも信頼ポリシーの構造は同じ（`<host>:aud` は `StringEquals`、`<host>:sub` は `StringLike`）で、`sub` の許可リストだけがロールごとに違う。
+
+| ロール（既定名） | 目的 | 権限 | 利用者 |
+|---|---|---|---|
+| `FederatedMcpReadOnly` | 普段の調査・参照 | AWS 管理ポリシー `ReadOnlyAccess` のみ | `AllowedSubjects` |
+| `FederatedMcpDebug` | 障害調査（秘密値の参照・運用操作・実行を伴う） | `ReadOnlyAccess` + インラインポリシー + 任意の追加管理ポリシー（`DebugAdditionalPolicyArns`） | `DebugAllowedSubjects` |
+
+- インラインポリシーは Statement をグループ（Sid）に分けて持つ。すべて `StringEquals aws:CalledViaAWSMCP = aws-mcp.amazonaws.com`、Resource は `*`。削除系・IAM 変更・組織変更は含めない。
+  - `Investigation`: ログ・トレース・CloudTrail・Athena・Config・EC2 コンソール出力など、`ReadOnlyAccess` より深い調査用の読み取り。
+  - `SecretRead`: `secretsmanager:GetSecretValue`、`ssm:GetParameter(s)` / `GetParametersByPath`。秘密値を読めるので実行系と同等のリスク。別 Statement の `kms:Decrypt` は `kms:ViaService`（`secretsmanager.*.amazonaws.com` / `ssm.*.amazonaws.com`）に限定する。
+  - `Operations`: ECS / EC2 / Lambda（`PutFunctionConcurrency` のみ）/ Auto Scaling（`SetDesiredCapacity` のみ）/ RDS / ElastiCache / CloudFront の軽い運用操作（再起動・停止・台数変更・無効化など。削除なし）。
+  - `Execution`: SSM のコマンド・セッション、EC2 Instance Connect、ECS Exec / RunTask、Lambda 実行、Step Functions、SQS / SNS、`rds-db:connect`。`ecs:RunTask` 用の `iam:PassRole` は別 Statement で、パラメーター `DebugPassableEcsTaskRoleArns`（既定は空）を指定したときだけ付く（`Fn::If` + `AWS::NoValue`）。Resource はその ARN、`iam:PassedToService = ecs-tasks.amazonaws.com` に限定する。空ならタスクロール無しのタスク定義だけ実行できる。
+- Athena の結果バケットへの書き込み（`s3:PutObject`）はこのポリシーに含めない。必要なら `DebugAdditionalPolicyArns` で足す。
+- インラインポリシーの上限は 10,240 文字。テストで文書が上限未満であることを確かめている（現状 約 2.3k 文字）。
+- 権限を広げるときはテンプレートの該当グループに Action を足すか、`DebugAdditionalPolicyArns` で管理ポリシーを足す。
+- 利用者の範囲はロールごとに別のパラメーターで決める。デバッグは読み取り専用より狭くする想定。
+- Worker から見ると 2 ロールは別のプロファイルで、1 アカウントにつき `<env>-readonly` と `<env>-debug` を `AWS_PROFILES` に並べる（default は readonly 側）。ロールごとに `RoleSessionName` が分かれるので CloudTrail で見分けられる。
+
+注意:
+
+- **デバッグロールはリモート実行相当の権限と秘密値の参照を含む。** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` はリモートシェルと同等で、秘密情報・認証情報・ファイルが見えうる。`SecretRead` は秘密値そのものを読める。`Operations` や `lambda:InvokeFunction` などは副作用のある処理を実行する。
+- **権限昇格の経路は塞いでいる。** `iam:PassRole` を `*` に付けると任意のロールでタスクを動かせるため、既定では付けず `DebugPassableEcsTaskRoleArns` の明示ロールに限る。`lambda:UpdateFunctionConfiguration`（実行ロール・環境変数の差し替え）と `autoscaling:UpdateAutoScalingGroup`（起動テンプレートの差し替え）は付けない。テストで両 Action の不在と PassRole の既定なしを確かめている。
+- **残るリスク:** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` / EC2 Instance Connect は、対象インスタンス・タスクのロールの権限で動ける。強いロールを持つ対象が同一アカウントにあるとその権限を借りられる。本番ではタグ条件や SSM ドキュメントで対象を絞る。
+- **`ReadOnlyAccess` は MCP 経由に限定されない。** AWS 管理ポリシーには IAM 条件を付けられないため、セッションの認証情報で直接 API を呼んでも読み取りは効く。`aws:CalledViaAWSMCP` で絞られるのはインラインの操作だけ。
+- 本番では Resource を ARN・タグ・SSM ドキュメントで絞り、セッションログ（SSM Session Manager、ECS Exec、Lambda の CloudWatch Logs）を必ず有効にする。CloudTrail だけでは足りない。`DebugAllowedSubjects` は読み取り専用より絞る。
+
 ## マルチアカウント（aws_profile）
 
 複数の AWS アカウントを `tools/call` の引数 `aws_profile` で切り替える。前身の `aws_profile` を引き継ぐが、users 対応表と S3 読み込みは持たない。
 
 ### 決定
 
-- **各アカウント**: 対象アカウントごとに `infra/aws/awsbridge.yaml` を流し、Worker を信頼するロールを作る。Worker は選ばれたロールを **AssumeRoleWithWebIdentity で直接**引き受ける（チェーン AssumeRole はしない）。
-- **認可は AWS 側**: 誰がどのアカウントを使えるかは各アカウントの信頼ポリシー（`AllowedSubjects`）で決まる。許可外は STS の `AccessDenied` → 403 `forbidden`。Worker に users 対応表は持たない。
+- **各アカウント**: 対象アカウントごとに `infra/aws/awsbridge.yaml` を流し、Worker を信頼する 2 つのロール（[ロール構成](#ロール構成)）を作る。Worker は選ばれたロールを **AssumeRoleWithWebIdentity で直接**引き受ける（チェーン AssumeRole はしない）。
+- **認可は AWS 側**: 誰がどのアカウントを使えるかは各アカウントの信頼ポリシー（`AllowedSubjects` / `DebugAllowedSubjects`）で決まる。許可外は STS の `AccessDenied` → 403 `forbidden`。Worker に users 対応表は持たない。
 - **設定**: 環境変数 `AWS_PROFILES`（**必須**）。wrangler の vars（JSON オブジェクト）でも secret（JSON 文字列）でも受け付ける。基点ロール `FEDERATED_ROLE_ARN` は廃止し、設定経路をこれに一本化した。
 
 ```json
 {
-  "default": "dev",
+  "default": "dev-readonly",
   "profiles": {
-    "dev":  { "roleArn": "arn:aws:iam::111111111111:role/awsbridge", "description": "任意" },
-    "prod": { "roleArn": "arn:aws:iam::222222222222:role/awsbridge" }
+    "dev-readonly":  { "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly", "description": "任意" },
+    "dev-debug":     { "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug" },
+    "prod-readonly": { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
+    "prod-debug":    { "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
   },
   "tools": ["call_aws"]
 }
@@ -156,11 +186,11 @@ Access JWT の実物（開発環境）で確認した claim:
 
 1. `git remote add upstream <awsbridge の URL>` → `git pull --no-rebase upstream main` で追従する。**上流のファイルは編集せず、ファイルを足すだけ**にして衝突を避ける。
 2. `wrangler.<name>.jsonc`（例 `wrangler.awsbridge-mcp.jsonc`）を足す。`name` / `workers_dev` / `vars.AWS_PROFILES` を持ち、env セクションは使わない（ロール ARN は秘密ではないのでコミットしてよい）。
-3. 下流用の mise 設定として `mise.<name>.toml` と `.miserc.toml`（`env = ["<name>"]`）を足し、`AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV`（空 = `--env` を付けない）/ `AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_ROLE_NAME` / `AWSBRIDGE_KEY_FILE` などを与える。秘密値は `mise.local.toml`（gitignore）に置く。
+3. 下流用の mise 設定として `mise.<name>.toml` と `.miserc.toml`（`env = ["<name>"]`）を足し、`AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV`（空 = `--env` を付けない）/ `AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_KEY_FILE` などを与える。秘密値は `mise.local.toml`（gitignore）に置く。
 4. 上書きできる既定値は `mise.toml` の `[env]` ではなくスクリプト側（`scripts/*.sh`、`scripts/poc/`）の `${VAR:-default}` で補う。理由: mise は `mise.<env>.toml` を `mise.toml` より優先するが `.config/mise/conf.d/*.toml` は `mise.toml` に負けるうえ、`[env]` に既定値があると呼び出し側の環境変数や下流ファイルでの上書きが難しくなるため（実験で確認）。優先順位は `mise.local.toml` > `mise.<name>.toml` > `mise.toml`。
 5. wrangler は `scripts/wrangler.sh` 経由で呼び、`--config "${AWSBRIDGE_WRANGLER_CONFIG:-wrangler.jsonc}"` を付ける。`AWSBRIDGE_WRANGLER_ENV` は未設定なら `dev`、**空文字なら `--env` を付けない**（`${VAR-dev}` で未設定と空を区別）。
 6. 署名鍵は環境ごとに分ける。issuer（Worker の URL）が環境ごとに変わるため、IAM OIDC プロバイダーとロールの CloudFormation スタックも環境ごとに別になる。
-7. 各アカウントに `AWS_PROFILE=<対象> mise run deploy:aws` で CloudFormation を流し、出力 `RoleArn` を `AWS_PROFILES` に追記する。
+7. 各アカウントに `AWS_PROFILE=<対象> mise run deploy:aws` で CloudFormation を流し、出力 `ReadOnlyRoleArn` / `DebugRoleArn` を、1 アカウントにつき `<env>-readonly` と `<env>-debug` の 2 プロファイルとして `AWS_PROFILES` に追記する（default は readonly 側）。
 8. 上流自身の開発用デプロイは、`mise.local.toml` の `AWSBRIDGE_PROFILES`（JSON 文字列）を `mise run secrets` が secret `AWS_PROFILES` として登録する。vars で `AWS_PROFILES` を持つ環境では、secret と二重定義にならないよう `AWSBRIDGE_PROFILES` を設定せずに `mise run secrets` を使う（`AWS_PROFILES` は登録されない）。
 
 ## MCP Server Portal 背後に置くことの制約
@@ -226,17 +256,17 @@ mise run deploy:worker      # wrangler deploy → secrets を順に実行（AWS 
                             #   プロファイル一覧を secret で持つ場合は、下の手順で AWSBRIDGE_PROFILES を設定したあと mise run secrets を実行し直す
 
 # AWS 側（対象アカウントごと。何度でも別アカウントに流せる）
-AWS_PROFILE=<対象> mise run deploy:aws   # CloudFormation（OIDC プロバイダー + ロール）をデプロイ。出力 RoleArn を控える
+AWS_PROFILE=<対象> mise run deploy:aws   # CloudFormation（OIDC プロバイダー + ロール 2 つ）をデプロイ。出力 ReadOnlyRoleArn / DebugRoleArn を控える
 
 # Cloudflare 側（ロール ARN の反映）
-# mise.local.toml に AWSBRIDGE_PROFILES（JSON 文字列。出力 RoleArn を並べる）を設定
+# mise.local.toml に AWSBRIDGE_PROFILES（JSON 文字列。出力 ReadOnlyRoleArn / DebugRoleArn を並べる）を設定
 mise run secrets            # Worker secret を一括登録（SIGNING_JWK / ACCESS_TEAM_DOMAIN / ACCESS_AUD / AWS_PROFILES）
 
-mise run poc:sts            # 正常 1 + 否定 4 ケース（--role-arn 省略時はスタックの Output RoleArn。AWS_PROFILE で対象を選ぶ）
+mise run poc:sts            # 正常 1 + 否定 4 ケース（--role-arn 省略時はスタックの Output ReadOnlyRoleArn。AWS_PROFILE で対象を選ぶ）
 AWS_PROFILE=<対象> mise run destroy:aws  # 後片付け（CloudFormation スタックの削除）
 ```
 
-`mise.local.toml` には `AWSBRIDGE_ISSUER` などに加えて `AWSBRIDGE_ACCESS_TEAM_DOMAIN`・`AWSBRIDGE_ACCESS_AUD`・`AWSBRIDGE_PROFILES` が要る。IAM 側のリソースは `infra/aws/awsbridge.yaml`（CloudFormation）で作る。マネジメントコンソールや StackSets でテンプレートを直接流してもよい（パラメーターは README の「AWS 側」を参照）。`AWS_PROFILE` と `AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_ROLE_NAME` / `AWSBRIDGE_AUDIENCE` は呼び出し側の環境変数が優先される（既定値はスクリプト側にあり、`mise.toml` の `[env]` には置かない）。
+`mise.local.toml` には `AWSBRIDGE_ISSUER` などに加えて `AWSBRIDGE_ACCESS_TEAM_DOMAIN`・`AWSBRIDGE_ACCESS_AUD`・`AWSBRIDGE_PROFILES` が要る。IAM 側のリソースは `infra/aws/awsbridge.yaml`（CloudFormation）で作る。マネジメントコンソールや StackSets でテンプレートを直接流してもよい（パラメーターは README の「AWS 側」を参照）。`AWS_PROFILE` と `AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_AUDIENCE` は呼び出し側の環境変数が優先される（既定値はスクリプト側にあり、`mise.toml` の `[env]` には置かない）。
 
 ### Worker が公開した discovery（IAM が受理した内容）
 
