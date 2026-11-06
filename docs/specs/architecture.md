@@ -322,7 +322,7 @@ mise run poc:sts            # 正常 1 + 否定 4 ケース（--role-arn 省略�
 AWS_PROFILE=<対象> mise run destroy:aws  # 後片付け（CloudFormation スタックの削除）
 ```
 
-`mise.local.toml` には `AWSBRIDGE_ISSUER` などに加えて `AWSBRIDGE_ACCESS_TEAM_DOMAIN`・`AWSBRIDGE_ACCESS_AUD`・`AWSBRIDGE_PROFILES` が要る。IAM 側のリソースは `infra/aws/awsbridge.yaml`（CloudFormation）で作る。マネジメントコンソールや StackSets でテンプレートを直接流してもよい（パラメーターは README の「AWS 側」を参照）。`AWS_PROFILE` と `AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_AUDIENCE` は呼び出し側の環境変数が優先される（既定値はスクリプト側にあり、`mise.toml` の `[env]` には置かない）。
+`mise.local.toml` には `AWSBRIDGE_ISSUER` などに加えて `AWSBRIDGE_ACCESS_TEAM_DOMAIN`・`AWSBRIDGE_ACCESS_AUD`・`AWSBRIDGE_PROFILES` が要る。IAM 側のリソースは `infra/aws/awsbridge.yaml`（CloudFormation）で作る。マネジメントコンソールや StackSets でテンプレートを直接流してもよい（パラメーターは README_ja.md の「AWS 側」を参照）。`AWS_PROFILE` と `AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_AUDIENCE` は呼び出し側の環境変数が優先される（既定値はスクリプト側にあり、`mise.toml` の `[env]` には置かない）。
 
 ### Worker が公開した discovery（IAM が受理した内容）
 

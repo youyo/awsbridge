@@ -9,7 +9,7 @@ tflint = "0.64.0"
 # 上書きされうる既定値（AWS_PROFILE / AWSBRIDGE_AUDIENCE / AWSBRIDGE_STACK_NAME / AWSBRIDGE_KEY_FILE /
 # AWSBRIDGE_WRANGLER_ENV / AWSBRIDGE_WRANGLER_CONFIG）はここに置かず、scripts/*.sh と scripts/poc/ 側の既定値で補う。
 # ここに置くと、下流の mise 設定ファイル（mise.<name>.toml）や環境変数で上書きしにくくなるため。
-# 下流の使い方は README「下流リポジトリでの運用」を参照。
+# 下流の使い方は README_ja.md「下流リポジトリでの運用」を参照。
 # 個人情報・アカウント固有値は mise.local.toml（gitignore）に置く:
 #   AWSBRIDGE_ISSUER           = "https://<worker>.<subdomain>.workers.dev"（Worker の URL = OIDC issuer）
 #   AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org"（読み取り専用ロールを引き受けられる利用者。カンマ区切り）

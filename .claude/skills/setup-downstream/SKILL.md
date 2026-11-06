@@ -9,7 +9,7 @@ disable-model-invocation: true
 
 下流リポジトリ名: $ARGUMENTS
 
-awsbridge（public）を `upstream` とする下流の private リポジトリを作り、デプロイまで進めます。以下の `<name>` は下流リポジトリ名（環境名）です。下流は上流のファイルを編集せず、3 つのファイル（`wrangler.<name>.jsonc` / `mise.<name>.toml` / `.miserc.toml`）を足すだけで動きます。このスキルは awsbridge を clone した作業ツリー（これが下流リポジトリになる）の中で実行する前提です。詳しくは README「デプロイ」「下流リポジトリでの運用」「マルチアカウント」を参照してください。
+awsbridge（public）を `upstream` とする下流の private リポジトリを作り、デプロイまで進めます。以下の `<name>` は下流リポジトリ名（環境名）です。下流は上流のファイルを編集せず、3 つのファイル（`wrangler.<name>.jsonc` / `mise.<name>.toml` / `.miserc.toml`）を足すだけで動きます。このスキルは awsbridge を clone した作業ツリー（これが下流リポジトリになる）の中で実行する前提です。詳しくは README_ja.md「デプロイ」「下流リポジトリでの運用」「マルチアカウント」を参照してください。
 
 ## 手順
 

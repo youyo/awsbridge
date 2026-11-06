@@ -1,4 +1,4 @@
-// 署名鍵のローテーション（無停止）の各段。CLI は scripts/key-rotate.ts。手順は README「署名鍵のローテーション」。
+// 署名鍵のローテーション（無停止）の各段。CLI は scripts/key-rotate.ts。手順は README_ja.md「署名鍵のローテーション」。
 // ファイルは 0600。上書きしない。各操作の前に存在確認をして、条件に合わなければ何も動かさず中止（例外）する。
 import {
   chmodSync,

@@ -2,7 +2,7 @@
 # wrangler を、使う設定ファイルと環境を環境変数で切り替えて呼ぶ。引数はそのまま wrangler に渡す。
 #   AWSBRIDGE_WRANGLER_CONFIG  wrangler の設定ファイル（既定 wrangler.jsonc。リポジトリルート相対）
 #   AWSBRIDGE_WRANGLER_ENV     wrangler の --env（未設定なら dev。空文字なら --env を付けない）
-# 下流リポジトリは wrangler.<name>.jsonc を足し、mise.<name>.toml でこれらを与える（README 参照）。
+# 下流リポジトリは wrangler.<name>.jsonc を足し、mise.<name>.toml でこれらを与える（README_ja.md 参照）。
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

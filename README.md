@@ -1,213 +1,215 @@
 # awsbridge
 
+English | [日本語](README_ja.md)
+
 Bridge AI agents to AWS.
 
-Cloudflare Access で認証された利用者の身元を、利用者ごとの AWS 一時認証情報（STS）に変換し、SigV4 署名して AWS MCP Server へ中継する Cloudflare Worker です。Cloudflare MCP Server Portal の背後に置くことを前提としています。
+A Cloudflare Worker that converts the identity of a user authenticated by Cloudflare Access into per-user temporary AWS credentials (STS), signs requests with SigV4, and relays them to the AWS MCP Server. It is designed to sit behind a Cloudflare MCP Server Portal.
 
-> 開発初期段階です。設計は [docs/specs/architecture.md](docs/specs/architecture.md) を参照してください。
+> Early development stage. For the design, see [docs/specs/architecture.md](docs/specs/architecture.md) (written in Japanese).
 
-前身: [youyo/aws-mcp-gateway](https://github.com/youyo/aws-mcp-gateway)
+Predecessor: [youyo/aws-mcp-gateway](https://github.com/youyo/aws-mcp-gateway)
 
-## デプロイ
+## Deployment
 
-Cloudflare 側（Worker）と AWS 側（CloudFormation）は完全に分かれています。Worker のデプロイは AWS を呼ばず、CloudFormation のデプロイは Cloudflare を呼びません。対象の AWS アカウントには CloudFormation だけを流せば足ります。
+The Cloudflare side (Worker) and the AWS side (CloudFormation) are completely separate. Deploying the Worker does not call AWS, and deploying CloudFormation does not call Cloudflare. For each target AWS account, you only need to run CloudFormation.
 
-### 前提
+### Prerequisites
 
-- [mise](https://mise.jdx.dev/)（`mise install` でランタイムと cfn-lint が入ります）
-- Cloudflare 側: `wrangler login` 済みのアカウント
-- AWS 側: IAM と CloudFormation を操作できる権限を持つ AWS プロファイル
+- [mise](https://mise.jdx.dev/) (`mise install` installs the runtimes and cfn-lint)
+- Cloudflare side: an account where you have run `wrangler login`
+- AWS side: an AWS profile with permission to operate IAM and CloudFormation
 
-### 初回の順序
+### Order for the first deployment
 
-Worker の URL が OIDC issuer になるため、次の順で進めます。
+The Worker's URL becomes the OIDC issuer, so proceed in this order.
 
-1. Cloudflare 側: `mise run keygen` → `mise.local.toml` に `AWSBRIDGE_ISSUER` などを設定 → `mise run deploy:worker`（Worker の URL を確定させる。この時点ではプロファイル一覧が未登録なので `/mcp` は 500 になる）
-2. AWS 側: `AWS_PROFILE=<対象> mise run deploy:aws`（出力 `ReadOnlyRoleArn` / `DebugRoleArn` を控える）
-3. プロファイル一覧を登録する。secret で持つ場合は `mise.local.toml` に `AWSBRIDGE_PROFILES` を設定して `mise run secrets`、`wrangler.jsonc` の vars で持つ場合（下流リポジトリ）は vars に書いて `mise run deploy:worker`
+1. Cloudflare side: `mise run keygen` → set `AWSBRIDGE_ISSUER` and the other variables in `mise.local.toml` → `mise run deploy:worker` (this fixes the Worker's URL. At this point the profile list is not registered yet, so `/mcp` returns 500)
+2. AWS side: `AWS_PROFILE=<target> mise run deploy:aws` (note the outputs `ReadOnlyRoleArn` / `DebugRoleArn`)
+3. Register the profile list. To keep it as a secret, set `AWSBRIDGE_PROFILES` in `mise.local.toml` and run `mise run secrets`. To keep it in the `vars` of `wrangler.jsonc` (downstream repositories), write it in `vars` and run `mise run deploy:worker`
 
-2 回目以降は、変更した側だけを流します。
+From the second time on, deploy only the side you changed.
 
-### AWS 側（対象アカウントごと）
+### AWS side (per target account)
 
-[infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml) を流すだけです。Worker の URL を issuer とする IAM OIDC プロバイダーと、Worker 発行の JWT で引き受ける 2 つのロール（読み取り専用 `FederatedMcpReadOnly`、デバッグ `FederatedMcpDebug`）を作ります。
-
-```
-AWS_PROFILE=<対象> mise run deploy:aws    # CloudFormation をデプロイ（何度でも別アカウントに流せる）
-AWS_PROFILE=<対象> mise run destroy:aws   # 片付け: スタックを削除
-```
-
-`AWS_PROFILE` は呼び出し側の値が優先されます（未設定なら `awsbridge`）。`AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_AUDIENCE` も同様に環境変数で上書きできます（これらの既定値は `scripts/` 側にあり、`mise.toml` の `[env]` には置いていません）。一方、`mise.local.toml` や下流リポジトリの `mise.<name>.toml` に書いた値は、呼び出し側の環境変数より優先されます。対象アカウントを `AWS_PROFILE=<対象>` で切り替えたい場合は、`AWS_PROFILE` をこれらのファイルに書かないでください。
+Just deploy [infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml). It creates an IAM OIDC provider whose issuer is the Worker's URL, and two roles that are assumed with the JWT issued by the Worker (read-only `FederatedMcpReadOnly` and debug `FederatedMcpDebug`).
 
 ```
-mise exec -- env AWS_PROFILE=<対象> AWSBRIDGE_ALLOWED_SUBJECTS="user@example.com" AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS="admin@example.com" bash scripts/deploy-aws.sh
+AWS_PROFILE=<target> mise run deploy:aws    # Deploy CloudFormation (can be deployed to any number of accounts)
+AWS_PROFILE=<target> mise run destroy:aws   # Clean up: delete the stack
 ```
 
-マネジメントコンソールや StackSets でテンプレートを直接流すこともできます。そのときのパラメーター:
+A caller-supplied `AWS_PROFILE` takes precedence (`awsbridge` if unset). `AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_AUDIENCE` can also be overridden with environment variables in the same way (their defaults live in `scripts/` and are not placed in `[env]` of `mise.toml`). On the other hand, values written in `mise.local.toml` or in a downstream repository's `mise.<name>.toml` take precedence over the caller's environment variables. If you want to switch the target account with `AWS_PROFILE=<target>`, do not write `AWS_PROFILE` in those files.
 
-| パラメーター | 説明 |
+```
+mise exec -- env AWS_PROFILE=<target> AWSBRIDGE_ALLOWED_SUBJECTS="user@example.com" AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS="admin@example.com" bash scripts/deploy-aws.sh
+```
+
+You can also deploy the template directly from the management console or with StackSets. The parameters in that case:
+
+| Parameter | Description |
 |---|---|
-| `IssuerHost` | Worker のホスト名（`https://` と末尾 `/` なし。例: `awsbridge.example.workers.dev`） |
-| `Audience` | JWT の audience（既定 `awsbridge`。Worker の `STS_AUDIENCE` と一致させる） |
-| `AllowedSubjects` | 読み取り専用ロールを引き受けられる利用者（カンマ区切り。下記の書式。小文字で指定） |
-| `DebugAllowedSubjects` | デバッグロールを引き受けられる利用者（同じ書式。読み取り専用より絞ることを勧めます） |
-| `ReadOnlyRoleName` | 読み取り専用ロール名（既定 `FederatedMcpReadOnly`） |
-| `DebugRoleName` | デバッグロール名（既定 `FederatedMcpDebug`） |
-| `DebugAdditionalPolicyArns` | 任意。デバッグロールに追加で付ける管理ポリシー（カンマ区切り。空なら付けない） |
-| `DebugPassableEcsTaskRoleArns` | 任意。`ecs:RunTask` でタスクに渡してよい IAM ロール ARN（カンマ区切り。ワイルドカード不可）。空なら `iam:PassRole` を付けない |
+| `IssuerHost` | The Worker's host name (without `https://` and without a trailing `/`. Example: `awsbridge.example.workers.dev`) |
+| `Audience` | The JWT audience (default `awsbridge`. Must match the Worker's `STS_AUDIENCE`) |
+| `AllowedSubjects` | Users who can assume the read-only role (comma-separated. See the format below. Specify in lowercase) |
+| `DebugAllowedSubjects` | Users who can assume the debug role (same format. Keeping it narrower than the read-only role is recommended) |
+| `ReadOnlyRoleName` | Read-only role name (default `FederatedMcpReadOnly`) |
+| `DebugRoleName` | Debug role name (default `FederatedMcpDebug`) |
+| `DebugAdditionalPolicyArns` | Optional. Additional managed policies to attach to the debug role (comma-separated. Nothing is attached if empty) |
+| `DebugPassableEcsTaskRoleArns` | Optional. IAM role ARNs that may be passed to a task with `ecs:RunTask` (comma-separated. Wildcards are not allowed). If empty, `iam:PassRole` is not granted |
 
-デプロイ後、出力 `ReadOnlyRoleArn` / `DebugRoleArn` を控えます（`aws cloudformation describe-stacks` でも取れます）。
+After deployment, note the outputs `ReadOnlyRoleArn` / `DebugRoleArn` (you can also get them with `aws cloudformation describe-stacks`).
 
-#### ロールの権限と注意
+#### Role permissions and caveats
 
-| ロール | 権限 |
+| Role | Permissions |
 |---|---|
-| `FederatedMcpReadOnly` | AWS 管理ポリシー `ReadOnlyAccess` + SSM パラメーター取得（`ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`）の明示 Deny（条件なし） |
-| `FederatedMcpDebug` | `ReadOnlyAccess` + インラインポリシー（調査の読み取り強化・秘密値の参照・軽い運用操作・接続と実行。`aws:CalledViaAWSMCP = aws-mcp.amazonaws.com` の条件付き）+ 任意の `DebugAdditionalPolicyArns` |
+| `FederatedMcpReadOnly` | The AWS managed policy `ReadOnlyAccess` + an explicit Deny (unconditional) on retrieving SSM parameters (`ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`) |
+| `FederatedMcpDebug` | `ReadOnlyAccess` + an inline policy (enhanced read access for investigation, reading secret values, light operational actions, and connection and execution; conditional on `aws:CalledViaAWSMCP = aws-mcp.amazonaws.com`) + the optional `DebugAdditionalPolicyArns` |
 
-デバッグロールのインラインポリシーは、次のグループに分かれています（すべて `aws:CalledViaAWSMCP = aws-mcp.amazonaws.com` の条件付き、Resource は `*`）。削除系・IAM 変更・組織変更は含みません。
+The debug role's inline policy is divided into the following groups (all conditional on `aws:CalledViaAWSMCP = aws-mcp.amazonaws.com`, with Resource `*`). It does not include delete operations, IAM changes, or organization changes.
 
-| グループ（Sid） | 内容 |
+| Group (Sid) | Contents |
 |---|---|
-| `Investigation` | `ReadOnlyAccess` より深い調査用の読み取り。Logs Insights / ログ取得 / Live Tail、X-Ray、CloudTrail（`LookupEvents`・クエリ）、Athena のクエリ実行、EC2 コンソール出力 / スクリーンショット、AWS Config の `SelectResourceConfig` / `GetResourceConfigHistory` |
-| `SecretRead` | 秘密値の参照: `secretsmanager:GetSecretValue`、`ssm:GetParameter(s)` / `GetParametersByPath`。実行系と同等のリスクとして扱ってください。復号用の `kms:Decrypt` は別 Statement で、`kms:ViaService`（Secrets Manager / SSM 経由）に限定します |
-| `Operations` | 副作用のある軽い運用操作（削除なし）: ECS の `UpdateService` / `StopTask`、EC2 の起動・停止・再起動、Lambda の同時実行数の変更、Auto Scaling の台数変更、RDS / ElastiCache の再起動、CloudFront の `CreateInvalidation` |
-| `Execution` | 接続・実行: `ssm:SendCommand` / `StartSession` など、EC2 Instance Connect、`ecs:ExecuteCommand` / `RunTask`、`lambda:InvokeFunction`、`states:StartExecution`、`sqs:SendMessage`、`sns:Publish`、`rds-db:connect`。`ecs:RunTask` 用の `iam:PassRole` は別 Statement で、`DebugPassableEcsTaskRoleArns` を指定したときだけ付き、渡せるロールをその ARN、渡し先を `ecs-tasks.amazonaws.com` に限定します（空ならタスクロール無しのタスク定義だけ実行できます） |
+| `Investigation` | Reads for investigation that go deeper than `ReadOnlyAccess`. Logs Insights / log retrieval / Live Tail, X-Ray, CloudTrail (`LookupEvents` and queries), running Athena queries, EC2 console output / screenshots, AWS Config `SelectResourceConfig` / `GetResourceConfigHistory` |
+| `SecretRead` | Reading secret values: `secretsmanager:GetSecretValue`, `ssm:GetParameter(s)` / `GetParametersByPath`. Treat this as carrying the same risk as the execution group. `kms:Decrypt` for decryption is a separate Statement, limited to `kms:ViaService` (via Secrets Manager / SSM) |
+| `Operations` | Light operational actions with side effects (no deletion): ECS `UpdateService` / `StopTask`, starting, stopping, and rebooting EC2, changing Lambda concurrency, changing Auto Scaling capacity, rebooting RDS / ElastiCache, CloudFront `CreateInvalidation` |
+| `Execution` | Connection and execution: `ssm:SendCommand` / `StartSession` and others, EC2 Instance Connect, `ecs:ExecuteCommand` / `RunTask`, `lambda:InvokeFunction`, `states:StartExecution`, `sqs:SendMessage`, `sns:Publish`, `rds-db:connect`. `iam:PassRole` for `ecs:RunTask` is a separate Statement, granted only when `DebugPassableEcsTaskRoleArns` is specified; it limits the roles that can be passed to those ARNs and the recipient to `ecs-tasks.amazonaws.com` (if empty, only task definitions without a task role can be run) |
 
-Athena のクエリは結果バケットへの書き込み（`s3:PutObject`）が別に必要です。このポリシーには含めていないので、必要なら `DebugAdditionalPolicyArns` で足してください。
+Athena queries also need a separate write permission (`s3:PutObject`) to the result bucket. This policy does not include it, so add it with `DebugAdditionalPolicyArns` if needed.
 
-- **デバッグロールはリモート実行相当の権限を含みます。** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` はリモートシェルと同等で、秘密情報や認証情報、ファイルの内容が見えてしまうことがあります。`SecretRead` も秘密値そのものを読めます。`Operations` と `lambda:InvokeFunction`・`states:StartExecution`・`sqs:SendMessage`・`sns:Publish` は副作用のある処理を実行します。
-- **権限昇格の経路は塞いでいます。** `iam:PassRole` を `*` に付けると、任意のロールでタスクを動かせてしまうため、既定では付けず、`DebugPassableEcsTaskRoleArns` で明示したロールだけに限ります。また `lambda:UpdateFunctionConfiguration`（実行ロールや環境変数の差し替え）と `autoscaling:UpdateAutoScalingGroup`（起動テンプレートの差し替え）は付けていません。
-- **残るリスク:** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` / EC2 Instance Connect は、対象のインスタンスやタスクに付いたロールの権限で動けます。権限の強いインスタンス・タスクが同じアカウントにあると、その権限を借りられます。本番ではタグ条件や SSM ドキュメントで対象を絞ってください。
-- **読み取り専用ロールは `ReadOnlyAccess` を含むため、SSM パラメーター以外の秘密値は読めてしまいます。** `ReadOnlyAccess`（v191）は `ssm:Get*` を含み、SecureString も `aws/ssm` キー経由で復号できてしまうため、読み取り専用ロールでは SSM パラメーター取得を明示 Deny しています（秘密値の参照はデバッグロールの `SecretRead` だけ）。一方、Lambda の環境変数（`lambda:Get*` / `ListFunctions`）や `s3:GetObject` などは調査で日常的に使うため Deny していません。ここに秘密値があるなら、`AllowedSubjects` を絞るか、権限境界・SCP で独自に Deny してください。
-- **`ReadOnlyAccess` は MCP 経由に限定されません。** AWS 管理ポリシーには IAM 条件を付けられないため、セッションの認証情報で直接 API を呼んでも読み取り権限は有効です。`aws:CalledViaAWSMCP` で絞られるのはインラインポリシーの操作だけです。
-- 本番では `Resource` を特定の ARN・タグ・SSM ドキュメントに絞り、セッションログ（SSM Session Manager のログ、ECS Exec のログ、Lambda の CloudWatch Logs）を必ず有効にしてください。CloudTrail だけでは足りません。
-- 利用者はロールごとに `AllowedSubjects`（読み取り専用）と `DebugAllowedSubjects`（デバッグ）で分けます。`DebugAllowedSubjects` は読み取り専用より狭くしてください。
+- **The debug role includes permissions equivalent to remote execution.** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` are equivalent to a remote shell, and secrets, credentials, and file contents may become visible. `SecretRead` can also read secret values themselves. `Operations`, as well as `lambda:InvokeFunction`, `states:StartExecution`, `sqs:SendMessage`, and `sns:Publish`, run processes with side effects.
+- **Privilege escalation paths are closed.** Granting `iam:PassRole` on `*` would let tasks run with any role, so it is not granted by default and is limited to the roles explicitly listed in `DebugPassableEcsTaskRoleArns`. Also, `lambda:UpdateFunctionConfiguration` (swapping the execution role or environment variables) and `autoscaling:UpdateAutoScalingGroup` (swapping the launch template) are not granted.
+- **Remaining risk:** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` / EC2 Instance Connect can act with the permissions of the role attached to the target instance or task. If a highly privileged instance or task exists in the same account, those permissions can be borrowed. In production, narrow the targets with tag conditions or SSM documents.
+- **The read-only role includes `ReadOnlyAccess`, so secret values other than SSM parameters can be read.** `ReadOnlyAccess` (v191) includes `ssm:Get*`, and SecureString values can also be decrypted via the `aws/ssm` key, so the read-only role explicitly denies retrieving SSM parameters (reading secret values is only possible through `SecretRead` of the debug role). On the other hand, Lambda environment variables (`lambda:Get*` / `ListFunctions`), `s3:GetObject`, and similar are used routinely in investigations and are not denied. If secret values are stored there, narrow `AllowedSubjects`, or add your own Deny with a permissions boundary or an SCP.
+- **`ReadOnlyAccess` is not limited to calls through MCP.** IAM conditions cannot be attached to AWS managed policies, so the read permissions remain valid even if you call the API directly with the session credentials. Only the inline policy's actions are restricted by `aws:CalledViaAWSMCP`.
+- In production, narrow `Resource` to specific ARNs, tags, or SSM documents, and always enable session logs (SSM Session Manager logs, ECS Exec logs, Lambda CloudWatch Logs). CloudTrail alone is not enough.
+- Users are separated per role by `AllowedSubjects` (read-only) and `DebugAllowedSubjects` (debug). Keep `DebugAllowedSubjects` narrower than the read-only list.
 
-### Cloudflare 側（1 回）
+### Cloudflare side (once)
 
 ```
-mise run keygen          # 署名鍵を生成（.secrets/、既存なら上書きしない）
-# mise.local.toml に AWSBRIDGE_ISSUER / AWSBRIDGE_ACCESS_* / AWSBRIDGE_PROFILES などを設定
-mise run deploy:worker   # wrangler deploy → secrets を順に実行（AWS は呼ばない）
+mise run keygen          # Generate the signing key (.secrets/, not overwritten if it exists)
+# Set AWSBRIDGE_ISSUER / AWSBRIDGE_ACCESS_* / AWSBRIDGE_PROFILES and others in mise.local.toml
+mise run deploy:worker   # Runs wrangler deploy → secrets in order (does not call AWS)
 ```
 
-`secrets` は単独でも実行できます（`mise run secrets`）。`wrangler secret bulk` に標準入力で JSON を渡すので、値がコマンドライン引数に出ません。登録するのは `SIGNING_JWK` / `ADDITIONAL_PUBLIC_JWKS`（署名鍵のローテーション用。通常は `[]`）/ `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD` / `AWS_PROFILES` で、`AWS_PROFILES` は `AWSBRIDGE_PROFILES`（JSON 文字列）から読みます。
+`secrets` can also be run on its own (`mise run secrets`). It passes JSON to `wrangler secret bulk` via standard input, so values do not appear in command-line arguments. What it registers is `SIGNING_JWK` / `ADDITIONAL_PUBLIC_JWKS` (for signing key rotation. Normally `[]`) / `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD` / `AWS_PROFILES`, and `AWS_PROFILES` is read from `AWSBRIDGE_PROFILES` (a JSON string).
 
-検証: `mise run poc:sts`（正常 1 + 否定 4 ケース。実 AWS を呼ぶので明示的に実行したときだけ使います）。
+Verification: `mise run poc:sts` (1 positive + 4 negative cases. It calls real AWS, so use it only when you run it explicitly).
 
-### `mise.local.toml` の変数
+### Variables in `mise.local.toml`
 
-固定の既定値は `mise.toml` にあります。アカウント固有の値は `mise.local.toml`（gitignore）に書きます（値はすべてプレースホルダーです）。
+Fixed defaults are in `mise.toml`. Account-specific values go in `mise.local.toml` (gitignored). All values are placeholders.
 
 ```toml
 [env]
-AWSBRIDGE_ISSUER = "https://awsbridge.example.workers.dev"   # Worker の URL（OIDC issuer）
-AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org" # 読み取り専用ロールを引き受けられる利用者（カンマ区切り）
-AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS = "admin@example.com"       # デバッグロールを引き受けられる利用者（カンマ区切り）
-# AWSBRIDGE_READONLY_ROLE_NAME = "FederatedMcpReadOnly"      # 任意。ロール名（既定値）
-# AWSBRIDGE_DEBUG_ROLE_NAME = "FederatedMcpDebug"            # 任意。ロール名（既定値）
-# AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS = "arn:aws:iam::<アカウントID>:policy/<名前>" # 任意。デバッグロールに追加する管理ポリシー（カンマ区切り）
-AWSBRIDGE_PROFILES = '{"default":"dev-readonly","profiles":[{"name":"dev-readonly","roleArn":"arn:aws:iam::<アカウントID>:role/FederatedMcpReadOnly"},{"name":"dev-debug","roleArn":"arn:aws:iam::<アカウントID>:role/FederatedMcpDebug"}]}' # 各アカウントの deploy:aws の出力 ReadOnlyRoleArn / DebugRoleArn。secrets が AWS_PROFILES に登録
-AWSBRIDGE_POC_SUBJECT = "user@example.com"                   # poc:sts の正常ケースで使う利用者
-AWSBRIDGE_ACCESS_TEAM_DOMAIN = "https://team.example.cloudflareaccess.com" # Access のチームドメイン
-AWSBRIDGE_ACCESS_AUD = "<Access アプリケーションの AUD タグ>"   # このアプリケーションの AUD
+AWSBRIDGE_ISSUER = "https://awsbridge.example.workers.dev"   # The Worker's URL (OIDC issuer)
+AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org" # Users who can assume the read-only role (comma-separated)
+AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS = "admin@example.com"       # Users who can assume the debug role (comma-separated)
+# AWSBRIDGE_READONLY_ROLE_NAME = "FederatedMcpReadOnly"      # Optional. Role name (default value)
+# AWSBRIDGE_DEBUG_ROLE_NAME = "FederatedMcpDebug"            # Optional. Role name (default value)
+# AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS = "arn:aws:iam::<account-id>:policy/<name>" # Optional. Additional managed policies for the debug role (comma-separated)
+AWSBRIDGE_PROFILES = '{"default":"dev-readonly","profiles":[{"name":"dev-readonly","roleArn":"arn:aws:iam::<account-id>:role/FederatedMcpReadOnly"},{"name":"dev-debug","roleArn":"arn:aws:iam::<account-id>:role/FederatedMcpDebug"}]}' # The outputs ReadOnlyRoleArn / DebugRoleArn of deploy:aws for each account. secrets registers it as AWS_PROFILES
+AWSBRIDGE_POC_SUBJECT = "user@example.com"                   # The user used in the positive case of poc:sts
+AWSBRIDGE_ACCESS_TEAM_DOMAIN = "https://team.example.cloudflareaccess.com" # The Access team domain
+AWSBRIDGE_ACCESS_AUD = "<AUD tag of the Access application>"   # The AUD of this application
 ```
 
-`AWSBRIDGE_ALLOWED_SUBJECTS` と `AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS` の書式（どちらも同じ）: 各要素は `user@example.com` または `*@example.com` の形です。ワイルドカードを使えるのはメールのローカル部だけで、ドメイン部（`*@*` や `*@*.com`）や `*` 単独は使えません（全員に許可してしまうため）。空要素や前後の空白もエラーです。email は小文字に正規化して照合します（Worker は Access JWT の email を小文字にして STS に渡し、`deploy:aws` もこれらを小文字にして CloudFormation に渡します）。`deploy:aws` は AWS を呼ぶ前にこれを検証し、CloudFormation テンプレートの `AllowedPattern` でも同じ検査をします。
+Format of `AWSBRIDGE_ALLOWED_SUBJECTS` and `AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS` (the same for both): each element takes the form `user@example.com` or `*@example.com`. A wildcard can be used only in the local part of the email; the domain part (`*@*` or `*@*.com`) and a bare `*` are not allowed (they would permit everyone). Empty elements and leading or trailing whitespace are also errors. Emails are normalized to lowercase before matching (the Worker lowercases the Access JWT's email before passing it to STS, and `deploy:aws` also lowercases these values before passing them to CloudFormation). `deploy:aws` validates this before calling AWS, and the CloudFormation template performs the same check with `AllowedPattern`.
 
-`AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS` で付ける管理ポリシーは、デバッグロールを引き受けた利用者が実行できる操作そのものになります。必要最小限の権限だけを付けてください（未設定なら何も付けません）。
+The managed policies attached with `AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS` become exactly the operations that a user who assumes the debug role can perform. Attach only the minimum necessary permissions (nothing is attached if unset).
 
-上書きできる既定値（`scripts/` 側で補います。環境変数・`mise.local.toml`・下流の mise 設定ファイルで変更可）: `AWS_PROFILE`（`awsbridge`）、`AWSBRIDGE_AUDIENCE`（`awsbridge`）、`AWSBRIDGE_STACK_NAME`（`awsbridge`）、`AWSBRIDGE_KEY_FILE`（リポジトリルートの `.secrets/dev-signing-key.json`）、`AWSBRIDGE_NEXT_KEY_FILE` / `AWSBRIDGE_PREVIOUS_KEY_FILE`（鍵ローテーション用。既定は `AWSBRIDGE_KEY_FILE` の拡張子の前に `.next` / `.previous` を付けたもの）、`AWSBRIDGE_WRANGLER_CONFIG`（`wrangler.jsonc`）、`AWSBRIDGE_WRANGLER_ENV`（未設定なら `dev`。**空文字なら `--env` を付けない**）。
+Overridable defaults (filled in on the `scripts/` side. Can be changed with environment variables, `mise.local.toml`, or a downstream mise config file): `AWS_PROFILE` (`awsbridge`), `AWSBRIDGE_AUDIENCE` (`awsbridge`), `AWSBRIDGE_STACK_NAME` (`awsbridge`), `AWSBRIDGE_KEY_FILE` (`.secrets/dev-signing-key.json` at the repository root), `AWSBRIDGE_NEXT_KEY_FILE` / `AWSBRIDGE_PREVIOUS_KEY_FILE` (for key rotation. By default, `.next` / `.previous` is added before the extension of `AWSBRIDGE_KEY_FILE`), `AWSBRIDGE_WRANGLER_CONFIG` (`wrangler.jsonc`), `AWSBRIDGE_WRANGLER_ENV` (`dev` if unset. **If it is an empty string, `--env` is not added**).
 
-### Worker の設定
+### Worker configuration
 
-secret（`mise run secrets` が登録）: `SIGNING_JWK`、`ADDITIONAL_PUBLIC_JWKS`（任意。署名鍵のローテーション用の追加の公開鍵）、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`AWS_PROFILES`（必須。vars で持つ場合は secret にしない）。
+Secrets (registered by `mise run secrets`): `SIGNING_JWK`, `ADDITIONAL_PUBLIC_JWKS` (optional. Additional public keys for signing key rotation), `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `AWS_PROFILES` (required. If you keep it in vars, do not make it a secret).
 
-var（任意。既定値を上書きするときだけ）: `ISSUER`（deploy 時に `--var` で設定）、`IDENTITY_CLAIM`（既定 `email`）、`ACCESS_MAX_TOKEN_AGE_SECONDS`、`STS_AUDIENCE`（既定 `awsbridge`）、`STS_REGION`（既定 `us-east-1`）、`STS_ENDPOINT`、`AWS_MCP_REGION`（既定 `us-east-1`）、`AWS_MCP_ENDPOINT`、`TARGET_AWS_REGION`（既定 `ap-northeast-1`）、`ALLOWED_ORIGINS`（カンマ区切りの完全一致オリジン。既定は空）。
+Vars (optional. Only when overriding the defaults): `ISSUER` (set with `--var` at deploy time), `IDENTITY_CLAIM` (default `email`), `ACCESS_MAX_TOKEN_AGE_SECONDS`, `STS_AUDIENCE` (default `awsbridge`), `STS_REGION` (default `us-east-1`), `STS_ENDPOINT`, `AWS_MCP_REGION` (default `us-east-1`), `AWS_MCP_ENDPOINT`, `TARGET_AWS_REGION` (default `ap-northeast-1`), `ALLOWED_ORIGINS` (comma-separated exact-match origins. Empty by default).
 
-`/mcp` は CSRF 対策として、`Origin` ヘッダーが付いたリクエスト（ブラウザ由来）を `ALLOWED_ORIGINS` に含まれない限り 403 `forbidden_origin` で拒否します。`Origin` が無い MCP クライアント・Portal のサーバー間通信は通ります。また POST は `Content-Type` が `application/json`（`; charset=utf-8` などのパラメーター可）のときだけ受け付け、それ以外（Content-Type 無しを含む）は 415 `unsupported_media_type` です。Access はブラウザの Cookie を検証して `Cf-Access-Jwt-Assertion` を差し込むため、認証だけでは CSRF を防げません。
+As a CSRF countermeasure, `/mcp` rejects requests that carry an `Origin` header (that is, requests from a browser) with 403 `forbidden_origin` unless the origin is included in `ALLOWED_ORIGINS`. Server-to-server traffic from MCP clients and the Portal, which have no `Origin`, passes through. A POST is accepted only when `Content-Type` is `application/json` (parameters such as `; charset=utf-8` are allowed); anything else (including a missing Content-Type) results in 415 `unsupported_media_type`. Access verifies the browser's cookie and injects `Cf-Access-Jwt-Assertion`, so authentication alone cannot prevent CSRF.
 
-`/mcp` のエラーは `{"error":"<code>"}` で返ります: `unauthorized`（401）、`forbidden`（403。ロールを引き受ける権限がない）、`upstream_auth_failed`（502。サーバー側の設定不整合）、`temporarily_unavailable`（503）、`server_misconfigured`（500）、`unknown_aws_profile` / `invalid_aws_profile` / `batch_not_supported`（400）。原因ごとの対応表は `docs/specs/architecture.md` の「エラーと HTTP ステータスの対応」を参照してください。
+Errors from `/mcp` are returned as `{"error":"<code>"}`: `unauthorized` (401), `forbidden` (403. No permission to assume the role), `upstream_auth_failed` (502. Server-side configuration inconsistency), `temporarily_unavailable` (503), `server_misconfigured` (500), `unknown_aws_profile` / `invalid_aws_profile` / `batch_not_supported` (400). For a table of responses by cause, see the section on the error to HTTP status mapping in `docs/specs/architecture.md`.
 
-## 署名鍵のローテーション
+## Signing key rotation
 
-Worker の署名鍵（secret `SIGNING_JWK`）を、止めずに入れ替える手順です。STS は JWKS をキャッシュするので、単純に差し替えると切り替え直後に検証が失敗します。そこで、新しい鍵の公開鍵を先に JWKS（`/.well-known/jwks.json`）へ載せ、STS が取り込んでから署名を切り替えます。
+This is the procedure for replacing the Worker's signing key (secret `SIGNING_JWK`) without downtime. STS caches the JWKS, so simply swapping the key would make verification fail right after the switch. Therefore, the new key's public key is first published in the JWKS (`/.well-known/jwks.json`), and signing is switched only after STS has picked it up.
 
 ```
-mise run key:prepare    # 1. 次の鍵を生成（AWSBRIDGE_NEXT_KEY_FILE。既にあれば中止）
-mise run secrets        #    次の鍵の公開鍵を JWKS に載せる（署名は現行の鍵のまま）
-# ── 最低 1 時間（安全側に 24 時間）待つ: STS の JWKS キャッシュが切れるまで ──
-mise run key:activate   # 2. 現行 → PREVIOUS、NEXT → 現行
-mise run secrets        #    署名を新しい鍵に切り替える（JWKS には前の鍵の公開鍵も残る）
-# ── JWT の有効期限（5 分）以上待つ ──
-mise run key:retire     # 3. 前の鍵（PREVIOUS）を削除
-mise run secrets        #    古い公開鍵を JWKS から外す
+mise run key:prepare    # 1. Generate the next key (AWSBRIDGE_NEXT_KEY_FILE. Aborts if it already exists)
+mise run secrets        #    Publish the next key's public key in the JWKS (signing still uses the current key)
+# ── Wait at least 1 hour (24 hours to be safe): until STS's JWKS cache expires ──
+mise run key:activate   # 2. Current → PREVIOUS, NEXT → current
+mise run secrets        #    Switch signing to the new key (the previous key's public key stays in the JWKS)
+# ── Wait at least as long as the JWT lifetime (5 minutes) ──
+mise run key:retire     # 3. Delete the previous key (PREVIOUS)
+mise run secrets        #    Remove the old public key from the JWKS
 ```
 
-- STS の JWKS キャッシュの長さは公開されていないため、待ち時間は目安です。1 回目の待ちは最低 1 時間、確実にするなら 24 時間。2 回目の待ちは JWT の有効期限（5 分）以上で、`/.well-known/jwks.json` の `cache-control: max-age=300` も考慮して余裕を見てください。
-- `mise run secrets` は、`AWSBRIDGE_NEXT_KEY_FILE` / `AWSBRIDGE_PREVIOUS_KEY_FILE`（既定は `AWSBRIDGE_KEY_FILE` の拡張子の前に `.next` / `.previous` を付けたもの）のファイルがあれば、その**公開鍵だけ**を secret `ADDITIONAL_PUBLIC_JWKS` に登録します（秘密成分は secret に入れません）。どちらも無ければ空配列 `[]` を登録し、前回の追加鍵を消します。署名は常に `SIGNING_JWK`（現行の鍵）だけで行います。
-- 鍵ファイルは 0600 で作り、上書きしません。各タスクは操作の前に存在を確認し、条件に合わなければ何も動かさず中止します（`key:prepare`: NEXT が既にある、`key:activate`: NEXT が無い・PREVIOUS が既にある）。`key:retire` は PREVIOUS が無ければ何もしません。
-- `ADDITIONAL_PUBLIC_JWKS` の**要素**が不正（短い鍵・壊れた base64url・RSA 以外など）なら、Worker はその要素だけを捨てて `jwks: invalid additional key skipped (index=<n>)` を warn で出し、署名鍵の公開鍵と正しい追加鍵は返します（JWKS 全体は止まりません）。JSON として壊れている・配列でない場合も、追加鍵なしで 200 を返します。`SIGNING_JWK` が不正なときだけ 500 `server_misconfigured` です。なお捨てられた鍵で署名しても STS は検証できないので、`mise run secrets` は next / previous の鍵ファイルを同じ検証にかけ、通らなければ登録せずに止まります。
-- 仕組みの詳細は `docs/specs/architecture.md` の「署名鍵のローテーション」を参照してください。
+- The length of STS's JWKS cache is not public, so the wait times are guidelines. The first wait is at least 1 hour, or 24 hours to be certain. The second wait is at least the JWT lifetime (5 minutes); also allow some margin for the `cache-control: max-age=300` of `/.well-known/jwks.json`.
+- If the files `AWSBRIDGE_NEXT_KEY_FILE` / `AWSBRIDGE_PREVIOUS_KEY_FILE` (by default, `.next` / `.previous` added before the extension of `AWSBRIDGE_KEY_FILE`) exist, `mise run secrets` registers **only their public keys** in the secret `ADDITIONAL_PUBLIC_JWKS` (no private components go into the secret). If neither exists, it registers an empty array `[]` and clears the previous additional keys. Signing is always done only with `SIGNING_JWK` (the current key).
+- Key files are created with mode 0600 and are never overwritten. Each task checks existence before acting and, if the conditions are not met, aborts without changing anything (`key:prepare`: NEXT already exists; `key:activate`: NEXT is missing or PREVIOUS already exists). `key:retire` does nothing if PREVIOUS is missing.
+- If an **element** of `ADDITIONAL_PUBLIC_JWKS` is invalid (a short key, broken base64url, non-RSA, and so on), the Worker discards only that element, logs `jwks: invalid additional key skipped (index=<n>)` as a warning, and still returns the signing key's public key and the valid additional keys (the JWKS as a whole does not stop). If it is broken as JSON or is not an array, it returns 200 without additional keys. Only when `SIGNING_JWK` is invalid does it return 500 `server_misconfigured`. Note that STS cannot verify a signature made with a discarded key, so `mise run secrets` applies the same validation to the next / previous key files and stops without registering if they do not pass.
+- For details of the mechanism, see the section on signing key rotation in `docs/specs/architecture.md`.
 
-## マルチアカウント
+## Multi-account
 
-複数の AWS アカウントを、MCP の `tools/call` の引数 `aws_profile` で切り替えられます。Worker は選ばれたアカウントのロールを AssumeRoleWithWebIdentity で直接引き受けます（チェーンしません）。誰がどのアカウントを使えるかは各アカウントの信頼ポリシー（`AllowedSubjects` / `DebugAllowedSubjects`）で決まり、許可外は 403 `forbidden` になります。
+You can switch between multiple AWS accounts with the `aws_profile` argument of MCP `tools/call`. The Worker directly assumes the selected account's role with AssumeRoleWithWebIdentity (no chaining). Who can use which account is determined by each account's trust policy (`AllowedSubjects` / `DebugAllowedSubjects`), and anything not permitted results in 403 `forbidden`.
 
-1. 対象アカウントごとに `AWS_PROFILE=<対象> mise run deploy:aws` を流し、出力 `ReadOnlyRoleArn` / `DebugRoleArn` を控える。
-2. 環境変数 `AWS_PROFILES`（必須。wrangler の vars の JSON オブジェクトでも、secret の JSON 文字列でも可）にプロファイル一覧を書く（値はプレースホルダー）。`profiles` は配列で書くのを推奨します。配列の順がそのまま `aws_profile` の enum の順になります。
+1. For each target account, run `AWS_PROFILE=<target> mise run deploy:aws` and note the outputs `ReadOnlyRoleArn` / `DebugRoleArn`.
+2. Write the profile list in the environment variable `AWS_PROFILES` (required. It can be a JSON object in wrangler's vars or a JSON string in a secret) (values are placeholders). Writing `profiles` as an array is recommended. The order of the array becomes the order of the `aws_profile` enum as-is.
 
 ```json
 {
   "default": "dev-readonly",
   "profiles": [
-    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly", "description": "開発（読み取り専用）" },
-    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug", "description": "開発（デバッグ）" },
+    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly", "description": "development (read-only)" },
+    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug", "description": "development (debug)" },
     { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
     { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
   ]
 }
 ```
 
-`profiles` はオブジェクト（`"profiles": { "dev-readonly": { "roleArn": "..." }, ... }`）でも書けます（従来の形式）。ただしオブジェクトのキーの順は、Worker に届くまでの経路で保たれないことがあります（原因は未特定。実環境で、`dev-readonly` → `dev-debug` と書いたのに Portal の enum が名前順になった例があります）。順を意図するなら配列で書いてください。配列形式の `name` は必須で、重複は 500 `server_misconfigured` です。
+`profiles` can also be written as an object (`"profiles": { "dev-readonly": { "roleArn": "..." }, ... }`; the legacy format). However, the order of object keys is sometimes not preserved along the path to the Worker (the cause is unidentified. In a real environment, there was a case where `dev-readonly` → `dev-debug` was written but the Portal's enum ended up in name order). If you intend a particular order, write it as an array. In the array format, `name` is required, and duplicates result in 500 `server_misconfigured`.
 
-- プロファイル名: 英数字・`_`・`-` の 1〜32 文字（超えると 500 `server_misconfigured`）。数字だけの名前はオブジェクトの規則で数値順に先に並ぶので、順を意図するなら避けてください。
-- `default`: 必須。`aws_profile` を省略したとき、および `tools/list` など `tools/call` 以外で使うプロファイル。
-- `tools`: 任意。`aws_profile` の対象ツール（省略時は全ツール。通常は省略でよい）。名前は AWS MCP Server が返す実際のツール名（例: `aws___run_script`。`tools/list` で確認できる）で、存在しない名前を書くと `aws_profile` が効きません。対象外ツールに付いた `aws_profile` は無視して取り除きます。
-- `tools/list` の応答には、対象ツールの `inputSchema.properties.aws_profile`（`enum` は `default` を先頭にして残りを設定の順（配列形式なら配列の順）に、`description` に既定値と各説明）を注入します。これでクライアント（Claude など）がツール定義からプロファイルを選べます（省略可。`required` には入れません）。上流が既に `aws_profile` を持つツールは注入しません。応答を加工できないときは原文のまま返します。MCP Server Portal は管理者の資格で `tools/list` を同期・キャッシュしますが、プロファイル一覧は全員共通なので問題ありません。デプロイやプロファイル変更の後は、Portal 側でツール一覧を再同期してください。
-- `aws_profile` は上流へ送る前に取り除きます。一覧にない名前は 400 `unknown_aws_profile`、文字列以外は 400 `invalid_aws_profile`。
-- JSON-RPC バッチは、対象ツールの `aws_profile` がすべて同じ（省略は `default`）ならそのロールで中継し、異なれば 400 `batch_not_supported`。
-- `AWS_PROFILES` が未設定・不正なら 500 `server_misconfigured`。
-- STS の `RoleSessionName` は `gw-<利用者>-<プロファイル名>` です（CloudTrail で見分けられます）。
+- Profile names: 1 to 32 characters of alphanumerics, `_`, and `-` (exceeding that results in 500 `server_misconfigured`). Names consisting only of digits are ordered first in numeric order by the rules for objects, so avoid them if you intend a particular order.
+- `default`: required. The profile used when `aws_profile` is omitted, and for requests other than `tools/call` such as `tools/list`.
+- `tools`: optional. The tools that `aws_profile` applies to (all tools if omitted; omitting is normally fine). The names are the actual tool names returned by the AWS MCP Server (for example `aws___run_script`; you can check them with `tools/list`), and if you write a name that does not exist, `aws_profile` has no effect. An `aws_profile` attached to a tool that is not a target is ignored and removed.
+- In the `tools/list` response, `inputSchema.properties.aws_profile` is injected into the target tools (the `enum` has `default` first and the rest in the configured order (the array order for the array format), and the `description` has the default and each description). This lets clients (such as Claude) choose a profile from the tool definition (optional; it is not added to `required`). Tools whose upstream definition already has `aws_profile` are not injected. If the response cannot be processed, it is returned as is. The MCP Server Portal syncs and caches `tools/list` with the administrator's credentials, but the profile list is common to everyone, so this is not a problem. After a deployment or a profile change, re-sync the tool list on the Portal side.
+- `aws_profile` is removed before being sent upstream. A name not in the list results in 400 `unknown_aws_profile`, and a non-string results in 400 `invalid_aws_profile`.
+- For a JSON-RPC batch, if the `aws_profile` of all target tools is the same (omitted means `default`), it is relayed with that role; if they differ, it results in 400 `batch_not_supported`.
+- If `AWS_PROFILES` is unset or invalid, the result is 500 `server_misconfigured`.
+- The STS `RoleSessionName` is `gw-<user>-<profile name>` (so you can tell them apart in CloudTrail).
 
-上流自身の開発用デプロイでは、`mise.local.toml` の `AWSBRIDGE_PROFILES`（上記 JSON の文字列）を `mise run secrets` が secret `AWS_PROFILES` として登録します。詳細は `docs/specs/architecture.md` の「マルチアカウント（aws_profile）」を参照してください。
+For the upstream's own development deployment, `mise run secrets` registers `AWSBRIDGE_PROFILES` in `mise.local.toml` (the JSON above as a string) as the secret `AWS_PROFILES`. For details, see the section on multi-account (aws_profile) in `docs/specs/architecture.md`.
 
-## セットアップ用スキル（Claude Code）
+## Setup skill (Claude Code)
 
-下流の private リポジトリを対話しながらセットアップする Claude Code スキルを `.claude/skills/setup-downstream/` に同梱しています。awsbridge を clone すればそのまま使えます（初回はフォルダーの信頼を求められます）。
-
-```
-git clone https://github.com/youyo/awsbridge <下流リポジトリ名>
-cd <下流リポジトリ名> && claude
-/setup-downstream <下流リポジトリ名>
-```
-
-スキルは、リモートの付け替え（`origin` → `upstream`）・下流リポジトリの作成・Worker のデプロイ・CloudFormation・Cloudflare Access/Portal・動作確認を順に案内します。外部に影響する操作は、各段階で実行前に確認します。スキルはコードと一緒に版管理されるので、`git pull --no-rebase upstream main` で下流にも更新が届きます。
-
-## 下流リポジトリでの運用
-
-実運用は private の下流リポジトリで行う想定です。awsbridge を `upstream` として登録して更新を pull し続けます。**上流のファイルは一切編集せず、新しいファイルを足すだけ**で自分の環境にデプロイできます（`git pull` で衝突しません）。以下の `<name>` は環境名です（例 `awsbridge-mcp`）。
-
-1. 下流リポジトリを作り、上流を取り込む。
+A Claude Code skill that interactively sets up a downstream private repository is bundled in `.claude/skills/setup-downstream/`. You can use it as is just by cloning awsbridge (on first use you will be asked to trust the folder).
 
 ```
-git clone <awsbridge の URL> my-awsbridge && cd my-awsbridge
+git clone https://github.com/youyo/awsbridge <downstream repository name>
+cd <downstream repository name> && claude
+/setup-downstream <downstream repository name>
+```
+
+The skill guides you in order through re-pointing the remotes (`origin` → `upstream`), creating the downstream repository, deploying the Worker, CloudFormation, Cloudflare Access/Portal, and verification. For operations that affect external systems, it asks for confirmation before running at each stage. The skill is version-controlled together with the code, so updates reach the downstream repository through `git pull --no-rebase upstream main`.
+
+## Operating in a downstream repository
+
+Production use is expected to happen in a private downstream repository. You register awsbridge as `upstream` and keep pulling updates. **You never edit upstream files; you only add new files** to deploy to your own environment (so `git pull` does not conflict). In the following, `<name>` is the environment name (for example `awsbridge-mcp`).
+
+1. Create the downstream repository and bring in the upstream.
+
+```
+git clone <awsbridge URL> my-awsbridge && cd my-awsbridge
 git remote rename origin upstream
-git remote add origin <private リポジトリの URL>   # 下流の push 先
+git remote add origin <private repository URL>   # The downstream push destination
 ```
 
-2. `wrangler.<name>.jsonc` を足す（コミットする。ロール ARN は秘密ではない）。`main` などは上流の `wrangler.jsonc` と同じ値にし、`name` / `workers_dev` / `vars.AWS_PROFILES` だけ自分用にします。env セクションは使いません（値はダミーです）。
+2. Add `wrangler.<name>.jsonc` (commit it. Role ARNs are not secrets). Keep `main` and the others the same as the upstream `wrangler.jsonc`, and customize only `name` / `workers_dev` / `vars.AWS_PROFILES`. Do not use the env section (the values are dummies).
 
 ```jsonc
 {
@@ -232,17 +234,17 @@ git remote add origin <private リポジトリの URL>   # 下流の push 先
 }
 ```
 
-3. 下流用の mise 設定ファイルを足す。`mise.<name>.toml` と、それを有効にする `.miserc.toml` の 2 つです（どちらもコミットする。秘密値は入れない）。
+3. Add the downstream mise config files: `mise.<name>.toml` and the `.miserc.toml` that enables it (commit both. Do not put secret values in them).
 
 ```toml
 # mise.awsbridge-mcp.toml
 [env]
 AWSBRIDGE_WRANGLER_CONFIG = "wrangler.awsbridge-mcp.jsonc"
-AWSBRIDGE_WRANGLER_ENV = ""                      # 空 = --env を付けない（未設定だと上流の dev になる）
+AWSBRIDGE_WRANGLER_ENV = ""                      # Empty = do not add --env (if unset, the upstream's dev is used)
 AWSBRIDGE_STACK_NAME = "awsbridge-mcp"
-AWSBRIDGE_KEY_FILE = ".secrets/awsbridge-mcp-signing-key.json"   # 環境ごとに別の鍵にする
-# AWS_PROFILE = "<デプロイに使う AWS CLI プロファイル>"
-# AWSBRIDGE_AUDIENCE = "awsbridge"               # 変える場合は Worker の var STS_AUDIENCE も揃える
+AWSBRIDGE_KEY_FILE = ".secrets/awsbridge-mcp-signing-key.json"   # Use a separate key per environment
+# AWS_PROFILE = "<AWS CLI profile used for deployment>"
+# AWSBRIDGE_AUDIENCE = "awsbridge"               # If you change it, also match the Worker's var STS_AUDIENCE
 ```
 
 ```toml
@@ -250,25 +252,25 @@ AWSBRIDGE_KEY_FILE = ".secrets/awsbridge-mcp-signing-key.json"   # 環境ごと�
 env = ["awsbridge-mcp"]
 ```
 
-4. 秘密値と環境固有値を `mise.local.toml`（gitignore。コミットしない）に書く。`AWSBRIDGE_ISSUER`（Worker の URL）、`AWSBRIDGE_ALLOWED_SUBJECTS`、`AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS`、`AWSBRIDGE_ACCESS_TEAM_DOMAIN`、`AWSBRIDGE_ACCESS_AUD` など（上の「`mise.local.toml` の変数」を参照）。`AWS_PROFILES` を `vars` で持つので `AWSBRIDGE_PROFILES` は設定しない（`secrets` が `AWS_PROFILES` を secret として二重登録しません）。
+4. Write secret values and environment-specific values in `mise.local.toml` (gitignored. Do not commit it): `AWSBRIDGE_ISSUER` (the Worker's URL), `AWSBRIDGE_ALLOWED_SUBJECTS`, `AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS`, `AWSBRIDGE_ACCESS_TEAM_DOMAIN`, `AWSBRIDGE_ACCESS_AUD`, and so on (see "Variables in `mise.local.toml`" above). Because `AWS_PROFILES` is kept in `vars`, do not set `AWSBRIDGE_PROFILES` (so that `secrets` does not register `AWS_PROFILES` a second time as a secret).
 
-5. デプロイする（初回）。
+5. Deploy (first time).
 
 ```
-mise run keygen          # AWSBRIDGE_KEY_FILE に署名鍵を生成
-mise run deploy:worker   # wrangler.<name>.jsonc で Worker をデプロイ → secrets を登録
-AWS_PROFILE=<対象> mise run deploy:aws   # アカウントごとに CloudFormation を流し、出力 ReadOnlyRoleArn / DebugRoleArn を wrangler.<name>.jsonc の AWS_PROFILES に書く
+mise run keygen          # Generate the signing key at AWSBRIDGE_KEY_FILE
+mise run deploy:worker   # Deploy the Worker with wrangler.<name>.jsonc → register secrets
+AWS_PROFILE=<target> mise run deploy:aws   # Deploy CloudFormation per account, and write the outputs ReadOnlyRoleArn / DebugRoleArn into AWS_PROFILES in wrangler.<name>.jsonc
 ```
 
-6. 上流の更新を取り込む。
+6. Pull in upstream updates.
 
 ```
 git pull --no-rebase upstream main
 ```
 
-注意:
+Notes:
 
-- **署名鍵は環境ごとに分ける。** 上流の開発用デプロイと同じ鍵・同じ issuer を使い回さないでください（`AWSBRIDGE_KEY_FILE` を別パスにする）。鍵の入れ替えは「署名鍵のローテーション」の手順（`mise run key:prepare` → `secrets` → 待つ → `key:activate` → `secrets` → 待つ → `key:retire` → `secrets`）で止めずに行えます。
-- **issuer（Worker の URL）が環境ごとに変わる**ので、IAM OIDC プロバイダーとロールを作る CloudFormation スタックも環境ごとに別です（`AWSBRIDGE_STACK_NAME` を分ける）。同じアカウントに複数の環境を置くときはロール名も分ける（`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME`）。
-- mise は `mise.<name>.toml` を `mise.toml` より、`mise.local.toml` を `mise.<name>.toml` より優先します。`.config/mise/conf.d/*.toml` は `mise.toml` に負けるので使えません。
-- 上流の `wrangler.jsonc`（`name: awsbridge` / `env.dev`）は上流の開発用です。下流では使いません。
+- **Keep signing keys separate per environment.** Do not reuse the same key and the same issuer as the upstream's development deployment (use a different path for `AWSBRIDGE_KEY_FILE`). You can swap keys without downtime by following the "Signing key rotation" procedure (`mise run key:prepare` → `secrets` → wait → `key:activate` → `secrets` → wait → `key:retire` → `secrets`).
+- **The issuer (the Worker's URL) differs per environment**, so the CloudFormation stack that creates the IAM OIDC provider and roles is also separate per environment (use different values of `AWSBRIDGE_STACK_NAME`). When placing multiple environments in the same account, also separate the role names (`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME`).
+- mise gives `mise.<name>.toml` precedence over `mise.toml`, and `mise.local.toml` precedence over `mise.<name>.toml`. `.config/mise/conf.d/*.toml` loses to `mise.toml`, so it cannot be used.
+- The upstream `wrangler.jsonc` (`name: awsbridge` / `env.dev`) is for the upstream's development use. Do not use it downstream.
