@@ -96,6 +96,22 @@ export function profileNames(config: ProfilesConfig): string[] {
   return [config.default, ...rest];
 }
 
+/** list_aws_profiles が返す内容。roleArn（アカウント ID を含む）は絶対に含めない。 */
+export type ProfilesListing = {
+  default: string;
+  profiles: { name: string; description?: string }[];
+};
+
+export function listProfiles(config: ProfilesConfig): ProfilesListing {
+  return {
+    default: config.default,
+    profiles: profileNames(config).map((name) => {
+      const d = config.profiles[name]?.description;
+      return d !== undefined ? { name, description: d } : { name };
+    }),
+  };
+}
+
 // isolate 内キャッシュ（オブジェクトは同一参照、文字列は直近の 1 件）
 const objCache = new WeakMap<object, ProfilesConfig>();
 let strCache: { raw: string; config: ProfilesConfig } | undefined;

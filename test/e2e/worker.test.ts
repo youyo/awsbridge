@@ -612,20 +612,31 @@ describe("マルチアカウント（aws_profile）", () => {
     expect(JSON.parse((mcpSeen[0] as McpSeen).body).params._meta.AWS_REGION).toBe("ap-northeast-1");
   });
 
-  it("未知の aws_profile は 400 unknown_aws_profile で、STS にも上流にも行かない", async () => {
+  it("未知の aws_profile は 200 + isError で、使える一覧と既定を含み、STS にも上流にも行かない", async () => {
     stsRoles = [];
     mcpSeen = [];
     const res = await callTool(await accessJwt(ALLOWED_SUB), { aws_profile: "nope" });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: "unknown_aws_profile" });
+    expect(res.status).toBe(200);
+    const raw = await res.text();
+    expect(raw).not.toContain("arn:aws");
+    const body = JSON.parse(raw);
+    expect(body.id).toBe(9);
+    expect(body.result.isError).toBe(true);
+    const text = body.result.content[0]?.text ?? "";
+    expect(text).toContain("unknown_aws_profile");
+    for (const n of ["a", "z", "b"]) expect(text).toContain(n);
     expect(stsRoles).toHaveLength(0);
     expect(mcpSeen).toHaveLength(0);
   });
 
-  it("文字列以外は 400 invalid_aws_profile", async () => {
+  it("文字列以外は 200 + isError（invalid_aws_profile）", async () => {
     const res = await callTool(await accessJwt(ALLOWED_SUB), { aws_profile: 1 });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: "invalid_aws_profile" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { isError: boolean; content: { text: string }[] };
+    };
+    expect(body.result.isError).toBe(true);
+    expect(body.result.content[0]?.text).toContain("invalid_aws_profile");
   });
 
   it("tools/list は default のロール", async () => {
@@ -636,7 +647,7 @@ describe("マルチアカウント（aws_profile）", () => {
     expect(stsRoles).toEqual([ROLE_A]);
   });
 
-  it("tools/list 応答の対象ツールに aws_profile の enum が入り、その値で tools/call すると対応するロールが使われる", async () => {
+  it("通し: tools/list（enum なし + list_aws_profiles）→ list_aws_profiles → 誤った名前で isError と一覧 → 正しい名前で成功", async () => {
     mcpSeen = [];
     stsRoles = [];
     const token = await accessJwt(PROFILE_SUBS[0] as string);
@@ -648,14 +659,71 @@ describe("マルチアカウント（aws_profile）", () => {
     expect(mcpSeen[0]?.headers.accept).toBe("application/json");
     const [callAws, other] = body.result.tools;
     const prop = callAws?.inputSchema?.properties?.aws_profile;
-    // default（a）が先頭、残りは設定（配列）の順: z → b
-    expect(prop.enum).toEqual(["a", "z", "b"]);
-    expect(prop.description).toContain("b: second");
+    expect(prop.type).toBe("string");
+    expect(prop.enum).toBeUndefined();
     expect(other?.inputSchema).toBeUndefined();
+    expect(body.result.tools.map((t) => t.name)).toContain("list_aws_profiles");
 
+    // list_aws_profiles は Worker が応答する（STS・上流に行かない）
     stsRoles = [];
-    expect((await callTool(token, { aws_profile: prop.enum[2] })).status).toBe(200);
+    mcpSeen = [];
+    const listRes = await callTool(token, {}, "list_aws_profiles");
+    expect(listRes.status).toBe(200);
+    const raw = await listRes.text();
+    expect(raw).not.toContain("arn:aws");
+    const listed = JSON.parse(raw).result.structuredContent as {
+      default: string;
+      profiles: { name: string; description?: string }[];
+    };
+    expect(listed.default).toBe("a");
+    expect(listed.profiles.map((p) => p.name)).toEqual(["a", "z", "b"]);
+    expect(listed.profiles[2]?.description).toBe("second");
+    expect(stsRoles).toHaveLength(0);
+    expect(mcpSeen).toHaveLength(0);
+
+    // 誤った名前 → isError と一覧
+    const bad = JSON.parse(await (await callTool(token, { aws_profile: "typo" })).text());
+    expect(bad.result.isError).toBe(true);
+    expect(bad.result.content[0].text).toContain("unknown_aws_profile");
+    expect(bad.result.content[0].text).toContain("z");
+    expect(stsRoles).toHaveLength(0);
+
+    // 一覧から選んだ正しい名前 → 成功し対応するロール
+    const okRes = await callTool(token, {
+      aws_profile: (listed.profiles[2] as { name: string }).name,
+    });
+    expect(okRes.status).toBe(200);
     expect(stsRoles).toContain(ROLE_B);
+  });
+
+  it("list_aws_profiles は未認証だと 401", async () => {
+    const res = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "list_aws_profiles" },
+      }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("list_aws_profiles を含むバッチは 400 batch_not_supported", async () => {
+    const res = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-access-jwt-assertion": await accessJwt(ALLOWED_SUB),
+      },
+      body: JSON.stringify([
+        { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_aws_profiles" } },
+        { jsonrpc: "2.0", id: 2, method: "tools/list" },
+      ]),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "batch_not_supported" });
   });
 
   it("バッチで aws_profile が混在すれば 400 batch_not_supported", async () => {

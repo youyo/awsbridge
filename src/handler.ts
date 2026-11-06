@@ -5,9 +5,11 @@ import { AccessJwtError, accessTokenFromRequest, verifyAccessJwt } from "./acces
 import { publicJwkOf } from "./keys";
 import { buildDiscovery, buildSessionName, publicJwksTolerant, signStsToken } from "./oidc";
 import {
+  listProfiles,
   type ProfilesConfig,
   ProfilesConfigError,
   parseProfilesConfig,
+  profileNames,
   selectProfile,
 } from "./profiles";
 import { isJsonContentType, proxyToAwsMcp } from "./proxy";
@@ -17,6 +19,7 @@ import {
   type CredentialCache,
   StsError,
 } from "./sts";
+import { LIST_PROFILES_TOOL } from "./toolslist";
 
 export interface Env {
   // secret
@@ -78,6 +81,22 @@ async function handleWellKnown(pathname: string, env: Env): Promise<Response> {
   }
   return json(await publicJwksTolerant(jwk, env.ADDITIONAL_PUBLIC_JWKS));
 }
+
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+const isToolsCallOf = (msg: unknown, name: string): msg is Record<string, unknown> =>
+  isObj(msg) && msg.method === "tools/call" && isObj(msg.params) && msg.params.name === name;
+
+/** 単一の tools/call なら JSON-RPC の id を持つ要求として返す（バッチは undefined）。 */
+const singleToolsCall = (rpc: unknown): Record<string, unknown> | undefined =>
+  isObj(rpc) && rpc.method === "tools/call" ? rpc : undefined;
+
+const rpcResult = (id: unknown, result: unknown) =>
+  new Response(JSON.stringify({ jsonrpc: "2.0", id: id ?? null, result }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
 
 function parseMaxAge(v: string | undefined): number | undefined | "invalid" {
   if (v === undefined || v === "") return undefined;
@@ -163,8 +182,27 @@ async function handleMcp(request: Request, env: Env, deps: HandlerDeps): Promise
       rpc = undefined;
     }
   }
+  // list_aws_profiles は Worker が応答する（認証後・プロファイル選択と STS の前）。バッチは非対応
+  if (Array.isArray(rpc) && rpc.some((m) => isToolsCallOf(m, LIST_PROFILES_TOOL))) {
+    return errorBody("batch_not_supported", 400);
+  }
+  if (isToolsCallOf(rpc, LIST_PROFILES_TOOL)) {
+    const listing = listProfiles(profiles);
+    return rpcResult(rpc.id, {
+      content: [{ type: "text", text: JSON.stringify(listing) }],
+      structuredContent: listing,
+    });
+  }
   const selection = selectProfile(profiles, rpc);
-  if (selection.kind === "error") return errorBody(selection.code, 400);
+  if (selection.kind === "error") {
+    const call = singleToolsCall(rpc);
+    // 単一の tools/call の aws_profile 不正は、LLM が読めるツール結果で返す（使える一覧つき。roleArn は含めない）
+    if (call && selection.code !== "batch_not_supported") {
+      const text = `${selection.code}: aws_profile に指定できるプロファイル: ${profileNames(profiles).join(", ")}。省略すると既定の ${profiles.default} を使う。一覧は list_aws_profiles ツールでも取得できる。`;
+      return rpcResult(call.id, { isError: true, content: [{ type: "text", text }] });
+    }
+    return errorBody(selection.code, 400);
+  }
   const roleArn = selection.roleArn;
 
   const cacheKey = { identity: who.identity, roleArn };

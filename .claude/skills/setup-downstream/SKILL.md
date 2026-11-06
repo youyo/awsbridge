@@ -27,7 +27,7 @@ awsbridge（public）を `upstream` とする下流の private リポジトリ�
    - 既存でなければ `gh repo create <owner>/<name> --private` を実行する。既にあれば作らずにそれを使う。
    - 未付け替えなら、`git remote rename origin upstream` で上流を `upstream` にして、`git remote add origin <下流の URL>` で下流を `origin` に足す。
 3. 下流のファイルを作る。値は手順 1 の入力で埋める。ロール ARN は手順 5 で決まるまで仮に空にしておく。
-   - `wrangler.<name>.jsonc`: 上流の `wrangler.jsonc` から `compatibility_date` / `compatibility_flags` / `main` / `observability` を写し、`name`（Worker 名）、`workers_dev: true`、`vars.AWS_PROFILES`（`default` と `profiles`。`profiles` は `[{ "name": "<env>-readonly", "roleArn": "...", "description": "..." }, ...]` の配列で書く。配列の順がそのまま `aws_profile` の enum の順になる。オブジェクト形式も受け付けるが、キーの順が途中で保たれないことがある。`tools` は通常省略。指定するなら AWS MCP Server の実際のツール名（例 `aws___run_script`））を書く。`env` セクションは使わない。
+   - `wrangler.<name>.jsonc`: 上流の `wrangler.jsonc` から `compatibility_date` / `compatibility_flags` / `main` / `observability` を写し、`name`（Worker 名）、`workers_dev: true`、`vars.AWS_PROFILES`（`default` と `profiles`。`profiles` は `[{ "name": "<env>-readonly", "roleArn": "...", "description": "..." }, ...]` の配列で書く。配列の順が `list_aws_profiles` の一覧の順になる（`default` が先頭）。オブジェクト形式も受け付けるが、キーの順が途中で保たれないことがある。`tools` は通常省略。指定するなら AWS MCP Server の実際のツール名（例 `aws___run_script`））を書く。`env` セクションは使わない。
    - `mise.<name>.toml`: `[env]` に `AWSBRIDGE_WRANGLER_CONFIG = "wrangler.<name>.jsonc"`、`AWSBRIDGE_WRANGLER_ENV = ""`（空 = `--env` を付けない）、`AWSBRIDGE_STACK_NAME = "<name>"`、`AWSBRIDGE_KEY_FILE = ".secrets/<name>-signing-key.json"` を書く。
    - `.miserc.toml`: `env = ["<name>"]`。
    - `mise.local.toml`（gitignore 済みか確認する。コミットしない）: `AWSBRIDGE_ALLOWED_SUBJECTS` / `AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS` / `AWSBRIDGE_ACCESS_TEAM_DOMAIN` / `AWSBRIDGE_POC_SUBJECT`（動作確認に使う利用者）と、必要なら `AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS` を書く。`AWSBRIDGE_ISSUER` は Worker をデプロイしてから決まるので、ここではまだ書かない。`AWS_PROFILES` を `vars` で持つので `AWSBRIDGE_PROFILES` は書かない。
@@ -54,7 +54,8 @@ awsbridge（public）を `upstream` とする下流の private リポジトリ�
    - Portal 経由の正常系（`tools/list`、`aws_profile` を付けた `tools/call`）は利用者に試してもらう。
 8. 下流リポジトリにコミットし、利用者の確認後に push する。
    - コミットするのは `wrangler.<name>.jsonc` / `mise.<name>.toml` / `.miserc.toml`。`mise.local.toml` と `.secrets/` は含まれていないことを `git status` で確認する。
-   - `mise run deploy:worker` のあとは、Portal のツール一覧を再同期する（Cloudflare ダッシュボードの AI controls → MCP servers でこのサーバーを同期）。Portal は `tools/list` をキャッシュしており、注入された `aws_profile` の enum（プロファイル一覧）は再同期するまで反映されない。
+   - Portal のツール一覧の再同期（Cloudflare ダッシュボードの AI controls → MCP servers でこのサーバーを同期）と claude.ai のコネクタ再接続が要るのは、上流（AWS MCP Server）のツール構成が変わったとき、または awsbridge 自体の更新で注入するスキーマが変わったときだけ。`aws_profile` の選択肢はスキーマの enum ではなく `list_aws_profiles` ツールで実行時に取得するので、プロファイルを追加するだけなら再同期も再接続も不要（`mise run deploy:worker` 後すぐ反映される）。
+   - ただし、`aws_profile` の enum を外して `list_aws_profiles` を追加した今回の更新を取り込む初回だけは、`mise run deploy:worker` のあとに Portal の再同期と claude.ai の再接続を 1 回行う。
    - 上流の更新を取り込むときは `git pull --no-rebase upstream main` （下流のコミットを付け直さないよう rebase せず merge する。push 済みの履歴と食い違わない）→ `mise run test` → `mise run deploy:worker`。
 
 ## 止まる条件

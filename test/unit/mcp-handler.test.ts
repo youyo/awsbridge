@@ -465,17 +465,49 @@ describe("aws_profile によるアカウント切り替え", () => {
     expect(sent.params._meta).toEqual({ other: 1, AWS_REGION: "us-west-2" });
   });
 
-  it("未知の aws_profile は 400 unknown_aws_profile（STS・上流を呼ばない）", async () => {
+  it("未知の aws_profile は 200 + isError の JSON-RPC 結果で、コード・使える一覧・既定を含む（STS・上流を呼ばない）", async () => {
     const { handler, calls } = makeDeps();
     const res = await handler(await post(toolCall({ aws_profile: "nope" })), makeEnv());
-    await expectError(res, 400, "unknown_aws_profile");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const body = (await res.json()) as {
+      jsonrpc: string;
+      id: unknown;
+      result: { isError: boolean; content: { type: string; text: string }[] };
+    };
+    expect(body.jsonrpc).toBe("2.0");
+    expect(body.id).toBe(1);
+    expect(body.result.isError).toBe(true);
+    const text = body.result.content[0]?.text ?? "";
+    expect(body.result.content[0]?.type).toBe("text");
+    expect(text).toContain("unknown_aws_profile");
+    expect(text).toContain("dev");
+    expect(text).toContain("prod");
+    expect(text).not.toContain("111111111111");
+    expect(text).not.toContain("arn:aws");
     expect(calls).toHaveLength(0);
   });
 
-  it("文字列以外は 400 invalid_aws_profile", async () => {
+  it("文字列以外は 200 + isError（invalid_aws_profile）", async () => {
     const { handler, calls } = makeDeps();
     const res = await handler(await post(toolCall({ aws_profile: 1 })), makeEnv());
-    await expectError(res, 400, "invalid_aws_profile");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { isError: boolean; content: { text: string }[] };
+    };
+    expect(body.result.isError).toBe(true);
+    expect(body.result.content[0]?.text).toContain("invalid_aws_profile");
+    expect(body.result.content[0]?.text).toContain("prod");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("バッチ中の未知の aws_profile は従来どおり 400 {error}", async () => {
+    const { handler, calls } = makeDeps();
+    const res = await handler(
+      await post([toolCall({ aws_profile: "nope" }), toolCall({ aws_profile: "dev" })]),
+      makeEnv(),
+    );
+    await expectError(res, 400, "unknown_aws_profile");
     expect(calls).toHaveLength(0);
   });
 
@@ -650,7 +682,7 @@ describe("aws_profile によるアカウント切り替え", () => {
 });
 
 describe("/mcp tools/list への aws_profile 注入", () => {
-  it("Worker 経由の tools/list 応答に AWS_PROFILES の enum が入り、上流へは accept: application/json", async () => {
+  it("Worker 経由の tools/list 応答に enum なしの aws_profile と list_aws_profiles が入り、上流へは accept: application/json", async () => {
     const calls: Request[] = [];
     const fakeFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = input instanceof Request ? input : new Request(input, init);
@@ -676,44 +708,74 @@ describe("/mcp tools/list への aws_profile 注入", () => {
     expect(res.status).toBe(200);
     expect(calls[0]?.headers.get("accept")).toBe("application/json");
     const body = (await res.json()) as { result: { tools: { inputSchema?: any }[] } };
-    expect(body.result.tools[0]?.inputSchema.properties.aws_profile.enum).toEqual(["dev", "prod"]);
+    expect(body.result.tools[0]?.inputSchema.properties.aws_profile.type).toBe("string");
+    expect(body.result.tools[0]?.inputSchema.properties.aws_profile.enum).toBeUndefined();
     // PROFILES.tools = ["call_aws"] なので other には入らない
     expect(body.result.tools[1]?.inputSchema).toBeUndefined();
+    expect((body.result.tools as { name: string }[]).map((t) => t.name)).toContain(
+      "list_aws_profiles",
+    );
   });
+});
 
-  it("配列形式の profiles は enum が default 先頭・残りは配列順", async () => {
-    const fakeFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const request = input instanceof Request ? input : new Request(input, init);
-      if (request.url.startsWith(STS)) return new Response(creds());
-      return new Response(
-        JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "call_aws" }] } }),
-        { headers: { "content-type": "application/json" } },
-      );
-    }) as unknown as typeof fetch;
-    const handler = createHandler({
-      fetch: fakeFetch,
-      getKey: accessJwks,
-      cache: createCredentialCache(),
-    });
-    const env = makeEnv({
+describe("/mcp list_aws_profiles（Worker が応答）", () => {
+  const listCall = (id: unknown = 7, args?: unknown) => ({
+    jsonrpc: "2.0",
+    id,
+    method: "tools/call",
+    params: { name: "list_aws_profiles", ...(args !== undefined ? { arguments: args } : {}) },
+  });
+  const env = () =>
+    makeEnv({
       AWS_PROFILES: {
         default: "dev-readonly",
         profiles: [
-          { name: "prod-readonly", roleArn: ROLE_PROD },
+          { name: "prod-readonly", roleArn: ROLE_PROD, description: "本番" },
           { name: "dev-readonly", roleArn: ROLE },
-          { name: "dev-debug", roleArn: ROLE },
+          { name: "dev-debug", roleArn: ROLE, description: "デバッグ" },
         ],
       } as never,
     });
-    const res = await handler(await mcpRequest(), env);
-    const body = (await res.json()) as {
-      result: { tools: { inputSchema?: { properties: { aws_profile: { enum: string[] } } } }[] };
+
+  it("認証後に Worker が応答する。default 先頭・description 付き・roleArn なし・STS/上流は呼ばない", async () => {
+    const { handler, calls } = makeDeps();
+    const res = await handler(await post(listCall(7, {})), env());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const raw = await res.text();
+    expect(raw).not.toContain("arn:aws");
+    expect(raw).not.toContain("111111111111");
+    expect(raw).not.toContain("222222222222");
+    const body = JSON.parse(raw);
+    expect(body.jsonrpc).toBe("2.0");
+    expect(body.id).toBe(7);
+    const payload = {
+      default: "dev-readonly",
+      profiles: [
+        { name: "dev-readonly" },
+        { name: "prod-readonly", description: "本番" },
+        { name: "dev-debug", description: "デバッグ" },
+      ],
     };
-    expect(body.result.tools[0]?.inputSchema?.properties.aws_profile.enum).toEqual([
-      "dev-readonly",
-      "prod-readonly",
-      "dev-debug",
-    ]);
+    expect(body.result.structuredContent).toEqual(payload);
+    expect(body.result.content).toHaveLength(1);
+    expect(body.result.content[0]?.type).toBe("text");
+    expect(JSON.parse(body.result.content[0]?.text)).toEqual(payload);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("未認証なら 401（列挙させない）", async () => {
+    const { handler, calls } = makeDeps();
+    const res = await handler(await post(listCall(), null), env());
+    await expectError(res, 401, "unauthorized");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("list_aws_profiles を含むバッチは 400 batch_not_supported", async () => {
+    const { handler, calls } = makeDeps();
+    const res = await handler(await post([listCall(1), toolCall({})]), env());
+    await expectError(res, 400, "batch_not_supported");
+    expect(calls).toHaveLength(0);
   });
 });
 

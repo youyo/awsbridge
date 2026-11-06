@@ -160,7 +160,10 @@ export async function proxyToAwsMcp(request: Request, opts: ProxyOptions): Promi
   try {
     const upstream = await doFetch(signed);
     if (rewrite && opts.profiles && listRpc) {
-      const res = await rewriteToolsListResponse(upstream, opts.profiles, listRpc.id);
+      // params.cursor がある（2 ページ目以降）ときは list_aws_profiles を追加しない
+      const params = listRpc.params;
+      const paged = isPlainObject(params) && params.cursor !== undefined && params.cursor !== null;
+      const res = await rewriteToolsListResponse(upstream, opts.profiles, listRpc.id, !paged);
       const h = new Headers(res.headers);
       for (const name of DROP_RESPONSE_HEADERS) h.delete(name);
       return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });

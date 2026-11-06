@@ -158,9 +158,9 @@ Access JWT の実物（開発環境）で確認した claim:
 }
 ```
 
-- `profiles` は**配列（推奨）**でもオブジェクト（`{ "<名前>": { "roleArn": ... } }`）でもよい。配列の順がそのまま `aws_profile` の enum の順になる。オブジェクト形式は従来どおり受け付け、その場合はキーの順になる。
+- `profiles` は**配列（推奨）**でもオブジェクト（`{ "<名前>": { "roleArn": ... } }`）でもよい。配列の順が `list_aws_profiles` の返す一覧の順になる（`default` は常に先頭）。オブジェクト形式は従来どおり受け付け、その場合はキーの順になる。
   - 配列形式を推奨する理由: 実環境で、vars のオブジェクトに `dev-readonly` → `dev-debug` の順で書いたのに、Portal に同期された enum が名前順（`dev-debug`, `dev-readonly`）になった。Worker のコード（`src/profiles.ts` / `src/toolslist.ts`）は順を変えない（unit テストで確認済み）。原因は特定できていないが、Worker に届く前の経路（vars の保存・受け渡しなど）でオブジェクトのキーが並べ替えられた可能性が高い（推定）。配列なら順が値の一部なので、どの経路でも保たれる。
-  - さらに enum は**常に `default` を先頭**にし、残りを設定の順に並べる。並べ替えが起きても `default` は先頭に来る。
+  - さらに一覧は**常に `default` を先頭**にし、残りを設定の順に並べる。並べ替えが起きても `default` は先頭に来る。
   - 配列形式の `name` は必須で、重複は 500 `server_misconfigured`（種別 `duplicate`）。
   - 名前が数字だけのプロファイル（`"1"`, `"10"` など）は、JS のオブジェクトの規則で数値順に先に並ぶ。順を意図するなら数字だけの名前は避ける。
 - `default`: 必須。`profiles` の名前。`aws_profile` を指定しないときに使う。
@@ -179,18 +179,28 @@ Access JWT の実物（開発環境）で確認した claim:
 
 `aws_profile` は上流へ送る前にすべての `tools/call` の arguments から取り除く（対象・対象外とも）。本文は handler で 1 回だけ読み、パース結果に対して `aws_profile` の除去と `_meta.AWS_REGION` の注入を行い、直列化は 1 回にする。`/mcp` の POST は Content-Type が `application/json` のものだけ受け付けるので（後述「CSRF 対策」）、本文が JSON としてパースできない場合（fail-safe）だけ `default` でそのまま中継する。
 
-エラー: `aws_profile` が文字列でない → 400 `invalid_aws_profile`、一覧にない（`__proto__` 等の prototype 由来の名前も不可）→ 400 `unknown_aws_profile`。どちらも認証後に判定し、STS・上流は呼ばない。
+エラー: `aws_profile` が文字列でない → `invalid_aws_profile`、一覧にない（`__proto__` 等の prototype 由来の名前も不可）→ `unknown_aws_profile`。どちらも認証後に判定し、STS・上流は呼ばない。単一の `tools/call` のときは HTTP 200 の JSON-RPC 結果 `{ result: { isError: true, content: [{ type: "text", text }] } }` で返す（`text` にエラーコード・使えるプロファイル名の一覧・既定のプロファイル名を含む。`roleArn` は含めない）。LLM が本文を読んで 1 回で直せるようにするため。バッチのときは従来どおり 400 の `{"error": "<code>"}`。
+
+### list_aws_profiles
+
+`aws_profile` の選択肢はツールスキーマに持たせず、Worker が提供する `list_aws_profiles` ツールで実行時に取得させる。
+
+- `tools/call` で `params.name === "list_aws_profiles"` の単一リクエストは、Access JWT の検証後・プロファイル選択と STS の前に Worker が応答する（未認証では列挙させない。STS・上流は呼ばない）。
+- 応答: HTTP 200・`application/json`・`{ jsonrpc, id, result: { content: [{ type: "text", text: <JSON 文字列> }], structuredContent: <同じオブジェクト> } }`。内容は `{ default, profiles: [{ name, description? }] }`（`default` 先頭、残りは設定の順）。**`roleArn` は含めない**（アカウント ID が漏れるため）。
+- `list_aws_profiles` を含む JSON-RPC バッチは 400 `batch_not_supported`。
+- 一覧は全利用者共通（利用者ごとには絞らない。認可は各アカウントの信頼ポリシー）。戻り値は毎回最新なので、`AWS_PROFILES` を変えてデプロイした直後から反映される。
 
 ### tools/list への注入
 
 クライアントがツール定義から `aws_profile` を選べるよう、`tools/list` の応答に注入する（`src/toolslist.ts`）。
 
 - 対象: POST の単一 JSON-RPC リクエストで `method === "tools/list"`（バッチは対象外）。上流へは `accept: application/json` で要求し、JSON 応答を得る。
-- 注入内容: 対象ツール（`tools` 設定のもの。省略時は全ツール）の `inputSchema.properties.aws_profile = { type: "string", enum: [プロファイル名（設定順）], description }`。`required` には加えない。`inputSchema` / `properties` が無ければ `type: "object"` で作る。`description` は既定値と各プロファイルの説明（長い説明は切り詰め、全体を数百文字に収める）。
+- 注入内容: 対象ツール（`tools` 設定のもの。省略時は全ツール）の `inputSchema.properties.aws_profile = { type: "string", description }`。**`enum` は持たせない**。`description` は固定文字列で、既定のプロファイル名もプロファイル名も入れない（「使えるプロファイルは `list_aws_profiles` ツールで取得する。省略すると既定のプロファイルを使う」）。これにより、スキーマは `AWS_PROFILES` に依存せず、プロファイルを追加しても変わらない（claude.ai がツール定義をキャッシュしても、再同期・再接続が要らない）。`required` には加えない。`inputSchema` / `properties` が無ければ `type: "object"` で作る。
+- `list_aws_profiles` ツール定義（`name` / `description` / `inputSchema: { type: "object", properties: {} }` / `annotations: { readOnlyHint: true }`）を `result.tools` に追加する（`tools` 設定に関係なく）。上流に同名ツールがあれば追加せず `console.warn("tools_list: list_aws_profiles conflict")`。`params.cursor` がある（2 ページ目以降の）`tools/list` では追加しない（`aws_profile` の注入は各ページで行う）。
 - 既に `aws_profile` を持つツールは注入せず `console.warn("tools_list: aws_profile conflict")`。
 - 応答の扱い: `application/json` は注入して返す。`text/event-stream`（上流が Accept を無視した場合）は、イベントが 1 つで `data:` の JSON-RPC 応答の id が一致し `result.tools` を持つときだけ注入して再シリアライズする。それ以外（複数イベント・パース不能・id 不一致）、非 200、その他の content-type、壊れた JSON は原文のまま流す（fail-safe。認可は `tools/call` 側なので、注入失敗で経路を止めない）。
 - 加工時は `content-encoding` と `content-length` を応答から外す（Workers の fetch は gzip を展開済みで、長さも変わるため）。
-- Portal 背後では、Portal が管理者資格で `tools/list` を同期・キャッシュするが、プロファイル一覧は全員共通なので問題ない。デプロイやプロファイル変更の後は Portal 側でツール一覧の再同期が必要。
+- Portal 背後では、Portal が管理者資格で `tools/list` を同期・キャッシュする。注入するスキーマはプロファイル設定に依存しないので、プロファイルを追加するだけなら Portal の再同期も claude.ai の再接続も要らない。再同期・再接続が要るのは、上流のツール構成が変わったとき、または awsbridge 自体の更新で注入するスキーマが変わったとき（この仕様に切り替えた更新を取り込む初回を含む）。
 
 ### キャッシュと CloudTrail
 
@@ -244,8 +254,8 @@ Worker は secret `SIGNING_JWK`（RSA 秘密鍵 JWK）で STS 向け JWT に署�
 
 1. ポータル側の **Require user auth は Enabled 必須**（Terraform では portal の `servers[].on_behalf = true`。Disabled だと管理者資格を全員で共用し、全員が管理者の身元で AWS のロールを引き受ける。2026-11-05 に実環境で `false` のまま登録してしまい、利用者ごとの Sign Out が出ないことで気づいた）
 2. awsbridge 自体を self-hosted Access アプリにする（直 URL アクセスを Access で塞ぐ）。既存の `x-reader-mcp` / `seekio-mcp` と同じ構成
-3. ポータルは tools 一覧を管理者資格で同期・キャッシュするため、利用者ごとに異なる `aws_profile` の enum は効かない。全員共通の enum（`AWS_PROFILES` の一覧）は効くので注入している（[tools/list への注入](#toolslist-への注入)）。デプロイ後はポータル側でツール一覧の再同期が必要。認可は `tools/call` 側（と各アカウントの信頼ポリシー）で強制する
-4. ポータルの Code Mode（Required）では tools が 2 つに集約されるため、`aws_profile` 引数の説明が届きにくい
+3. ポータルは tools 一覧を管理者資格で同期・キャッシュするため、利用者ごとに異なる `aws_profile` の enum は効かない。そのため `aws_profile` の選択肢はスキーマの enum に持たせず、`list_aws_profiles` ツールで実行時に取得させる（[tools/list への注入](#toolslist-への注入)）。プロファイルを追加するだけなら再同期は不要（上流のツール構成が変わったとき、または awsbridge 自体の更新で注入スキーマが変わったときは必要）。認可は `tools/call` 側（と各アカウントの信頼ポリシー）で強制する
+4. ポータルの Code Mode（Required）では tools が 2 つに集約されるため、`aws_profile` 引数の説明が届きにくい。`list_aws_profiles` は通常のツールなので Code Mode でも呼べる見込み（実環境で要確認）
 
 ## セキュリティ上の注意
 
@@ -283,9 +293,10 @@ Access JWT の検証は毎リクエスト行う。一方、STS から取得済�
 | STS が Worker 発行 JWT を拒否（`InvalidIdentityToken` 等） | 502 | `upstream_auth_failed` |
 | STS の一時障害・ネットワーク失敗 | 503 | `temporarily_unavailable` |
 | 必須設定（`AWS_PROFILES` 含む）の欠落・不正・署名鍵が不正 | 500 | `server_misconfigured` |
-| `aws_profile` が一覧にない | 400 | `unknown_aws_profile` |
-| `aws_profile` が文字列でない | 400 | `invalid_aws_profile` |
-| JSON-RPC バッチで対象ツールの `aws_profile` が混在 | 400 | `batch_not_supported` |
+| `aws_profile` が一覧にない（単一の `tools/call`） | 200 | JSON-RPC 結果 `isError: true`（本文にコード `unknown_aws_profile`・使える一覧・既定） |
+| `aws_profile` が文字列でない（単一の `tools/call`） | 200 | JSON-RPC 結果 `isError: true`（コード `invalid_aws_profile`） |
+| 上記をバッチで指定 | 400 | `unknown_aws_profile` / `invalid_aws_profile` |
+| JSON-RPC バッチで対象ツールの `aws_profile` が混在、または `list_aws_profiles` を含む | 400 | `batch_not_supported` |
 | 上流 AWS MCP への署名失敗・接続失敗 | 502 | （本文 `Bad Gateway`。ログは `proxy: sign_failed` / `proxy: fetch_failed`） |
 | 未対応メソッド | 405 | （本文 `Method Not Allowed`） |
 

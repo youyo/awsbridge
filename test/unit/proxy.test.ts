@@ -495,12 +495,27 @@ describe("proxyToAwsMcp: tools/list への aws_profile 注入", () => {
       body: JSON.stringify(rpcObj),
     });
 
-  it("tools/list は accept を application/json にし、応答へ enum を注入する", async () => {
+  it("tools/list は accept を application/json にし、応答へ aws_profile（enum なし）と list_aws_profiles を注入する", async () => {
     const { fn, calls } = fakeFetch(listRes);
     const res = await proxyToAwsMcp(post(listRpc), opts(fn, { rpc: listRpc, profiles }));
     expect(calls[0]?.headers.get("accept")).toBe("application/json");
-    const json = (await res.json()) as { result: { tools: { inputSchema: any }[] } };
-    expect(json.result.tools[0]?.inputSchema.properties.aws_profile.enum).toEqual(["dev", "prod"]);
+    const json = (await res.json()) as { result: { tools: { name: string; inputSchema: any }[] } };
+    expect(json.result.tools[0]?.inputSchema.properties.aws_profile.type).toBe("string");
+    expect(json.result.tools[0]?.inputSchema.properties.aws_profile.enum).toBeUndefined();
+    expect(json.result.tools.map((t) => t.name)).toContain("list_aws_profiles");
+  });
+
+  it("params.cursor がある tools/list（2 ページ目以降）には list_aws_profiles を追加しない", async () => {
+    const paged = { ...listRpc, params: { cursor: "next" } };
+    const { fn } = fakeFetch(listRes);
+    const res = await proxyToAwsMcp(post(paged), opts(fn, { rpc: paged, profiles }));
+    const json = (await res.json()) as {
+      result: {
+        tools: { name: string; inputSchema: { properties: { aws_profile: { type: string } } } }[];
+      };
+    };
+    expect(json.result.tools.map((t) => t.name)).toEqual(["t"]);
+    expect(json.result.tools[0]?.inputSchema.properties.aws_profile.type).toBe("string");
   });
 
   it("tools/list 以外は accept を変えず、応答も加工しない", async () => {

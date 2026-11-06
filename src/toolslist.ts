@@ -1,35 +1,31 @@
 // tools/list 応答への aws_profile 注入。設計: docs/specs/architecture.md「マルチアカウント（aws_profile）」。
-// 注入は UX 補助（Claude などにプロファイルの選択肢を見せる）。認可は tools/call 側で行うので、
+// 注入は UX 補助（aws_profile の引数と、一覧を返す list_aws_profiles ツールを見せる）。スキーマはプロファイル設定に依存させない。認可は tools/call 側で行うので、
 // 加工できない応答は常に原文のまま返す（fail-safe）。
-import { type ProfilesConfig, profileNames } from "./profiles";
-
-const MAX_DESC_PER_PROFILE = 60;
-const MAX_DESC_TOTAL = 400;
+import type { ProfilesConfig } from "./profiles";
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 
-function describeProfiles(config: ProfilesConfig): string {
-  // 数百文字に収める: 説明の合計が上限を超えたら、以降のプロファイルは名前だけにする
-  let used = 0;
-  const parts = profileNames(config).map((name) => {
-    const d = config.profiles[name]?.description?.trim();
-    if (!d || used >= MAX_DESC_TOTAL) return name;
-    const short = d.length > MAX_DESC_PER_PROFILE ? `${d.slice(0, MAX_DESC_PER_PROFILE)}…` : d;
-    used += short.length;
-    return `${name}: ${short}`;
-  });
-  return `使う AWS アカウント / ロールのプロファイル。省略すると ${config.default}。${parts.join(" / ")}`;
-}
+export const LIST_PROFILES_TOOL = "list_aws_profiles";
+
+// 固定文字列。default もプロファイル名も入れない（プロファイルを追加してもスキーマが変わらないようにする）
+const AWS_PROFILE_SCHEMA = {
+  type: "string",
+  description:
+    "使う AWS アカウント / ロールのプロファイル名。使えるプロファイルは list_aws_profiles ツールで取得する。省略すると既定のプロファイルを使う。",
+};
+
+const LIST_PROFILES_DEFINITION = {
+  name: LIST_PROFILES_TOOL,
+  description:
+    "aws_profile に指定できるプロファイルの一覧（名前と説明）と、省略時に使われる既定のプロファイル名を返す。",
+  inputSchema: { type: "object", properties: {} },
+  annotations: { readOnlyHint: true },
+};
 
 /** result.tools[] の対象ツールへ aws_profile を注入する。注入したら true。形状が違えば何もせず false。 */
-function injectIntoResponse(config: ProfilesConfig, msg: unknown): boolean {
+function injectIntoResponse(config: ProfilesConfig, msg: unknown, addListTool: boolean): boolean {
   if (!isObj(msg) || !isObj(msg.result) || !Array.isArray(msg.result.tools)) return false;
-  const schema = {
-    type: "string",
-    enum: profileNames(config),
-    description: describeProfiles(config),
-  };
   let changed = false;
   for (const t of msg.result.tools) {
     if (!isObj(t) || typeof t.name !== "string") continue;
@@ -44,16 +40,29 @@ function injectIntoResponse(config: ProfilesConfig, msg: unknown): boolean {
       console.warn(`tools_list: aws_profile conflict (tool=${t.name})`);
       continue;
     }
-    props.aws_profile = schema;
+    props.aws_profile = { ...AWS_PROFILE_SCHEMA };
     inputSchema.properties = props;
     if (inputSchema.type === undefined) inputSchema.type = "object";
     t.inputSchema = inputSchema;
     changed = true;
   }
+  if (addListTool) {
+    if (msg.result.tools.some((t) => isObj(t) && t.name === LIST_PROFILES_TOOL)) {
+      console.warn(`tools_list: ${LIST_PROFILES_TOOL} conflict`);
+    } else {
+      msg.result.tools.push(structuredClone(LIST_PROFILES_DEFINITION));
+      changed = true;
+    }
+  }
   return changed;
 }
 
-function sseRewrite(config: ProfilesConfig, text: string, id: unknown): string | undefined {
+function sseRewrite(
+  config: ProfilesConfig,
+  text: string,
+  id: unknown,
+  addListTool: boolean,
+): string | undefined {
   const events = text.split(/\r?\n\r?\n/).filter((e) => e.trim() !== "");
   if (events.length !== 1) return undefined;
   const lines = (events[0] as string).split(/\r?\n/);
@@ -66,7 +75,7 @@ function sseRewrite(config: ProfilesConfig, text: string, id: unknown): string |
     return undefined;
   }
   if (!isObj(msg) || msg.id !== id) return undefined;
-  if (!injectIntoResponse(config, msg)) return undefined;
+  if (!injectIntoResponse(config, msg, addListTool)) return undefined;
   const out: string[] = [];
   let placed = false;
   for (const l of lines) {
@@ -88,6 +97,8 @@ export async function rewriteToolsListResponse(
   upstream: Response,
   config: ProfilesConfig,
   id: unknown,
+  /** false なら list_aws_profiles を追加しない（tools/list の 2 ページ目以降）。 */
+  addListTool = true,
 ): Promise<Response> {
   if (upstream.status !== 200) return upstream;
   const ct = (upstream.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
@@ -100,12 +111,12 @@ export async function rewriteToolsListResponse(
   if (isJson) {
     try {
       const msg: unknown = JSON.parse(text);
-      if (injectIntoResponse(config, msg)) out = JSON.stringify(msg);
+      if (injectIntoResponse(config, msg, addListTool)) out = JSON.stringify(msg);
     } catch {
       console.warn("tools_list: response is not valid JSON; passing through");
     }
   } else {
-    out = sseRewrite(config, text, id);
+    out = sseRewrite(config, text, id, addListTool);
     if (out === undefined) console.warn("tools_list: cannot rewrite SSE response; passing through");
   }
 
