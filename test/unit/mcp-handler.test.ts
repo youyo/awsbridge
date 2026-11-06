@@ -68,7 +68,6 @@ function makeEnv(over: Partial<Env> = {}): Env {
     SIGNING_JWK: JSON.stringify(signingJwk),
     ACCESS_TEAM_DOMAIN: TEAM,
     ACCESS_AUD: AUD,
-    AWS_PROFILES: PROFILES,
     STS_ENDPOINT: STS,
     AWS_MCP_ENDPOINT: MCP,
     ...over,
@@ -77,7 +76,10 @@ function makeEnv(over: Partial<Env> = {}): Env {
 
 type Call = { url: string; init: RequestInit | undefined; request?: Request };
 
-function makeDeps(stsResponse: () => Response = () => new Response(creds())) {
+function makeDeps(
+  stsResponse: () => Response = () => new Response(creds()),
+  profiles: unknown = PROFILES,
+) {
   const calls: Call[] = [];
   const fakeFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : undefined;
@@ -95,6 +97,7 @@ function makeDeps(stsResponse: () => Response = () => new Response(creds())) {
     fetch: fakeFetch,
     getKey: accessJwks,
     cache: createCredentialCache(),
+    profiles,
   });
   return { handler, calls };
 }
@@ -196,6 +199,7 @@ describe("/mcp 成功経路", () => {
       fetch: fetchSpy,
       getKey: accessJwks,
       cache: createCredentialCache(),
+      profiles: PROFILES,
     });
     const res = await h(await mcpRequest(), env);
     expect(res.status).toBe(200);
@@ -356,13 +360,7 @@ describe("エラー応答", () => {
     expect(stsCalls(calls)).toHaveLength(2);
   });
 
-  for (const missing of [
-    "ISSUER",
-    "SIGNING_JWK",
-    "ACCESS_TEAM_DOMAIN",
-    "ACCESS_AUD",
-    "AWS_PROFILES",
-  ] as const) {
+  for (const missing of ["ISSUER", "SIGNING_JWK", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD"] as const) {
     it(`${missing} 欠落は 500 server_misconfigured（どれかは返さない）`, async () => {
       const { handler, calls } = makeDeps();
       const env = makeEnv();
@@ -589,39 +587,26 @@ describe("aws_profile によるアカウント切り替え", () => {
     await expectError(res, 403, "forbidden");
   });
 
-  it("AWS_PROFILES を JSON 文字列（secret）で渡しても動く", async () => {
-    const { handler, calls } = makeDeps();
-    const res = await handler(
-      await post(toolCall({ aws_profile: "prod" })),
-      makeEnv({ AWS_PROFILES: JSON.stringify(PROFILES) }),
-    );
-    expect(res.status).toBe(200);
-    expect(roleOf(stsCalls(calls)[0])).toBe(ROLE_PROD);
-  });
-
   it("profiles を配列形式で渡しても aws_profile で選べる", async () => {
-    const { handler, calls } = makeDeps();
-    const env = makeEnv({
-      AWS_PROFILES: {
-        default: "dev",
-        profiles: [
-          { name: "dev", roleArn: ROLE },
-          { name: "prod", roleArn: ROLE_PROD },
-        ],
-      } as never,
+    const { handler, calls } = makeDeps(undefined, {
+      default: "dev",
+      profiles: [
+        { name: "dev", roleArn: ROLE },
+        { name: "prod", roleArn: ROLE_PROD },
+      ],
     });
-    const res = await handler(await post(toolCall({ aws_profile: "prod" })), env);
+    const res = await handler(await post(toolCall({ aws_profile: "prod" })), makeEnv());
     expect(res.status).toBe(200);
     expect(roleOf(stsCalls(calls)[0])).toBe(ROLE_PROD);
   });
 
   it("32 文字のプロファイル名でも sessionName は 64 文字以内で -<name> で終わる", async () => {
     const name = "n".repeat(32);
-    const { handler, calls } = makeDeps();
-    const env = makeEnv({
-      AWS_PROFILES: { default: name, profiles: { [name]: { roleArn: ROLE } } } as never,
+    const { handler, calls } = makeDeps(undefined, {
+      default: name,
+      profiles: { [name]: { roleArn: ROLE } },
     });
-    const res = await handler(await post(toolCall({ cli_command: "x" })), env);
+    const res = await handler(await post(toolCall({ cli_command: "x" })), makeEnv());
     expect(res.status).toBe(200);
     const sn = new URLSearchParams(String(stsCalls(calls)[0]?.init?.body)).get("RoleSessionName");
     expect(sn?.length).toBeLessThanOrEqual(64);
@@ -652,7 +637,25 @@ describe("aws_profile によるアカウント切り替え", () => {
     }
   });
 
-  it("不正な AWS_PROFILES は 500 server_misconfigured（設定値をログに出さない）", async () => {
+  it("プロファイル一覧が注入されていなければ 500 server_misconfigured（未設定はエラー）", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const calls: Call[] = [];
+    const handler = createHandler({
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ url: String(input), init });
+        return new Response("unexpected", { status: 599 });
+      }) as unknown as typeof fetch,
+      getKey: accessJwks,
+      cache: createCredentialCache(),
+      profiles: undefined,
+    });
+    const res = await handler(await post(toolCall()), makeEnv());
+    await expectError(res, 500, "server_misconfigured");
+    expect(calls).toHaveLength(0);
+    spy.mockRestore();
+  });
+
+  it("不正なプロファイル一覧は 500 server_misconfigured（設定値をログに出さない）", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     const bad: unknown[] = [
       "{not json",
@@ -670,13 +673,13 @@ describe("aws_profile によるアカウント切り替え", () => {
       { default: "n".repeat(33), profiles: { ["n".repeat(33)]: { roleArn: ROLE } } },
     ];
     for (const v of bad) {
-      const { handler, calls } = makeDeps();
-      const res = await handler(await post(toolCall()), makeEnv({ AWS_PROFILES: v as never }));
+      const { handler, calls } = makeDeps(undefined, v);
+      const res = await handler(await post(toolCall()), makeEnv());
       await expectError(res, 500, "server_misconfigured");
       expect(calls).toHaveLength(0);
     }
     expect(JSON.stringify(spy.mock.calls)).not.toContain("SECRET-ARN");
-    expect(JSON.stringify(spy.mock.calls)).toContain("invalid AWS_PROFILES");
+    expect(JSON.stringify(spy.mock.calls)).toContain("invalid profiles");
     spy.mockRestore();
   });
 });
@@ -703,6 +706,7 @@ describe("/mcp tools/list への aws_profile 注入", () => {
       fetch: fakeFetch,
       getKey: accessJwks,
       cache: createCredentialCache(),
+      profiles: PROFILES,
     });
     const res = await handler(await mcpRequest(), makeEnv());
     expect(res.status).toBe(200);
@@ -725,20 +729,18 @@ describe("/mcp list_aws_profiles（Worker が応答）", () => {
     method: "tools/call",
     params: { name: "list_aws_profiles", ...(args !== undefined ? { arguments: args } : {}) },
   });
-  const env = () =>
-    makeEnv({
-      AWS_PROFILES: {
-        default: "dev-readonly",
-        profiles: [
-          { name: "prod-readonly", roleArn: ROLE_PROD, description: "本番" },
-          { name: "dev-readonly", roleArn: ROLE },
-          { name: "dev-debug", roleArn: ROLE, description: "デバッグ" },
-        ],
-      } as never,
-    });
+  const env = () => makeEnv();
+  const LISTED = {
+    default: "dev-readonly",
+    profiles: [
+      { name: "prod-readonly", roleArn: ROLE_PROD, description: "本番" },
+      { name: "dev-readonly", roleArn: ROLE },
+      { name: "dev-debug", roleArn: ROLE, description: "デバッグ" },
+    ],
+  };
 
   it("認証後に Worker が応答する。default 先頭・description 付き・roleArn なし・STS/上流は呼ばない", async () => {
-    const { handler, calls } = makeDeps();
+    const { handler, calls } = makeDeps(undefined, LISTED);
     const res = await handler(await post(listCall(7, {})), env());
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("application/json");
@@ -765,14 +767,14 @@ describe("/mcp list_aws_profiles（Worker が応答）", () => {
   });
 
   it("未認証なら 401（列挙させない）", async () => {
-    const { handler, calls } = makeDeps();
+    const { handler, calls } = makeDeps(undefined, LISTED);
     const res = await handler(await post(listCall(), null), env());
     await expectError(res, 401, "unauthorized");
     expect(calls).toHaveLength(0);
   });
 
   it("list_aws_profiles を含むバッチは 400 batch_not_supported", async () => {
-    const { handler, calls } = makeDeps();
+    const { handler, calls } = makeDeps(undefined, LISTED);
     const res = await handler(await post([listCall(1), toolCall({})]), env());
     await expectError(res, 400, "batch_not_supported");
     expect(calls).toHaveLength(0);

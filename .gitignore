@@ -11,6 +11,8 @@ coverage/
 .claude/settings.local.json
 .secrets/
 mise.local.toml
+# プロファイル一覧（アカウント ID を含む。config/profiles.example.json をコピーして作る）
+config/profiles.json
 
 # Terraform
 infra/cloudflare/.terraform/

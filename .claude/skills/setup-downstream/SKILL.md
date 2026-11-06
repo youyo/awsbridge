@@ -27,10 +27,10 @@ awsbridge（public）を `upstream` とする下流の private リポジトリ�
    - 既存でなければ `gh repo create <owner>/<name> --private` を実行する。既にあれば作らずにそれを使う。
    - 未付け替えなら、`git remote rename origin upstream` で上流を `upstream` にして、`git remote add origin <下流の URL>` で下流を `origin` に足す。
 3. 下流のファイルを作る。値は手順 1 の入力で埋める。ロール ARN は手順 5 で決まるまで仮に空にしておく。
-   - `wrangler.<name>.jsonc`: 上流の `wrangler.jsonc` から `compatibility_date` / `compatibility_flags` / `main` / `observability` を写し、`name`（Worker 名）、`workers_dev: true`、`vars.AWS_PROFILES`（`default` と `profiles`。`profiles` は `[{ "name": "<env>-readonly", "roleArn": "...", "description": "..." }, ...]` の配列で書く。配列の順が `list_aws_profiles` の一覧の順になる（`default` が先頭）。オブジェクト形式も受け付けるが、キーの順が途中で保たれないことがある。`tools` は通常省略。指定するなら AWS MCP Server の実際のツール名（例 `aws___run_script`））を書く。`env` セクションは使わない。
+   - `wrangler.<name>.jsonc`: 上流の `wrangler.jsonc` から `compatibility_date` / `compatibility_flags` / `main` / `observability` を写し、`name`（Worker 名）、`workers_dev: true`、`alias`（`{ "awsbridge:profiles": "./deploy/profiles.json" }`。プロファイル一覧は環境変数ではなく JSON モジュールとして Worker にバンドルする。Workers の環境変数は 1 つ 5 KB が上限のため）を書く。`deploy/profiles.json` も作ってコミットする（`default` と `profiles`。`profiles` は `[{ "name": "<env>-readonly", "roleArn": "...", "description": "..." }, ...]` の配列で書く。配列の順が `list_aws_profiles` の一覧の順になる（`default` が先頭）。オブジェクト形式も受け付けるが、キーの順が途中で保たれないことがある。`tools` は通常省略。指定するなら AWS MCP Server の実際のツール名（例 `aws___run_script`））。`env` セクションは使わない。
    - `mise.<name>.toml`: `[env]` に `AWSBRIDGE_WRANGLER_CONFIG = "wrangler.<name>.jsonc"`、`AWSBRIDGE_WRANGLER_ENV = ""`（空 = `--env` を付けない）、`AWSBRIDGE_STACK_NAME = "<name>"`、`AWSBRIDGE_KEY_FILE = ".secrets/<name>-signing-key.json"` を書く。
    - `.miserc.toml`: `env = ["<name>"]`。
-   - `mise.local.toml`（gitignore 済みか確認する。コミットしない）: `AWSBRIDGE_ALLOWED_SUBJECTS` / `AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS` / `AWSBRIDGE_ACCESS_TEAM_DOMAIN` / `AWSBRIDGE_POC_SUBJECT`（動作確認に使う利用者）と、必要なら `AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS` を書く。`AWSBRIDGE_ISSUER` は Worker をデプロイしてから決まるので、ここではまだ書かない。`AWS_PROFILES` を `vars` で持つので `AWSBRIDGE_PROFILES` は書かない。
+   - `mise.local.toml`（gitignore 済みか確認する。コミットしない）: `AWSBRIDGE_ALLOWED_SUBJECTS` / `AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS` / `AWSBRIDGE_ACCESS_TEAM_DOMAIN` / `AWSBRIDGE_POC_SUBJECT`（動作確認に使う利用者）と、必要なら `AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS` を書く。`AWSBRIDGE_ISSUER` は Worker をデプロイしてから決まるので、ここではまだ書かない。プロファイル一覧は `mise.local.toml` ではなく `deploy/profiles.json` に置くので、`AWSBRIDGE_PROFILES` は書かない（廃止）。
 4. Cloudflare 側（Worker）を先にデプロイする。デプロイは外部に影響するので、実行前に利用者に確認する。
    - `mise install`（初回は `mise trust` が必要なことがある）→ `mise run install`（clone 直後は依存パッケージが無い）
    - `mise run keygen`（`AWSBRIDGE_KEY_FILE` に署名鍵を生成する。環境ごとに別の鍵にする。既存なら上書きされない）
@@ -40,7 +40,7 @@ awsbridge（public）を `upstream` とする下流の private リポジトリ�
    - この時点で `/mcp` が 500（プロファイル未登録）か 401 になるのは正常。
 5. AWS 側を、対象アカウントごとに流す。CloudFormation の実行は外部に影響するので、アカウントごとに利用者に確認する。
    - `AWS_PROFILE=<対象> mise run deploy:aws`
-   - 出力（`aws cloudformation describe-stacks` でも取れる）の `ReadOnlyRoleArn` と `DebugRoleArn` を、`wrangler.<name>.jsonc` の `vars.AWS_PROFILES.profiles` に 2 つのプロファイル（例 `<env>-readonly` に ReadOnlyRoleArn、`<env>-debug` に DebugRoleArn）として反映する。`default` は必須（readonly 側を勧める）。
+   - 出力（`aws cloudformation describe-stacks` でも取れる）の `ReadOnlyRoleArn` と `DebugRoleArn` を、`deploy/profiles.json` の `profiles` に 2 つのプロファイル（例 `<env>-readonly` に ReadOnlyRoleArn、`<env>-debug` に DebugRoleArn）として反映する。`default` は必須（readonly 側を勧める）。
    - すべてのアカウントを流したら、`mise run deploy:worker` で一覧を反映する（利用者に確認）。
 6. Cloudflare Access / MCP Server Portal を用意する。
    - 利用者が既に Cloudflare の IaC を持っているなら、そちらに足す。必要なものは、Worker 用の self-hosted Access アプリ（Managed OAuth 有効。動的クライアント登録の許可 URI に `https://dash.cloudflare.com/<アカウント ID>/one/access-controls/ai-controls/mcp-server/oauth-callback/*` と `https://<portal のホスト>/servers-callback` を入れる。無いと MCP サーバーの認証が「Redirect URI not allowed」で失敗し waiting のままになる）、`/.well-known/openid-configuration` と `/.well-known/jwks.json` を対象外にする bypass（AWS IAM / STS が認証なしで取りに来る）、MCP サーバー（`https://<worker_host>/mcp`、`auth_type = "oauth"`）、`type = "mcp"` のアプリ、Portal への登録。

@@ -98,14 +98,14 @@ Access JWT の実物（開発環境）で確認した claim:
 | 機能 | 扱い |
 |---|---|
 | `IAM_MODE=federated` | 唯一のモードとして継承 |
-| `ASSUME_ROLE_ARN`（チェーン） | 廃止。ロールは `AWS_PROFILES` で指定し、チェーンせず直接引き受ける |
+| `ASSUME_ROLE_ARN`（チェーン） | 廃止。ロールはプロファイル一覧で指定し、チェーンせず直接引き受ける |
 | `_meta` への AWS リージョン注入 | 継承 |
 | `ALLOWED_DOMAINS` / `ALLOWED_EMAILS` | 廃止（Access ポリシーに一本化） |
 | `COOKIE_SECRET` / `SIGNING_KEY_HEX`(OAuth 用) / DynamoDB ストア | 廃止（OAuth を持たない） |
 | `aws_profile` | 継承。各アカウントのロールを AssumeRoleWithWebIdentity で直接引き受ける（[マルチアカウント](#マルチアカウントaws_profile)） |
 | `/mcp/assumerole/...` パスルーティング | 廃止（`aws_profile` に一本化） |
-| `AWS_PROFILE_CONFIG_S3` / users 対応表 | 廃止。プロファイル一覧は環境変数 `AWS_PROFILES`。誰がどのアカウントを使えるかは各アカウントの信頼ポリシーで AWS 側が判定する |
-| `FEDERATED_ROLE_ARN`（基点ロール） | 廃止。`AWS_PROFILES` の `default` に一本化 |
+| `AWS_PROFILE_CONFIG_S3` / users 対応表 | 廃止。プロファイル一覧はバンドルした JSON モジュール `awsbridge:profiles`。誰がどのアカウントを使えるかは各アカウントの信頼ポリシーで AWS 側が判定する |
+| `FEDERATED_ROLE_ARN`（基点ロール） | 廃止。プロファイル一覧の `default` に一本化 |
 
 ## ロール構成
 
@@ -125,7 +125,7 @@ Access JWT の実物（開発環境）で確認した claim:
 - インラインポリシーの上限は 10,240 文字。テストで文書が上限未満であることを確かめている（現状 約 2.3k 文字）。
 - 権限を広げるときはテンプレートの該当グループに Action を足すか、`DebugAdditionalPolicyArns` で管理ポリシーを足す。
 - 利用者の範囲はロールごとに別のパラメーターで決める。デバッグは読み取り専用より狭くする想定。
-- Worker から見ると 2 ロールは別のプロファイルで、1 アカウントにつき `<env>-readonly` と `<env>-debug` を `AWS_PROFILES` に並べる（default は readonly 側）。ロールごとに `RoleSessionName` が分かれるので CloudTrail で見分けられる。
+- Worker から見ると 2 ロールは別のプロファイルで、1 アカウントにつき `<env>-readonly` と `<env>-debug` をプロファイル一覧に並べる（default は readonly 側）。ロールごとに `RoleSessionName` が分かれるので CloudTrail で見分けられる。
 
 注意:
 
@@ -144,7 +144,11 @@ Access JWT の実物（開発環境）で確認した claim:
 
 - **各アカウント**: 対象アカウントごとに `infra/aws/awsbridge.yaml` を流し、Worker を信頼する 2 つのロール（[ロール構成](#ロール構成)）を作る。Worker は選ばれたロールを **AssumeRoleWithWebIdentity で直接**引き受ける（チェーン AssumeRole はしない）。
 - **認可は AWS 側**: 誰がどのアカウントを使えるかは各アカウントの信頼ポリシー（`AllowedSubjects` / `DebugAllowedSubjects`）で決まる。許可外は STS の `AccessDenied` → 403 `forbidden`。Worker に users 対応表は持たない。
-- **設定**: 環境変数 `AWS_PROFILES`（**必須**）。wrangler の vars（JSON オブジェクト）でも secret（JSON 文字列）でも受け付ける。基点ロール `FEDERATED_ROLE_ARN` は廃止し、設定経路をこれに一本化した。
+- **設定**: JSON モジュール `awsbridge:profiles`（**必須**）。環境変数（vars / secret）の `AWS_PROFILES` は廃止した。Workers の環境変数は 1 つ 5 KB が上限で、1 プロファイル約 140 B の 270 プロファイル（約 38 KB）が入らないため、Worker にバンドルする JSON に置く（Worker のサイズ上限は 64 MiB）。基点ロール `FEDERATED_ROLE_ARN` は廃止し、設定経路をこれに一本化した。
+  - 上流コードは固定のモジュール名 `awsbridge:profiles` を `src/index.ts` だけが import し、`createHandler({ profiles })` で注入する（`src/handler.ts` は alias に依存しないので unit テストで差し替えられる）。型は `src/profiles-module.d.ts`。
+  - `wrangler.jsonc` の `alias` が `awsbridge:profiles` を gitignore された `config/profiles.json` に向ける。コミットするのはダミー値の `config/profiles.example.json` で、上流の開発用デプロイはこれをコピーして使う。ファイルが無いとビルド（`wrangler deploy` / `wrangler dev`）が解決エラーで失敗する＝未設定はエラー（サンプルで黙って動かさない）。
+  - 下流は上流のファイルを編集せず、自分の `wrangler.<name>.jsonc` の `alias` で自前の JSON（例 `deploy/profiles.json`）に向ける。
+  - `wrangler dev --alias` / `deploy --alias` は `key:value` を `:` で分けるため、コロンを含むモジュール名は CLI で指定できない。e2e は alias を一時ファイルに向けた wrangler 設定（`--config`）を使う。
 
 ```json
 {
@@ -165,7 +169,7 @@ Access JWT の実物（開発環境）で確認した claim:
   - 名前が数字だけのプロファイル（`"1"`, `"10"` など）は、JS のオブジェクトの規則で数値順に先に並ぶ。順を意図するなら数字だけの名前は避ける。
 - `default`: 必須。`profiles` の名前。`aws_profile` を指定しないときに使う。
 - `tools`: 任意。`aws_profile` の対象ツール。省略時は全ツール。
-- 検証: 名前は `^[A-Za-z0-9_-]{1,32}$`（STS の `RoleSessionName` 64 文字に `gw-<利用者>-<名前>` を収めるため 32 文字まで）、`roleArn` は `^arn:aws[a-z-]*:iam::\d{12}:role/[\w+=,.@/-]{1,128}$`、`profiles` は 1 件以上で名前の重複なし、`tools` は空配列不可、`default` は `profiles` に存在すること。違反は 500 `server_misconfigured`（ログには `config: invalid AWS_PROFILES: <種別>` のみ。値は出さない）。
+- 検証: 名前は `^[A-Za-z0-9_-]{1,32}$`（STS の `RoleSessionName` 64 文字に `gw-<利用者>-<名前>` を収めるため 32 文字まで）、`roleArn` は `^arn:aws[a-z-]*:iam::\d{12}:role/[\w+=,.@/-]{1,128}$`、`profiles` は 1 件以上で名前の重複なし、`tools` は空配列不可、`default` は `profiles` に存在すること。違反は 500 `server_misconfigured`（ログには `config: invalid profiles: <種別>` のみ。値は出さない）。
 
 ### 選び方
 
@@ -188,14 +192,14 @@ Access JWT の実物（開発環境）で確認した claim:
 - `tools/call` で `params.name === "list_aws_profiles"` の単一リクエストは、Access JWT の検証後・プロファイル選択と STS の前に Worker が応答する（未認証では列挙させない。STS・上流は呼ばない）。
 - 応答: HTTP 200・`application/json`・`{ jsonrpc, id, result: { content: [{ type: "text", text: <JSON 文字列> }], structuredContent: <同じオブジェクト> } }`。内容は `{ default, profiles: [{ name, description? }] }`（`default` 先頭、残りは設定の順）。**`roleArn` は含めない**（アカウント ID が漏れるため）。
 - `list_aws_profiles` を含む JSON-RPC バッチは 400 `batch_not_supported`。
-- 一覧は全利用者共通（利用者ごとには絞らない。認可は各アカウントの信頼ポリシー）。戻り値は毎回最新なので、`AWS_PROFILES` を変えてデプロイした直後から反映される。
+- 一覧は全利用者共通（利用者ごとには絞らない。認可は各アカウントの信頼ポリシー）。戻り値は毎回最新なので、`config/profiles.json`（下流は自前の JSON）を変えてデプロイした直後から反映される。
 
 ### tools/list への注入
 
 クライアントがツール定義から `aws_profile` を選べるよう、`tools/list` の応答に注入する（`src/toolslist.ts`）。
 
 - 対象: POST の単一 JSON-RPC リクエストで `method === "tools/list"`（バッチは対象外）。上流へは `accept: application/json` で要求し、JSON 応答を得る。
-- 注入内容: 対象ツール（`tools` 設定のもの。省略時は全ツール）の `inputSchema.properties.aws_profile = { type: "string", description }`。**`enum` は持たせない**。`description` は固定文字列で、既定のプロファイル名もプロファイル名も入れない（「使えるプロファイルは `list_aws_profiles` ツールで取得する。省略すると既定のプロファイルを使う」）。これにより、スキーマは `AWS_PROFILES` に依存せず、プロファイルを追加しても変わらない（claude.ai がツール定義をキャッシュしても、再同期・再接続が要らない）。`required` には加えない。`inputSchema` / `properties` が無ければ `type: "object"` で作る。
+- 注入内容: 対象ツール（`tools` 設定のもの。省略時は全ツール）の `inputSchema.properties.aws_profile = { type: "string", description }`。**`enum` は持たせない**。`description` は固定文字列で、既定のプロファイル名もプロファイル名も入れない（「使えるプロファイルは `list_aws_profiles` ツールで取得する。省略すると既定のプロファイルを使う」）。これにより、スキーマはプロファイル一覧に依存せず、プロファイルを追加しても変わらない（claude.ai がツール定義をキャッシュしても、再同期・再接続が要らない）。`required` には加えない。`inputSchema` / `properties` が無ければ `type: "object"` で作る。
 - `list_aws_profiles` ツール定義（`name` / `description` / `inputSchema: { type: "object", properties: {} }` / `annotations: { readOnlyHint: true }`）を `result.tools` に追加する（`tools` 設定に関係なく）。上流に同名ツールがあれば追加せず `console.warn("tools_list: list_aws_profiles conflict")`。`params.cursor` がある（2 ページ目以降の）`tools/list` では追加しない（`aws_profile` の注入は各ページで行う）。
 - 既に `aws_profile` を持つツールは注入せず `console.warn("tools_list: aws_profile conflict")`。
 - 応答の扱い: `application/json` は注入して返す。`text/event-stream`（上流が Accept を無視した場合）は、イベントが 1 つで `data:` の JSON-RPC 応答の id が一致し `result.tools` を持つときだけ注入して再シリアライズする。それ以外（複数イベント・パース不能・id 不一致）、非 200、その他の content-type、壊れた JSON は原文のまま流す（fail-safe。認可は `tools/call` 側なので、注入失敗で経路を止めない）。
@@ -211,13 +215,13 @@ Access JWT の実物（開発環境）で確認した claim:
 実運用は private の下流リポジトリで行う。awsbridge を git の upstream として登録し、更新を pull し続ける。下流固有の設定は上流と衝突しにくい場所に置く。
 
 1. `git remote add upstream <awsbridge の URL>` → `git pull --no-rebase upstream main` で追従する。**上流のファイルは編集せず、ファイルを足すだけ**にして衝突を避ける。
-2. `wrangler.<name>.jsonc`（例 `wrangler.awsbridge-mcp.jsonc`）を足す。`name` / `workers_dev` / `vars.AWS_PROFILES` を持ち、env セクションは使わない（ロール ARN は秘密ではないのでコミットしてよい）。
+2. `wrangler.<name>.jsonc`（例 `wrangler.awsbridge-mcp.jsonc`）を足す。`name` / `workers_dev` / `alias`（自前のプロファイル一覧 JSON を `awsbridge:profiles` に差し替える）を持ち、env セクションは使わない（ロール ARN は秘密ではないのでコミットしてよい）。
 3. 下流用の mise 設定として `mise.<name>.toml` と `.miserc.toml`（`env = ["<name>"]`）を足し、`AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV`（空 = `--env` を付けない）/ `AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_KEY_FILE` などを与える。秘密値は `mise.local.toml`（gitignore）に置く。
 4. 上書きできる既定値は `mise.toml` の `[env]` ではなくスクリプト側（`scripts/*.sh`、`scripts/poc/`）の `${VAR:-default}` で補う。理由: mise は `mise.<env>.toml` を `mise.toml` より優先するが `.config/mise/conf.d/*.toml` は `mise.toml` に負けるうえ、`[env]` に既定値があると呼び出し側の環境変数や下流ファイルでの上書きが難しくなるため（実験で確認）。優先順位は `mise.local.toml` > `mise.<name>.toml` > `mise.toml`。
 5. wrangler は `scripts/wrangler.sh` 経由で呼び、`--config "${AWSBRIDGE_WRANGLER_CONFIG:-wrangler.jsonc}"` を付ける。`AWSBRIDGE_WRANGLER_ENV` は未設定なら `dev`、**空文字なら `--env` を付けない**（`${VAR-dev}` で未設定と空を区別）。
 6. 署名鍵は環境ごとに分ける。issuer（Worker の URL）が環境ごとに変わるため、IAM OIDC プロバイダーとロールの CloudFormation スタックも環境ごとに別になる。
-7. 各アカウントに `AWS_PROFILE=<対象> mise run deploy:aws` で CloudFormation を流し、出力 `ReadOnlyRoleArn` / `DebugRoleArn` を、1 アカウントにつき `<env>-readonly` と `<env>-debug` の 2 プロファイルとして `AWS_PROFILES` に追記する（default は readonly 側）。
-8. 上流自身の開発用デプロイは、`mise.local.toml` の `AWSBRIDGE_PROFILES`（JSON 文字列）を `mise run secrets` が secret `AWS_PROFILES` として登録する。vars で `AWS_PROFILES` を持つ環境では、secret と二重定義にならないよう `AWSBRIDGE_PROFILES` を設定せずに `mise run secrets` を使う（`AWS_PROFILES` は登録されない）。
+7. 各アカウントに `AWS_PROFILE=<対象> mise run deploy:aws` で CloudFormation を流し、出力 `ReadOnlyRoleArn` / `DebugRoleArn` を、1 アカウントにつき `<env>-readonly` と `<env>-debug` の 2 プロファイルとして自前のプロファイル一覧 JSON に追記する（default は readonly 側）。
+8. 上流自身の開発用デプロイは、`config/profiles.example.json` を `config/profiles.json` にコピーして書き換える（gitignore。`mise run secrets` はプロファイル一覧を扱わない）。`AWS_PROFILES` を使っていた既存のデプロイは、一覧を JSON に移して再デプロイし、不要になった Worker secret を `wrangler secret delete AWS_PROFILES` で消す（README_ja.md「既存デプロイからの移行」）。
 
 ## 署名鍵のローテーション
 
@@ -292,7 +296,7 @@ Access JWT の検証は毎リクエスト行う。一方、STS から取得済�
 | STS が `AccessDenied`（trust policy が利用者を許可していない） | 403 | `forbidden` |
 | STS が Worker 発行 JWT を拒否（`InvalidIdentityToken` 等） | 502 | `upstream_auth_failed` |
 | STS の一時障害・ネットワーク失敗 | 503 | `temporarily_unavailable` |
-| 必須設定（`AWS_PROFILES` 含む）の欠落・不正・署名鍵が不正 | 500 | `server_misconfigured` |
+| 必須設定の欠落・プロファイル一覧の不正・署名鍵が不正 | 500 | `server_misconfigured` |
 | `aws_profile` が一覧にない（単一の `tools/call`） | 200 | JSON-RPC 結果 `isError: true`（本文にコード `unknown_aws_profile`・使える一覧・既定） |
 | `aws_profile` が文字列でない（単一の `tools/call`） | 200 | JSON-RPC 結果 `isError: true`（コード `invalid_aws_profile`） |
 | 上記をバッチで指定 | 400 | `unknown_aws_profile` / `invalid_aws_profile` |
@@ -319,21 +323,21 @@ STS の `invalid_token` を 401 ではなく 502 `upstream_auth_failed` にし�
 ```
 # Cloudflare 側（1 回）
 mise run keygen             # 開発用 RSA 鍵を .secrets/ に生成
+cp config/profiles.example.json config/profiles.json   # プロファイル一覧（gitignore）。無いとビルドが失敗する。初回はダミーのままでよい
 mise run deploy:worker      # wrangler deploy → secrets を順に実行（AWS は呼ばない）。初回は URL を確定させるために先に実行する
-                            #   プロファイル一覧を secret で持つ場合は、下の手順で AWSBRIDGE_PROFILES を設定したあと mise run secrets を実行し直す
 
 # AWS 側（対象アカウントごと。何度でも別アカウントに流せる）
 AWS_PROFILE=<対象> mise run deploy:aws   # CloudFormation（OIDC プロバイダー + ロール 2 つ）をデプロイ。出力 ReadOnlyRoleArn / DebugRoleArn を控える
 
 # Cloudflare 側（ロール ARN の反映）
-# mise.local.toml に AWSBRIDGE_PROFILES（JSON 文字列。出力 ReadOnlyRoleArn / DebugRoleArn を並べる）を設定
-mise run secrets            # Worker secret を一括登録（SIGNING_JWK / ADDITIONAL_PUBLIC_JWKS / ACCESS_TEAM_DOMAIN / ACCESS_AUD / AWS_PROFILES）
+# config/profiles.json に出力 ReadOnlyRoleArn / DebugRoleArn を並べ、mise run deploy:worker で反映する
+mise run secrets            # Worker secret を一括登録（SIGNING_JWK / ADDITIONAL_PUBLIC_JWKS / ACCESS_TEAM_DOMAIN / ACCESS_AUD）
 
 mise run poc:sts            # 正常 1 + 否定 4 ケース（--role-arn 省略時はスタックの Output ReadOnlyRoleArn。AWS_PROFILE で対象を選ぶ）
 AWS_PROFILE=<対象> mise run destroy:aws  # 後片付け（CloudFormation スタックの削除）
 ```
 
-`mise.local.toml` には `AWSBRIDGE_ISSUER` などに加えて `AWSBRIDGE_ACCESS_TEAM_DOMAIN`・`AWSBRIDGE_ACCESS_AUD`・`AWSBRIDGE_PROFILES` が要る。IAM 側のリソースは `infra/aws/awsbridge.yaml`（CloudFormation）で作る。マネジメントコンソールや StackSets でテンプレートを直接流してもよい（パラメーターは README_ja.md の「AWS 側」を参照）。`AWS_PROFILE` と `AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_AUDIENCE` は呼び出し側の環境変数が優先される（既定値はスクリプト側にあり、`mise.toml` の `[env]` には置かない）。
+`mise.local.toml` には `AWSBRIDGE_ISSUER` などに加えて `AWSBRIDGE_ACCESS_TEAM_DOMAIN`・`AWSBRIDGE_ACCESS_AUD` が要る（プロファイル一覧は `config/profiles.json`）。IAM 側のリソースは `infra/aws/awsbridge.yaml`（CloudFormation）で作る。マネジメントコンソールや StackSets でテンプレートを直接流してもよい（パラメーターは README_ja.md の「AWS 側」を参照）。`AWS_PROFILE` と `AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_AUDIENCE` は呼び出し側の環境変数が優先される（既定値はスクリプト側にあり、`mise.toml` の `[env]` には置かない）。
 
 ### Worker が公開した discovery（IAM が受理した内容）
 

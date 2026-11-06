@@ -43,6 +43,13 @@ describe("setup-downstream の SKILL.md", () => {
     for (const p of paths) expect(existsSync(join(root, p)), p).toBe(true);
   });
 
+  it("プロファイル一覧は alias で deploy/profiles.json に向ける手順で、廃止した AWS_PROFILES / AWSBRIDGE_PROFILES を書かせない", () => {
+    expect(body).toContain("awsbridge:profiles");
+    expect(body).toContain("deploy/profiles.json");
+    expect(body).not.toContain("vars.AWS_PROFILES");
+    expect(body).not.toMatch(/AWSBRIDGE_PROFILES[^`]*を(設定|書)/);
+  });
+
   it("実在しそうな 12 桁のアカウント ID を含まない（ダミーのみ可）", () => {
     const dummy = /^(\d)\1{11}$|^123456789012$/;
     for (const f of [skillPath]) {

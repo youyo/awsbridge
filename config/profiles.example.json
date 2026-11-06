@@ -1,0 +1,23 @@
+{
+  "default": "dev-readonly",
+  "profiles": [
+    {
+      "name": "dev-readonly",
+      "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly",
+      "description": "development (read-only)"
+    },
+    {
+      "name": "dev-debug",
+      "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug",
+      "description": "development (debug)"
+    },
+    {
+      "name": "prod-readonly",
+      "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly"
+    },
+    {
+      "name": "prod-debug",
+      "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug"
+    }
+  ]
+}

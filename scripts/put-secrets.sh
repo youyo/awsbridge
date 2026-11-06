@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Worker secret（SIGNING_JWK / ADDITIONAL_PUBLIC_JWKS / ACCESS_TEAM_DOMAIN / ACCESS_AUD / AWS_PROFILES）を一括登録する。
+# Worker secret（SIGNING_JWK / ADDITIONAL_PUBLIC_JWKS / ACCESS_TEAM_DOMAIN / ACCESS_AUD）を一括登録する。
 # 値は wrangler の標準入力に JSON で渡し、コマンドライン引数には載せない。
 # 値はすべて環境変数（mise.toml / mise.local.toml）から読む。AWS は呼ばない
-# AWS_PROFILES（default とプロファイル一覧）は JSON 文字列の AWSBRIDGE_PROFILES から読む
-# （各ロール ARN は CloudFormation の Output ReadOnlyRoleArn）。wrangler の設定と環境は scripts/wrangler.sh が
+# プロファイル一覧（aws_profile で選べるアカウント）は secret / 環境変数では持たない（Workers の環境変数は 1 つ 5 KB 上限）。
+# wrangler の alias でバンドルする JSON（config/profiles.json など）に置く。README.md の "Profiles" 参照。
+# wrangler の設定と環境は scripts/wrangler.sh が
 # AWSBRIDGE_WRANGLER_CONFIG（既定 wrangler.jsonc）/ AWSBRIDGE_WRANGLER_ENV（既定 dev、空なら --env なし）で決める。
 # AWSBRIDGE_KEY_FILE の既定はリポジトリルートの .secrets/dev-signing-key.json。
 # 署名鍵のローテーション: AWSBRIDGE_NEXT_KEY_FILE / AWSBRIDGE_PREVIOUS_KEY_FILE（既定は KEY_FILE の拡張子の前に
@@ -25,15 +26,6 @@ done
 
 if [ ! -r "$AWSBRIDGE_KEY_FILE" ]; then
   echo "署名鍵ファイルを読めません（AWSBRIDGE_KEY_FILE、既定 .secrets/dev-signing-key.json）。mise run keygen で生成してください。" >&2
-  exit 1
-fi
-
-# AWSBRIDGE_PROFILES が JSON として読めること（値はエラーに出さない）
-# 未設定（空）なら AWS_PROFILES は登録しない（wrangler の vars で持つ環境向け）
-if [ -z "${AWSBRIDGE_PROFILES:-}" ]; then
-  echo "AWSBRIDGE_PROFILES が未設定のため AWS_PROFILES は登録しません（vars で与えてください）。" >&2
-elif ! node -e 'JSON.parse(process.env.AWSBRIDGE_PROFILES)' 2>/dev/null; then
-  echo "AWSBRIDGE_PROFILES が JSON として不正です。mise.local.toml を確認してください。" >&2
   exit 1
 fi
 
@@ -80,7 +72,6 @@ process.stdout.write(JSON.stringify({
   ADDITIONAL_PUBLIC_JWKS: JSON.stringify(additional),
   ACCESS_TEAM_DOMAIN: e.AWSBRIDGE_ACCESS_TEAM_DOMAIN,
   ACCESS_AUD: e.AWSBRIDGE_ACCESS_AUD,
-  ...(e.AWSBRIDGE_PROFILES ? { AWS_PROFILES: e.AWSBRIDGE_PROFILES } : {}),
 }));
 ')"
 printf '%s' "$payload" | bash "${root}/scripts/wrangler.sh" secret bulk

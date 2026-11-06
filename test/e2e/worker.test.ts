@@ -24,13 +24,24 @@ const PROFILE_SUBS = ["p1@example.com", "p2@example.com", "p3@example.com"];
 const DENIED_SUB = "denied@example.com";
 const ROLE_A = "arn:aws:iam::111111111111:role/awsbridge";
 const ROLE_B = "arn:aws:iam::222222222222:role/awsbridge";
-const AWS_PROFILES = JSON.stringify({
+// Workers の環境変数は 1 つ 5 KB 上限。それを大きく超える 270 プロファイル（135 アカウント × 2 ロール）を JSON モジュールで渡す
+const FILLER_COUNT = 267;
+const fillerRole = (i: number) =>
+  `arn:aws:iam::${String(300000000000 + i).padStart(12, "0")}:role/awsbridge`;
+const LAST_PROFILE = `f${FILLER_COUNT - 1}`;
+const LAST_ROLE = fillerRole(FILLER_COUNT - 1);
+const PROFILES_JSON = JSON.stringify({
   default: "a",
-  // 配列形式。順は z → b → a（default は a）
+  // 配列形式。順は z → b → a（default は a）、そのあとにダミーのプロファイル
   profiles: [
     { name: "z", roleArn: ROLE_B },
     { name: "b", roleArn: ROLE_B, description: "second" },
     { name: "a", roleArn: ROLE_A },
+    ...Array.from({ length: FILLER_COUNT }, (_, i) => ({
+      name: `f${i}`,
+      roleArn: fillerRole(i),
+      description: `filler account ${i}`,
+    })),
   ],
   tools: ["call_aws"],
 });
@@ -288,10 +299,24 @@ beforeAll(async () => {
       `ADDITIONAL_PUBLIC_JWKS='${JSON.stringify([{ kty: "RSA", n: nextJwk.n, e: nextJwk.e }, previousJwk])}'`,
       `ACCESS_TEAM_DOMAIN='${fakeBase}'`,
       `ACCESS_AUD='${FAKE_AUD}'`,
-      `AWS_PROFILES='${AWS_PROFILES}'`,
       `ALLOWED_ORIGINS='https://allowed.example'`,
       "",
     ].join("\n"),
+  );
+  // プロファイル一覧は env ではなく JSON モジュールで渡す。下流リポジトリと同じ形で、alias を一時ファイルに向けた自前の wrangler 設定を使う。
+  // （`wrangler dev --alias` は "key:value" を ":" で分けるので、"awsbridge:profiles" のようにコロンを含むモジュール名は CLI からは指定できない）
+  const profilesFile = join(tmp, "profiles.json");
+  writeFileSync(profilesFile, PROFILES_JSON);
+  const wranglerConfig = join(tmp, "wrangler.e2e.jsonc");
+  writeFileSync(
+    wranglerConfig,
+    JSON.stringify({
+      name: "awsbridge-e2e",
+      main: join(process.cwd(), "src/index.ts"),
+      compatibility_date: "2026-07-21",
+      compatibility_flags: ["nodejs_compat"],
+      alias: { "awsbridge:profiles": profilesFile },
+    }),
   );
   const port = await freePort();
   base = `http://127.0.0.1:${port}`;
@@ -300,8 +325,8 @@ beforeAll(async () => {
     [
       "wrangler",
       "dev",
-      "--env",
-      "dev",
+      "--config",
+      wranglerConfig,
       "--port",
       String(port),
       "--ip",
@@ -676,8 +701,12 @@ describe("マルチアカウント（aws_profile）", () => {
       profiles: { name: string; description?: string }[];
     };
     expect(listed.default).toBe("a");
-    expect(listed.profiles.map((p) => p.name)).toEqual(["a", "z", "b"]);
+    // 270 プロファイル（環境変数の 5 KB 上限を大きく超える一覧）が JSON モジュール経由で届く
+    expect(Buffer.byteLength(PROFILES_JSON)).toBeGreaterThan(20_000);
+    expect(listed.profiles).toHaveLength(FILLER_COUNT + 3);
+    expect(listed.profiles.map((p) => p.name).slice(0, 3)).toEqual(["a", "z", "b"]);
     expect(listed.profiles[2]?.description).toBe("second");
+    expect(listed.profiles.at(-1)?.name).toBe(LAST_PROFILE);
     expect(stsRoles).toHaveLength(0);
     expect(mcpSeen).toHaveLength(0);
 
@@ -694,6 +723,12 @@ describe("マルチアカウント（aws_profile）", () => {
     });
     expect(okRes.status).toBe(200);
     expect(stsRoles).toContain(ROLE_B);
+
+    // 一覧の末尾のプロファイルでも tools/call が動く
+    stsRoles = [];
+    const lastRes = await callTool(token, { aws_profile: LAST_PROFILE });
+    expect(lastRes.status).toBe(200);
+    expect(stsRoles).toEqual([LAST_ROLE]);
   });
 
   it("list_aws_profiles は未認証だと 401", async () => {

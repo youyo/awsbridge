@@ -24,9 +24,9 @@ Cloudflare 側（Worker）と AWS 側（CloudFormation）は完全に分かれ�
 
 Worker の URL が OIDC issuer になるため、次の順で進めます。
 
-1. Cloudflare 側: `mise run keygen` → `mise.local.toml` に `AWSBRIDGE_ISSUER` などを設定 → `mise run deploy:worker`（Worker の URL を確定させる。この時点ではプロファイル一覧が未登録なので `/mcp` は 500 になる）
+1. Cloudflare 側: `mise run keygen` → `mise.local.toml` に `AWSBRIDGE_ISSUER` などを設定 → `cp config/profiles.example.json config/profiles.json`（ビルドに必須。中身はこの時点ではダミーのままでよい）→ `mise run deploy:worker`（Worker の URL を確定させる。この時点ではダミーのロール ARN なので `/mcp` は使えない）
 2. AWS 側: `AWS_PROFILE=<対象> mise run deploy:aws`（出力 `ReadOnlyRoleArn` / `DebugRoleArn` を控える）
-3. プロファイル一覧を登録する。secret で持つ場合は `mise.local.toml` に `AWSBRIDGE_PROFILES` を設定して `mise run secrets`、`wrangler.jsonc` の vars で持つ場合（下流リポジトリ）は vars に書いて `mise run deploy:worker`
+3. プロファイル一覧を登録する。`config/profiles.json` に出力のロール ARN を書き（下の「マルチアカウント」）、`mise run deploy:worker` で反映する。一覧は環境変数ではなく Worker にバンドルされる JSON なので、`config/profiles.json` が無いとビルドが失敗する（未設定はエラー）
 
 2 回目以降は、変更した側だけを流します。
 
@@ -90,11 +90,12 @@ Athena のクエリは結果バケットへの書き込み（`s3:PutObject`）�
 
 ```
 mise run keygen          # 署名鍵を生成（.secrets/、既存なら上書きしない）
-# mise.local.toml に AWSBRIDGE_ISSUER / AWSBRIDGE_ACCESS_* / AWSBRIDGE_PROFILES などを設定
+# mise.local.toml に AWSBRIDGE_ISSUER / AWSBRIDGE_ACCESS_* などを設定
+cp config/profiles.example.json config/profiles.json   # プロファイル一覧（gitignore）。ロール ARN を書く
 mise run deploy:worker   # wrangler deploy → secrets を順に実行（AWS は呼ばない）
 ```
 
-`secrets` は単独でも実行できます（`mise run secrets`）。`wrangler secret bulk` に標準入力で JSON を渡すので、値がコマンドライン引数に出ません。登録するのは `SIGNING_JWK` / `ADDITIONAL_PUBLIC_JWKS`（署名鍵のローテーション用。通常は `[]`）/ `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD` / `AWS_PROFILES` で、`AWS_PROFILES` は `AWSBRIDGE_PROFILES`（JSON 文字列）から読みます。
+`secrets` は単独でも実行できます（`mise run secrets`）。`wrangler secret bulk` に標準入力で JSON を渡すので、値がコマンドライン引数に出ません。登録するのは `SIGNING_JWK` / `ADDITIONAL_PUBLIC_JWKS`（署名鍵のローテーション用。通常は `[]`）/ `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD` です。プロファイル一覧は secret にしません（Workers の環境変数は 1 つ 5 KB が上限で、270 プロファイルなら約 38 KB になるため）。`config/profiles.json` として Worker にバンドルします（「マルチアカウント」参照）。
 
 検証: `mise run poc:sts`（正常 1 + 否定 4 ケース。実 AWS を呼ぶので明示的に実行したときだけ使います）。
 
@@ -110,7 +111,6 @@ AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS = "admin@example.com"       # デバッグロ�
 # AWSBRIDGE_READONLY_ROLE_NAME = "FederatedMcpReadOnly"      # 任意。ロール名（既定値）
 # AWSBRIDGE_DEBUG_ROLE_NAME = "FederatedMcpDebug"            # 任意。ロール名（既定値）
 # AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS = "arn:aws:iam::<アカウントID>:policy/<名前>" # 任意。デバッグロールに追加する管理ポリシー（カンマ区切り）
-AWSBRIDGE_PROFILES = '{"default":"dev-readonly","profiles":[{"name":"dev-readonly","roleArn":"arn:aws:iam::<アカウントID>:role/FederatedMcpReadOnly"},{"name":"dev-debug","roleArn":"arn:aws:iam::<アカウントID>:role/FederatedMcpDebug"}]}' # 各アカウントの deploy:aws の出力 ReadOnlyRoleArn / DebugRoleArn。secrets が AWS_PROFILES に登録
 AWSBRIDGE_POC_SUBJECT = "user@example.com"                   # poc:sts の正常ケースで使う利用者
 AWSBRIDGE_ACCESS_TEAM_DOMAIN = "https://team.example.cloudflareaccess.com" # Access のチームドメイン
 AWSBRIDGE_ACCESS_AUD = "<Access アプリケーションの AUD タグ>"   # このアプリケーションの AUD
@@ -124,7 +124,7 @@ AWSBRIDGE_ACCESS_AUD = "<Access アプリケーションの AUD タグ>"   # こ
 
 ### Worker の設定
 
-secret（`mise run secrets` が登録）: `SIGNING_JWK`、`ADDITIONAL_PUBLIC_JWKS`（任意。署名鍵のローテーション用の追加の公開鍵）、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`AWS_PROFILES`（必須。vars で持つ場合は secret にしない）。
+secret（`mise run secrets` が登録）: `SIGNING_JWK`、`ADDITIONAL_PUBLIC_JWKS`（任意。署名鍵のローテーション用の追加の公開鍵）、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`。プロファイル一覧は env / secret ではなくバンドルした JSON モジュール（`awsbridge:profiles`。必須）で渡します。
 
 var（任意。既定値を上書きするときだけ）: `ISSUER`（deploy 時に `--var` で設定）、`IDENTITY_CLAIM`（既定 `email`）、`ACCESS_MAX_TOKEN_AGE_SECONDS`、`STS_AUDIENCE`（既定 `awsbridge`）、`STS_REGION`（既定 `us-east-1`）、`STS_ENDPOINT`、`AWS_MCP_REGION`（既定 `us-east-1`）、`AWS_MCP_ENDPOINT`、`TARGET_AWS_REGION`（既定 `ap-northeast-1`）、`ALLOWED_ORIGINS`（カンマ区切りの完全一致オリジン。既定は空）。
 
@@ -158,7 +158,7 @@ mise run secrets        #    古い公開鍵を JWKS から外す
 複数の AWS アカウントを、MCP の `tools/call` の引数 `aws_profile` で切り替えられます。Worker は選ばれたアカウントのロールを AssumeRoleWithWebIdentity で直接引き受けます（チェーンしません）。誰がどのアカウントを使えるかは各アカウントの信頼ポリシー（`AllowedSubjects` / `DebugAllowedSubjects`）で決まり、許可外は 403 `forbidden` になります。
 
 1. 対象アカウントごとに `AWS_PROFILE=<対象> mise run deploy:aws` を流し、出力 `ReadOnlyRoleArn` / `DebugRoleArn` を控える。
-2. 環境変数 `AWS_PROFILES`（必須。wrangler の vars の JSON オブジェクトでも、secret の JSON 文字列でも可）にプロファイル一覧を書く（値はプレースホルダー）。`profiles` は配列で書くのを推奨します。配列の順が `list_aws_profiles` の返す一覧の順になります（`default` は常に先頭）。
+2. プロファイル一覧（必須）を JSON ファイルに書く。上流の開発用デプロイでは `cp config/profiles.example.json config/profiles.json` で作ります（gitignore。値はプレースホルダー）。一覧は環境変数ではなく、wrangler の `alias` で JSON モジュール `awsbridge:profiles` として Worker にバンドルされるので、プロファイル数に実質的な上限はありません（Workers の環境変数は 1 つ 5 KB が上限）。ファイルが無いとビルド（`wrangler deploy` / `wrangler dev`）が `Cannot find module` で失敗します。`profiles` は配列で書くのを推奨します。配列の順が `list_aws_profiles` の返す一覧の順になります（`default` は常に先頭）。
 
 ```json
 {
@@ -177,13 +177,28 @@ mise run secrets        #    古い公開鍵を JWKS から外す
 - プロファイル名: 英数字・`_`・`-` の 1〜32 文字（超えると 500 `server_misconfigured`）。数字だけの名前はオブジェクトの規則で数値順に先に並ぶので、順を意図するなら避けてください。
 - `default`: 必須。`aws_profile` を省略したとき、および `tools/list` など `tools/call` 以外で使うプロファイル。
 - `tools`: 任意。`aws_profile` の対象ツール（省略時は全ツール。通常は省略でよい）。名前は AWS MCP Server が返す実際のツール名（例: `aws___run_script`。`tools/list` で確認できる）で、存在しない名前を書くと `aws_profile` が効きません。対象外ツールに付いた `aws_profile` は無視して取り除きます。
-- `tools/list` の応答には、対象ツールの `inputSchema.properties.aws_profile`（`{type: "string", description}`。`enum` は持たず、`description` にも既定値やプロファイル名は入れません）を注入し、あわせて `list_aws_profiles` ツールを追加します（`tools/list` のページングで 2 ページ目以降には追加しません）。クライアント（Claude など）は `list_aws_profiles` を呼んで、使えるプロファイルを実行時に取得します。このツールは認証後に Worker が自分で応答し、`{default, profiles: [{name, description?}]}` を返します（`roleArn` は含めません）。注入するスキーマは `AWS_PROFILES` に依存しないので、プロファイルを追加するだけなら MCP Server Portal の再同期も claude.ai の再接続も要りません。再同期・再接続が要るのは、上流のツール構成が変わったとき、または awsbridge の更新で注入するスキーマが変わったときです（`enum` を外して `list_aws_profiles` を追加した更新を取り込む初回を含みます）。上流が既に `aws_profile` を持つツールは注入しません。応答を加工できないときは原文のまま返します。
+- `tools/list` の応答には、対象ツールの `inputSchema.properties.aws_profile`（`{type: "string", description}`。`enum` は持たず、`description` にも既定値やプロファイル名は入れません）を注入し、あわせて `list_aws_profiles` ツールを追加します（`tools/list` のページングで 2 ページ目以降には追加しません）。クライアント（Claude など）は `list_aws_profiles` を呼んで、使えるプロファイルを実行時に取得します。このツールは認証後に Worker が自分で応答し、`{default, profiles: [{name, description?}]}` を返します（`roleArn` は含めません）。注入するスキーマはプロファイル一覧に依存しないので、プロファイルを追加するだけなら MCP Server Portal の再同期も claude.ai の再接続も要りません。再同期・再接続が要るのは、上流のツール構成が変わったとき、または awsbridge の更新で注入するスキーマが変わったときです（`enum` を外して `list_aws_profiles` を追加した更新を取り込む初回を含みます）。上流が既に `aws_profile` を持つツールは注入しません。応答を加工できないときは原文のまま返します。
 - `aws_profile` は上流へ送る前に取り除きます。単一の `tools/call` では、一覧にない名前（`unknown_aws_profile`）も文字列以外（`invalid_aws_profile`）も、HTTP 200 の JSON-RPC 結果 `isError: true` で返します。本文にエラーコード・使えるプロファイル名・既定のプロファイルを含むので、クライアントは 1 回で直せます。JSON-RPC バッチのときは 400 `{"error": "<code>"}` です。
 - JSON-RPC バッチは、対象ツールの `aws_profile` がすべて同じ（省略は `default`）ならそのロールで中継し、異なれば 400 `batch_not_supported`。
-- `AWS_PROFILES` が未設定・不正なら 500 `server_misconfigured`。
+- 一覧が不正（形式エラー・重複・空など）なら 500 `server_misconfigured`（ログには `config: invalid profiles: <種別>` だけを出し、設定値は出しません）。未設定はビルドの失敗になります。
 - STS の `RoleSessionName` は `gw-<利用者>-<プロファイル名>` です（CloudTrail で見分けられます）。
 
-上流自身の開発用デプロイでは、`mise.local.toml` の `AWSBRIDGE_PROFILES`（上記 JSON の文字列）を `mise run secrets` が secret `AWS_PROFILES` として登録します。詳細は `docs/specs/architecture.md` の「マルチアカウント（aws_profile）」を参照してください。
+下流リポジトリは上流の `wrangler.jsonc` を編集せず、自分の `wrangler.<name>.jsonc` の `alias` で自前の JSON（例 `deploy/profiles.json`）に向けます（「下流リポジトリでの運用」参照）。詳細は `docs/specs/architecture.md` の「マルチアカウント（aws_profile）」を参照してください。
+
+### 既存デプロイからの移行（`AWS_PROFILES` の廃止）
+
+以前は `AWS_PROFILES` を vars または secret（`mise.local.toml` の `AWSBRIDGE_PROFILES`）で渡していました。`AWS_PROFILES` は廃止したので、次の手順で移します。
+
+```
+# 上流の開発用デプロイ: mise.local.toml の AWSBRIDGE_PROFILES（JSON 文字列）の中身を config/profiles.json に書く
+cp config/profiles.example.json config/profiles.json   # 中身を自分の一覧に置き換える。mise.local.toml の AWSBRIDGE_PROFILES は削除
+# 下流リポジトリ: wrangler.<name>.jsonc の vars.AWS_PROFILES を deploy/profiles.json に移し、vars を消して alias を足す
+mise run deploy:worker
+# 不要になった Worker secret を消す（secret で持っていた場合のみ。--config / --env は使っていた設定に合わせる）
+bash scripts/wrangler.sh secret delete AWS_PROFILES
+```
+
+`AWS_PROFILES` の vars / secret が残っていても Worker は読みません（無視されます）。ただし secret は Worker に残り続けるので、`secret delete` で消してください。
 
 ## セットアップ用スキル（Claude Code）
 
@@ -209,7 +224,7 @@ git remote rename origin upstream
 git remote add origin <private リポジトリの URL>   # 下流の push 先
 ```
 
-2. `wrangler.<name>.jsonc` を足す（コミットする。ロール ARN は秘密ではない）。`main` などは上流の `wrangler.jsonc` と同じ値にし、`name` / `workers_dev` / `vars.AWS_PROFILES` だけ自分用にします。env セクションは使いません（値はダミーです）。
+2. `wrangler.<name>.jsonc` を足す（コミットする。ロール ARN は秘密ではない）。`main` などは上流の `wrangler.jsonc` と同じ値にし、`name` / `workers_dev` / `alias` だけ自分用にします。`alias` で、プロファイル一覧の JSON（手順 2 の次に作る `deploy/profiles.json`）をモジュール `awsbridge:profiles` として差し替えます。env セクションは使いません（値はダミーです）。
 
 ```jsonc
 {
@@ -220,19 +235,11 @@ git remote add origin <private リポジトリの URL>   # 下流の push 先
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
   "workers_dev": true,
-  "vars": {
-    "AWS_PROFILES": {
-      "default": "dev-readonly",
-      "profiles": [
-        { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly", "description": "development (read-only)" },
-        { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug", "description": "development (debug)" },
-        { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
-        { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
-      ]
-    }
-  }
+  "alias": { "awsbridge:profiles": "./deploy/profiles.json" }
 }
 ```
+
+   `deploy/profiles.json` の形式は上の「マルチアカウント」の JSON と同じです（コミットする。ロール ARN は秘密ではない）。上流の `config/profiles.example.json` をコピーして書き換えると早いです。
 
 3. 下流用の mise 設定ファイルを足す。`mise.<name>.toml` と、それを有効にする `.miserc.toml` の 2 つです（どちらもコミットする。秘密値は入れない）。
 
@@ -252,14 +259,14 @@ AWSBRIDGE_KEY_FILE = ".secrets/awsbridge-mcp-signing-key.json"   # 環境ごと�
 env = ["awsbridge-mcp"]
 ```
 
-4. 秘密値と環境固有値を `mise.local.toml`（gitignore。コミットしない）に書く。`AWSBRIDGE_ISSUER`（Worker の URL）、`AWSBRIDGE_ALLOWED_SUBJECTS`、`AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS`、`AWSBRIDGE_ACCESS_TEAM_DOMAIN`、`AWSBRIDGE_ACCESS_AUD` など（上の「`mise.local.toml` の変数」を参照）。`AWS_PROFILES` を `vars` で持つので `AWSBRIDGE_PROFILES` は設定しない（`secrets` が `AWS_PROFILES` を secret として二重登録しません）。
+4. 秘密値と環境固有値を `mise.local.toml`（gitignore。コミットしない）に書く。`AWSBRIDGE_ISSUER`（Worker の URL）、`AWSBRIDGE_ALLOWED_SUBJECTS`、`AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS`、`AWSBRIDGE_ACCESS_TEAM_DOMAIN`、`AWSBRIDGE_ACCESS_AUD` など（上の「`mise.local.toml` の変数」を参照）。プロファイル一覧は `mise.local.toml` ではなく `deploy/profiles.json` に置きます。
 
 5. デプロイする（初回）。
 
 ```
 mise run keygen          # AWSBRIDGE_KEY_FILE に署名鍵を生成
 mise run deploy:worker   # wrangler.<name>.jsonc で Worker をデプロイ → secrets を登録
-AWS_PROFILE=<対象> mise run deploy:aws   # アカウントごとに CloudFormation を流し、出力 ReadOnlyRoleArn / DebugRoleArn を wrangler.<name>.jsonc の AWS_PROFILES に書く
+AWS_PROFILE=<対象> mise run deploy:aws   # アカウントごとに CloudFormation を流し、出力 ReadOnlyRoleArn / DebugRoleArn を deploy/profiles.json に書く
 ```
 
 6. 上流の更新を取り込む。

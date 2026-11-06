@@ -10,6 +10,7 @@ tflint = "0.64.0"
 # AWSBRIDGE_WRANGLER_ENV / AWSBRIDGE_WRANGLER_CONFIG）はここに置かず、scripts/*.sh と scripts/poc/ 側の既定値で補う。
 # ここに置くと、下流の mise 設定ファイル（mise.<name>.toml）や環境変数で上書きしにくくなるため。
 # 下流の使い方は README_ja.md「下流リポジトリでの運用」を参照。
+# プロファイル一覧（aws_profile で選べるアカウント）は環境変数ではなく、wrangler の alias でバンドルする JSON（config/profiles.json。gitignore）に置く。README_ja.md「マルチアカウント」参照。
 # 個人情報・アカウント固有値は mise.local.toml（gitignore）に置く:
 #   AWSBRIDGE_ISSUER           = "https://<worker>.<subdomain>.workers.dev"（Worker の URL = OIDC issuer）
 #   AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org"（読み取り専用ロールを引き受けられる利用者。カンマ区切り）
@@ -18,7 +19,6 @@ tflint = "0.64.0"
 #   AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS = "arn:aws:iam::<アカウントID>:policy/<名前>"（任意。デバッグロールに追加する管理ポリシー。カンマ区切り）
 #   AWSBRIDGE_POC_SUBJECT      = "user@example.com"（poc:sts の正常ケースで使う利用者）
 #   AWSBRIDGE_ACCESS_TEAM_DOMAIN = "https://team.example.cloudflareaccess.com"（Access のチームドメイン。secrets タスクが Worker secret ACCESS_TEAM_DOMAIN に登録）
-#   AWSBRIDGE_PROFILES         = '{"default":"dev-readonly","profiles":[{"name":"dev-readonly","roleArn":"arn:aws:iam::<アカウントID>:role/FederatedMcpReadOnly"},{"name":"dev-debug","roleArn":"arn:aws:iam::<アカウントID>:role/FederatedMcpDebug"}]}'（JSON 文字列。各アカウントの deploy:aws 出力 ReadOnlyRoleArn / DebugRoleArn を並べる。secrets タスクが Worker secret AWS_PROFILES に登録）
 #   AWSBRIDGE_ACCESS_AUD       = "<Access アプリケーションの AUD タグ>"（secrets タスクが Worker secret ACCESS_AUD に登録）
 #   AWSBRIDGE_KEY_FILE         = ".secrets/dev-signing-key.json"（任意。署名鍵 JWK の置き場所。既定はリポジトリルートのこのパス。.secrets/ は gitignore）
 #   AWSBRIDGE_NEXT_KEY_FILE / AWSBRIDGE_PREVIOUS_KEY_FILE（任意。鍵ローテーション用の次の鍵・前の鍵。既定は KEY_FILE の拡張子の前に .next / .previous を付けたもの。key:* タスクが作る）
@@ -81,7 +81,7 @@ description = "署名鍵のローテーション 3/3: 前の鍵（PREVIOUS）を
 run = "pnpm tsx scripts/key-rotate.ts retire"
 
 [tasks.secrets]
-description = "Worker secret（SIGNING_JWK / ADDITIONAL_PUBLIC_JWKS / ACCESS_TEAM_DOMAIN / ACCESS_AUD / AWS_PROFILES）を一括登録。AWS_PROFILES は AWSBRIDGE_PROFILES（JSON 文字列）から読む（AWS は呼ばない）"
+description = "Worker secret（SIGNING_JWK / ADDITIONAL_PUBLIC_JWKS / ACCESS_TEAM_DOMAIN / ACCESS_AUD）を一括登録（AWS は呼ばない）。プロファイル一覧は secret にせず config/profiles.json でバンドルする"
 run = "bash scripts/put-secrets.sh"
 
 [tasks."deploy:worker"]

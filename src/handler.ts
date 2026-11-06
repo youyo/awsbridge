@@ -28,8 +28,6 @@ export interface Env {
   ADDITIONAL_PUBLIC_JWKS?: string;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
-  // AWS_PROFILES は wrangler の vars（オブジェクト）でも secret（JSON 文字列）でもよい。必須
-  AWS_PROFILES?: string | Record<string, unknown>;
   // var（ISSUER は deploy 時の --var、以降は任意の上書き用）
   ISSUER?: string;
   IDENTITY_CLAIM?: string;
@@ -50,6 +48,12 @@ export interface HandlerDeps {
   /** Access JWT の署名鍵解決。既定はチームドメインの JWKS。 */
   getKey?: JWTVerifyGetKey;
   cache: CredentialCache;
+  /**
+   * プロファイル一覧（aws_profile で選べるアカウント）。必須。実行時に parseProfilesConfig で検証する。
+   * 本番は src/index.ts が wrangler の alias で差し替えた JSON モジュール（awsbridge:profiles）を渡す。
+   * 環境変数には置かない（Workers の環境変数は 1 つ 5 KB 上限のため）。
+   */
+  profiles: unknown;
 }
 
 const wellKnownHeaders = {
@@ -135,11 +139,9 @@ async function handleMcp(request: Request, env: Env, deps: HandlerDeps): Promise
   }
   let profiles: ProfilesConfig;
   try {
-    profiles = parseProfilesConfig(env.AWS_PROFILES);
+    profiles = parseProfilesConfig(deps.profiles);
   } catch (e) {
-    console.error(
-      `config: ${e instanceof ProfilesConfigError ? e.message : "invalid AWS_PROFILES"}`,
-    );
+    console.error(`config: ${e instanceof ProfilesConfigError ? e.message : "invalid profiles"}`);
     return misconfigured();
   }
   const maxAge = parseMaxAge(env.ACCESS_MAX_TOKEN_AGE_SECONDS);

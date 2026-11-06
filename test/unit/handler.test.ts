@@ -1,8 +1,18 @@
 import { calculateJwkThumbprint, createLocalJWKSet, jwtVerify } from "jose";
 import { describe, expect, it, vi } from "vitest";
-import handler from "../../src/index";
+import { createHandler } from "../../src/handler";
 import { signStsToken } from "../../src/oidc";
+import { createCredentialCache } from "../../src/sts";
 import { newPrivateJwk } from "./helpers";
+
+// src/index.ts は alias の JSON モジュール（awsbridge:profiles）を import するので、ここでは handler を直接組み立てる（alias は e2e で確認）
+const handle = createHandler({
+  cache: createCredentialCache(),
+  profiles: { default: "dev", profiles: { dev: { roleArn: "arn:aws:iam::111111111111:role/x" } } },
+});
+const handler = {
+  fetch: (request: Request, env: Parameters<typeof handle>[1]) => handle(request, env),
+};
 
 const ISSUER = "https://awsbridge.example.workers.dev";
 

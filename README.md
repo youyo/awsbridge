@@ -24,9 +24,9 @@ The Cloudflare side (Worker) and the AWS side (CloudFormation) are completely se
 
 The Worker's URL becomes the OIDC issuer, so proceed in this order.
 
-1. Cloudflare side: `mise run keygen` → set `AWSBRIDGE_ISSUER` and the other variables in `mise.local.toml` → `mise run deploy:worker` (this fixes the Worker's URL. At this point the profile list is not registered yet, so `/mcp` returns 500)
+1. Cloudflare side: `mise run keygen` → set `AWSBRIDGE_ISSUER` and the other variables in `mise.local.toml` → `cp config/profiles.example.json config/profiles.json` (required for the build. The contents can stay as dummies for now) → `mise run deploy:worker` (this fixes the Worker's URL. At this point the role ARNs are dummies, so `/mcp` is not usable)
 2. AWS side: `AWS_PROFILE=<target> mise run deploy:aws` (note the outputs `ReadOnlyRoleArn` / `DebugRoleArn`)
-3. Register the profile list. To keep it as a secret, set `AWSBRIDGE_PROFILES` in `mise.local.toml` and run `mise run secrets`. To keep it in the `vars` of `wrangler.jsonc` (downstream repositories), write it in `vars` and run `mise run deploy:worker`
+3. Register the profile list. Write the role ARNs from the outputs into `config/profiles.json` (see "Multi-account" below) and run `mise run deploy:worker`. The list is a JSON file bundled into the Worker, not an environment variable, so the build fails without `config/profiles.json` (unset is an error)
 
 From the second time on, deploy only the side you changed.
 
@@ -90,11 +90,12 @@ Athena queries also need a separate write permission (`s3:PutObject`) to the res
 
 ```
 mise run keygen          # Generate the signing key (.secrets/, not overwritten if it exists)
-# Set AWSBRIDGE_ISSUER / AWSBRIDGE_ACCESS_* / AWSBRIDGE_PROFILES and others in mise.local.toml
+# Set AWSBRIDGE_ISSUER / AWSBRIDGE_ACCESS_* and others in mise.local.toml
+cp config/profiles.example.json config/profiles.json   # The profile list (gitignored). Write the role ARNs
 mise run deploy:worker   # Runs wrangler deploy → secrets in order (does not call AWS)
 ```
 
-`secrets` can also be run on its own (`mise run secrets`). It passes JSON to `wrangler secret bulk` via standard input, so values do not appear in command-line arguments. What it registers is `SIGNING_JWK` / `ADDITIONAL_PUBLIC_JWKS` (for signing key rotation. Normally `[]`) / `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD` / `AWS_PROFILES`, and `AWS_PROFILES` is read from `AWSBRIDGE_PROFILES` (a JSON string).
+`secrets` can also be run on its own (`mise run secrets`). It passes JSON to `wrangler secret bulk` via standard input, so values do not appear in command-line arguments. What it registers is `SIGNING_JWK` / `ADDITIONAL_PUBLIC_JWKS` (for signing key rotation. Normally `[]`) / `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD`. The profile list is not a secret (a Workers environment variable is limited to 5 KB each, and 270 profiles take about 38 KB). It is bundled into the Worker as `config/profiles.json` (see "Multi-account").
 
 Verification: `mise run poc:sts` (1 positive + 4 negative cases. It calls real AWS, so use it only when you run it explicitly).
 
@@ -110,7 +111,6 @@ AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS = "admin@example.com"       # Users who can ass
 # AWSBRIDGE_READONLY_ROLE_NAME = "FederatedMcpReadOnly"      # Optional. Role name (default value)
 # AWSBRIDGE_DEBUG_ROLE_NAME = "FederatedMcpDebug"            # Optional. Role name (default value)
 # AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS = "arn:aws:iam::<account-id>:policy/<name>" # Optional. Additional managed policies for the debug role (comma-separated)
-AWSBRIDGE_PROFILES = '{"default":"dev-readonly","profiles":[{"name":"dev-readonly","roleArn":"arn:aws:iam::<account-id>:role/FederatedMcpReadOnly"},{"name":"dev-debug","roleArn":"arn:aws:iam::<account-id>:role/FederatedMcpDebug"}]}' # The outputs ReadOnlyRoleArn / DebugRoleArn of deploy:aws for each account. secrets registers it as AWS_PROFILES
 AWSBRIDGE_POC_SUBJECT = "user@example.com"                   # The user used in the positive case of poc:sts
 AWSBRIDGE_ACCESS_TEAM_DOMAIN = "https://team.example.cloudflareaccess.com" # The Access team domain
 AWSBRIDGE_ACCESS_AUD = "<AUD tag of the Access application>"   # The AUD of this application
@@ -124,7 +124,7 @@ Overridable defaults (filled in on the `scripts/` side. Can be changed with envi
 
 ### Worker configuration
 
-Secrets (registered by `mise run secrets`): `SIGNING_JWK`, `ADDITIONAL_PUBLIC_JWKS` (optional. Additional public keys for signing key rotation), `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `AWS_PROFILES` (required. If you keep it in vars, do not make it a secret).
+Secrets (registered by `mise run secrets`): `SIGNING_JWK`, `ADDITIONAL_PUBLIC_JWKS` (optional. Additional public keys for signing key rotation), `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`. The profile list is passed not as an env var or secret but as a bundled JSON module (`awsbridge:profiles`; required).
 
 Vars (optional. Only when overriding the defaults): `ISSUER` (set with `--var` at deploy time), `IDENTITY_CLAIM` (default `email`), `ACCESS_MAX_TOKEN_AGE_SECONDS`, `STS_AUDIENCE` (default `awsbridge`), `STS_REGION` (default `us-east-1`), `STS_ENDPOINT`, `AWS_MCP_REGION` (default `us-east-1`), `AWS_MCP_ENDPOINT`, `TARGET_AWS_REGION` (default `ap-northeast-1`), `ALLOWED_ORIGINS` (comma-separated exact-match origins. Empty by default).
 
@@ -158,7 +158,7 @@ mise run secrets        #    Remove the old public key from the JWKS
 You can switch between multiple AWS accounts with the `aws_profile` argument of MCP `tools/call`. The Worker directly assumes the selected account's role with AssumeRoleWithWebIdentity (no chaining). Who can use which account is determined by each account's trust policy (`AllowedSubjects` / `DebugAllowedSubjects`), and anything not permitted results in 403 `forbidden`.
 
 1. For each target account, run `AWS_PROFILE=<target> mise run deploy:aws` and note the outputs `ReadOnlyRoleArn` / `DebugRoleArn`.
-2. Write the profile list in the environment variable `AWS_PROFILES` (required. It can be a JSON object in wrangler's vars or a JSON string in a secret) (values are placeholders). Writing `profiles` as an array is recommended. The order of the array becomes the order of the list returned by `list_aws_profiles` as-is (`default` is always first).
+2. Write the profile list (required) in a JSON file. For the upstream's own development deployment, create it with `cp config/profiles.example.json config/profiles.json` (gitignored; values are placeholders). The list is not an environment variable: wrangler's `alias` bundles it into the Worker as the JSON module `awsbridge:profiles`, so there is practically no limit on the number of profiles (a Workers environment variable is limited to 5 KB each). Without the file, the build (`wrangler deploy` / `wrangler dev`) fails with `Cannot find module`. Writing `profiles` as an array is recommended. The order of the array becomes the order of the list returned by `list_aws_profiles` as-is (`default` is always first).
 
 ```json
 {
@@ -177,13 +177,28 @@ You can switch between multiple AWS accounts with the `aws_profile` argument of 
 - Profile names: 1 to 32 characters of alphanumerics, `_`, and `-` (exceeding that results in 500 `server_misconfigured`). Names consisting only of digits are ordered first in numeric order by the rules for objects, so avoid them if you intend a particular order.
 - `default`: required. The profile used when `aws_profile` is omitted, and for requests other than `tools/call` such as `tools/list`.
 - `tools`: optional. The tools that `aws_profile` applies to (all tools if omitted; omitting is normally fine). The names are the actual tool names returned by the AWS MCP Server (for example `aws___run_script`; you can check them with `tools/list`), and if you write a name that does not exist, `aws_profile` has no effect. An `aws_profile` attached to a tool that is not a target is ignored and removed.
-- In the `tools/list` response, `inputSchema.properties.aws_profile` (`{type: "string", description}`; no `enum`, and the description contains neither the default nor any profile name) is injected into the target tools, and a `list_aws_profiles` tool is added (not on the second and later pages of a paginated `tools/list`). Clients (such as Claude) get the available profiles at run time by calling `list_aws_profiles`, which the Worker answers by itself after authentication (it returns `{default, profiles: [{name, description?}]}`, never a `roleArn`). Because the injected schema does not depend on `AWS_PROFILES`, adding a profile needs neither a re-sync of the MCP Server Portal nor a reconnection of claude.ai. A re-sync and reconnection are needed only when the upstream tool set changes or when an awsbridge update changes the injected schema (including the first time you take in the update that removed the `enum` and added `list_aws_profiles`). Tools whose upstream definition already has `aws_profile` are not injected. If the response cannot be processed, it is returned as is.
+- In the `tools/list` response, `inputSchema.properties.aws_profile` (`{type: "string", description}`; no `enum`, and the description contains neither the default nor any profile name) is injected into the target tools, and a `list_aws_profiles` tool is added (not on the second and later pages of a paginated `tools/list`). Clients (such as Claude) get the available profiles at run time by calling `list_aws_profiles`, which the Worker answers by itself after authentication (it returns `{default, profiles: [{name, description?}]}`, never a `roleArn`). Because the injected schema does not depend on the profile list, adding a profile needs neither a re-sync of the MCP Server Portal nor a reconnection of claude.ai. A re-sync and reconnection are needed only when the upstream tool set changes or when an awsbridge update changes the injected schema (including the first time you take in the update that removed the `enum` and added `list_aws_profiles`). Tools whose upstream definition already has `aws_profile` are not injected. If the response cannot be processed, it is returned as is.
 - `aws_profile` is removed before being sent upstream. For a single `tools/call`, a name not in the list (`unknown_aws_profile`) or a non-string (`invalid_aws_profile`) is returned as HTTP 200 with a JSON-RPC result `isError: true` whose text contains the error code, the available profile names, and the default, so the client can correct it in one try. In a JSON-RPC batch, it results in 400 with `{"error": "<code>"}`.
 - For a JSON-RPC batch, if the `aws_profile` of all target tools is the same (omitted means `default`), it is relayed with that role; if they differ, it results in 400 `batch_not_supported`.
-- If `AWS_PROFILES` is unset or invalid, the result is 500 `server_misconfigured`.
+- If the list is invalid (a format error, a duplicate, empty, and so on), the result is 500 `server_misconfigured` (the log shows only `config: invalid profiles: <kind>`, never the values). Unset makes the build fail.
 - The STS `RoleSessionName` is `gw-<user>-<profile name>` (so you can tell them apart in CloudTrail).
 
-For the upstream's own development deployment, `mise run secrets` registers `AWSBRIDGE_PROFILES` in `mise.local.toml` (the JSON above as a string) as the secret `AWS_PROFILES`. For details, see the section on multi-account (aws_profile) in `docs/specs/architecture.md`.
+A downstream repository does not edit the upstream `wrangler.jsonc`; its own `wrangler.<name>.jsonc` points `alias` at its own JSON (for example `deploy/profiles.json`) (see "Operating in a downstream repository"). For details, see the section on multi-account (aws_profile) in `docs/specs/architecture.md`.
+
+### Migrating an existing deployment (`AWS_PROFILES` was removed)
+
+`AWS_PROFILES` used to be passed as a var or a secret (`AWSBRIDGE_PROFILES` in `mise.local.toml`). It was removed, so migrate as follows.
+
+```
+# Upstream's development deployment: write the contents of AWSBRIDGE_PROFILES (a JSON string) in mise.local.toml into config/profiles.json
+cp config/profiles.example.json config/profiles.json   # Replace the contents with your list. Delete AWSBRIDGE_PROFILES from mise.local.toml
+# Downstream repository: move vars.AWS_PROFILES in wrangler.<name>.jsonc to deploy/profiles.json, delete the vars, and add alias
+mise run deploy:worker
+# Delete the Worker secret that is no longer needed (only if you kept it as a secret; match --config / --env to the ones you used)
+bash scripts/wrangler.sh secret delete AWS_PROFILES
+```
+
+The Worker no longer reads a leftover `AWS_PROFILES` var or secret (it is ignored). A secret stays on the Worker, though, so remove it with `secret delete`.
 
 ## Setup skill (Claude Code)
 
@@ -209,7 +224,7 @@ git remote rename origin upstream
 git remote add origin <private repository URL>   # The downstream push destination
 ```
 
-2. Add `wrangler.<name>.jsonc` (commit it. Role ARNs are not secrets). Keep `main` and the others the same as the upstream `wrangler.jsonc`, and customize only `name` / `workers_dev` / `vars.AWS_PROFILES`. Do not use the env section (the values are dummies).
+2. Add `wrangler.<name>.jsonc` (commit it. Role ARNs are not secrets). Keep `main` and the others the same as the upstream `wrangler.jsonc`, and customize only `name` / `workers_dev` / `alias`. `alias` replaces the module `awsbridge:profiles` with your profile list JSON (`deploy/profiles.json`, created right after step 2). Do not use the env section (the values are dummies).
 
 ```jsonc
 {
@@ -220,19 +235,11 @@ git remote add origin <private repository URL>   # The downstream push destinati
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
   "workers_dev": true,
-  "vars": {
-    "AWS_PROFILES": {
-      "default": "dev-readonly",
-      "profiles": [
-        { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly", "description": "development (read-only)" },
-        { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug", "description": "development (debug)" },
-        { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
-        { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
-      ]
-    }
-  }
+  "alias": { "awsbridge:profiles": "./deploy/profiles.json" }
 }
 ```
+
+   The format of `deploy/profiles.json` is the same as the JSON in "Multi-account" above (commit it. Role ARNs are not secrets). Copying the upstream `config/profiles.example.json` and rewriting it is the quickest way.
 
 3. Add the downstream mise config files: `mise.<name>.toml` and the `.miserc.toml` that enables it (commit both. Do not put secret values in them).
 
@@ -252,14 +259,14 @@ AWSBRIDGE_KEY_FILE = ".secrets/awsbridge-mcp-signing-key.json"   # Use a separat
 env = ["awsbridge-mcp"]
 ```
 
-4. Write secret values and environment-specific values in `mise.local.toml` (gitignored. Do not commit it): `AWSBRIDGE_ISSUER` (the Worker's URL), `AWSBRIDGE_ALLOWED_SUBJECTS`, `AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS`, `AWSBRIDGE_ACCESS_TEAM_DOMAIN`, `AWSBRIDGE_ACCESS_AUD`, and so on (see "Variables in `mise.local.toml`" above). Because `AWS_PROFILES` is kept in `vars`, do not set `AWSBRIDGE_PROFILES` (so that `secrets` does not register `AWS_PROFILES` a second time as a secret).
+4. Write secret values and environment-specific values in `mise.local.toml` (gitignored. Do not commit it): `AWSBRIDGE_ISSUER` (the Worker's URL), `AWSBRIDGE_ALLOWED_SUBJECTS`, `AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS`, `AWSBRIDGE_ACCESS_TEAM_DOMAIN`, `AWSBRIDGE_ACCESS_AUD`, and so on (see "Variables in `mise.local.toml`" above). The profile list goes in `deploy/profiles.json`, not in `mise.local.toml`.
 
 5. Deploy (first time).
 
 ```
 mise run keygen          # Generate the signing key at AWSBRIDGE_KEY_FILE
 mise run deploy:worker   # Deploy the Worker with wrangler.<name>.jsonc → register secrets
-AWS_PROFILE=<target> mise run deploy:aws   # Deploy CloudFormation per account, and write the outputs ReadOnlyRoleArn / DebugRoleArn into AWS_PROFILES in wrangler.<name>.jsonc
+AWS_PROFILE=<target> mise run deploy:aws   # Deploy CloudFormation per account, and write the outputs ReadOnlyRoleArn / DebugRoleArn into deploy/profiles.json
 ```
 
 6. Pull in upstream updates.

@@ -1,5 +1,5 @@
 // 複数 AWS アカウントの切り替え（aws_profile）。設計: docs/specs/architecture.md「マルチアカウント（aws_profile）」。
-// 設定は環境変数 AWS_PROFILES（オブジェクトまたは JSON 文字列）。profiles は配列（[{ name, roleArn, description? }]）でもオブジェクトでもよい。ここは副作用のない純粋関数だけを置く。
+// 設定は JSON モジュール awsbridge:profiles（wrangler の alias で差し替える。src/index.ts が import して createHandler に渡す）。オブジェクトまたは JSON 文字列を受け付ける。profiles は配列（[{ name, roleArn, description? }]）でもオブジェクトでもよい。ここは副作用のない純粋関数だけを置く。
 
 export type ProfileEntry = { roleArn: string; description?: string };
 
@@ -25,7 +25,7 @@ export type ProfilesConfigErrorKind =
 export class ProfilesConfigError extends Error {
   readonly kind: ProfilesConfigErrorKind;
   constructor(kind: ProfilesConfigErrorKind) {
-    super(`invalid AWS_PROFILES: ${kind}`);
+    super(`invalid profiles: ${kind}`);
     this.name = "ProfilesConfigError";
     this.kind = kind;
   }
@@ -116,7 +116,7 @@ export function listProfiles(config: ProfilesConfig): ProfilesListing {
 const objCache = new WeakMap<object, ProfilesConfig>();
 let strCache: { raw: string; config: ProfilesConfig } | undefined;
 
-/** AWS_PROFILES（wrangler vars のオブジェクト、または secret の JSON 文字列）を検証して返す。不正・未設定は ProfilesConfigError。 */
+/** プロファイル一覧（JSON モジュールのオブジェクト、または JSON 文字列）を検証して返す。不正・未設定は ProfilesConfigError。 */
 export function parseProfilesConfig(raw: unknown): ProfilesConfig {
   if (raw === undefined || raw === "") throw new ProfilesConfigError("missing");
   if (typeof raw === "string") {

@@ -46,3 +46,18 @@ describe("README の 2 言語化", () => {
     expect(fences("README.md")).toBe(fences("README_ja.md"));
   });
 });
+
+describe("README のプロファイル一覧（alias でバンドル）", () => {
+  for (const f of ["README.md", "README_ja.md"]) {
+    it(`${f}: example のコピー手順・alias・移行時の secret delete を載せ、AWSBRIDGE_PROFILES を設定例に残さない`, () => {
+      const text = read(f);
+      expect(text).toContain("cp config/profiles.example.json config/profiles.json");
+      expect(text).toContain("awsbridge:profiles");
+      expect(text).toContain("secret delete AWS_PROFILES");
+      // 設定例（mise.local.toml のコードブロック）に AWSBRIDGE_PROFILES = ... が無い
+      expect(text).not.toMatch(/^AWSBRIDGE_PROFILES\s*=/m);
+      // 下流の wrangler 設定例が vars.AWS_PROFILES を使っていない
+      expect(text).not.toMatch(/"AWS_PROFILES"\s*:/);
+    });
+  }
+});

@@ -28,6 +28,10 @@ describe("mise.toml のデプロイタスク", () => {
   it("secrets は単独タスクとして残る", () => {
     expect(section("tasks.secrets")).toContain("scripts/put-secrets.sh");
   });
+  it("プロファイル一覧は secret にしない（secrets の説明と mise.toml に AWS_PROFILES / AWSBRIDGE_PROFILES が無い）", () => {
+    expect(section("tasks.secrets")).not.toContain("AWS_PROFILES");
+    expect(toml).not.toMatch(/AWS_PROFILES|AWSBRIDGE_PROFILES/);
+  });
   it("鍵ローテーションのタスク（key:prepare / key:activate / key:retire）は scripts/key-rotate.ts を呼び、wrangler・aws を呼ばない", () => {
     for (const cmd of ["prepare", "activate", "retire"]) {
       const run = /^run\s*=.*$/m.exec(section(`tasks."key:${cmd}"`))?.[0] ?? "";
