@@ -1,0 +1,15 @@
+{
+  // PoC（人間の AWS ログイン）専用の issuer Worker。MCP 用の wrangler.jsonc とは別（env セクションも使わない）。
+  // discovery と JWKS を静的に返すだけで、署名はしない。
+  // 文書は deploy-issuer.ts が手元の署名鍵から .secrets/poc-human/issuer-documents.json に作り、下の alias で取り込む。
+  // （AWSBRIDGE_HUMAN_POC_OUT_DIR で置き場所を変えたときは、deploy-issuer.ts が `--alias` で上書きする）
+  // デプロイ: mise run poc:human:deploy-issuer、削除: mise run poc:human:destroy（scripts/poc/human/README.md）。
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "awsbridge-human-poc",
+  "main": "worker.ts",
+  "compatibility_date": "2026-07-21",
+  "workers_dev": true,
+  "preview_urls": false,
+  // パスはこのファイルからの相対
+  "alias": { "awsbridge-human-poc-documents": "../../../.secrets/poc-human/issuer-documents.json" }
+}

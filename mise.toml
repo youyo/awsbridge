@@ -50,7 +50,11 @@ run = "bash infra/cloudflare/check.sh"
 [tasks.lint]
 description = "lint・フォーマット検査・型チェック・CloudFormation テンプレート検査（cfn-lint）・Terraform サンプル検査"
 depends = ["typecheck", "lint:terraform"]
-run = ["pnpm biome check .", "cfn-lint infra/aws/awsbridge.yaml"]
+run = [
+  "pnpm biome check .",
+  "cfn-lint infra/aws/awsbridge.yaml",
+  "cfn-lint scripts/poc/human/poc-human.yaml",
+]
 
 [tasks.fmt]
 description = "フォーマット"
@@ -108,3 +112,58 @@ run = "pnpm tsx scripts/poc/mint.ts"
 [tasks."poc:sts"]
 description = "Worker 発行 JWT で AssumeRoleWithWebIdentity を実行し、否定ケースも確認（--role-arn 省略時はスタックの Output ReadOnlyRoleArn）"
 run = "pnpm tsx scripts/poc/sts.ts"
+
+# ---- PoC: awsbridge 方式を人間の AWS ログイン（コンソール・aws login）に使えるか。手順は scripts/poc/human/README.md ----
+# MCP 経路とは別の issuer（Worker awsbridge-human-poc）・署名鍵・ロール・audience を使う。設定は AWSBRIDGE_HUMAN_POC_* だけを読む。
+# 実 AWS / Cloudflare を呼ぶもの（deploy-issuer / deploy-aws / console-url / destroy）は明示的に実行したときだけ使う。
+
+[tasks."poc:human:keygen"]
+description = "PoC（人間のログイン）: 専用の署名鍵を .secrets/poc-human/ に生成（既存なら上書きしない）"
+run = "pnpm tsx scripts/poc/human/keygen.ts"
+
+[tasks."poc:human:deploy-issuer"]
+description = "PoC（人間のログイン）: discovery と JWKS を手元で作り、静的に返す Worker awsbridge-human-poc を workers.dev へデプロイして公開内容を確認（AWS は呼ばない。--dry-run でバンドルだけ）"
+run = "pnpm tsx scripts/poc/human/deploy-issuer.ts"
+
+[tasks."poc:human:deploy-aws"]
+description = "PoC（人間のログイン）: CloudFormation で PoC 用の OIDC プロバイダーとロール AwsbridgeHumanPoc をデプロイ（Cloudflare は呼ばない）"
+run = "bash scripts/poc/human/deploy-aws.sh"
+
+[tasks."poc:human:console-url"]
+description = "PoC（人間のログイン）: JWT → AssumeRoleWithWebIdentity → getSigninToken（SessionDuration あり・なし）→ ログイン URL を .secrets/poc-human/ に書く"
+run = "pnpm tsx scripts/poc/human/console-url.ts"
+
+[tasks."poc:human:destroy"]
+description = "PoC（人間のログイン）: CloudFormation スタックと Worker awsbridge-human-poc を削除し、手元のログイン URL・認証情報を消す"
+run = "bash scripts/poc/human/destroy.sh"
+
+# ---- PoC P2〜P4（セッションタグ・SourceIdentity・緊急停止）。手順は scripts/poc/human/README.md ----
+# checks / stop-watch / revoke / unrevoke / delete-provider / recreate-provider / trail は実 AWS を呼ぶ。明示的に実行したときだけ使う。
+
+[tasks."poc:human:checks"]
+description = "PoC P2/P3: セッションタグ（入れ子・平坦）と SourceIdentity のケース表を流し、期待と実際（成功 / エラーコード）を表で出す（認証情報は出さない）"
+run = "pnpm tsx scripts/poc/human/checks.ts"
+
+[tasks."poc:human:stop-watch"]
+description = "PoC P4: 認証情報ファイル・AWS プロファイル・新しい引き受けを数秒おきに s3:ListBuckets で見張り、最後の成功と最初の拒否の時刻を出す"
+run = "pnpm tsx scripts/poc/human/stop-watch.ts"
+
+[tasks."poc:human:revoke"]
+description = "PoC P4 (a): PoC のロール（既定 Tagged）に AWSRevokeOlderSessions 相当のインラインポリシーを付け、完了時刻（UTC）を出す"
+run = "pnpm tsx scripts/poc/human/revoke.ts revoke"
+
+[tasks."poc:human:unrevoke"]
+description = "PoC P4 (a): revoke で付けたインラインポリシー AWSRevokeOlderSessions を外す"
+run = "pnpm tsx scripts/poc/human/revoke.ts unrevoke"
+
+[tasks."poc:human:delete-provider"]
+description = "PoC P4 (b): PoC の OIDC プロバイダー（issuer が AWSBRIDGE_HUMAN_POC_ISSUER と一致するものだけ）を消し、完了時刻（UTC）を出す"
+run = "pnpm tsx scripts/poc/human/revoke.ts delete-provider"
+
+[tasks."poc:human:recreate-provider"]
+description = "PoC P4 (b): 消した OIDC プロバイダーを同じ URL・client ID・タグで作り直す（deploy-aws では作り直されない）"
+run = "pnpm tsx scripts/poc/human/revoke.ts recreate-provider"
+
+[tasks."poc:human:trail"]
+description = "PoC P2/P3: CloudTrail で直近の AssumeRoleWithWebIdentity と、そのセッションの API イベントの SourceIdentity・セッションタグを出す（email は伏せる）"
+run = "pnpm tsx scripts/poc/human/trail.ts"
