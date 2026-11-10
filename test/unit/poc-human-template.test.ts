@@ -70,11 +70,12 @@ describe("PoC（人間のログイン）テンプレート: OIDC プロバイダ
 
 describe("PoC（人間のログイン）テンプレート: ロール", () => {
   const role = tpl.Resources.HumanRole;
-  it("ロールは 1 つだけ", () => {
-    const roles = Object.values(tpl.Resources as Record<string, Json>).filter(
-      (r) => r.Type === "AWS::IAM::Role",
-    );
-    expect(roles).toHaveLength(1);
+  it("ロールは既存の HumanRole と、P2〜P4 用の TaggedRole・NoTagRole の 3 つ", () => {
+    const roles = Object.entries(tpl.Resources as Record<string, Json>)
+      .filter(([, r]) => r.Type === "AWS::IAM::Role")
+      .map(([k]) => k)
+      .sort();
+    expect(roles).toEqual(["HumanRole", "NoTagRole", "TaggedRole"]);
   });
   it("MaxSessionDuration は 43200（12 時間）", () => {
     expect(role.Properties.MaxSessionDuration).toBe(43200);
@@ -115,5 +116,109 @@ describe("PoC（人間のログイン）テンプレート: Outputs", () => {
   it("RoleArn と OidcProviderArn", () => {
     expect(tpl.Outputs.RoleArn.Value).toEqual({ "Fn::GetAtt": ["HumanRole", "Arn"] });
     expect(tpl.Outputs.OidcProviderArn.Value).toEqual({ Ref: "OidcProvider" });
+  });
+});
+
+function roleTrust(resource: string, subject = "user@example.com") {
+  const text = evaluate(tpl.Resources[resource].Properties.AssumeRolePolicyDocument, {
+    IssuerHost: HOST,
+    Audience: "awsbridge-human-poc",
+    Subject: subject,
+    OidcProvider: PROVIDER_ARN,
+  });
+  expect(typeof text).toBe("string");
+  return JSON.parse(text as string);
+}
+
+describe("PoC（人間のログイン）テンプレート: TaggedRole（P2 セッションタグ・P3 SourceIdentity・P4 停止）", () => {
+  const role = tpl.Resources.TaggedRole;
+  it("ロール名は <RoleName>Tagged（PoC のガード AwsbridgeHumanPoc* に収まる）、MaxSessionDuration 43200", () => {
+    expect(evaluate(role.Properties.RoleName, { RoleName: "AwsbridgeHumanPoc" })).toBe(
+      "AwsbridgeHumanPocTagged",
+    );
+    expect(role.Properties.MaxSessionDuration).toBe(43200);
+  });
+  it("ReadOnlyAccess と SignInLocalDevelopmentAccess（コンソールと aws login で P3/P4 を試す）", () => {
+    expect(evaluate(role.Properties.ManagedPolicyArns, { "AWS::Partition": "aws" })).toEqual([
+      "arn:aws:iam::aws:policy/ReadOnlyAccess",
+      "arn:aws:iam::aws:policy/SignInLocalDevelopmentAccess",
+    ]);
+  });
+  it("信頼ポリシーは Allow 文 1 つだけ（迂回できる別の Allow を置かない）", () => {
+    const doc = roleTrust("TaggedRole");
+    expect(doc.Statement).toHaveLength(1);
+    expect(doc.Statement[0].Effect).toBe("Allow");
+    expect(doc.Statement[0].Principal).toEqual({ Federated: PROVIDER_ARN });
+  });
+  it("Action は AssumeRoleWithWebIdentity・TagSession・SetSourceIdentity", () => {
+    const st = roleTrust("TaggedRole").Statement[0];
+    expect([...st.Action].sort()).toEqual([
+      "sts:AssumeRoleWithWebIdentity",
+      "sts:SetSourceIdentity",
+      "sts:TagSession",
+    ]);
+  });
+  it("条件: aud・sub、access_profile は poc-admin / poc-viewer、タグのキーは access_profile だけ、SourceIdentity 必須", () => {
+    const st = roleTrust("TaggedRole").Statement[0];
+    expect(st.Condition).toEqual({
+      StringEquals: {
+        [`${HOST}:aud`]: "awsbridge-human-poc",
+        [`${HOST}:sub`]: "user@example.com",
+        "aws:RequestTag/access_profile": ["poc-admin", "poc-viewer"],
+      },
+      "ForAllValues:StringEquals": { "aws:TagKeys": ["access_profile"] },
+      Null: { "sts:SourceIdentity": "false" },
+    });
+  });
+  it("権限: access_profile が poc-admin でなければ iam:ListRoles を Deny（PrincipalTag での権限差）", () => {
+    const policies = role.Properties.Policies as Json[];
+    expect(policies).toHaveLength(1);
+    const doc = policies[0].PolicyDocument;
+    expect(doc.Statement).toEqual([
+      {
+        Sid: "DenyListRolesUnlessPocAdmin",
+        Effect: "Deny",
+        Action: "iam:ListRoles",
+        Resource: "*",
+        Condition: { StringNotEquals: { "aws:PrincipalTag/access_profile": "poc-admin" } },
+      },
+    ]);
+  });
+});
+
+describe("PoC（人間のログイン）テンプレート: NoTagRole（TagSession なしでタグ付きトークンが拒否されるか）", () => {
+  const role = tpl.Resources.NoTagRole;
+  it("ロール名は <RoleName>NoTag", () => {
+    expect(evaluate(role.Properties.RoleName, { RoleName: "AwsbridgeHumanPoc" })).toBe(
+      "AwsbridgeHumanPocNoTag",
+    );
+  });
+  it("信頼ポリシーの Action は AssumeRoleWithWebIdentity だけ、条件は aud・sub だけ", () => {
+    const doc = roleTrust("NoTagRole");
+    expect(doc.Statement).toHaveLength(1);
+    expect(doc.Statement[0].Action).toEqual(["sts:AssumeRoleWithWebIdentity"]);
+    expect(doc.Statement[0].Condition).toEqual({
+      StringEquals: {
+        [`${HOST}:aud`]: "awsbridge-human-poc",
+        [`${HOST}:sub`]: "user@example.com",
+      },
+    });
+  });
+  it("権限は ReadOnlyAccess だけ", () => {
+    expect(evaluate(role.Properties.ManagedPolicyArns, { "AWS::Partition": "aws" })).toEqual([
+      "arn:aws:iam::aws:policy/ReadOnlyAccess",
+    ]);
+  });
+});
+
+describe("PoC（人間のログイン）テンプレート: 追加のロール名と Outputs", () => {
+  it("RoleName は接尾辞（Tagged / NoTag）を足しても 64 文字に収まる長さまで", () => {
+    const re = new RegExp(tpl.Parameters.RoleName.AllowedPattern);
+    expect(re.test("A".repeat(58))).toBe(true);
+    expect(re.test("A".repeat(59))).toBe(false);
+  });
+  it("TaggedRoleArn と NoTagRoleArn を出す", () => {
+    expect(tpl.Outputs.TaggedRoleArn.Value).toEqual({ "Fn::GetAtt": ["TaggedRole", "Arn"] });
+    expect(tpl.Outputs.NoTagRoleArn.Value).toEqual({ "Fn::GetAtt": ["NoTagRole", "Arn"] });
   });
 });

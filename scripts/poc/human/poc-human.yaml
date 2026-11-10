@@ -1,9 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   awsbridge PoC (human AWS sign-in) - IAM OIDC provider for the PoC issuer Worker
-  (awsbridge-human-poc) and one role that a locally signed JWT can assume with
-  sts:AssumeRoleWithWebIdentity. Separate from the MCP stack (infra/aws/awsbridge.yaml):
-  different issuer, signing key, audience and role. Delete it after the PoC.
+  (awsbridge-human-poc) and roles that a locally signed JWT can assume with
+  sts:AssumeRoleWithWebIdentity (HumanRole for sign-in, TaggedRole and NoTagRole for
+  session tags, SourceIdentity and emergency stop). Separate from the MCP stack
+  (infra/aws/awsbridge.yaml): different issuer, signing key, audience and roles. Delete it after the PoC.
 
 # What the PoC checks (see scripts/poc/human/README.md):
 #   PoC-A  Temporary credentials from AssumeRoleWithWebIdentity -> federation endpoint
@@ -13,8 +14,16 @@ Description: >-
 #          AWS managed policy SignInLocalDevelopmentAccess
 #          (https://docs.aws.amazon.com/aws-managed-policy/latest/reference/SignInLocalDevelopmentAccess.html).
 #
-# The trust policy allows exactly one user (sub) with the PoC audience (aud).
-# sts:SetSourceIdentity and sts:TagSession are allowed in advance for follow-up PoCs.
+#   P2     Session tags in the JWT (https://aws.amazon.com/tags) gate the trust policy with
+#          aws:RequestTag, and aws:PrincipalTag changes permissions after assumption (TaggedRole).
+#          A role without sts:TagSession rejects tagged tokens (NoTagRole).
+#   P3     SourceIdentity (https://aws.amazon.com/source_identity) is required by the trust policy
+#          (TaggedRole) and recorded in CloudTrail.
+#   P4     Emergency stop: revoke sessions (inline policy AWSRevokeOlderSessions added out of band by
+#          scripts/poc/human/revoke.ts) and OIDC provider deletion.
+#
+# Every trust policy allows exactly one user (sub) with the PoC audience (aud).
+# HumanRole allows sts:SetSourceIdentity and sts:TagSession without conditions (used for the tag size limits).
 
 Parameters:
   IssuerHost:
@@ -35,9 +44,9 @@ Parameters:
   RoleName:
     Type: String
     Default: AwsbridgeHumanPoc
-    Description: Name of the PoC IAM role.
-    AllowedPattern: '^[\w+=,.@-]{1,64}$'
-    ConstraintDescription: 1-64 characters of alphanumerics and _+=,.@-
+    Description: Name of the PoC IAM role. The P2-P4 roles are named <RoleName>Tagged and <RoleName>NoTag.
+    AllowedPattern: '^[\w+=,.@-]{1,58}$'
+    ConstraintDescription: 1-58 characters of alphanumerics and _+=,.@- (a suffix of up to 6 characters is added for the P2-P4 roles)
 
 Resources:
   OidcProvider:
@@ -89,6 +98,94 @@ Resources:
         - Key: project
           Value: awsbridge-human-poc
 
+  # P2/P3/P4: the trust policy requires access_profile (poc-admin or poc-viewer) as the only session tag
+  # and a SourceIdentity. All conditions sit in the one Allow statement, so no other statement can bypass them.
+  TaggedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Fn::Sub: "${RoleName}Tagged"
+      MaxSessionDuration: 43200
+      ManagedPolicyArns:
+        - Fn::Sub: "arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess"
+        # Console and `aws login` are used for P3/P4 with this role as well
+        - Fn::Sub: "arn:${AWS::Partition}:iam::aws:policy/SignInLocalDevelopmentAccess"
+      Policies:
+        - PolicyName: PrincipalTagPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # P2: the same role grants different permissions depending on the session tag
+              - Sid: DenyListRolesUnlessPocAdmin
+                Effect: Deny
+                Action: iam:ListRoles
+                Resource: "*"
+                Condition:
+                  StringNotEquals:
+                    aws:PrincipalTag/access_profile: poc-admin
+      AssumeRolePolicyDocument:
+        Fn::Sub: |-
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": { "Federated": "${OidcProvider}" },
+                "Action": [
+                  "sts:AssumeRoleWithWebIdentity",
+                  "sts:TagSession",
+                  "sts:SetSourceIdentity"
+                ],
+                "Condition": {
+                  "StringEquals": {
+                    "${IssuerHost}:aud": "${Audience}",
+                    "${IssuerHost}:sub": "${Subject}",
+                    "aws:RequestTag/access_profile": ["poc-admin", "poc-viewer"]
+                  },
+                  "ForAllValues:StringEquals": {
+                    "aws:TagKeys": ["access_profile"]
+                  },
+                  "Null": {
+                    "sts:SourceIdentity": "false"
+                  }
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: project
+          Value: awsbridge-human-poc
+
+  # P2: without sts:TagSession (and sts:SetSourceIdentity) a tagged token should be rejected.
+  NoTagRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Fn::Sub: "${RoleName}NoTag"
+      ManagedPolicyArns:
+        - Fn::Sub: "arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess"
+      AssumeRolePolicyDocument:
+        Fn::Sub: |-
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": { "Federated": "${OidcProvider}" },
+                "Action": ["sts:AssumeRoleWithWebIdentity"],
+                "Condition": {
+                  "StringEquals": {
+                    "${IssuerHost}:aud": "${Audience}",
+                    "${IssuerHost}:sub": "${Subject}"
+                  }
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: project
+          Value: awsbridge-human-poc
+
 Outputs:
   RoleArn:
     Description: ARN of the PoC role (assumed with the locally signed JWT).
@@ -98,3 +195,11 @@ Outputs:
     Description: ARN of the PoC IAM OIDC provider.
     Value:
       Ref: OidcProvider
+  TaggedRoleArn:
+    Description: ARN of the P2-P4 role (session tag access_profile and SourceIdentity are required).
+    Value:
+      Fn::GetAtt: [TaggedRole, Arn]
+  NoTagRoleArn:
+    Description: ARN of the P2 role without sts:TagSession.
+    Value:
+      Fn::GetAtt: [NoTagRole, Arn]

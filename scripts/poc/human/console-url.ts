@@ -9,37 +9,59 @@
 //   --duration-seconds <秒>       STS の DurationSeconds（省略時は送らない = STS の既定 3600 秒）
 //   --session-durations <一覧>    getSigninToken の SessionDuration（既定 none,43200,43199。none は付けない）
 //   --federation-method get|post  getSigninToken の HTTP メソッド（既定 get。AWS の文書は SessionDuration の説明を GET 前提で書いている）
-import { execFileSync } from "node:child_process";
+//   --role base|tagged|notag      引き受けるロール（既定 base = AwsbridgeHumanPoc。tagged / notag は P2〜P4 用。--role-arn があればそちら）
+//                                 base 以外はファイル名にロールを入れる（credentials-<role>.json、console-url-<role>-dur-…）
+//   --access-profile <値>         セッションタグ access_profile を JWT に入れる（例 poc-admin / poc-viewer）
+//   --tag-format nested|flat      セッションタグの書き方（既定 nested）
+//   --source-identity             SourceIdentity（値は subject）を JWT に入れる。tagged ロールは必須
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { parseAssumeRoleResponse, parseStsError } from "../../../src/sts-xml";
-import { fail, readKey, required, writeSecret } from "./io";
+import { fail, readKey, required, roleArnOf, stackOutputs, writeSecret } from "./io";
 import {
   assumeRoleWithWebIdentityParams,
   consoleDestination,
   consoleUrlFileName,
+  credentialsFileName,
   FEDERATION_ENDPOINT,
   getSigninTokenParams,
   humanPocSettings,
   humanSessionName,
+  isRoleKey,
+  isValidTagValue,
   loginUrl,
   parseSessionDurations,
   parseSigninTokenResponse,
+  parseStsExtras,
   sessionDurationLabel,
+  sessionTagClaims,
   signHumanToken,
+  sourceIdentityClaim,
   stsEndpoint,
   summarizeBody,
 } from "./lib";
 
-const { values } = parseArgs({
-  options: {
-    "role-arn": { type: "string" },
-    "duration-seconds": { type: "string" },
-    "session-durations": { type: "string", default: "none,43200,43199" },
-    "federation-method": { type: "string", default: "get" },
-  },
-});
+let values: ReturnType<typeof parse>["values"];
+function parse() {
+  return parseArgs({
+    options: {
+      "role-arn": { type: "string" },
+      "duration-seconds": { type: "string" },
+      "session-durations": { type: "string", default: "none,43200,43199" },
+      "federation-method": { type: "string", default: "get" },
+      role: { type: "string", default: "base" },
+      "access-profile": { type: "string" },
+      "tag-format": { type: "string", default: "nested" },
+      "source-identity": { type: "boolean", default: false },
+    },
+  });
+}
+try {
+  values = parse().values;
+} catch (e) {
+  fail((e as Error).message);
+}
 
 let settings: ReturnType<typeof humanPocSettings>;
 try {
@@ -60,6 +82,26 @@ if (values["duration-seconds"] !== undefined) {
     fail("--duration-seconds は 900〜43200 の整数");
 }
 
+const role = values.role ?? "base";
+if (!isRoleKey(role)) fail("--role は base / tagged / notag");
+const tagFormat = values["tag-format"] ?? "nested";
+if (tagFormat !== "nested" && tagFormat !== "flat") fail("--tag-format は nested か flat");
+const accessProfile = values["access-profile"];
+if (accessProfile !== undefined && (accessProfile === "" || !isValidTagValue(accessProfile)))
+  fail("--access-profile はタグの値に使える文字（英数字と _.:/=+-@）で 1〜256 文字");
+let extraClaims: Record<string, unknown>;
+try {
+  extraClaims = {
+    ...sessionTagClaims(
+      accessProfile === undefined ? {} : { access_profile: accessProfile },
+      tagFormat,
+    ),
+    ...(values["source-identity"] ? sourceIdentityClaim(subject) : {}),
+  };
+} catch (e) {
+  fail(`SourceIdentity にできません: ${(e as Error).message}`);
+}
+
 let sessionDurations: (number | undefined)[];
 try {
   sessionDurations = parseSessionDurations(values["session-durations"] ?? "");
@@ -67,29 +109,10 @@ try {
   fail(`--session-durations が不正です: ${(e as Error).message}`);
 }
 
-// --role-arn が無ければ PoC スタック（MCP 用ではない）の Output RoleArn を使う
-function roleArnFromStack(): string {
-  return execFileSync(
-    "aws",
-    [
-      "cloudformation",
-      "describe-stacks",
-      "--stack-name",
-      settings.stackName,
-      "--query",
-      "Stacks[0].Outputs[?OutputKey=='RoleArn'].OutputValue",
-      "--output",
-      "text",
-    ],
-    {
-      encoding: "utf8",
-      env: { ...process.env, AWS_PROFILE: settings.awsProfile, AWS_REGION: settings.region },
-    },
-  ).trim();
-}
-const roleArn = values["role-arn"] ?? roleArnFromStack();
+// --role-arn が無ければ PoC スタック（MCP 用ではない）の Output（RoleArn / TaggedRoleArn / NoTagRoleArn）を使う
+const roleArn = values["role-arn"] ?? roleArnOf(stackOutputs(settings), role, settings.stackName);
 if (!/^arn:aws[a-z-]*:iam::\d{12}:role\/.+$/.test(roleArn))
-  fail(`ロール ARN を得られません（スタック ${settings.stackName} の Output RoleArn）`);
+  fail(`ロール ARN が不正です: ${roleArn}`);
 
 // 1. JWT → STS（署名なしの AssumeRoleWithWebIdentity）
 const token = await signHumanToken({
@@ -97,6 +120,7 @@ const token = await signHumanToken({
   issuer,
   audience: settings.audience,
   subject,
+  extraClaims,
 });
 const stsRes = await fetch(stsEndpoint(settings.region), {
   method: "POST",
@@ -122,7 +146,18 @@ console.log(
   `[OK] STS AssumeRoleWithWebIdentity (DurationSeconds=${durationLabel}) HTTP ${stsRes.status} ` +
     `Arn=${creds.assumedRoleArn} Expiration=${creds.expiration.toISOString()}`,
 );
-const credsFile = join(settings.outDir, "credentials.json");
+{
+  const extras = parseStsExtras(stsXml);
+  const tags =
+    accessProfile === undefined ? "なし" : `access_profile=${accessProfile}（${tagFormat}）`;
+  console.log(
+    `     タグ: ${tags}  SourceIdentity（応答）: ${extras.sourceIdentity ?? "なし"}` +
+      (extras.sessionTokenUtilization === undefined
+        ? ""
+        : `  SessionTokenUtilization: ${extras.sessionTokenUtilization}%`),
+  );
+}
+const credsFile = join(settings.outDir, credentialsFileName(role));
 writeSecret(
   credsFile,
   `${JSON.stringify(
@@ -164,7 +199,7 @@ for (const sd of sessionDurations) {
     body = (e as Error).message;
   }
   const signinToken = status === 200 ? parseSigninTokenResponse(body) : undefined;
-  const file = join(settings.outDir, consoleUrlFileName(durationSeconds, sd));
+  const file = join(settings.outDir, consoleUrlFileName(durationSeconds, sd, role));
   if (!signinToken) {
     // 前回の同じ条件の URL が残っていると、失敗したのに入れたと誤認しうるので消す
     rmSync(file, { force: true });

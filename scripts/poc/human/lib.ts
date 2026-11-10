@@ -66,17 +66,120 @@ export interface HumanTokenParams {
   /** epoch seconds */
   now: number;
   ttlSeconds?: number;
+  /** セッションタグ・SourceIdentity などの追加 claim（iss・aud・sub・iat・exp は上書きできない） */
+  extraClaims?: Record<string, unknown>;
 }
+
+const RESERVED_CLAIMS = ["iss", "aud", "sub", "iat", "exp"];
 
 /** STS に渡す JWT の claim。iss は正規化した issuer とバイト単位で一致させる。 */
 export function humanTokenClaims(p: HumanTokenParams) {
+  const extra = p.extraClaims ?? {};
+  for (const k of RESERVED_CLAIMS)
+    if (k in extra) throw new Error(`extraClaims で ${k} は上書きできない`);
   return {
+    ...extra,
     iss: normalizeIssuer(p.issuer),
     aud: p.audience,
     sub: p.subject,
     iat: p.now,
     exp: p.now + (p.ttlSeconds ?? 300),
   };
+}
+
+// ---- P2 セッションタグ・P3 SourceIdentity（JWT の claim） ----
+// 出典: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_session-tags.html（入れ子形式・平坦形式）
+//       https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_temp_control-access_monitor.html（source_identity）
+
+export const AWS_TAGS_CLAIM = "https://aws.amazon.com/tags";
+export const AWS_SOURCE_IDENTITY_CLAIM = "https://aws.amazon.com/source_identity";
+
+export type TagFormat = "nested" | "flat";
+
+/**
+ * セッションタグの claim。
+ * - nested: {"https://aws.amazon.com/tags": {"principal_tags": {"k": ["v"]}}}（値は 1 要素の配列）
+ * - flat:   {"https://aws.amazon.com/tags/principal_tags/k": "v"}（値は文字列）
+ * タグが空なら何も足さない。キーの大文字・小文字はそのまま渡す。
+ */
+export function sessionTagClaims(
+  tags: Record<string, string>,
+  format: TagFormat,
+): Record<string, unknown> {
+  const entries = Object.entries(tags);
+  if (entries.length === 0) return {};
+  if (format === "flat")
+    return Object.fromEntries(
+      entries.map(([k, v]) => [`${AWS_TAGS_CLAIM}/principal_tags/${k}`, v]),
+    );
+  return {
+    [AWS_TAGS_CLAIM]: { principal_tags: Object.fromEntries(entries.map(([k, v]) => [k, [v]])) },
+  };
+}
+
+/** SourceIdentity の claim。STS の制約（2〜64 文字、[\w+=,.@-]）に合わなければ例外。 */
+export function sourceIdentityClaim(sourceIdentity: string): Record<string, string> {
+  if (!/^[\w+=,.@-]{2,64}$/.test(sourceIdentity))
+    throw new Error("SourceIdentity must be 2-64 characters of [A-Za-z0-9_+=,.@-]");
+  return { [AWS_SOURCE_IDENTITY_CLAIM]: sourceIdentity };
+}
+
+/** タグの値（空でも可）。IAM のタグ値で使える文字のうち空白を除いたもの・256 文字まで。 */
+export function isValidTagValue(v: string): boolean {
+  return /^[\p{L}\p{N}_.:/=+\-@]{0,256}$/u.test(v);
+}
+
+export interface StsExtras {
+  sourceIdentity: string | undefined;
+  packedPolicySize: number | undefined;
+  sessionTokenSize: number | undefined;
+  sessionTokenUtilization: number | undefined;
+}
+
+/** AssumeRoleWithWebIdentity の成功応答から、認証情報以外の確認用の値を取り出す（無い要素は undefined）。 */
+export function parseStsExtras(xml: string): StsExtras {
+  const text = (name: string) =>
+    new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(xml)?.[1]?.trim();
+  const num = (name: string) => {
+    const v = text(name);
+    return v !== undefined && /^\d+$/.test(v) ? Number(v) : undefined;
+  };
+  return {
+    sourceIdentity: text("SourceIdentity"),
+    packedPolicySize: num("PackedPolicySize"),
+    sessionTokenSize: num("SessionTokenSize"),
+    sessionTokenUtilization: num("SessionTokenUtilization"),
+  };
+}
+
+// ---- ロールの選択（スタックの Output） ----
+
+export const ROLE_KEYS = ["base", "tagged", "notag"] as const;
+export type RoleKey = (typeof ROLE_KEYS)[number];
+
+export function isRoleKey(v: string): v is RoleKey {
+  return (ROLE_KEYS as readonly string[]).includes(v);
+}
+
+/** base = 既存の AwsbridgeHumanPoc、tagged = AwsbridgeHumanPocTagged、notag = AwsbridgeHumanPocNoTag の Output 名。 */
+export function roleOutputKey(role: RoleKey): string {
+  return { base: "RoleArn", tagged: "TaggedRoleArn", notag: "NoTagRoleArn" }[role];
+}
+
+/** describe-stacks --query Stacks[0].Outputs --output json の出力を OutputKey → OutputValue にする。 */
+export function outputsMap(json: string): Record<string, string> {
+  const v: unknown = JSON.parse(json);
+  if (!Array.isArray(v)) return {};
+  const out: Record<string, string> = {};
+  for (const o of v as { OutputKey?: unknown; OutputValue?: unknown }[])
+    if (typeof o?.OutputKey === "string" && typeof o.OutputValue === "string")
+      out[o.OutputKey] = o.OutputValue;
+  return out;
+}
+
+/** 認証情報のファイル名。base は従来どおり credentials.json。destroy.sh は credentials*.json を消す。 */
+export function credentialsFileName(role: RoleKey): string {
+  return role === "base" ? "credentials.json" : `credentials-${role}.json`;
 }
 
 /** 手元の秘密鍵で JWT に署名する（header: alg RS256、kid = JWK thumbprint）。 */
@@ -209,9 +312,11 @@ export function sessionDurationLabel(d: number | undefined): string {
 export function consoleUrlFileName(
   durationSeconds: number | undefined,
   sessionDuration: number | undefined,
+  role: RoleKey = "base",
 ): string {
   const dur = durationSeconds === undefined ? "default" : String(durationSeconds);
-  return `console-url-dur-${dur}-sd-${sessionDurationLabel(sessionDuration)}.txt`;
+  const prefix = role === "base" ? "console-url" : `console-url-${role}`;
+  return `${prefix}-dur-${dur}-sd-${sessionDurationLabel(sessionDuration)}.txt`;
 }
 
 /** エラー応答の要約（タグ除去・空白を詰める・200 文字まで）。機密値（URL エンコード形も）は [REDACTED] に置き換える。 */

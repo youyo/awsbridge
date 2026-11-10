@@ -136,3 +136,34 @@ run = "pnpm tsx scripts/poc/human/console-url.ts"
 [tasks."poc:human:destroy"]
 description = "PoC（人間のログイン）: CloudFormation スタックと Worker awsbridge-human-poc を削除し、手元のログイン URL・認証情報を消す"
 run = "bash scripts/poc/human/destroy.sh"
+
+# ---- PoC P2〜P4（セッションタグ・SourceIdentity・緊急停止）。手順は scripts/poc/human/README.md ----
+# checks / stop-watch / revoke / unrevoke / delete-provider / recreate-provider / trail は実 AWS を呼ぶ。明示的に実行したときだけ使う。
+
+[tasks."poc:human:checks"]
+description = "PoC P2/P3: セッションタグ（入れ子・平坦）と SourceIdentity のケース表を流し、期待と実際（成功 / エラーコード）を表で出す（認証情報は出さない）"
+run = "pnpm tsx scripts/poc/human/checks.ts"
+
+[tasks."poc:human:stop-watch"]
+description = "PoC P4: 認証情報ファイル・AWS プロファイル・新しい引き受けを数秒おきに s3:ListBuckets で見張り、最後の成功と最初の拒否の時刻を出す"
+run = "pnpm tsx scripts/poc/human/stop-watch.ts"
+
+[tasks."poc:human:revoke"]
+description = "PoC P4 (a): PoC のロール（既定 Tagged）に AWSRevokeOlderSessions 相当のインラインポリシーを付け、完了時刻（UTC）を出す"
+run = "pnpm tsx scripts/poc/human/revoke.ts revoke"
+
+[tasks."poc:human:unrevoke"]
+description = "PoC P4 (a): revoke で付けたインラインポリシー AWSRevokeOlderSessions を外す"
+run = "pnpm tsx scripts/poc/human/revoke.ts unrevoke"
+
+[tasks."poc:human:delete-provider"]
+description = "PoC P4 (b): PoC の OIDC プロバイダー（issuer が AWSBRIDGE_HUMAN_POC_ISSUER と一致するものだけ）を消し、完了時刻（UTC）を出す"
+run = "pnpm tsx scripts/poc/human/revoke.ts delete-provider"
+
+[tasks."poc:human:recreate-provider"]
+description = "PoC P4 (b): 消した OIDC プロバイダーを同じ URL・client ID・タグで作り直す（deploy-aws では作り直されない）"
+run = "pnpm tsx scripts/poc/human/revoke.ts recreate-provider"
+
+[tasks."poc:human:trail"]
+description = "PoC P2/P3: CloudTrail で直近の AssumeRoleWithWebIdentity と、そのセッションの API イベントの SourceIdentity・セッションタグを出す（email は伏せる）"
+run = "pnpm tsx scripts/poc/human/trail.ts"
