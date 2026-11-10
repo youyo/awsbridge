@@ -50,7 +50,11 @@ run = "bash infra/cloudflare/check.sh"
 [tasks.lint]
 description = "lint・フォーマット検査・型チェック・CloudFormation テンプレート検査（cfn-lint）・Terraform サンプル検査"
 depends = ["typecheck", "lint:terraform"]
-run = ["pnpm biome check .", "cfn-lint infra/aws/awsbridge.yaml"]
+run = [
+  "pnpm biome check .",
+  "cfn-lint infra/aws/awsbridge.yaml",
+  "cfn-lint scripts/poc/human/poc-human.yaml",
+]
 
 [tasks.fmt]
 description = "フォーマット"
@@ -108,3 +112,27 @@ run = "pnpm tsx scripts/poc/mint.ts"
 [tasks."poc:sts"]
 description = "Worker 発行 JWT で AssumeRoleWithWebIdentity を実行し、否定ケースも確認（--role-arn 省略時はスタックの Output ReadOnlyRoleArn）"
 run = "pnpm tsx scripts/poc/sts.ts"
+
+# ---- PoC: awsbridge 方式を人間の AWS ログイン（コンソール・aws login）に使えるか。手順は scripts/poc/human/README.md ----
+# MCP 経路とは別の issuer（Worker awsbridge-human-poc）・署名鍵・ロール・audience を使う。設定は AWSBRIDGE_HUMAN_POC_* だけを読む。
+# 実 AWS / Cloudflare を呼ぶもの（deploy-issuer / deploy-aws / console-url / destroy）は明示的に実行したときだけ使う。
+
+[tasks."poc:human:keygen"]
+description = "PoC（人間のログイン）: 専用の署名鍵を .secrets/poc-human/ に生成（既存なら上書きしない）"
+run = "pnpm tsx scripts/poc/human/keygen.ts"
+
+[tasks."poc:human:deploy-issuer"]
+description = "PoC（人間のログイン）: discovery と JWKS を手元で作り、静的に返す Worker awsbridge-human-poc を workers.dev へデプロイして公開内容を確認（AWS は呼ばない。--dry-run でバンドルだけ）"
+run = "pnpm tsx scripts/poc/human/deploy-issuer.ts"
+
+[tasks."poc:human:deploy-aws"]
+description = "PoC（人間のログイン）: CloudFormation で PoC 用の OIDC プロバイダーとロール AwsbridgeHumanPoc をデプロイ（Cloudflare は呼ばない）"
+run = "bash scripts/poc/human/deploy-aws.sh"
+
+[tasks."poc:human:console-url"]
+description = "PoC（人間のログイン）: JWT → AssumeRoleWithWebIdentity → getSigninToken（SessionDuration あり・なし）→ ログイン URL を .secrets/poc-human/ に書く"
+run = "pnpm tsx scripts/poc/human/console-url.ts"
+
+[tasks."poc:human:destroy"]
+description = "PoC（人間のログイン）: CloudFormation スタックと Worker awsbridge-human-poc を削除し、手元のログイン URL・認証情報を消す"
+run = "bash scripts/poc/human/destroy.sh"

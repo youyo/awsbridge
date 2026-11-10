@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  awsbridge PoC (human AWS sign-in) - IAM OIDC provider for the PoC issuer Worker
+  (awsbridge-human-poc) and one role that a locally signed JWT can assume with
+  sts:AssumeRoleWithWebIdentity. Separate from the MCP stack (infra/aws/awsbridge.yaml):
+  different issuer, signing key, audience and role. Delete it after the PoC.
+
+# What the PoC checks (see scripts/poc/human/README.md):
+#   PoC-A  Temporary credentials from AssumeRoleWithWebIdentity -> federation endpoint
+#          (getSigninToken -> login) -> console sign-in URL, with and without SessionDuration.
+#   PoC-B  From that console session, `aws login` (AWS CLI 2.32+) obtains CLI credentials.
+#          This needs signin:AuthorizeOAuth2Access and signin:CreateOAuth2Token, granted by the
+#          AWS managed policy SignInLocalDevelopmentAccess
+#          (https://docs.aws.amazon.com/aws-managed-policy/latest/reference/SignInLocalDevelopmentAccess.html).
+#
+# The trust policy allows exactly one user (sub) with the PoC audience (aud).
+# sts:SetSourceIdentity and sts:TagSession are allowed in advance for follow-up PoCs.
+
+Parameters:
+  IssuerHost:
+    Type: String
+    Description: PoC issuer Worker host name without scheme or trailing slash (e.g. awsbridge-human-poc.example.workers.dev).
+    AllowedPattern: "^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$"
+    ConstraintDescription: Host name only. Do not include https:// or a trailing slash.
+  Audience:
+    Type: String
+    Default: awsbridge-human-poc
+    Description: Audience (aud) of the PoC JWT. Also used as the OIDC client ID. Keep it different from the MCP audience.
+    AllowedPattern: "^[A-Za-z0-9._:-]+$"
+  Subject:
+    Type: String
+    Description: The one PoC user (JWT sub = lower-case email, e.g. user@example.com). Wildcards are not allowed.
+    AllowedPattern: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$'
+    ConstraintDescription: Must be a single email address such as user@example.com (no wildcards, no lists).
+  RoleName:
+    Type: String
+    Default: AwsbridgeHumanPoc
+    Description: Name of the PoC IAM role.
+    AllowedPattern: '^[\w+=,.@-]{1,64}$'
+    ConstraintDescription: 1-64 characters of alphanumerics and _+=,.@-
+
+Resources:
+  OidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url:
+        Fn::Sub: "https://${IssuerHost}"
+      ClientIdList:
+        - Ref: Audience
+      Tags:
+        - Key: project
+          Value: awsbridge-human-poc
+
+  HumanRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Ref: RoleName
+      # 12 hours: the longest console / CLI session the PoC tries.
+      MaxSessionDuration: 43200
+      ManagedPolicyArns:
+        - Fn::Sub: "arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess"
+        # signin:AuthorizeOAuth2Access / signin:CreateOAuth2Token for `aws login` (PoC-B)
+        - Fn::Sub: "arn:${AWS::Partition}:iam::aws:policy/SignInLocalDevelopmentAccess"
+      # The condition keys contain the issuer host, so the document is built as a JSON string.
+      AssumeRolePolicyDocument:
+        Fn::Sub: |-
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": { "Federated": "${OidcProvider}" },
+                "Action": [
+                  "sts:AssumeRoleWithWebIdentity",
+                  "sts:SetSourceIdentity",
+                  "sts:TagSession"
+                ],
+                "Condition": {
+                  "StringEquals": {
+                    "${IssuerHost}:aud": "${Audience}",
+                    "${IssuerHost}:sub": "${Subject}"
+                  }
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: project
+          Value: awsbridge-human-poc
+
+Outputs:
+  RoleArn:
+    Description: ARN of the PoC role (assumed with the locally signed JWT).
+    Value:
+      Fn::GetAtt: [HumanRole, Arn]
+  OidcProviderArn:
+    Description: ARN of the PoC IAM OIDC provider.
+    Value:
+      Ref: OidcProvider
