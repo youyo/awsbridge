@@ -31,7 +31,7 @@ const assumeEvent = {
   },
   responseElements: {
     credentials: {
-      accessKeyId: "ASIAIOSFODNN7EXAMPLE",
+      accessKeyId: "ASIA_TEST_KEY_EXAMPLE",
       sessionToken: "<encoded session token blob>",
       expiration: "Nov 11, 2026, 2:00:00 AM",
     },
@@ -53,7 +53,7 @@ const apiEvent = {
   userIdentity: {
     type: "AssumedRole",
     arn: "arn:aws:sts::123456789012:assumed-role/AwsbridgeHumanPocTagged/human-user@example.com",
-    accessKeyId: "ASIAIOSFODNN7EXAMPLE",
+    accessKeyId: "ASIA_TEST_KEY_EXAMPLE",
     sessionContext: {
       sessionIssuer: { arn: "arn:aws:iam::123456789012:role/AwsbridgeHumanPocTagged" },
       sourceIdentity: "user@example.com",
@@ -91,7 +91,7 @@ describe("assumeEventRow", () => {
       sourceIdentityRequest: "user@example.com",
       sourceIdentityResponse: "user@example.com",
       tags: { access_profile: "poc-admin" },
-      accessKeyId: "ASIAIOSFODNN7EXAMPLE",
+      accessKeyId: "ASIA_TEST_KEY_EXAMPLE",
       tokenUtilization: 37,
     });
   });
@@ -118,7 +118,7 @@ describe("assumeEventRow", () => {
 describe("apiEventRow", () => {
   it("userIdentity.sessionContext.sourceIdentity を取り出す", () => {
     expect(apiEventRow(apiEvent)).toEqual({
-      key: "ASIAIOSFODNN7EXAMPLE",
+      key: "ASIA_TEST_KEY_EXAMPLE",
       time: "2026-11-11T01:00:05Z",
       region: "us-east-1",
       eventName: "ListBuckets",
@@ -183,7 +183,7 @@ describe("formatAssumeRows / formatApiRows", () => {
     const out = `${formatAssumeRows([row])}\n${formatApiRows([apiEventRow(apiEvent)])}`;
     expect(out).not.toContain("user@example.com");
     expect(out).not.toContain("123456789012");
-    expect(out).not.toContain("ASIAIOSFODNN7EXAMPLE");
+    expect(out).not.toContain("ASIA_TEST_KEY_EXAMPLE");
     expect(out).toContain("u***@***.com");
     expect(out).toContain("access_profile=poc-admin");
     expect(out).toContain("AccessDenied");

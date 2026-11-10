@@ -381,7 +381,7 @@ describe("trail.ts", () => {
       principalTags: { access_profile: "poc-admin" },
     },
     responseElements: {
-      credentials: { accessKeyId: "ASIAIOSFODNN7EXAMPLE" },
+      credentials: { accessKeyId: "ASIA_TEST_KEY_EXAMPLE" },
       sourceIdentity: "user@example.com",
     },
   };
@@ -392,7 +392,7 @@ describe("trail.ts", () => {
     awsRegion: "us-east-1",
     userIdentity: {
       arn: `arn:aws:sts::${ACCOUNT}:assumed-role/AwsbridgeHumanPocTagged/human-user@example.com`,
-      accessKeyId: "ASIAIOSFODNN7EXAMPLE",
+      accessKeyId: "ASIA_TEST_KEY_EXAMPLE",
       sessionContext: { sourceIdentity: "user@example.com" },
     },
   };
@@ -412,7 +412,7 @@ describe("trail.ts", () => {
     const byKey = r.calls.filter(
       (c) =>
         c[2] === "lookup-events" &&
-        c.includes("AttributeKey=AccessKeyId,AttributeValue=ASIAIOSFODNN7EXAMPLE"),
+        c.includes("AttributeKey=AccessKeyId,AttributeValue=ASIA_TEST_KEY_EXAMPLE"),
     );
     expect(byKey.length).toBeGreaterThan(0);
     expect(r.stdout).toContain("AssumeRoleWithWebIdentity");
