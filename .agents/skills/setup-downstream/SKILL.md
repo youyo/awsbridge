@@ -1,0 +1,1 @@
+../../../.claude/skills/setup-downstream/SKILL.md
