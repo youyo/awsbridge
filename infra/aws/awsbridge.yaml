@@ -2,35 +2,44 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   awsbridge - IAM OIDC provider (issuer = awsbridge Worker) and two roles that
   the Worker-issued JWT can assume with sts:AssumeRoleWithWebIdentity:
-  a read-only role (FederatedMcpReadOnly) and a debug role (FederatedMcpDebug).
+  a read-only role (FederatedMcpViewer) and a debug role (FederatedMcpDebugger).
 
 # Role layout (see docs/specs/architecture.md "ロール構成"):
 #
-#   ReadOnlyRole  AWS managed ReadOnlyAccess + an inline explicit Deny on ssm:GetParameter* (see below).
-#   DebugRole     ReadOnlyAccess + an inline policy in groups (Investigation / SecretRead /
-#                 Operations / CostIncurring / Execution, all Allows gated by aws:CalledViaAWSMCP,
-#                 plus a Deny on ssm:GetParameter* outside AWS MCP)
+#   ReadOnlyRole  AWS managed ReadOnlyAccess + an inline explicit Deny on reading secret values (see below).
+#   DebugRole     ReadOnlyAccess + an inline policy in groups (Investigation / Operations /
+#                 CostIncurring / Execution, all Allows gated by aws:CalledViaAWSMCP,
+#                 plus the same Deny on reading secret values)
 #                 (+ optional extra managed policies via DebugAdditionalPolicyArns).
 #
-# WARNING (ReadOnlyRole):
-# - ReadOnlyAccess (v191) includes ssm:Get*, so by itself it can read SSM parameters, and SecureString
-#   values are decryptable through SSM with the aws/ssm key. Secret values are meant to be read only by
-#   the debug role (SecretRead), so the inline policy explicitly denies ssm:GetParameter, GetParameters,
-#   GetParametersByPath and GetParameterHistory. The Deny has no condition: it applies whether or not the
-#   call goes through the AWS MCP server. The debug role instead denies them only outside AWS MCP
-#   (DenyParameterReadOutsideMCP), so its SecretRead still works through MCP.
-# - Residual risk: ReadOnlyAccess also lets this role read Lambda function environment variables
-#   (lambda:Get*, ListFunctions), S3 objects (s3:GetObject) and similar data. They are used daily for
-#   investigation, so they are NOT denied here. If secrets live there, narrow AllowedSubjects or add your
-#   own Deny (e.g. through a permissions boundary or an SCP).
+# These MCP roles are separate from the human console tiers (Viewer / Developer / Administrator,
+# see docs/specs/console-login.md section 2.3). Granting a person a console role does not change what these
+# roles can do. Everyone can use the read-only role (Viewer). Give the debug role (Debugger) only to people
+# who have the human Administrator or Developer tier: its remote shells get the target role's permissions,
+# which carry no MCP-only condition. For now this is kept in line by operation (DebugAllowedSubjects).
+#
+# WARNING (both roles): secret values cannot be read directly through the API.
+# - Both roles explicitly deny, with no condition, ssm:GetParameter, GetParameters, GetParametersByPath,
+#   GetParameterHistory, secretsmanager:GetSecretValue and BatchGetSecretValue. The Deny applies whether
+#   or not the call goes through the AWS MCP server, and also overrides any Allow in managed policies
+#   added with DebugAdditionalPolicyArns. ReadOnlyAccess (v191) includes ssm:Get* (SecureString values are
+#   decryptable through SSM with the aws/ssm key), so without the Deny it could read SSM parameters.
+#   ReadOnlyAccess does not include secretsmanager:GetSecretValue or kms:Decrypt; no kms:Decrypt is granted.
+# - Residual paths: this is not "cannot read secrets". Secrets can still be reached through
+#   remote shells (debug role: SSM SendCommand / StartSession, ECS Exec, EC2 Instance Connect run with the
+#   instance or task role's permissions, which may read secrets), SSM command / Automation output,
+#   Lambda function environment variables and code URLs (lambda:Get*), plaintext task definition and
+#   CodeBuild project environment variables, EC2 user data, CloudFormation templates and outputs, AppConfig
+#   configuration content, S3 objects (s3:GetObject), logs, and rds-db:connect (debug role). They are used daily for investigation, so they are NOT denied
+#   here. If secrets live there, narrow the allowed subjects or add your own Deny (e.g. through a
+#   permissions boundary or an SCP).
 #
 # Users are scoped per role: AllowedSubjects (read-only) and DebugAllowedSubjects (debug).
 #
 # WARNING (DebugRole):
 # - ReadOnlyAccess is NOT restricted to the AWS MCP path. AWS managed policies cannot carry
 #   IAM conditions, so its read permissions apply even to direct API calls with the session.
-#   Only the inline policy below is gated by aws:CalledViaAWSMCP (its Deny on ssm:GetParameter*
-#   closes the direct path for SSM parameters).
+#   Only the Allows in the inline policy below are gated by aws:CalledViaAWSMCP.
 # - The inline policy grants remote-execution-equivalent permissions: ssm:SendCommand and
 #   ecs:ExecuteCommand are equivalent to a remote shell (secrets, credentials and files can
 #   be exposed); lambda:InvokeFunction runs business logic that may have side effects.
@@ -71,13 +80,13 @@ Parameters:
     ConstraintDescription: Each entry must look like user@example.com or *@example.com. A bare * or a wildcard in the domain is not allowed.
   ReadOnlyRoleName:
     Type: String
-    Default: FederatedMcpReadOnly
+    Default: FederatedMcpViewer
     Description: Name of the read-only IAM role.
     AllowedPattern: '^[\w+=,.@-]{1,64}$'
     ConstraintDescription: 1-64 characters of alphanumerics and _+=,.@-
   DebugRoleName:
     Type: String
-    Default: FederatedMcpDebug
+    Default: FederatedMcpDebugger
     Description: Name of the debug IAM role.
     AllowedPattern: '^[\w+=,.@-]{1,64}$'
     ConstraintDescription: 1-64 characters of alphanumerics and _+=,.@-
@@ -140,9 +149,10 @@ Resources:
       ManagedPolicyArns:
         - Fn::Sub: "arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess"
       Policies:
-        - PolicyName: DenySsmParameterRead
+        - PolicyName: DenySecretValueRead
           PolicyDocument:
             Version: "2012-10-17"
+            # Same Deny as in DebugRole (no condition). See the warning at the top.
             Statement:
               - Sid: DenySsmParameterRead
                 Effect: Deny
@@ -151,6 +161,12 @@ Resources:
                   - ssm:GetParameters
                   - ssm:GetParametersByPath
                   - ssm:GetParameterHistory
+                Resource: "*"
+              - Sid: DenySecretsManagerRead
+                Effect: Deny
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:BatchGetSecretValue
                 Resource: "*"
       # The condition keys contain the issuer host, and CloudFormation cannot use
       # intrinsic functions in mapping keys, so the policy is built as a JSON string.
@@ -260,24 +276,11 @@ Resources:
                 Condition:
                   StringEquals:
                     "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
-              # SecretRead: reads secret values. Treat as equivalent in risk to the Execution group.
-              - Sid: SecretRead
-                Effect: Allow
-                Action:
-                  - secretsmanager:GetSecretValue
-                  - ssm:GetParameter
-                  - ssm:GetParameters
-                  - ssm:GetParametersByPath
-                Resource: "*"
-                Condition:
-                  StringEquals:
-                    "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
-              # DenyParameterReadOutsideMCP: ReadOnlyAccess includes ssm:Get*, so without this the session
-              # credentials could read SSM parameters directly (SecureString with aws/ssm decrypts via the key policy).
-              # StringNotEquals is true when the key is absent (a direct call), so the Deny applies there;
-              # through AWS MCP the key equals aws-mcp.amazonaws.com and the Deny does not apply.
-              # Do not change this to ...IfExists or a Null check.
-              - Sid: DenyParameterReadOutsideMCP
+              # DenySsmParameterRead / DenySecretsManagerRead: secret values cannot be read through the API, even
+              # through AWS MCP (no condition). Also overrides Allows from DebugAdditionalPolicyArns.
+              # ReadOnlyAccess includes ssm:Get* (SecureString with aws/ssm decrypts via the key policy).
+              # Do not add a condition here, and do not grant secretsmanager:GetSecretValue or kms:Decrypt.
+              - Sid: DenySsmParameterRead
                 Effect: Deny
                 Action:
                   - ssm:GetParameter
@@ -285,23 +288,12 @@ Resources:
                   - ssm:GetParametersByPath
                   - ssm:GetParameterHistory
                 Resource: "*"
-                Condition:
-                  StringNotEquals:
-                    "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
-              # SecretDecrypt: kms:Decrypt only when the call comes through Secrets Manager or SSM,
-              # so keys cannot be used to decrypt arbitrary data.
-              - Sid: SecretDecrypt
-                Effect: Allow
+              - Sid: DenySecretsManagerRead
+                Effect: Deny
                 Action:
-                  - kms:Decrypt
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:BatchGetSecretValue
                 Resource: "*"
-                Condition:
-                  StringEquals:
-                    "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
-                  StringLike:
-                    "kms:ViaService":
-                      - "secretsmanager.*.amazonaws.com"
-                      - "ssm.*.amazonaws.com"
               # Operations: light, reversible-ish operational actions with side effects. No delete actions.
               # Exception in effect: bedrock:StartIngestionJob syncs a Knowledge Base data source, and documents
               # removed from the source (e.g. S3) are removed from the vector store too. Resource stays "*"

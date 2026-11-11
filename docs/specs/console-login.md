@@ -2,6 +2,7 @@
 
 - 作成日: 2026-11-11
 - 改訂: 2026-11-11 段階 1 のゲートの cto の決裁（条件付き承認）と、Sol のレビューのうち採った指摘を反映した。名前を「human」から「console」に改めた（audience・ロールのパス・RoleSessionName・StackSet と SCP の名前・ファイル・タスク・環境変数）。PoC（`scripts/poc/human/`）の名前と記録は変えていない
+- 改訂: 2026-11 設定例のロール名を `Federated*`（`FederatedViewer` / `FederatedDeveloper` / `FederatedAdministrator`）に、MCP 用ロールの既定名を `FederatedMcpViewer` / `FederatedMcpDebugger` に改めた。MCP 用ロールとの関係（§2.3 の決裁 S2）を書き足した
 - 状態: 設計案。段階 1 のゲートは、Sol のレビューのあと cto が**条件付きで承認**した。段階 1 を 1a（会社環境で運用者だけ・1 アカウント）と 1b（試行者・5 アカウント以下）に分け、1a は §7.2 の条件を満たし人の承認が出れば始めてよい。実装済みは設定のスキーマ・検証・生成だけ（`src/console/`）。そのほかの内容はまだ実装していない
 - 対象: awsbridge 方式（自前の OIDC issuer → 各アカウントの IAM OIDC プロバイダー → `AssumeRoleWithWebIdentity`）による、人が使う AWS コンソールと `aws login` へのログイン（この仕組みを「コンソールログイン」と呼ぶ）
 - 関連:
@@ -103,12 +104,20 @@ issuer の公開文書（discovery と JWKS）: https://<issuer-host>/std/...（
 | Access アプリ | MCP Portal と self-hosted のアプリ | 入口とチームごとのアプリ（portal §9.1）。issuer のホストには Access アプリを置かない（§3.1） |
 | issuer と鍵 | 1 つ（Worker の URL） | 階層 × 境界ごと |
 | audience | `awsbridge`（`infra/aws/awsbridge.yaml`） | `awsbridge-console`（§3.2） |
-| ロール | `FederatedMcpReadOnly` / `FederatedMcpDebug`（パスなし） | `/awsbridge-console/<tier>/` の下（§3.3） |
+| ロール | `FederatedMcpViewer` / `FederatedMcpDebugger`（パスなし） | `/awsbridge-console/<tier>/` の下（§3.3） |
 | 認可の条件 | `<issuer>:sub` の許可リスト | `aws:RequestTag/awsbridge_team` の許可値・`aws:TagKeys`・SourceIdentity 必須。`sub` は照合しない |
 | CSRF の前提 | ブラウザを想定しない（Origin があれば検査、Content-Type は JSON） | ブラウザが本線。Origin 必須・CSRF トークン・フォームの POST（portal §9.5） |
 | 設定 | `config/profiles.json`（バンドル） | 設定ファイル → 生成物（portal §11） |
 
 分ける理由（cto の決裁の要約）: 同じ issuer でタグや SourceIdentity を出すと、TagSession / SetSourceIdentity のない既存ロールの引き受けが失敗する [確認済み: PoC の P2 ケース 9]。CSRF の前提が逆。Access ポリシーを別に厳しくできる。鍵が漏れたときの影響範囲を分けられる。
+
+**ロールは共有しない（決裁 S2、2026-11。MCP 用とコンソール用でロールを共有する案 S1 は却下）。** MCP 用ロール（`FederatedMcpViewer` / `FederatedMcpDebugger`）は、人の階層（Viewer / Developer / Administrator。設定例のロール名は `FederatedViewer` / `FederatedDeveloper` / `FederatedAdministrator`）と独立した別のロールで、信頼ポリシー・issuer・audience も別である。人にコンソールのロールを与えても、MCP 側の権限には効かない。MCP 用ロールを渡す人は、人の階層と次のように揃える（利用者の決定）:
+
+- MCP の Viewer（`FederatedMcpViewer`）は全員が使える。
+- MCP の Debugger（`FederatedMcpDebugger`）は、人の Administrator か Developer を持つ人にだけ渡す。Viewer だけの人には渡さない。Debugger はリモートシェルなどで実行先（インスタンス・タスク）のロールの権限を得られ、その権限には MCP 経由の条件が付かないため、人に Developer / Administrator を渡すかどうかの判断と揃える。
+- 原則は「そのアカウントで Administrator か Developer を持つ人に渡す」。ただし、人の権限の所持から自動で判定することは今はできない（MCP 側の認可は email の許可リスト `DebugAllowedSubjects` で、チームの情報を持たない）。当面は、グループ（チーム）ごとに Debugger を渡すかを決めてよい。
+- 運用: 下流が「Debugger を渡すチーム」をアカウントごとに決め、そのチームのメンバーを `DebugAllowedSubjects` に入れる。許可リストはアカウントごとの設定なので、合わせる単位は「そのアカウント」（別のアカウントで Developer を持つだけの人は入れない）。チームのメンバーが変わったときや、人から Developer / Administrator を外したときは、`DebugAllowedSubjects` も直す。外し忘れは気付きにくいので、所属変更の手順に入れる。
+- 将来: MCP 側の認可をチーム（Access アプリ → セッションタグ）に寄せれば、チームごとの割り当てを自動で強制できる（別の設計として扱う。未着手）。
 
 ---
 
@@ -170,7 +179,7 @@ Standard と Admin の 2 つの Worker への振り分け（N9 は 1 つの Work
 |---|---|---|
 | パス | **P-2**: `/awsbridge-console/<tier>/`（`/awsbridge-console/std/`・`/awsbridge-console/admin/`）[資料: cto の決裁] | SCP や `aws:PrincipalArn` の条件で「コンソールログイン用すべて」（`arn:aws:iam::*:role/awsbridge-console/*`）と「Admin の階層だけ」（`.../awsbridge-console/admin/*`）を、ロール名を知らずに止められる。ArnLike の `*` がパスの `/` をまたいで一致するかは [推測]（SCP の訓練で確かめる）。実装: `rolePath(tier)`（`src/console/config.ts`）。一覧の `roleArn` と `stacksets.json` の `roles[].rolePath` はこの値、`rolePathPrefix` は `/awsbridge-console/` |
 | tier とパスの意味 | パスの `<tier>` は停止の対象選びに使う名前で、**権限の強さを保証しない**（Standard のロールに強い権限を付けることは、パスでは防げない。portal §11.5 の検査と A10 の保護で防ぐ）[資料: Sol のレビューの指摘 10・12] | — |
-| ロール名 | 設定の `roles[].roleName`（下流が決める。例 `ConsoleReadOnly`）。上流は名前を決めない | ロールの名前を変えると、そのロールのセッションは切れる |
+| ロール名 | 設定の `roles[].roleName`（下流が決める。例 `FederatedViewer`）。上流は名前を決めない | ロールの名前を変えると、そのロールのセッションは切れる |
 | MCP 用との区別 | パスで区別できる（MCP 用はパスなし） | — |
 
 ### 3.4 タグと JWT の claim

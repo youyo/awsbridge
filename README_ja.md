@@ -32,7 +32,7 @@ Worker の URL が OIDC issuer になるため、次の順で進めます。
 
 ### AWS 側（対象アカウントごと）
 
-[infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml) を流すだけです。Worker の URL を issuer とする IAM OIDC プロバイダーと、Worker 発行の JWT で引き受ける 2 つのロール（読み取り専用 `FederatedMcpReadOnly`、デバッグ `FederatedMcpDebug`）を作ります。
+[infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml) を流すだけです。Worker の URL を issuer とする IAM OIDC プロバイダーと、Worker 発行の JWT で引き受ける 2 つのロール（読み取り専用 `FederatedMcpViewer`、デバッグ `FederatedMcpDebugger`）を作ります。この MCP 用ロールは、人のコンソールログインの階層（Viewer / Developer / Administrator）とは独立した別のロールで、人にコンソールのロールを与えても MCP 用ロールの権限は変わりません。Viewer（`FederatedMcpViewer`）は全員が使えます。Debugger（`FederatedMcpDebugger`）は、人の Administrator か Developer を持つ人にだけ渡してください（Viewer だけの人には渡さない）。Debugger はリモートシェルなどで実行先のロールの権限（MCP 経由の条件が付かない）を得られるためです。ただし人の権限の所持から自動で判定することは今はできない（MCP 側の認可は email の許可リストで、チームの情報を持たない）ので、当面はグループ（チーム）ごとに Debugger を渡すかを決めてかまいません。下流が「Debugger を渡すチーム」をアカウントごとに決め、そのチームのメンバーを `DebugAllowedSubjects` に入れます。許可リストはアカウントごとの設定なので、別のアカウントで Developer を持つだけの人は入れません。チームのメンバーが変わったときや、人から Developer / Administrator を外したときは、`DebugAllowedSubjects` も直してください。外し忘れは気付きにくいので、所属変更の手順に入れてください。将来、MCP 側の認可をチーム（Access アプリ → セッションタグ）に寄せれば、チームごとの割り当てを自動で強制できます（別の設計。未着手）。
 
 ```
 AWS_PROFILE=<対象> mise run deploy:aws    # CloudFormation をデプロイ（何度でも別アカウントに流せる）
@@ -53,8 +53,8 @@ mise exec -- env AWS_PROFILE=<対象> AWSBRIDGE_ALLOWED_SUBJECTS="user@example.c
 | `Audience` | JWT の audience（既定 `awsbridge`。Worker の `STS_AUDIENCE` と一致させる） |
 | `AllowedSubjects` | 読み取り専用ロールを引き受けられる利用者（カンマ区切り。下記の書式。小文字で指定） |
 | `DebugAllowedSubjects` | デバッグロールを引き受けられる利用者（同じ書式。読み取り専用より絞ることを勧めます） |
-| `ReadOnlyRoleName` | 読み取り専用ロール名（既定 `FederatedMcpReadOnly`） |
-| `DebugRoleName` | デバッグロール名（既定 `FederatedMcpDebug`） |
+| `ReadOnlyRoleName` | 読み取り専用ロール名（既定 `FederatedMcpViewer`） |
+| `DebugRoleName` | デバッグロール名（既定 `FederatedMcpDebugger`） |
 | `DebugAdditionalPolicyArns` | 任意。デバッグロールに追加で付ける管理ポリシー（カンマ区切り。空なら付けない） |
 | `DebugPassableEcsTaskRoleArns` | 任意。`ecs:RunTask` でタスクに渡してよい IAM ロール ARN（カンマ区切り。ワイルドカード不可）。空なら `iam:PassRole` を付けない |
 
@@ -64,16 +64,15 @@ mise exec -- env AWS_PROFILE=<対象> AWSBRIDGE_ALLOWED_SUBJECTS="user@example.c
 
 | ロール | 権限 |
 |---|---|
-| `FederatedMcpReadOnly` | AWS 管理ポリシー `ReadOnlyAccess` + SSM パラメーター取得（`ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`）の明示 Deny（条件なし） |
-| `FederatedMcpDebug` | `ReadOnlyAccess` + インラインポリシー（調査の読み取り強化・秘密値の参照・軽い運用操作・費用のかかる操作・接続と実行。`aws:CalledViaAWSMCP = aws-mcp.amazonaws.com` の条件付き。AWS MCP を経由しない SSM パラメーター取得の Deny を含む）+ 任意の `DebugAdditionalPolicyArns` |
+| `FederatedMcpViewer` | AWS 管理ポリシー `ReadOnlyAccess` + SSM パラメーターの取得（`ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`）と Secrets Manager の値の取得（`secretsmanager:GetSecretValue` / `BatchGetSecretValue`）の明示 Deny（条件なし） |
+| `FederatedMcpDebugger` | `ReadOnlyAccess` + インラインポリシー（調査の読み取り強化・軽い運用操作・費用のかかる操作・接続と実行。Allow はすべて `aws:CalledViaAWSMCP = aws-mcp.amazonaws.com` の条件付き。読み取り専用ロールと同じ、SSM パラメーターと Secrets Manager の値の取得の無条件の Deny を含む）+ 任意の `DebugAdditionalPolicyArns` |
 
 デバッグロールのインラインポリシーは、次のグループに分かれています（Allow はすべて `aws:CalledViaAWSMCP = aws-mcp.amazonaws.com` の条件付き、Resource は `*`）。削除系の操作・IAM 変更・組織変更は含みません（ただし Knowledge Bases の同期は、結果として索引の文書を消すことがあります。`Operations` を参照）。
 
 | グループ（Sid） | 内容 |
 |---|---|
 | `Investigation` | `ReadOnlyAccess` より深い調査用の読み取り。Logs Insights / ログ取得 / Live Tail、X-Ray、CloudTrail（`LookupEvents`・クエリ）、Athena のクエリ実行、EC2 コンソール出力 / スクリーンショット、AWS Config の `SelectResourceConfig` / `GetResourceConfigHistory` |
-| `SecretRead` | 秘密値の参照: `secretsmanager:GetSecretValue`、`ssm:GetParameter(s)` / `GetParametersByPath`。実行系と同等のリスクとして扱ってください。復号用の `kms:Decrypt` は別 Statement で、`kms:ViaService`（Secrets Manager / SSM 経由）に限定します |
-| `DenyParameterReadOutsideMCP` | **Deny**: AWS MCP を経由しない SSM パラメーター取得（`ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`）。条件は `StringNotEquals aws:CalledViaAWSMCP = aws-mcp.amazonaws.com` で、キーが無い直接の呼び出しにも効きます（下の注意を参照） |
+| `DenySsmParameterRead` / `DenySecretsManagerRead` | **Deny**（条件なし。読み取り専用ロールと同じ）: `ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`、`secretsmanager:GetSecretValue` / `BatchGetSecretValue`。直接の呼び出しにも AWS MCP 経由の呼び出しにも効き、`DebugAdditionalPolicyArns` で足した管理ポリシーの Allow より優先します。`kms:Decrypt` は付けません（下の注意を参照） |
 | `Operations` | 副作用のある軽い運用操作（削除なし）: ECS の `UpdateService` / `StopTask`、EC2 の起動・停止・再起動、Lambda の同時実行数の変更、Auto Scaling の台数変更、RDS / ElastiCache の再起動、CloudFront の `CreateInvalidation`、Bedrock Knowledge Bases の同期の開始・中止（`bedrock:StartIngestionJob` / `StopIngestionJob`）。同期は削除操作ではありませんが、データソース（S3 など）から消えた文書はベクトルストアからも消えます。<br>止める・再起動する: `states:StopExecution`、`glue:BatchStopJobRun` / `StopCrawler`、`codebuild:RetryBuild` / `StopBuild`、`autoscaling:SuspendProcesses` / `ResumeProcesses`、`rds:FailoverDBCluster` / `RebootDBCluster`、`elasticache:TestFailover`、`elasticbeanstalk:RestartAppServer`。<br>止める・抑える: `cloudwatch:DisableAlarmActions` / `EnableAlarmActions`、`events:EnableRule` / `DisableRule` / `CancelReplay`、`autoscaling:SetInstanceHealth` / `EnterStandby` / `ExitStandby`、`rds:StartDBInstance` / `StopDBInstance` / `StartDBCluster` / `StopDBCluster`、`ssm:StopAutomationExecution`、`batch:CancelJob`、`codepipeline:StopPipelineExecution` |
 | `CostIncurring` | **費用がかかる**操作: `bedrock:InvokeModel` / `InvokeModelWithResponseStream`（Converse を含む）/ `ApplyGuardrail` / `RetrieveAndGenerate`、`sagemaker:InvokeEndpoint` / `InvokeEndpointAsync`、`rds:CreateDBSnapshot` / `CreateDBClusterSnapshot`、`ec2:CreateSnapshot`、`lambda:PutProvisionedConcurrencyConfig`。スナップショットを共有する権限は含みません |
 | `Execution` | 接続・実行: `ssm:SendCommand` / `StartSession` など、EC2 Instance Connect、`ecs:ExecuteCommand` / `RunTask`、`lambda:InvokeFunction`、`states:StartExecution`、`sqs:SendMessage`、`sns:Publish`、`rds-db:connect`。業務ロジック・デプロイの実行: `states:RedriveExecution` / `StartSyncExecution`、`bedrock:InvokeAgent`、`lambda:InvokeFunctionUrl`、`glue:StartCrawler` / `StartWorkflowRun`、`ssm:StartAutomationExecution`、`events:StartReplay` / `PutEvents`、`codepipeline:RetryStageExecution`。`ecs:RunTask` 用の `iam:PassRole` は別 Statement で、`DebugPassableEcsTaskRoleArns` を指定したときだけ付き、渡せるロールをその ARN、渡し先を `ecs-tasks.amazonaws.com` に限定します（空ならタスクロール無しのタスク定義だけ実行できます） |
@@ -82,14 +81,15 @@ Athena のクエリは結果バケットへの書き込み（`s3:PutObject`）�
 
 Knowledge Bases の同期（`bedrock:StartIngestionJob` / `StopIngestionJob`）も、ほかのグループと同じく Resource は `*` です。デバッグロールはアカウント内のどのリソースでも調べられることを前提にしており、ほかの操作（ECS・EC2・RDS など）も対象の ARN をパラメーターにしていないため、Knowledge Base の ARN で絞るパラメーターは設けていません（`DebugAdditionalPolicyArns` は権限を足すだけで、絞ることはできません）。対象を絞るなら、テンプレートの `Operations` の Resource を `arn:${Partition}:bedrock:${Region}:${Account}:knowledge-base/${KnowledgeBaseId}` に書き換えるか、`aws:ResourceTag` の条件を足してください。
 
-- **デバッグロールはリモート実行相当の権限を含みます。** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` はリモートシェルと同等で、秘密情報や認証情報、ファイルの内容が見えてしまうことがあります。`SecretRead` も秘密値そのものを読めます。`Operations` と `lambda:InvokeFunction`・`states:StartExecution`・`sqs:SendMessage`・`sns:Publish` は副作用のある処理を実行します。
+- **デバッグロールはリモート実行相当の権限を含みます。** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` はリモートシェルと同等で、秘密情報や認証情報、ファイルの内容が見えてしまうことがあります（コマンドはインスタンスやタスクのロールの権限で動き、そのロールが秘密値を読めることがあります）。`Operations` と `lambda:InvokeFunction`・`states:StartExecution`・`sqs:SendMessage`・`sns:Publish` は副作用のある処理を実行します。
 - **費用がかかる操作とデプロイを伴う操作を含みます。** `CostIncurring` のモデル・推論エンドポイントの呼び出し、スナップショットの作成、プロビジョンド同時実行は課金されます（`rds:StopDBInstance` もスナップショットを作れます）。`codepipeline:RetryStageExecution` は失敗したステージを再試行し、本番へのデプロイを走らせることがあります。`events:StartReplay` / `PutEvents`、`bedrock:InvokeAgent`、`glue:StartCrawler` / `StartWorkflowRun`、`ssm:StartAutomationExecution` は、それぞれのターゲット・ジョブ・オートメーションを実行します。`glue:StartCrawler` は、クローラーの設定次第でカタログのテーブルを削除・非推奨にします。
 - **止める・抑える操作は戻し忘れに注意してください。** `cloudwatch:DisableAlarmActions` や `events:DisableRule`、`autoscaling:SuspendProcesses` / `EnterStandby` は、戻し忘れると障害の見逃しや自己修復の停止につながります。`autoscaling:SetInstanceHealth` で Unhealthy にしたインスタンスは終了・置き換えされます。
-- **AWS MCP を経由しない SSM パラメーター取得は Deny します。** `ReadOnlyAccess` は `ssm:Get*` を含むため、Deny が無いとセッションの認証情報で SSM パラメーターを直接読めてしまいます（SecureString も `aws/ssm` キーならキーポリシー側で復号できます）。`StringNotEquals` のような否定の条件演算子は、キーが要求に無いと true になり（[条件演算子](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html)）、`aws:CalledViaAWSMCP` は直接の呼び出しには付きません（[グローバル条件キー](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-keys.html)）。そのため Deny は直接の呼び出しに効き、AWS MCP 経由（値が `aws-mcp.amazonaws.com`）には効きません。MCP 経由の `SecretRead` は今までどおり読めます。この条件を `...IfExists` や `Null` に変えないでください。
+- **Secrets Manager と SSM パラメーターストアの値は、API で直接は読めません（両ロール）。** 両ロールとも `ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory` と `secretsmanager:GetSecretValue` / `BatchGetSecretValue` を条件なしで Deny するので、AWS MCP を経由するかどうかに関係なく効きます。`ReadOnlyAccess`（v191）は `ssm:Get*` を含み（SecureString も `aws/ssm` キーならキーポリシー側で復号できます）、Deny が無いとセッションで SSM パラメーターを読めてしまいます。`ReadOnlyAccess` は `secretsmanager:GetSecretValue` と `kms:Decrypt` を含まず、インラインポリシーもどちらも付けません。明示 Deny は常に優先するので、`DebugAdditionalPolicyArns` で管理ポリシーを足しても、これらの取得は戻せません。
 - **権限昇格の経路は塞いでいます。** `iam:PassRole` を `*` に付けると、任意のロールでタスクを動かせてしまうため、既定では付けず、`DebugPassableEcsTaskRoleArns` で明示したロールだけに限ります。また `lambda:UpdateFunctionConfiguration`（実行ロールや環境変数の差し替え）と `autoscaling:UpdateAutoScalingGroup`（起動テンプレートの差し替え）は付けていません。`glue:StartJobRun` と `batch:SubmitJob` も付けていません。引数やコマンド・環境変数を上書きして、ジョブのロールの権限で任意のコードを動かせるためです（`codebuild:StartBuild` と同じ理由です）。`codepipeline:StartPipelineExecution` も付けていません。`sourceRevisions` でソースのコミット・S3 オブジェクト・イメージを差し替えられ、`variables` で任意の値をパイプラインに渡せるためです（引数を上書きできる `codebuild:StartBuild` と同じ理由です。再実行は `RetryStageExecution` で行います）。`ssm:StartAutomationExecution` 用の `iam:PassRole` は付けないため、オートメーションは呼び出し元の権限の範囲でだけ動きます。
 - **残るリスク:** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` / EC2 Instance Connect は、対象のインスタンスやタスクに付いたロールの権限で動けます。権限の強いインスタンス・タスクが同じアカウントにあると、その権限を借りられます。本番ではタグ条件や SSM ドキュメントで対象を絞ってください。
-- **読み取り専用ロールは `ReadOnlyAccess` を含むため、SSM パラメーター以外の秘密値は読めてしまいます。** `ReadOnlyAccess`（v191）は `ssm:Get*` を含み、SecureString も `aws/ssm` キー経由で復号できてしまうため、読み取り専用ロールでは SSM パラメーター取得を明示 Deny しています（秘密値の参照はデバッグロールの `SecretRead` だけ）。デバッグロールでも、AWS MCP を経由しない取得は Deny しています（上を参照）。一方、Lambda の環境変数（`lambda:Get*` / `ListFunctions`）や `s3:GetObject` などは調査で日常的に使うため Deny していません。ここに秘密値があるなら、`AllowedSubjects` を絞るか、権限境界・SCP で独自に Deny してください。
-- **`ReadOnlyAccess` は MCP 経由に限定されません。** AWS 管理ポリシーには IAM 条件を付けられないため、セッションの認証情報で直接 API を呼んでも読み取り権限は有効です。`aws:CalledViaAWSMCP` で絞られるのはインラインポリシーの操作と、デバッグロールの SSM パラメーター取得の Deny だけです。
+- **「秘密値を読めない」わけではありません。** 上の 2 つの API 以外の経路は残ります: リモートシェル（デバッグロール。`ssm:SendCommand` / `StartSession`、`ecs:ExecuteCommand`、EC2 Instance Connect はインスタンスやタスクのロールの権限で動き、そのロールで秘密値を読めることがあります）、SSM のコマンドの実行結果（`ssm:GetCommandInvocation` / `ListCommandInvocations`）と Automation の実行結果、Lambda の環境変数と `lambda:GetFunction` で得るコードの取得 URL、ECS のタスク定義と CodeBuild プロジェクトの平文の環境変数、EC2 のユーザーデータ、CloudFormation のテンプレートと出力、AppConfig の設定内容、S3 のオブジェクト（`s3:GetObject`）、ログ、`rds-db:connect`（デバッグロール）。ECS の秘密の参照（`secrets` / `valueFrom`）や CodeBuild の `SECRETS_MANAGER` / `PARAMETER_STORE` 型の環境変数で見えるのは参照先だけで、値ではありません（平文の環境変数とは別です）。これらの多くは調査で日常的に使うため Deny していません。ここに秘密値があるなら、`AllowedSubjects` / `DebugAllowedSubjects` を絞るか、権限境界・SCP で独自に Deny してください。
+- **`ReadOnlyAccess` のバージョンは固定されません。** AWS 管理ポリシーなので、AWS の更新で読める範囲が変わることがあります。上の Deny は値を取得する API を名指しで止めるので、その部分は更新の影響を受けません。
+- **`ReadOnlyAccess` は MCP 経由に限定されません。** AWS 管理ポリシーには IAM 条件を付けられないため、セッションの認証情報で直接 API を呼んでも読み取り権限は有効です。`aws:CalledViaAWSMCP` で絞られるのは、デバッグロールのインラインポリシーの Allow だけです。
 - 本番では `Resource` を特定の ARN・タグ・SSM ドキュメントに絞り、セッションログ（SSM Session Manager のログ、ECS Exec のログ、Lambda の CloudWatch Logs）を必ず有効にしてください。CloudTrail だけでは足りません。
 - 利用者はロールごとに `AllowedSubjects`（読み取り専用）と `DebugAllowedSubjects`（デバッグ）で分けます。`DebugAllowedSubjects` は読み取り専用より狭くしてください。
 
@@ -115,8 +115,8 @@ mise run deploy:worker   # wrangler deploy → secrets を順に実行（AWS は
 AWSBRIDGE_ISSUER = "https://awsbridge.example.workers.dev"   # Worker の URL（OIDC issuer）
 AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org" # 読み取り専用ロールを引き受けられる利用者（カンマ区切り）
 AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS = "admin@example.com"       # デバッグロールを引き受けられる利用者（カンマ区切り）
-# AWSBRIDGE_READONLY_ROLE_NAME = "FederatedMcpReadOnly"      # 任意。ロール名（既定値）
-# AWSBRIDGE_DEBUG_ROLE_NAME = "FederatedMcpDebug"            # 任意。ロール名（既定値）
+# AWSBRIDGE_READONLY_ROLE_NAME = "FederatedMcpViewer"        # 任意。ロール名（既定値）
+# AWSBRIDGE_DEBUG_ROLE_NAME = "FederatedMcpDebugger"          # 任意。ロール名（既定値）
 # AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS = "arn:aws:iam::<アカウントID>:policy/<名前>" # 任意。デバッグロールに追加する管理ポリシー（カンマ区切り）
 AWSBRIDGE_POC_SUBJECT = "user@example.com"                   # poc:sts の正常ケースで使う利用者
 AWSBRIDGE_ACCESS_TEAM_DOMAIN = "https://team.example.cloudflareaccess.com" # Access のチームドメイン
@@ -171,10 +171,10 @@ mise run secrets        #    古い公開鍵を JWKS から外す
 {
   "default": "dev-readonly",
   "profiles": [
-    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly", "description": "開発（読み取り専用）" },
-    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug", "description": "開発（デバッグ）" },
-    { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
-    { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
+    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpViewer", "description": "開発（読み取り専用）" },
+    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebugger", "description": "開発（デバッグ）" },
+    { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpViewer" },
+    { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebugger" }
   ]
 }
 ```
@@ -206,6 +206,49 @@ bash scripts/wrangler.sh secret delete AWS_PROFILES
 ```
 
 `AWS_PROFILES` の vars / secret が残っていても Worker は読みません（無視されます）。ただし secret は Worker に残り続けるので、`secret delete` で消してください。
+
+### 移行（既定のロール名の変更とデバッグロールの縮小）
+
+既定のロール名を `FederatedMcpReadOnly` → `FederatedMcpViewer`、`FederatedMcpDebug` → `FederatedMcpDebugger` に変えました（パラメーター名 `ReadOnlyRoleName` / `DebugRoleName`、出力 `ReadOnlyRoleArn` / `DebugRoleArn`、環境変数 `AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME` は変わりません）。
+
+- **旧名が保たれるのは、既存スタックを `scripts/deploy-aws.sh` で更新し、名前を指定しない場合だけです。** `scripts/deploy-aws.sh`（`mise run deploy:aws`）は `aws cloudformation deploy` を使い、ロール名は環境変数を設定したときだけ渡します。既存スタックでは、渡さないパラメーターにスタックの既存の値が使われます。次の場合はロールが置き換えられ、`roleArn` と一意 ID が変わります: (1) `AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME` で新しい名前を指定した（新しい名前に移るときはこれ）。(2) `deploy:aws` 以外で流した（マネジメントコンソール、`UsePreviousValue` を付けない `create-change-set` / `update-stack`、StackSets など。指定しないパラメーターにテンプレートの既定値、つまり新しい名前が使われることがあります）。(3) スタックを削除して作り直した。
+- **移行の前に、変更を下見してください。** `scripts/deploy-aws.sh` と同じ引数に `--no-execute-changeset` を付けて `aws cloudformation deploy` を実行し、`aws cloudformation describe-change-set --stack-name <スタック> --change-set-name <名前> --query 'Changes[].ResourceChange.[LogicalResourceId,Action,Replacement]'` で、`ReadOnlyRole` / `DebugRole` に `Replacement: True` が出ないか確かめます。変更セットは実行しなければ何も変わりません。確かめたら `aws cloudformation delete-change-set` で削除してください。
+- **移行の前に、旧ロールの ARN を参照しているものを確かめてください:** KMS のキーポリシー、S3 のバケットポリシー、SCP、ほかのロールの信頼ポリシーなど。旧 ARN を書いたポリシーは新しいロールには当たりません。リソースポリシーの `Principal` に書いたロールは一意 ID で保存されるので、置き換えのあとは同じ名前のロールでも信頼は戻りません。これらのポリシーを直してください。
+- **OIDC プロバイダーの削除や信頼ポリシーの変更では、発行済みの STS 認証情報は失効しません。** 旧ロールのセッションは有効期限まで残ります（Worker が求める長さは 900 秒。上限はロールの `MaxSessionDuration`、既定 3600 秒）。すぐに止めたいなら、削除の前に旧ロールでセッションの失効（IAM の「アクティブなセッションを取り消す」）をかけてください。
+- **削除の完了は CloudFormation の結果だけでなく、IAM の実体で確かめてください。** スタックを削除したら、対象のアカウントすべてで、ロールと OIDC プロバイダーが実際に消えたことを確かめます。
+- **デバッグロールで秘密値を API で読めなくなりました。** `SecretRead`（`secretsmanager:GetSecretValue`、`ssm:GetParameter*`）と `SecretDecrypt`（`kms:Decrypt`）を削除し、両ロールでこれらの取得を条件なしで Deny します。これは非互換の変更で、`DebugAdditionalPolicyArns` で追加ポリシーを付けても戻せません（明示 Deny が優先します）。ロール名を変えるかどうかに関係なく、スタックを更新すると効きます。
+
+#### 同じスタックで改名する（切り替えの間 MCP は失敗する）
+
+1. 新しい名前でスタックを更新する: `AWSBRIDGE_READONLY_ROLE_NAME=FederatedMcpViewer AWSBRIDGE_DEBUG_ROLE_NAME=FederatedMcpDebugger AWS_PROFILE=<対象> mise run deploy:aws`。新しい出力 `ReadOnlyRoleArn` / `DebugRoleArn` を控える
+2. プロファイル一覧（`config/profiles.json`、下流なら `deploy/profiles.json`）の `roleArn` を更新する
+3. Worker をデプロイする: `mise run deploy:worker`
+4. 両ロールで確かめる（読み取り専用とデバッグのプロファイルでそれぞれツールを呼ぶ）
+
+手順 1 から手順 3 が終わるまで、MCP の呼び出しは失敗します（プロファイル一覧が、もう無い旧 ARN を指しているため）。
+
+#### 別スタックで並行稼働する（issuer の URL も変える場合）
+
+issuer の URL（Worker の公開 URL）も変えるなら、新しいスタックを旧スタックと並べて動かし、停止時間をほぼ無くして切り替えられます。issuer の URL（`AWSBRIDGE_ISSUER`）・スタック名（`AWSBRIDGE_STACK_NAME`）・ロール名（`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME`）の 3 つをすべて旧と違う値にしてください。IAM の OIDC プロバイダーは URL ごとに 1 つで、ロール名はアカウント内で一意なので、どれかが同じだと並行できません。上流のコードの変更は要りません（どれもパラメーター化済みです）。
+
+始める前に決めること:
+
+- **旧スタックの削除は移行の一部です。期限を決めてください。** 旧スタックを削除するまで旧デバッグロールは `SecretRead` を持ったまま残るので、それまでは「秘密値を API で直接読めなくする」が効いていません。
+- **署名鍵を新旧で同じにするか分けるか。** 同じにすると、鍵が漏れたとき旧スタックを削除するまで旧ロール（秘密値を読める旧デバッグロールを含む）にも届くので、上の期限が特に重要です。分けるなら、`AWSBRIDGE_KEY_FILE` を新しいファイルに向けて `mise run keygen` で新しい鍵を作ります。鍵を更新する機会になります（既存の手順は「署名鍵のローテーション」を参照）。
+- **URL が変わると、Cloudflare Access のアプリ（AUD）と MCP クライアントの接続先も変わります。** 新しいホストも Access のアプリと `/.well-known/*` の bypass で保護し（`infra/cloudflare` を参照）、新しい Worker の `ACCESS_AUD`（`AWSBRIDGE_ACCESS_AUD`）を新しいアプリの AUD にしてください。Worker は `ACCESS_AUD` で Access の JWT を自分でも検証するので、Access を通らずに届いた要求（別のホスト・Preview URL）は 401 になります。新しいホストでもこれを確かめてください（例: Access を通さない `/mcp` が 401 になる）。新しい URL がカスタムドメインなら、workers.dev の URL と Preview URL を閉じることも検討してください。
+
+手順（Worker が先です。初回と同じく、IAM は OIDC プロバイダーを作るときに issuer の `/.well-known/openid-configuration` を読みます）:
+
+1. 新しい URL で応答する別名の Worker を、`ISSUER` = 新しい URL でデプロイする（例: `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` で別の wrangler 設定を使い、`AWSBRIDGE_ISSUER` を新しい URL にする。`mise run deploy:worker` は `ISSUER` の指定とプロファイル一覧のバンドルを同じデプロイで行う）。STS は issuer の URL からディスカバリーと JWKS を取りに来て、ディスカバリーの issuer は Worker の `ISSUER` です。Worker は `ISSUER` を 1 つしか持たないので、旧 Worker は新しい issuer を出せません。並行稼働にはこの別名の Worker が要ります。この時点のプロファイル一覧は、初回と同じくダミーでかまいません
+2. 新しい `AWSBRIDGE_ISSUER`・`AWSBRIDGE_STACK_NAME`・ロール名を設定して、`mise run deploy:aws` で新しいスタックを作る。対象のアカウントすべてで行う
+3. 新しい Worker のプロファイル一覧に新しい `roleArn` を書き、もう一度デプロイする
+4. クライアントを切り替える前に、新しいロールを 1 回引き受けられることを確かめる: `AWSBRIDGE_ISSUER=<新しい URL> AWSBRIDGE_STACK_NAME=<新スタック> AWS_PROFILE=<対象> mise run poc:sts`（`AWSBRIDGE_KEY_FILE` の鍵で JWT に署名する。新しい URL の Worker と同じ鍵にする。デバッグロールは `--role-arn <DebugRoleArn>` を渡す）
+5. MCP クライアントの接続先を新しい URL に変える。Worker の URL は MCP の接続先でもあるので、クライアント側の再設定と再認可が要ります
+6. 両ロールで確かめる
+7. 期限までに、すべてのアカウントで旧スタックを削除する（`AWSBRIDGE_STACK_NAME=<旧スタック> AWS_PROFILE=<対象> mise run destroy:aws`）。旧の OIDC プロバイダーとロールが消えます。すべてのアカウントで、IAM 上で消えたことを確かめる
+8. すべてのアカウントで旧の OIDC プロバイダーが消えてから、旧 Worker を片付け、旧ホスト名を手放す。逆の順にすると、手放したホスト名（特に workers.dev のサブドメイン）を第三者が取ったとき、残ったプロバイダーがそれを発行者として信頼してしまいます
+
+この方法なら、切り替える前に旧と新を並べて確かめられます。別名の Worker を使わない場合は並行稼働になりません。Worker の `ISSUER` を新しい URL に移してからでないと新しいスタックを作れず、その後、新しいスタックと新しい `roleArn` をデプロイし終えるまで MCP の呼び出しは失敗します（旧ロールは Worker の JWT を受け付けなくなるため）。その方法を取るなら、切り戻しの手順（旧の `ISSUER` と旧の `roleArn` で Worker を再デプロイする。新しい側が動くまで旧スタックは残す）を先に用意してください。
 
 ## セットアップ用スキル（Claude Code）
 

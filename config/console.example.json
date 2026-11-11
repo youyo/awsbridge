@@ -11,14 +11,14 @@
   "roles": [
     {
       "name": "readonly",
-      "roleName": "ConsoleReadOnly",
+      "roleName": "FederatedViewer",
       "displayName": "ReadOnly",
       "sessionSeconds": 43200,
       "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/ReadOnlyAccess"] }
     },
     {
       "name": "developer",
-      "roleName": "ConsoleDeveloper",
+      "roleName": "FederatedDeveloper",
       "displayName": "Developer",
       "sessionSeconds": 14400,
       "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/PowerUserAccess"] }
