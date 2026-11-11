@@ -1,0 +1,239 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  awsbridge PoC (human AWS sign-in, portal) - two IAM OIDC providers whose issuers are paths
+  on the same host (https://<host>/std and https://<host>/admin, served by the PoC portal Worker
+  awsbridge-human-poc-portal) and roles that match the session tag awsbridge_team. Separate from
+  the MCP stack and from the earlier PoC stack (poc-human.yaml). Delete it after the PoC.
+
+# What the PoC checks (see scripts/poc/human/portal/README.md):
+#   N9   An OIDC issuer URL with a path can be registered as an IAM OIDC provider, and two paths on
+#        the same host can be two providers. Condition keys are <host>/<path>:aud.
+#        Discovery is at <issuer>/.well-known/openid-configuration.
+#   N10  Access -> portal Worker (Access JWT -> team from AUD -> own JWT with awsbridge_team and
+#        SourceIdentity) -> STS -> federation getSigninToken -> console.
+#
+# Trust policies do not match sub: who belongs to a team is decided by Access (per-team apps) and
+# the tag the Worker derives from the Access AUD. InfraOnlyRole accepts only the infra team, so the
+# dev path is expected to get AccessDenied (sts_denied) for it.
+# `aws login` is allowed only for the localhost client (no --remote).
+
+Parameters:
+  IssuerHost:
+    Type: String
+    Description: Host of the PoC portal Worker (awsbridge-human-poc-portal.<subdomain>.workers.dev). No scheme, path or trailing slash.
+    AllowedPattern: "^awsbridge-human-poc-portal\\.[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"
+    ConstraintDescription: Host name of the PoC portal Worker only (awsbridge-human-poc-portal.<subdomain>.workers.dev).
+  StdPath:
+    Type: String
+    Default: std
+    Description: Path of the Standard issuer (https://<IssuerHost>/<StdPath>).
+    AllowedPattern: "^[a-z0-9-]+$"
+  AdminPath:
+    Type: String
+    Default: admin
+    Description: Path of the Admin issuer (https://<IssuerHost>/<AdminPath>).
+    AllowedPattern: "^[a-z0-9-]+$"
+  Audience:
+    Type: String
+    Default: awsbridge-human-poc-portal
+    Description: Audience (aud) of the JWT signed by the portal Worker. Also the OIDC client ID.
+    AllowedPattern: "^[A-Za-z0-9._:-]+$"
+  RolePrefix:
+    Type: String
+    Default: AwsbridgeHumanPocPortal
+    Description: Prefix of the role names (<RolePrefix>Shared / InfraOnly / Admin).
+    AllowedPattern: "^AwsbridgeHumanPocPortal[A-Za-z0-9]{0,20}$"
+  SharedTeams:
+    Type: CommaDelimitedList
+    Default: "infra,dev"
+    Description: Teams (awsbridge_team values) that SharedRole accepts.
+  RestrictedTeam:
+    Type: String
+    Default: infra
+    Description: The only team that InfraOnlyRole and AdminRole accept.
+    AllowedPattern: "^[a-z0-9][a-z0-9-]{0,31}$"
+
+Resources:
+  StdProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url:
+        Fn::Sub: "https://${IssuerHost}/${StdPath}"
+      ClientIdList:
+        - Ref: Audience
+      Tags:
+        - Key: project
+          Value: awsbridge-human-poc-portal
+
+  AdminProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url:
+        Fn::Sub: "https://${IssuerHost}/${AdminPath}"
+      ClientIdList:
+        - Ref: Audience
+      Tags:
+        - Key: project
+          Value: awsbridge-human-poc-portal
+
+  SharedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Fn::Sub: "${RolePrefix}Shared"
+      MaxSessionDuration: 43200
+      ManagedPolicyArns:
+        - Fn::Sub: "arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess"
+      Policies:
+        - PolicyName: AwsLoginLocalhostOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: AwsLoginLocalhostOnly
+                Effect: Allow
+                Action:
+                  - signin:AuthorizeOAuth2Access
+                  - signin:CreateOAuth2Token
+                Resource:
+                  Fn::Sub: "arn:${AWS::Partition}:signin:*:${AWS::AccountId}:oauth2/public-client/localhost"
+      # Condition keys contain the provider name (<host>/<path>), so the document is built as a JSON string.
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |-
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": { "Federated": "${StdProvider}" },
+                  "Action": ["sts:AssumeRoleWithWebIdentity", "sts:TagSession", "sts:SetSourceIdentity"],
+                  "Condition": {
+                    "StringEquals": {
+                      "${IssuerHost}/${StdPath}:aud": "${Audience}",
+                      "aws:RequestTag/awsbridge_team": ["${Teams}"]
+                    },
+                    "ForAllValues:StringEquals": { "aws:TagKeys": ["awsbridge_team"] },
+                    "Null": { "sts:SourceIdentity": "false" }
+                  }
+                }
+              ]
+            }
+          - Teams:
+              Fn::Join:
+                - '", "'
+                - Ref: SharedTeams
+      Tags:
+        - Key: project
+          Value: awsbridge-human-poc-portal
+
+  InfraOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Fn::Sub: "${RolePrefix}InfraOnly"
+      MaxSessionDuration: 43200
+      ManagedPolicyArns:
+        - Fn::Sub: "arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess"
+      Policies:
+        - PolicyName: AwsLoginLocalhostOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: AwsLoginLocalhostOnly
+                Effect: Allow
+                Action:
+                  - signin:AuthorizeOAuth2Access
+                  - signin:CreateOAuth2Token
+                Resource:
+                  Fn::Sub: "arn:${AWS::Partition}:signin:*:${AWS::AccountId}:oauth2/public-client/localhost"
+      AssumeRolePolicyDocument:
+        Fn::Sub: |-
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": { "Federated": "${StdProvider}" },
+                "Action": ["sts:AssumeRoleWithWebIdentity", "sts:TagSession", "sts:SetSourceIdentity"],
+                "Condition": {
+                  "StringEquals": {
+                    "${IssuerHost}/${StdPath}:aud": "${Audience}",
+                    "aws:RequestTag/awsbridge_team": ["${RestrictedTeam}"]
+                  },
+                  "ForAllValues:StringEquals": { "aws:TagKeys": ["awsbridge_team"] },
+                  "Null": { "sts:SourceIdentity": "false" }
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: project
+          Value: awsbridge-human-poc-portal
+
+  # Trusts only the admin issuer. A JWT whose iss is the std issuer should not be able to assume it.
+  AdminRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Fn::Sub: "${RolePrefix}Admin"
+      # Shorter for the Admin tier (D6). ReadOnlyAccess only: this is a PoC.
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - Fn::Sub: "arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess"
+      Policies:
+        - PolicyName: AwsLoginLocalhostOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: AwsLoginLocalhostOnly
+                Effect: Allow
+                Action:
+                  - signin:AuthorizeOAuth2Access
+                  - signin:CreateOAuth2Token
+                Resource:
+                  Fn::Sub: "arn:${AWS::Partition}:signin:*:${AWS::AccountId}:oauth2/public-client/localhost"
+      AssumeRolePolicyDocument:
+        Fn::Sub: |-
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": { "Federated": "${AdminProvider}" },
+                "Action": ["sts:AssumeRoleWithWebIdentity", "sts:TagSession", "sts:SetSourceIdentity"],
+                "Condition": {
+                  "StringEquals": {
+                    "${IssuerHost}/${AdminPath}:aud": "${Audience}",
+                    "aws:RequestTag/awsbridge_team": ["${RestrictedTeam}"]
+                  },
+                  "ForAllValues:StringEquals": { "aws:TagKeys": ["awsbridge_team"] },
+                  "Null": { "sts:SourceIdentity": "false" }
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: project
+          Value: awsbridge-human-poc-portal
+
+Outputs:
+  StdProviderArn:
+    Description: ARN of the IAM OIDC provider for the std issuer (https://<host>/std).
+    Value:
+      Ref: StdProvider
+  AdminProviderArn:
+    Description: ARN of the IAM OIDC provider for the admin issuer (https://<host>/admin).
+    Value:
+      Ref: AdminProvider
+  SharedRoleArn:
+    Description: Role for the std issuer that accepts the shared teams.
+    Value:
+      Fn::GetAtt: [SharedRole, Arn]
+  InfraOnlyRoleArn:
+    Description: Role for the std issuer that accepts only the restricted team.
+    Value:
+      Fn::GetAtt: [InfraOnlyRole, Arn]
+  AdminRoleArn:
+    Description: Role for the admin issuer that accepts only the restricted team.
+    Value:
+      Fn::GetAtt: [AdminRole, Arn]

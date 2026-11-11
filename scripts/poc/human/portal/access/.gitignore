@@ -1,0 +1,7 @@
+# PoC のポータル用 Access アプリの Terraform。state と変数（account_id・email など実値）はコミットしない。
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+crash.log

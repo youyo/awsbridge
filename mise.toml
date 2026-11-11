@@ -103,6 +103,23 @@ run = "bash scripts/deploy-aws.sh"
 description = "CloudFormation スタックを削除"
 run = "bash scripts/destroy-aws.sh"
 
+# ---- 人間の AWS ログイン: チーム・ロール・種類の設定ファイル（docs/specs/human-login-portal.md §11）----
+# 入力と出力の場所は環境変数で変える（既定値は [env] に置かず scripts/human/config.ts 側で補う。下流は mise.<name>.toml で与える）:
+#   AWSBRIDGE_HUMAN_CONFIG          設定ファイル（既定 config/human.json。config/human.example.json か config/human.company.example.json をコピーして作る。gitignore）
+#   AWSBRIDGE_HUMAN_AUD_FILE        Terraform の出力（{ "teams": { <チーム>: <AUD> }, "entry": { "standard": <AUD>, "admin": <AUD> } }。任意）
+#   AWSBRIDGE_HUMAN_INVENTORY_FILE  placement: ou の Organization のアカウント（ListAccounts の結果を整えたもの。任意。email を含むのでコミットしない）
+#   AWSBRIDGE_HUMAN_OUT_DIR         生成物の置き場所（既定 .generated/human。gitignore）
+#   AWSBRIDGE_HUMAN_SOURCE_REVISION 生成物に記録する設定のコミット（任意）
+# どちらも AWS・Cloudflare・Terraform を呼ばない。
+
+[tasks."human:config:check"]
+description = "人間のログインの設定ファイルを検査する（スキーマ・参照・重複・階層。AUD のファイルを渡せば AUD の対応も）。生成物は書かない"
+run = "pnpm tsx scripts/human/config.ts check"
+
+[tasks."human:config:generate"]
+description = "人間のログインの設定ファイルから、Worker 用（階層ごと）・StackSets 用・Access の検査用の生成物を書く（その階層のチームの AUD が要る）"
+run = "pnpm tsx scripts/human/config.ts generate"
+
 # ---- 検証用（PoC 由来）。実 AWS を呼ぶので明示的に実行したときだけ使う ----
 
 [tasks."poc:mint"]
@@ -167,3 +184,54 @@ run = "pnpm tsx scripts/poc/human/revoke.ts recreate-provider"
 [tasks."poc:human:trail"]
 description = "PoC P2/P3: CloudTrail で直近の AssumeRoleWithWebIdentity と、そのセッションの API イベントの SourceIdentity・セッションタグを出す（email は伏せる）"
 run = "pnpm tsx scripts/poc/human/trail.ts"
+
+# ---- PoC（人間のログイン）のポータル: N9（パス付き issuer）・N1 の M2（パスごとの Access アプリと AUD）・N10（Access + Worker の通し経路） ----
+# 手順は scripts/poc/human/portal/README.md。設定は AWSBRIDGE_HUMAN_POC_PORTAL_* だけを読む（MCP 用・既存の PoC の変数は読まない）。
+# 実 AWS / Cloudflare を呼ぶもの（deploy / deploy-aws / access-plan / access-apply / checks / watch / revoke-tokens / destroy）は明示的に実行したときだけ使う。
+
+[tasks."poc:human:portal:keygen"]
+description = "PoC ポータル: std と admin の署名鍵を .secrets/poc-human/portal/ に生成（既存なら上書きしない）"
+run = "pnpm tsx scripts/poc/human/portal/keygen.ts"
+
+[tasks."poc:human:portal:deploy"]
+description = "PoC ポータル: Worker awsbridge-human-poc-portal を workers.dev へデプロイし、std / admin の issuer の文書を照合（スタックと Access の出力を読む。--dry-run / --check-only）"
+run = "pnpm tsx scripts/poc/human/portal/deploy.ts"
+
+[tasks."poc:human:portal:deploy-aws"]
+description = "PoC ポータル: CloudFormation でパス付き issuer の OIDC プロバイダー 2 つとロール AwsbridgeHumanPocPortal* をデプロイ（Cloudflare は呼ばない）"
+run = "bash scripts/poc/human/portal/deploy-aws.sh"
+
+[tasks."poc:human:portal:access-plan"]
+description = "PoC ポータル: Access アプリ（scripts/poc/human/portal/access、別の state）の terraform plan"
+run = "terraform -chdir=scripts/poc/human/portal/access init -input=false && terraform -chdir=scripts/poc/human/portal/access plan"
+
+[tasks."poc:human:portal:access-apply"]
+description = "PoC ポータル: Access アプリ（scripts/poc/human/portal/access、別の state）の terraform apply（-auto-approve。PoC 用の state だけ）。そのあと poc:human:portal:deploy をやり直す"
+run = "terraform -chdir=scripts/poc/human/portal/access init -input=false && terraform -chdir=scripts/poc/human/portal/access apply -auto-approve"
+
+[tasks."poc:human:portal:checks"]
+description = "PoC ポータル N9: 手元の鍵で署名した JWT で STS をケースごとに呼び、パス付き issuer の可否を表で出す（--only 1,3）"
+run = "pnpm tsx scripts/poc/human/portal/checks.ts"
+
+[tasks."poc:human:portal:watch"]
+description = "PoC ポータル N10: ブラウザの Access の Cookie で /t/<チーム>/whoami を見張り、拒否とトークンの取り直しの時刻を出す（--team infra）"
+run = "pnpm tsx scripts/poc/human/portal/access-watch.ts"
+
+[tasks."poc:human:portal:revoke-tokens"]
+description = "PoC ポータル N10: PoC の Access アプリ（--app awsbridge-human-poc-portal-<チーム>）の既存のトークンを失効させ、完了時刻を出す"
+run = "pnpm tsx scripts/poc/human/portal/access-revoke.ts"
+
+[tasks."poc:human:portal:tail"]
+description = "PoC ポータル: Worker のログ（whoami・login の要約。トークンは出さない）を流す"
+run = "env -u CLOUDFLARE_API_TOKEN pnpm exec wrangler tail --config scripts/poc/human/portal/wrangler.jsonc --format pretty"
+
+[tasks."poc:human:portal:destroy"]
+description = "PoC ポータル: スタック → Worker → Access アプリ（Terraform）の順に削除し、手元の Worker の secret と Cookie を消す"
+run = "bash scripts/poc/human/portal/destroy.sh"
+
+[tasks."poc:human:portal:lint"]
+description = "PoC ポータル: CloudFormation（cfn-lint）と Access の Terraform（fmt・validate・tflint）の静的検査"
+run = [
+  "cfn-lint scripts/poc/human/portal/poc-portal.yaml",
+  "bash scripts/poc/human/portal/access/check.sh",
+]

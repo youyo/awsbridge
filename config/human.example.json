@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "portal": { "standardOrigin": "https://aws.example.com" },
+  "teams": [
+    {
+      "name": "me",
+      "displayName": "自分",
+      "access": { "aud": "0000000000000000000000000000000000000000000000000000000000000001" }
+    }
+  ],
+  "roles": [
+    {
+      "name": "readonly",
+      "roleName": "HumanReadOnly",
+      "displayName": "ReadOnly",
+      "sessionSeconds": 43200,
+      "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/ReadOnlyAccess"] }
+    },
+    {
+      "name": "developer",
+      "roleName": "HumanDeveloper",
+      "displayName": "Developer",
+      "sessionSeconds": 14400,
+      "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/PowerUserAccess"] }
+    }
+  ],
+  "kinds": [{ "name": "default", "assign": { "readonly": ["me"], "developer": ["me"] } }],
+  "boundaries": [
+    { "name": "managed", "issuers": { "standard": "https://id.example.com/standard" } }
+  ],
+  "organizations": [
+    {
+      "name": "personal",
+      "displayName": "個人",
+      "boundary": "managed",
+      "placement": "accounts",
+      "accounts": [
+        {
+          "accountId": "111111111111",
+          "name": "my-sandbox",
+          "kind": "default",
+          "email": "aws+my-sandbox@example.com"
+        }
+      ]
+    }
+  ]
+}
