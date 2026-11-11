@@ -15,6 +15,7 @@ import { fail, required, writeSecret } from "../io";
 import { formatWatchSummary, parseSamples, type Sample, summarizeSamples } from "../watch";
 import { loadSettings, localOverride } from "./io";
 import { teamFromPath } from "./lib";
+import { BASE_VARS } from "./settings";
 import { classifyWhoami, cookieHeader, tokenRefreshes } from "./watch-lib";
 
 let values: {
@@ -68,9 +69,7 @@ if (values.summarize !== undefined) {
 }
 
 const s = loadSettings();
-const base =
-  localOverride("AWSBRIDGE_HUMAN_POC_PORTAL_WATCH_BASE") ??
-  required(s.base, "AWSBRIDGE_HUMAN_POC_PORTAL_URL");
+const base = localOverride("AWSBRIDGE_HUMAN_POC_PORTAL_WATCH_BASE") ?? required(s.base, BASE_VARS);
 const teams = values.team ?? [];
 if (teams.length === 0) fail("--team を 1 つ以上指定してください");
 for (const t of teams) if (teamFromPath(`/t/${t}`) !== t) fail(`不正なチーム名: '${t}'`);

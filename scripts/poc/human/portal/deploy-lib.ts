@@ -53,6 +53,8 @@ export function deployVars(p: {
   sessionDuration: string;
   audience: string;
   region: string;
+  /** PoC 専用の GET /t/<team>/poc-token を開ける（bypass-check の B4 の準備。既定は閉じる） */
+  pocToken?: boolean;
 }): string[] {
   const pairs: [string, string | undefined][] = [
     ["PORTAL_BASE", p.base],
@@ -63,6 +65,7 @@ export function deployVars(p: {
     ["SESSION_DURATION", p.sessionDuration],
     ["AUDIENCE", p.audience],
     ["REGION", p.region],
+    ["POC_TOKEN_ENDPOINT", p.pocToken === true ? "enabled" : undefined],
   ];
   return pairs.filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => `${k}:${v}`);
 }

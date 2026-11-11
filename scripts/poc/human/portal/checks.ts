@@ -17,6 +17,7 @@ import { maskSensitive } from "../ops";
 import { loadSettings, localOverride, tryStackOutputs } from "./io";
 import { assertPortalRoleArn, issuerFor, providerIdOf, signPortalToken } from "./lib";
 import { n9Cases, n9Issuer, n9RoleOutputKey } from "./n9-cases";
+import { BASE_VARS } from "./settings";
 
 let only: string | undefined;
 try {
@@ -25,7 +26,7 @@ try {
   fail((e as Error).message);
 }
 const s = loadSettings();
-const base = required(s.base, "AWSBRIDGE_HUMAN_POC_PORTAL_URL");
+const base = required(s.base, BASE_VARS);
 const all = n9Cases();
 const ids = only === undefined ? all.map((c) => c.id) : only.split(",").map((x) => x.trim());
 const unknown = ids.filter((id) => !all.some((c) => c.id === id));

@@ -49,6 +49,12 @@ describe("PoC ポータルのテンプレート: Parameters", () => {
     ])
       expect(re.test(bad), bad).toBe(false);
   });
+  it("IssuerHost は利用者が承認した awsbridge-console-poc.<zone> も受け付ける（似た名前は不可）", () => {
+    const re = new RegExp(p.IssuerHost.AllowedPattern);
+    expect(re.test("awsbridge-console-poc.example.com")).toBe(true);
+    for (const bad of ["awsbridge-console.example.com", "awsbridge-console-pocx.example.com"])
+      expect(re.test(bad), bad).toBe(false);
+  });
   it("パスは std / admin が既定で、英小文字・数字・ハイフンだけ", () => {
     expect(p.StdPath.Default).toBe("std");
     expect(p.AdminPath.Default).toBe("admin");

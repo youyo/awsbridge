@@ -1,12 +1,16 @@
 {
   // PoC（人間のログイン）のポータル Worker。MCP 用の wrangler.jsonc、既存の PoC の issuer Worker（../wrangler.jsonc）とは別。
   // N9（パス付き issuer）・N1（パスごとの Access アプリと AUD）・N10（Access + Worker の通し経路）を確かめる。
+  // 入口は自社ドメインのホスト 1 つ（Custom Domain）だけ。workers.dev と Preview URL は無効（cto の条件 (2)。Access を経由しない入口を閉じる）。
+  // routes の pattern はダミー（.invalid）。deploy.ts が AWSBRIDGE_HUMAN_POC_PORTAL_HOST に置き換えた設定を
+  // <OUT_DIR>/wrangler.deploy.json に書いてデプロイする（実ドメインはここに書かない）。検査は bypass-lib.ts の checkWranglerConfig。
   // vars と secret は deploy.ts が渡す（ここには実値を書かない）。デプロイ: mise run poc:human:portal:deploy、
   // 削除: mise run poc:human:portal:destroy（scripts/poc/human/portal/README.md）。
   "$schema": "../../../../node_modules/wrangler/config-schema.json",
   "name": "awsbridge-human-poc-portal",
   "main": "worker.ts",
   "compatibility_date": "2026-07-21",
-  "workers_dev": true,
-  "preview_urls": false
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "awsbridge-human-poc-portal.example.invalid", "custom_domain": true }]
 }

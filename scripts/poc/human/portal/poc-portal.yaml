@@ -20,9 +20,9 @@ Description: >-
 Parameters:
   IssuerHost:
     Type: String
-    Description: Host of the PoC portal Worker (awsbridge-human-poc-portal.<subdomain>.workers.dev). No scheme, path or trailing slash.
-    AllowedPattern: "^awsbridge-human-poc-portal\\.[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"
-    ConstraintDescription: Host name of the PoC portal Worker only (awsbridge-human-poc-portal.<subdomain>.workers.dev).
+    Description: Host of the PoC portal Worker (Custom Domain awsbridge-human-poc-portal.<zone> or awsbridge-console-poc.<zone>). No scheme, path or trailing slash.
+    AllowedPattern: "^(awsbridge-human-poc-portal|awsbridge-console-poc)\\.[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"
+    ConstraintDescription: Host name of the PoC portal Worker only (awsbridge-human-poc-portal.<zone> or awsbridge-console-poc.<zone>).
   StdPath:
     Type: String
     Default: std

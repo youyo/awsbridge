@@ -58,6 +58,30 @@ describe("issuerFor / providerIdOf（N9: 1 つのホストのパスごとに iss
   });
 });
 
+describe("ホスト名の接頭辞（利用者が承認した awsbridge-console-poc も PoC 用として受け付ける）", () => {
+  it("normalizePortalBase は awsbridge-console-poc.<zone> も受け付け、似た名前は拒否する", () => {
+    expect(normalizePortalBase("https://awsbridge-console-poc.example.com/")).toBe(
+      "https://awsbridge-console-poc.example.com",
+    );
+    for (const bad of [
+      "https://awsbridge-console.example.com",
+      "https://awsbridge-console-pocx.example.com",
+      "https://x-awsbridge-console-poc.example.com",
+    ])
+      expect(() => normalizePortalBase(bad), bad).toThrow();
+  });
+  it("OIDC プロバイダーのガードも awsbridge-console-poc.<zone>/<path> を受け付ける", () => {
+    const arn = "arn:aws:iam::123456789012:oidc-provider/awsbridge-console-poc.example.com/std";
+    expect(assertPortalProviderArn(arn, "awsbridge-console-poc.example.com/std")).toBe(arn);
+    expect(() =>
+      assertPortalProviderArn(
+        "arn:aws:iam::123456789012:oidc-provider/awsbridge-console.example.com/std",
+        "awsbridge-console.example.com/std",
+      ),
+    ).toThrow();
+  });
+});
+
 describe("ガード（破壊的な操作は PoC のポータルの名前にだけ効かせる）", () => {
   const ARN = (id: string) => `arn:aws:iam::123456789012:oidc-provider/${id}`;
   it("OIDC プロバイダー: ARN の末尾が providerId と一致し、ホストが PoC のポータル", () => {

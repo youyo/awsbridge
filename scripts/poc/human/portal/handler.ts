@@ -1,4 +1,4 @@
-// PoC のポータル Worker（awsbridge-human-poc-portal）の処理。workers.dev に置く PoC 専用で、本番のポータルではない。
+// PoC のポータル Worker（awsbridge-human-poc-portal）の処理。自社ドメインの Custom Domain に置く PoC 専用で、本番のポータルではない。
 //
 // 経路:
 //   GET  /{std,admin}/.well-known/openid-configuration・jwks.json  N9 のパス付き issuer（Access は Bypass）
@@ -6,6 +6,9 @@
 //   GET  /、/t/<team>/（?refresh=<秒> で自動再読み込み）          同じ内容の HTML。チームのページにはログインのフォーム
 //   POST /t/<team>/login                                           N10: Access JWT → AUD からチーム → 自前 JWT → STS → getSigninToken → 302
 //   GET  /t/<team>/login、/t/<team>/expired                        案内だけ（発行しない）
+//   GET  /t/<team>/poc-token                                       PoC 専用（POC_TOKEN_ENDPOINT=enabled のときだけ）。検証できて
+//                                                                  チームが一致した生の Access JWT を添付ファイルで返す（B4: 失効済み
+//                                                                  JWT の持ち込みの確認用）。設計書の本番の Worker には入れない
 //
 // 守ること: チームは検証した Access JWT の AUD だけから決める（パスは食い違いの検出だけ）。未知の AUD には発行しない。
 // 一時認証情報・サインイントークン・JWT は応答の本文とログに出さない（ログイン URL は Location にだけ入れる）。
@@ -46,7 +49,7 @@ import {
 } from "./lib";
 
 export interface PortalEnv {
-  /** https://awsbridge-human-poc-portal.<subdomain>.workers.dev（issuer の土台。ポータルのオリジン） */
+  /** https://awsbridge-human-poc-portal.<自社ドメインのゾーン>（issuer の土台。ポータルのオリジン） */
   PORTAL_BASE: string;
   /** https://<team>.cloudflareaccess.com */
   ACCESS_TEAM_DOMAIN?: string;
@@ -67,6 +70,8 @@ export interface PortalEnv {
   /** E2E 用。http://127.0.0.1 / http://localhost のときだけ使う */
   STS_ENDPOINT?: string;
   FEDERATION_ENDPOINT?: string;
+  /** PoC 専用。"enabled" のときだけ GET /t/<team>/poc-token を開ける（deploy.ts --poc-token）。本番の Worker には入れない */
+  POC_TOKEN_ENDPOINT?: string;
 }
 
 export interface PortalDeps {
@@ -374,6 +379,43 @@ async function login(
   return new Response(null, { status: 302, headers: { ...COMMON_HEADERS, location } });
 }
 
+// ---- PoC 専用: 生の Access JWT ----
+
+/** B4 の持ち込み用に、検証できてチームが一致した Access JWT をそのまま返す。トークンはログに出さない。 */
+async function pocToken(
+  req: Request,
+  env: PortalEnv,
+  deps: PortalDeps,
+  pathTeam: string,
+): Promise<Response> {
+  const access = await verifyAccess(req, env, deps);
+  if (!access.ok || !access.payload) {
+    log({ event: "poc_token", team: pathTeam, outcome: "error", code: "unauthorized" });
+    return json({ error: "unauthorized" }, 401);
+  }
+  const team = teamFromAud(access.payload.aud, parseAudMap(env.ACCESS_AUD_MAP ?? "{}"));
+  if (!team.ok || team.team !== pathTeam) {
+    const code = team.ok ? "team_mismatch" : team.code;
+    log({ event: "poc_token", team: pathTeam, outcome: "error", code });
+    return json({ error: code }, 403);
+  }
+  const email = access.payload.email;
+  log({
+    event: "poc_token",
+    team: team.team,
+    outcome: "ok",
+    sub: typeof email === "string" ? maskEmail(email) : null,
+    access_iat: access.payload.iat ?? null,
+  });
+  return new Response(`${req.headers.get(ACCESS_JWT_HEADER)}\n`, {
+    headers: {
+      ...COMMON_HEADERS,
+      "content-type": "text/plain; charset=utf-8",
+      "content-disposition": 'attachment; filename="awsbridge-poc-access-jwt.txt"',
+    },
+  });
+}
+
 // ---- 入口 ----
 
 const DOC_RE = /^\/(std|admin)\/\.well-known\/(openid-configuration|jwks\.json)$/;
@@ -410,7 +452,11 @@ export async function handlePortalRequest(
     (pathTeam !== undefined && (path === `/t/${pathTeam}` || path === `/t/${pathTeam}/`));
   const isLogin = pathTeam !== undefined && path === `/t/${pathTeam}/login`;
   const isExpired = pathTeam !== undefined && path === `/t/${pathTeam}/expired`;
-  if (!isWhoami && !isPage && !isLogin && !isExpired)
+  const isPocToken =
+    env.POC_TOKEN_ENDPOINT === "enabled" &&
+    pathTeam !== undefined &&
+    path === `/t/${pathTeam}/poc-token`;
+  if (!isWhoami && !isPage && !isLogin && !isExpired && !isPocToken)
     return new Response("not found", { status: 404 });
 
   try {
@@ -421,6 +467,7 @@ export async function handlePortalRequest(
 
   if (isLogin && req.method === "POST") return login(req, env, deps, base, pathTeam as string);
   if (!readOnly) return new Response("method not allowed", { status: 405 });
+  if (isPocToken) return pocToken(req, env, deps, pathTeam as string);
 
   if (isLogin)
     return html(

@@ -1,6 +1,6 @@
 # コピーして terraform.tfvars にして使う（*.tfvars は gitignore 済み）。値はすべてダミー。
 account_id      = "00000000000000000000000000000000"
-worker_host     = "awsbridge-human-poc-portal.example.workers.dev"
+worker_host     = "awsbridge-human-poc-portal.example.com" # mise のタスクが AWSBRIDGE_HUMAN_POC_PORTAL_HOST から -var で上書きする
 allowed_idp_ids = ["00000000-0000-0000-0000-000000000000"] # Google の IdP
 
 teams = {
