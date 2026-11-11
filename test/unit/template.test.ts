@@ -32,8 +32,8 @@ describe("Parameters", () => {
   });
   it("既定値", () => {
     expect(p.Audience.Default).toBe("awsbridge");
-    expect(p.ReadOnlyRoleName.Default).toBe("FederatedMcpReadOnly");
-    expect(p.DebugRoleName.Default).toBe("FederatedMcpDebug");
+    expect(p.ReadOnlyRoleName.Default).toBe("FederatedMcpViewer");
+    expect(p.DebugRoleName.Default).toBe("FederatedMcpDebugger");
     expect(p.MaxSessionDuration.Default).toBe(3600);
     expect(p.MaxSessionDuration.Type).toBe("Number");
   });
@@ -75,7 +75,7 @@ describe("入力パターン", () => {
   for (const name of ["ReadOnlyRoleName", "DebugRoleName"]) {
     it(`${name} は IAM のロール名パターン`, () => {
       const re = new RegExp(p[name].AllowedPattern);
-      expect(re.test("FederatedMcpReadOnly")).toBe(true);
+      expect(re.test("FederatedMcpViewer")).toBe(true);
       expect(re.test("a_b+c=d,e.f@g-h")).toBe(true);
       expect(re.test("a".repeat(64))).toBe(true);
       expect(re.test("a".repeat(65))).toBe(false);
@@ -134,22 +134,56 @@ describe("権限", () => {
   it("ReadOnlyRole の管理ポリシーは ReadOnlyAccess だけ（パーティションは AWS::Partition）", () => {
     expect(managed("ReadOnlyRole")).toEqual([readOnlyAccess("aws-cn")]);
   });
-  it("ReadOnlyRole は SSM パラメータの取得を明示 Deny する（条件なし）", () => {
+  // 秘密値を API で直接読む操作。両ロールで無条件に Deny する（ReadOnlyAccess の ssm:Get* や、
+  // DebugAdditionalPolicyArns で足した管理ポリシーの Allow より Deny が優先する）
+  const SECRET_DENIES: Record<string, string[]> = {
+    DenySsmParameterRead: [
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+      "ssm:GetParametersByPath",
+      "ssm:GetParameterHistory",
+    ],
+    DenySecretsManagerRead: ["secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue"],
+  };
+  const SECRET_ACTIONS = Object.values(SECRET_DENIES).flat();
+  const inlineStatements = (role: RoleKind): Json[] =>
+    evaluate(tpl.Resources[role].Properties.Policies[0].PolicyDocument.Statement, {
+      HasDebugPassableEcsTaskRoles: "true",
+      DebugPassableEcsTaskRoleArns: ["arn:aws:iam::111111111111:role/task-a"],
+    });
+  for (const role of ["ReadOnlyRole", "DebugRole"] as const) {
+    it(`${role} は SSM パラメーターと Secrets Manager の値の取得を無条件で明示 Deny する`, () => {
+      const statements = inlineStatements(role);
+      for (const [sid, expected] of Object.entries(SECRET_DENIES)) {
+        const st = statements.find((s: Json) => s.Sid === sid);
+        expect(st, sid).toBeDefined();
+        expect(st.Effect, sid).toBe("Deny");
+        expect([...st.Action].sort(), sid).toEqual([...expected].sort());
+        expect(st.Resource, sid).toBe("*");
+        // AWS MCP を経由しても、直接呼んでも効くよう条件を付けない
+        expect(st.Condition, sid).toBeUndefined();
+      }
+    });
+    it(`${role} のどの Allow にも秘密値の取得（SSM・Secrets Manager・kms:Decrypt）を含めない`, () => {
+      const allows = inlineStatements(role).filter((s: Json) => s.Effect === "Allow");
+      for (const s of allows) {
+        const acts: string[] = Array.isArray(s.Action) ? s.Action : [s.Action];
+        for (const a of acts) {
+          expect(SECRET_ACTIONS, `${s.Sid}: ${a}`).not.toContain(a);
+          expect(a, s.Sid).not.toMatch(/^ssm:GetParameter/);
+          expect(a, s.Sid).not.toMatch(/^secretsmanager:/);
+          expect(a, s.Sid).not.toBe("kms:Decrypt");
+        }
+      }
+    });
+  }
+  it("ReadOnlyRole のインラインポリシーは秘密値の取得の Deny だけ", () => {
     const policies = tpl.Resources.ReadOnlyRole.Properties.Policies;
     expect(policies).toHaveLength(1);
     const doc = policies[0].PolicyDocument;
     expect(doc.Version).toBe("2012-10-17");
-    expect(doc.Statement).toHaveLength(1);
-    const st = doc.Statement[0];
-    expect(st.Effect).toBe("Deny");
-    expect([...st.Action].sort()).toEqual([
-      "ssm:GetParameter",
-      "ssm:GetParameterHistory",
-      "ssm:GetParameters",
-      "ssm:GetParametersByPath",
-    ]);
-    expect(st.Resource).toBe("*");
-    expect(st.Condition).toBeUndefined();
+    expect(doc.Statement.map((s: Json) => s.Sid).sort()).toEqual(Object.keys(SECRET_DENIES).sort());
+    for (const st of doc.Statement) expect(st.Effect, st.Sid).toBe("Deny");
   });
   it("DebugAdditionalPolicyArns は空なら付けず、あれば ReadOnlyAccess に加えて DebugRole だけに付く", () => {
     const p = tpl.Parameters.DebugAdditionalPolicyArns;
@@ -211,13 +245,6 @@ describe("権限", () => {
         "config:SelectResourceConfig",
         "config:GetResourceConfigHistory",
       ],
-      SecretRead: [
-        "secretsmanager:GetSecretValue",
-        "ssm:GetParameter",
-        "ssm:GetParameters",
-        "ssm:GetParametersByPath",
-      ],
-      SecretDecrypt: ["kms:Decrypt"],
       Operations: [
         "ecs:UpdateService",
         "ecs:StopTask",
@@ -301,14 +328,8 @@ describe("権限", () => {
       ],
       PassRoleForEcsRunTask: ["iam:PassRole"],
     };
-    // MCP を経由しない SSM パラメーターの取得を塞ぐ Deny（ReadOnlyAccess の ssm:Get* を上書きする）
-    const DENY_SID = "DenyParameterReadOutsideMCP";
-    const DENY_ACTIONS = [
-      "ssm:GetParameter",
-      "ssm:GetParameters",
-      "ssm:GetParametersByPath",
-      "ssm:GetParameterHistory",
-    ];
+    // 秘密値の取得を塞ぐ無条件の Deny（AWS MCP を経由しても読めない）
+    const DENY_SIDS = Object.keys(SECRET_DENIES);
     const policies = tpl.Resources.DebugRole.Properties.Policies;
     const doc = policies[0].PolicyDocument;
     const PASSABLE = ["arn:aws:iam::111111111111:role/task-a", "arn:aws:iam::111111111111:role/b"];
@@ -334,9 +355,9 @@ describe("権限", () => {
       expect(typeof policies[0].PolicyName).toBe("string");
       expect(doc.Version).toBe("2012-10-17");
     });
-    it("Statement は想定のグループと Deny 1 つだけ", () => {
+    it("Statement は想定のグループと秘密値の取得の Deny だけ", () => {
       expect(statements.map((s: Json) => s.Sid).sort()).toEqual(
-        [...Object.keys(GROUPS), DENY_SID].sort(),
+        [...Object.keys(GROUPS), ...DENY_SIDS].sort(),
       );
       expect(allowStatements.map((s: Json) => s.Sid).sort()).toEqual(Object.keys(GROUPS).sort());
     });
@@ -367,7 +388,7 @@ describe("権限", () => {
       expect(withoutPassable.map((s: Json) => s.Sid)).not.toContain("PassRoleForEcsRunTask");
       expect(withoutPassable.flatMap(actions)).not.toContain("iam:PassRole");
       expect(withoutPassable.map((s: Json) => s.Sid).sort()).toEqual(
-        [...Object.keys(GROUPS).filter((k) => k !== "PassRoleForEcsRunTask"), DENY_SID].sort(),
+        [...Object.keys(GROUPS).filter((k) => k !== "PassRoleForEcsRunTask"), ...DENY_SIDS].sort(),
       );
       expect(withoutPassable.flatMap(actions)).toContain("ecs:RunTask");
     });
@@ -396,19 +417,12 @@ describe("権限", () => {
           "aws-mcp.amazonaws.com",
         );
     });
-    it("MCP を経由しない SSM パラメーターの取得を Deny する（StringNotEquals・IfExists なし）", () => {
+    it("Deny は秘密値の取得の 2 つだけで、どちらも条件を持たない", () => {
       const deny = statements.filter((s: Json) => s.Effect === "Deny");
-      expect(deny).toHaveLength(1);
-      const s = deny[0];
-      expect(s.Sid).toBe(DENY_SID);
-      expect([...actions(s)].sort()).toEqual([...DENY_ACTIONS].sort());
-      expect(s.Resource).toBe("*");
-      // キーが無い（直接の呼び出し）ときにも効くよう、否定の演算子だけを使う
-      expect(s.Condition).toEqual({
-        StringNotEquals: { "aws:CalledViaAWSMCP": "aws-mcp.amazonaws.com" },
-      });
+      expect(deny.map((s: Json) => s.Sid).sort()).toEqual([...DENY_SIDS].sort());
+      for (const s of deny) expect(s.Condition, s.Sid).toBeUndefined();
     });
-    describe("SSM パラメーターの取得の評価（IAM の条件の評価規則を模す）", () => {
+    describe("秘密値の取得の評価（IAM の条件の評価規則を模す）", () => {
       // 条件演算子の規則: キーが無いとき、肯定の演算子は false、否定の演算子は true
       // https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html
       const conditionMatches = (cond: Json, ctx: Record<string, string>): boolean =>
@@ -421,33 +435,23 @@ describe("権限", () => {
             throw new Error(`未対応の演算子 ${op}`);
           }),
         );
-      // インラインポリシーだけで判定する（ReadOnlyAccess の ssm:Get* は Allow として扱う）
+      // インラインポリシーだけで判定する（ReadOnlyAccess や追加の管理ポリシーの Allow があっても Deny が優先する）
       const decide = (action: string, ctx: Record<string, string>) => {
         const hits = statements.filter(
           (s: Json) => actions(s).includes(action) && conditionMatches(s.Condition, ctx),
         );
         if (hits.some((s: Json) => s.Effect === "Deny")) return "Deny";
-        return "Allow（ReadOnlyAccess の ssm:Get* を含む）";
+        return "Deny ではない";
       };
       const MCP = { "aws:CalledViaAWSMCP": "aws-mcp.amazonaws.com" };
-      for (const a of DENY_ACTIONS) {
+      for (const a of SECRET_ACTIONS) {
         it(`${a}: 直接の呼び出し（キーなし）は Deny`, () => {
           expect(decide(a, {})).toBe("Deny");
         });
-        it(`${a}: 別の値のときも Deny`, () => {
-          expect(decide(a, { "aws:CalledViaAWSMCP": "other.amazonaws.com" })).toBe("Deny");
-        });
-        it(`${a}: AWS MCP 経由なら Deny に当たらない`, () => {
-          expect(decide(a, MCP)).not.toBe("Deny");
+        it(`${a}: AWS MCP 経由でも Deny`, () => {
+          expect(decide(a, MCP)).toBe("Deny");
         });
       }
-      it("MCP 経由の SecretRead（ssm:GetParameter* と secretsmanager:GetSecretValue）は Allow に当たる", () => {
-        const secretRead = byGroup("SecretRead");
-        for (const a of actions(secretRead)) {
-          expect(conditionMatches(secretRead.Condition, MCP), a).toBe(true);
-          expect(decide(a, MCP), a).not.toBe("Deny");
-        }
-      });
     });
     it("見直しで入れないと決めた操作を含まない", () => {
       for (const a of [
@@ -469,22 +473,40 @@ describe("権限", () => {
       ])
         expect(allActions, a).not.toContain(a);
     });
-    it("SecretRead 以外の Allow に ssm:GetParameter* を含めない", () => {
-      for (const s of allowStatements.filter((x: Json) => x.Sid !== "SecretRead"))
-        for (const a of actions(s)) expect(a, s.Sid).not.toMatch(/^ssm:GetParameter/);
+    it("どの Allow にも secretsmanager:GetSecretValue・kms:Decrypt・ssm:GetParameter* を含めない", () => {
+      const all = [...withPassable, ...withoutPassable].filter((s: Json) => s.Effect === "Allow");
+      for (const s of all)
+        for (const a of actions(s)) {
+          expect(a, s.Sid).not.toMatch(/^ssm:GetParameter/);
+          expect(a, s.Sid).not.toBe("secretsmanager:GetSecretValue");
+          expect(a, s.Sid).not.toBe("secretsmanager:BatchGetSecretValue");
+          expect(a, s.Sid).not.toBe("kms:Decrypt");
+        }
+      expect(allActions).not.toContain("kms:Decrypt");
     });
-    it("kms:Decrypt は Secrets Manager / SSM 経由に限定される", () => {
-      expect(byGroup("SecretDecrypt").Condition.StringLike).toEqual({
-        "kms:ViaService": ["secretsmanager.*.amazonaws.com", "ssm.*.amazonaws.com"],
-      });
+    it("SecretRead / SecretDecrypt / DenyParameterReadOutsideMCP の Statement は無い", () => {
+      const sids = statements.map((s: Json) => s.Sid);
+      for (const sid of ["SecretRead", "SecretDecrypt", "DenyParameterReadOutsideMCP"])
+        expect(sids).not.toContain(sid);
+    });
+    it("リモート実行系は残す", () => {
+      for (const a of [
+        "ssm:SendCommand",
+        "ssm:StartSession",
+        "ecs:ExecuteCommand",
+        "ecs:RunTask",
+        "lambda:InvokeFunction",
+        "iam:PassRole",
+        "rds-db:connect",
+      ])
+        expect(allActions, a).toContain(a);
     });
     it("iam:PassRole は ecs-tasks.amazonaws.com 宛に限定される", () => {
       expect(byGroup("PassRoleForEcsRunTask").Condition.StringEquals["iam:PassedToService"]).toBe(
         "ecs-tasks.amazonaws.com",
       );
     });
-    it("kms:Decrypt と iam:PassRole はそれぞれ専用 Statement だけにある", () => {
-      expect(allActions.filter((a) => a === "kms:Decrypt")).toHaveLength(1);
+    it("iam:PassRole は専用 Statement だけにある", () => {
       expect(allActions.filter((a) => a === "iam:PassRole")).toHaveLength(1);
     });
     it("削除系・IAM 変更・組織変更・ワイルドカードを含まない", () => {

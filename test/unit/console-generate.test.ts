@@ -81,7 +81,7 @@ describe("Worker 用の生成物（階層ごと）", () => {
     expect(w.roles.map((r) => r.name)).toEqual(["developer", "readonly"]);
     expect(w.roles[1]).toEqual({
       name: "readonly",
-      roleName: "ConsoleReadOnly",
+      roleName: "FederatedViewer",
       displayName: "readonly",
       sessionSeconds: 43200,
     });
@@ -115,13 +115,13 @@ describe("Worker 用の生成物（階層ごと）", () => {
       roles: [
         {
           role: "developer",
-          roleArn: "arn:aws:iam::444444444444:role/awsbridge-console/std/ConsoleDeveloper",
+          roleArn: "arn:aws:iam::444444444444:role/awsbridge-console/std/FederatedDeveloper",
           teams: ["dev"],
           sessionSeconds: 28800,
         },
         {
           role: "readonly",
-          roleArn: "arn:aws:iam::444444444444:role/awsbridge-console/std/ConsoleReadOnly",
+          roleArn: "arn:aws:iam::444444444444:role/awsbridge-console/std/FederatedViewer",
           teams: ["sa", "infra"],
           sessionSeconds: 43200,
         },
@@ -131,7 +131,7 @@ describe("Worker 用の生成物（階層ごと）", () => {
     expect(admin?.accounts.find((a) => a.accountId === "444444444444")?.roles).toEqual([
       {
         role: "admin",
-        roleArn: "arn:aws:iam::444444444444:role/awsbridge-console/admin/ConsoleAdmin",
+        roleArn: "arn:aws:iam::444444444444:role/awsbridge-console/admin/FederatedAdministrator",
         teams: ["infra-elevated"],
         sessionSeconds: 3600,
       },
@@ -143,7 +143,7 @@ describe("Worker 用の生成物（階層ごと）", () => {
     const s = JSON.stringify(standard);
     const a = JSON.stringify(admin);
     for (const leak of [
-      "ConsoleAdmin",
+      "FederatedAdministrator",
       "infra-elevated",
       "dev-elevated",
       "4".repeat(64),
@@ -153,8 +153,8 @@ describe("Worker 用の生成物（階層ごと）", () => {
       expect(s, leak).not.toContain(leak);
     }
     for (const leak of [
-      "ConsoleReadOnly",
-      "ConsoleDeveloper",
+      "FederatedViewer",
+      "FederatedDeveloper",
       '"dev"',
       "1".repeat(64),
       "6".repeat(64),
@@ -370,7 +370,7 @@ describe("StackSets 用の生成物", () => {
     expect(s.roles.find((r) => r.name === "admin")?.rolePath).toBe("/awsbridge-console/admin/");
     expect(s.roles.find((r) => r.name === "readonly")).toEqual({
       name: "readonly",
-      roleName: "ConsoleReadOnly",
+      roleName: "FederatedViewer",
       tier: "standard",
       rolePath: "/awsbridge-console/std/",
       sessionSeconds: 43200,

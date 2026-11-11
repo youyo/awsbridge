@@ -32,7 +32,7 @@ From the second time on, deploy only the side you changed.
 
 ### AWS side (per target account)
 
-Just deploy [infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml). It creates an IAM OIDC provider whose issuer is the Worker's URL, and two roles that are assumed with the JWT issued by the Worker (read-only `FederatedMcpReadOnly` and debug `FederatedMcpDebug`).
+Just deploy [infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml). It creates an IAM OIDC provider whose issuer is the Worker's URL, and two roles that are assumed with the JWT issued by the Worker (read-only `FederatedMcpViewer` and debug `FederatedMcpDebugger`). These MCP roles are separate from the human console tiers (Viewer / Developer / Administrator); granting a person a console role does not change what the MCP roles can do. Everyone can use the Viewer (`FederatedMcpViewer`). Give the Debugger (`FederatedMcpDebugger`) only to people who have the human Administrator or Developer tier, not to people who have only Viewer: through remote shells and similar actions, the Debugger gets the permissions of the target's role, which carry no MCP-only condition. This cannot be decided automatically from what a person holds today (MCP authorization is an email allow list and has no team information), so for now you may decide per group (team) whether it gets the Debugger. The downstream decides, per account, which teams get the Debugger and puts those teams' members in `DebugAllowedSubjects`. The list is per account, so do not include people who have Developer only in another account. When a team's members change, or when you remove Developer / Administrator from a person, update `DebugAllowedSubjects` too; put this in the procedure for membership changes, because a forgotten update is hard to notice. Moving MCP authorization to teams (Access application to session tags) would enforce the per-team assignment automatically (a separate design, not started).
 
 ```
 AWS_PROFILE=<target> mise run deploy:aws    # Deploy CloudFormation (can be deployed to any number of accounts)
@@ -53,8 +53,8 @@ You can also deploy the template directly from the management console or with St
 | `Audience` | The JWT audience (default `awsbridge`. Must match the Worker's `STS_AUDIENCE`) |
 | `AllowedSubjects` | Users who can assume the read-only role (comma-separated. See the format below. Specify in lowercase) |
 | `DebugAllowedSubjects` | Users who can assume the debug role (same format. Keeping it narrower than the read-only role is recommended) |
-| `ReadOnlyRoleName` | Read-only role name (default `FederatedMcpReadOnly`) |
-| `DebugRoleName` | Debug role name (default `FederatedMcpDebug`) |
+| `ReadOnlyRoleName` | Read-only role name (default `FederatedMcpViewer`) |
+| `DebugRoleName` | Debug role name (default `FederatedMcpDebugger`) |
 | `DebugAdditionalPolicyArns` | Optional. Additional managed policies to attach to the debug role (comma-separated. Nothing is attached if empty) |
 | `DebugPassableEcsTaskRoleArns` | Optional. IAM role ARNs that may be passed to a task with `ecs:RunTask` (comma-separated. Wildcards are not allowed). If empty, `iam:PassRole` is not granted |
 
@@ -64,16 +64,15 @@ After deployment, note the outputs `ReadOnlyRoleArn` / `DebugRoleArn` (you can a
 
 | Role | Permissions |
 |---|---|
-| `FederatedMcpReadOnly` | The AWS managed policy `ReadOnlyAccess` + an explicit Deny (unconditional) on retrieving SSM parameters (`ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`) |
-| `FederatedMcpDebug` | `ReadOnlyAccess` + an inline policy (enhanced read access for investigation, reading secret values, light operational actions, actions that incur cost, and connection and execution; conditional on `aws:CalledViaAWSMCP = aws-mcp.amazonaws.com`; includes a Deny on retrieving SSM parameters outside AWS MCP) + the optional `DebugAdditionalPolicyArns` |
+| `FederatedMcpViewer` | The AWS managed policy `ReadOnlyAccess` + an explicit Deny (unconditional) on retrieving SSM parameters (`ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`) and Secrets Manager values (`secretsmanager:GetSecretValue` / `BatchGetSecretValue`) |
+| `FederatedMcpDebugger` | `ReadOnlyAccess` + an inline policy (enhanced read access for investigation, light operational actions, actions that incur cost, and connection and execution; every Allow is conditional on `aws:CalledViaAWSMCP = aws-mcp.amazonaws.com`; includes the same unconditional Deny on retrieving SSM parameters and Secrets Manager values) + the optional `DebugAdditionalPolicyArns` |
 
 The debug role's inline policy is divided into the following groups (every Allow is conditional on `aws:CalledViaAWSMCP = aws-mcp.amazonaws.com`, with Resource `*`). It does not include delete actions, IAM changes, or organization changes (a Knowledge Bases sync can still remove indexed documents as a result; see `Operations`).
 
 | Group (Sid) | Contents |
 |---|---|
 | `Investigation` | Reads for investigation that go deeper than `ReadOnlyAccess`. Logs Insights / log retrieval / Live Tail, X-Ray, CloudTrail (`LookupEvents` and queries), running Athena queries, EC2 console output / screenshots, AWS Config `SelectResourceConfig` / `GetResourceConfigHistory` |
-| `SecretRead` | Reading secret values: `secretsmanager:GetSecretValue`, `ssm:GetParameter(s)` / `GetParametersByPath`. Treat this as carrying the same risk as the execution group. `kms:Decrypt` for decryption is a separate Statement, limited to `kms:ViaService` (via Secrets Manager / SSM) |
-| `DenyParameterReadOutsideMCP` | **Deny**: retrieving SSM parameters outside AWS MCP (`ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`). The condition is `StringNotEquals aws:CalledViaAWSMCP = aws-mcp.amazonaws.com`, so it also applies to direct calls, where the key is absent (see the notes below) |
+| `DenySsmParameterRead` / `DenySecretsManagerRead` | **Deny** (no condition, the same as the read-only role): `ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`, `secretsmanager:GetSecretValue` / `BatchGetSecretValue`. It applies to direct calls and to calls through AWS MCP alike, and also overrides any Allow in managed policies added with `DebugAdditionalPolicyArns`. `kms:Decrypt` is not granted (see the notes below) |
 | `Operations` | Light operational actions with side effects (no deletion): ECS `UpdateService` / `StopTask`, starting, stopping, and rebooting EC2, changing Lambda concurrency, changing Auto Scaling capacity, rebooting RDS / ElastiCache, CloudFront `CreateInvalidation`, starting and stopping a Bedrock Knowledge Bases sync (`bedrock:StartIngestionJob` / `StopIngestionJob`). A sync is not a delete action, but documents removed from the data source (such as S3) are also removed from the vector store.<br>Stop, restart, and fail over: `states:StopExecution`, `glue:BatchStopJobRun` / `StopCrawler`, `codebuild:RetryBuild` / `StopBuild`, `autoscaling:SuspendProcesses` / `ResumeProcesses`, `rds:FailoverDBCluster` / `RebootDBCluster`, `elasticache:TestFailover`, `elasticbeanstalk:RestartAppServer`.<br>Stop or suppress: `cloudwatch:DisableAlarmActions` / `EnableAlarmActions`, `events:EnableRule` / `DisableRule` / `CancelReplay`, `autoscaling:SetInstanceHealth` / `EnterStandby` / `ExitStandby`, `rds:StartDBInstance` / `StopDBInstance` / `StartDBCluster` / `StopDBCluster`, `ssm:StopAutomationExecution`, `batch:CancelJob`, `codepipeline:StopPipelineExecution` |
 | `CostIncurring` | Actions that **incur cost**: `bedrock:InvokeModel` / `InvokeModelWithResponseStream` (including Converse) / `ApplyGuardrail` / `RetrieveAndGenerate`, `sagemaker:InvokeEndpoint` / `InvokeEndpointAsync`, `rds:CreateDBSnapshot` / `CreateDBClusterSnapshot`, `ec2:CreateSnapshot`, `lambda:PutProvisionedConcurrencyConfig`. Permissions to share snapshots are not included |
 | `Execution` | Connection and execution: `ssm:SendCommand` / `StartSession` and others, EC2 Instance Connect, `ecs:ExecuteCommand` / `RunTask`, `lambda:InvokeFunction`, `states:StartExecution`, `sqs:SendMessage`, `sns:Publish`, `rds-db:connect`. Running business logic and deployments: `states:RedriveExecution` / `StartSyncExecution`, `bedrock:InvokeAgent`, `lambda:InvokeFunctionUrl`, `glue:StartCrawler` / `StartWorkflowRun`, `ssm:StartAutomationExecution`, `events:StartReplay` / `PutEvents`, `codepipeline:RetryStageExecution`. `iam:PassRole` for `ecs:RunTask` is a separate Statement, granted only when `DebugPassableEcsTaskRoleArns` is specified; it limits the roles that can be passed to those ARNs and the recipient to `ecs-tasks.amazonaws.com` (if empty, only task definitions without a task role can be run) |
@@ -82,14 +81,14 @@ Athena queries also need a separate write permission (`s3:PutObject`) to the res
 
 The Knowledge Bases sync actions (`bedrock:StartIngestionJob` / `StopIngestionJob`) also use Resource `*`, like the other groups. The debug role is meant to investigate any resource in the account, and the other actions (ECS, EC2, RDS, and so on) do not take target ARNs as parameters either, so there is no parameter to narrow them to Knowledge Base ARNs (`DebugAdditionalPolicyArns` only adds permissions and cannot narrow them). To narrow them, edit the `Operations` Resource in the template to `arn:${Partition}:bedrock:${Region}:${Account}:knowledge-base/${KnowledgeBaseId}`, or add an `aws:ResourceTag` condition.
 
-- **The debug role includes permissions equivalent to remote execution.** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` are equivalent to a remote shell, and secrets, credentials, and file contents may become visible. `SecretRead` can also read secret values themselves. `Operations`, as well as `lambda:InvokeFunction`, `states:StartExecution`, `sqs:SendMessage`, and `sns:Publish`, run processes with side effects.
+- **The debug role includes permissions equivalent to remote execution.** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` are equivalent to a remote shell, and secrets, credentials, and file contents may become visible (commands run with the instance or task role's permissions, which may be able to read secret values). `Operations`, as well as `lambda:InvokeFunction`, `states:StartExecution`, `sqs:SendMessage`, and `sns:Publish`, run processes with side effects.
 - **The debug role includes actions that incur cost or run deployments.** Model and inference endpoint invocations, snapshot creation, and provisioned concurrency in `CostIncurring` are billed (`rds:StopDBInstance` can also create a snapshot). `codepipeline:RetryStageExecution` retries a failed stage and may run a production deployment. `events:StartReplay` / `PutEvents`, `bedrock:InvokeAgent`, `glue:StartCrawler` / `StartWorkflowRun`, and `ssm:StartAutomationExecution` run their targets, jobs, or automations. Depending on its settings, `glue:StartCrawler` deletes or deprecates catalog tables.
 - **Remember to undo stop and suppress actions.** Leaving `cloudwatch:DisableAlarmActions`, `events:DisableRule`, or `autoscaling:SuspendProcesses` / `EnterStandby` in place can hide incidents or stop self-healing. An instance marked Unhealthy with `autoscaling:SetInstanceHealth` is terminated and replaced.
-- **Retrieving SSM parameters outside AWS MCP is denied.** `ReadOnlyAccess` includes `ssm:Get*`, so without the Deny the session credentials could read SSM parameters directly (SecureString values with the `aws/ssm` key are also decrypted through the key policy). A negated condition operator such as `StringNotEquals` evaluates to true when the key is absent from the request ([condition operators](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html)), and `aws:CalledViaAWSMCP` is not present on direct calls ([global condition keys](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-keys.html)). The Deny therefore applies to direct calls and not to calls through AWS MCP (value `aws-mcp.amazonaws.com`), so `SecretRead` through MCP works as before. Do not change this condition to `...IfExists` or `Null`.
+- **The values in Secrets Manager and SSM Parameter Store cannot be read directly through the API (both roles).** Both roles deny `ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory` and `secretsmanager:GetSecretValue` / `BatchGetSecretValue` with no condition, so the Deny applies whether or not the call goes through AWS MCP. `ReadOnlyAccess` (v191) includes `ssm:Get*` (SecureString values with the `aws/ssm` key are also decrypted through the key policy), so without the Deny the session could read SSM parameters. `ReadOnlyAccess` does not include `secretsmanager:GetSecretValue` or `kms:Decrypt`, and the inline policy grants neither. Because an explicit Deny always wins, adding a managed policy with `DebugAdditionalPolicyArns` cannot bring these reads back.
 - **Privilege escalation paths are closed.** Granting `iam:PassRole` on `*` would let tasks run with any role, so it is not granted by default and is limited to the roles explicitly listed in `DebugPassableEcsTaskRoleArns`. Also, `lambda:UpdateFunctionConfiguration` (swapping the execution role or environment variables) and `autoscaling:UpdateAutoScalingGroup` (swapping the launch template) are not granted. `glue:StartJobRun` and `batch:SubmitJob` are not granted: overriding job arguments or the command and environment variables can run arbitrary code with the job's role (the same reason as `codebuild:StartBuild`). `codepipeline:StartPipelineExecution` is not granted either: `sourceRevisions` can swap the source commit, S3 object, or image, and `variables` can pass arbitrary values into the pipeline (the same reason `codebuild:StartBuild`, which can override its arguments, is not granted; use `RetryStageExecution` to re-run). `iam:PassRole` for `ssm:StartAutomationExecution` is not granted, so automations run only within the caller's permissions.
 - **Remaining risk:** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` / EC2 Instance Connect can act with the permissions of the role attached to the target instance or task. If a highly privileged instance or task exists in the same account, those permissions can be borrowed. In production, narrow the targets with tag conditions or SSM documents.
-- **The read-only role includes `ReadOnlyAccess`, so secret values other than SSM parameters can be read.** `ReadOnlyAccess` (v191) includes `ssm:Get*`, and SecureString values can also be decrypted via the `aws/ssm` key, so the read-only role explicitly denies retrieving SSM parameters (reading secret values is only possible through `SecretRead` of the debug role). The debug role also denies retrieving them outside AWS MCP (see above). On the other hand, Lambda environment variables (`lambda:Get*` / `ListFunctions`), `s3:GetObject`, and similar are used routinely in investigations and are not denied. If secret values are stored there, narrow `AllowedSubjects`, or add your own Deny with a permissions boundary or an SCP.
-- **`ReadOnlyAccess` is not limited to calls through MCP.** IAM conditions cannot be attached to AWS managed policies, so the read permissions remain valid even if you call the API directly with the session credentials. Only the inline policy's actions and the debug role's Deny on retrieving SSM parameters are restricted by `aws:CalledViaAWSMCP`.
+- **This does not mean that the roles cannot read secrets.** Paths other than those two APIs remain: remote shells (debug role: `ssm:SendCommand` / `StartSession`, `ecs:ExecuteCommand`, EC2 Instance Connect act with the instance or task role's permissions, which may read secret values), Lambda environment variables (`lambda:Get*`), environment variables in ECS task definitions and CodeBuild projects, S3 objects (`s3:GetObject`), logs, and `rds-db:connect` (debug role). Many of them are used routinely in investigations and are not denied. If secret values are stored there, narrow `AllowedSubjects` / `DebugAllowedSubjects`, or add your own Deny with a permissions boundary or an SCP.
+- **`ReadOnlyAccess` is not limited to calls through MCP.** IAM conditions cannot be attached to AWS managed policies, so the read permissions remain valid even if you call the API directly with the session credentials. Only the Allows in the debug role's inline policy are restricted by `aws:CalledViaAWSMCP`.
 - In production, narrow `Resource` to specific ARNs, tags, or SSM documents, and always enable session logs (SSM Session Manager logs, ECS Exec logs, Lambda CloudWatch Logs). CloudTrail alone is not enough.
 - Users are separated per role by `AllowedSubjects` (read-only) and `DebugAllowedSubjects` (debug). Keep `DebugAllowedSubjects` narrower than the read-only list.
 
@@ -115,8 +114,8 @@ Fixed defaults are in `mise.toml`. Account-specific values go in `mise.local.tom
 AWSBRIDGE_ISSUER = "https://awsbridge.example.workers.dev"   # The Worker's URL (OIDC issuer)
 AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org" # Users who can assume the read-only role (comma-separated)
 AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS = "admin@example.com"       # Users who can assume the debug role (comma-separated)
-# AWSBRIDGE_READONLY_ROLE_NAME = "FederatedMcpReadOnly"      # Optional. Role name (default value)
-# AWSBRIDGE_DEBUG_ROLE_NAME = "FederatedMcpDebug"            # Optional. Role name (default value)
+# AWSBRIDGE_READONLY_ROLE_NAME = "FederatedMcpViewer"        # Optional. Role name (default value)
+# AWSBRIDGE_DEBUG_ROLE_NAME = "FederatedMcpDebugger"          # Optional. Role name (default value)
 # AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS = "arn:aws:iam::<account-id>:policy/<name>" # Optional. Additional managed policies for the debug role (comma-separated)
 AWSBRIDGE_POC_SUBJECT = "user@example.com"                   # The user used in the positive case of poc:sts
 AWSBRIDGE_ACCESS_TEAM_DOMAIN = "https://team.example.cloudflareaccess.com" # The Access team domain
@@ -171,10 +170,10 @@ You can switch between multiple AWS accounts with the `aws_profile` argument of 
 {
   "default": "dev-readonly",
   "profiles": [
-    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly", "description": "development (read-only)" },
-    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug", "description": "development (debug)" },
-    { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
-    { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
+    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpViewer", "description": "development (read-only)" },
+    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebugger", "description": "development (debug)" },
+    { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpViewer" },
+    { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebugger" }
   ]
 }
 ```
@@ -206,6 +205,46 @@ bash scripts/wrangler.sh secret delete AWS_PROFILES
 ```
 
 The Worker no longer reads a leftover `AWS_PROFILES` var or secret (it is ignored). A secret stays on the Worker, though, so remove it with `secret delete`.
+
+### Migrating: default role names changed and the debug role narrowed
+
+The default role names changed: `FederatedMcpReadOnly` → `FederatedMcpViewer` and `FederatedMcpDebug` → `FederatedMcpDebugger` (the parameter names `ReadOnlyRoleName` / `DebugRoleName`, the outputs `ReadOnlyRoleArn` / `DebugRoleArn`, and the environment variables `AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME` stay the same).
+
+- **Updating an existing stack keeps the old names unless you set them.** `scripts/deploy-aws.sh` (`mise run deploy:aws`) runs `aws cloudformation deploy` and passes a role name only when its environment variable is set. For an existing stack, parameters that are not passed keep the stack's current values, so the roles keep their old names. This applies to `deploy:aws`; if you deploy the template another way (the management console, StackSets, and so on), check how that tool fills in parameters that are not given.
+- **Moving to the new names replaces the roles.** Set `AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME` explicitly. Changing a role name makes CloudFormation replace the role, so its `roleArn` and its unique ID change.
+- **Before migrating, check what refers to the old role ARNs:** KMS key policies, S3 bucket policies, SCPs, other roles' trust policies, and so on. Policies that name the old ARN stop matching the new role.
+- **The debug role can no longer read secret values through the API.** `SecretRead` (`secretsmanager:GetSecretValue`, `ssm:GetParameter*`) and `SecretDecrypt` (`kms:Decrypt`) were removed, and both roles now deny those reads with no condition. This is a breaking change, and it cannot be undone with `DebugAdditionalPolicyArns` (an explicit Deny wins). It applies when you update the stack, whether or not you rename the roles.
+
+#### Same stack (rename the roles; MCP fails during the switch)
+
+1. Update the stack with the new names: `AWSBRIDGE_READONLY_ROLE_NAME=FederatedMcpViewer AWSBRIDGE_DEBUG_ROLE_NAME=FederatedMcpDebugger AWS_PROFILE=<target> mise run deploy:aws`. Note the new outputs `ReadOnlyRoleArn` / `DebugRoleArn`.
+2. Update the `roleArn` values in the profile list (`config/profiles.json`, or `deploy/profiles.json` downstream).
+3. Deploy the Worker: `mise run deploy:worker`.
+4. Check that both roles work (call a tool with a read-only profile and a debug profile).
+
+From step 1 until step 3 is done, MCP calls fail (the profile list still points at the old ARNs, which no longer exist).
+
+#### Separate stack in parallel (when the issuer URL also changes)
+
+If you also change the issuer URL (the Worker's public URL), you can run a new stack next to the old one and switch with almost no downtime. Use values different from the old deployment for all three of: the issuer URL (`AWSBRIDGE_ISSUER`), the stack name (`AWSBRIDGE_STACK_NAME`), and the role names (`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME`). An account has only one IAM OIDC provider per URL, and role names are unique within an account, so if any of them is the same, the two stacks cannot coexist. No upstream code change is needed (all of them are already parameters).
+
+Decide these before you start:
+
+- **Deleting the old stack is part of the migration. Set a deadline for it.** The old debug role keeps `SecretRead` until its stack is deleted, so "secret values cannot be read directly through the API" does not hold until then.
+- **Whether the old and new deployments share the signing key.** If they share it, a leaked key still reaches the old roles (including the old debug role that can read secret values) until the old stack is deleted, so the deadline matters even more. If you separate them, point `AWSBRIDGE_KEY_FILE` at a new file and run `mise run keygen` for the new deployment; this is a chance to renew the key (see "Signing key rotation" for the existing procedure).
+- **A new URL also changes the Cloudflare Access application (AUD) and the MCP clients' server URL.** Protect the new host with an Access application and the `/.well-known/*` bypass (see `infra/cloudflare`), and set the new Worker's `ACCESS_AUD` (`AWSBRIDGE_ACCESS_AUD`) to the new application's AUD. The Worker verifies the Access JWT against `ACCESS_AUD` itself, so a request that reaches it without passing Access (another host, a Preview URL) gets 401; check this on the new host too (for example, `/mcp` without Access returns 401). If the new URL is a custom domain, also consider disabling the workers.dev URL and Preview URLs.
+
+Steps:
+
+1. Deploy the new stack with `mise run deploy:aws`, setting the new `AWSBRIDGE_ISSUER`, `AWSBRIDGE_STACK_NAME`, and role names. Do this in every target account.
+2. Write the new `roleArn` values in the profile list that the new Worker bundles, then deploy the Worker that answers at the new URL with `ISSUER` set to the new URL (`mise run deploy:worker` passes `ISSUER` and bundles the profile list in the same deploy). STS fetches the discovery document and the JWKS from the issuer URL, and the discovery document's issuer is the Worker's `ISSUER`. A Worker has only one `ISSUER`, so running the old and new side by side needs a second Worker under another name (for example another wrangler config via `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV`).
+3. Before switching, confirm once that the new roles can be assumed: `AWSBRIDGE_ISSUER=<new URL> AWSBRIDGE_STACK_NAME=<new stack> AWS_PROFILE=<target> mise run poc:sts` (it signs a JWT with `AWSBRIDGE_KEY_FILE`, which must be the key of the Worker at the new URL; for the debug role, pass `--role-arn <DebugRoleArn>`). If you switch a single Worker instead (changing `ISSUER` and the `roleArn` values in the same deploy) and cannot check beforehand, prepare the rollback first: redeploy with the old `ISSUER` and the old `roleArn` values, and keep the old stack until the new one works.
+4. Change the MCP clients' server URL to the new URL. The Worker's URL is also the MCP endpoint, so clients need to be reconfigured and authorized again.
+5. Check that both roles work.
+6. By the deadline, delete the old stack in every account (`AWSBRIDGE_STACK_NAME=<old stack> AWS_PROFILE=<target> mise run destroy:aws`). This removes the old OIDC provider and roles.
+7. Only after the old OIDC provider is gone from every account, remove the old Worker and give up the old host name. In the reverse order, if a third party takes over the released host name (especially a workers.dev subdomain), a remaining provider would trust it as an issuer.
+
+This way you can check the old and new deployments side by side before you switch.
 
 ## Setup skill (Claude Code)
 

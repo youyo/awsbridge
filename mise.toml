@@ -15,7 +15,7 @@ tflint = "0.64.0"
 #   AWSBRIDGE_ISSUER           = "https://<worker>.<subdomain>.workers.dev"（Worker の URL = OIDC issuer）
 #   AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org"（読み取り専用ロールを引き受けられる利用者。カンマ区切り）
 #   AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS = "admin@example.com"（デバッグロールを引き受けられる利用者。カンマ区切り。読み取り専用より絞る）
-#   AWSBRIDGE_READONLY_ROLE_NAME / AWSBRIDGE_DEBUG_ROLE_NAME（任意。ロール名。既定は FederatedMcpReadOnly / FederatedMcpDebug）
+#   AWSBRIDGE_READONLY_ROLE_NAME / AWSBRIDGE_DEBUG_ROLE_NAME（任意。ロール名。新規スタックの既定は FederatedMcpViewer / FederatedMcpDebugger。既存スタックの更新で未設定なら既存の値のまま）
 #   AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS = "arn:aws:iam::<アカウントID>:policy/<名前>"（任意。デバッグロールに追加する管理ポリシー。カンマ区切り）
 #   AWSBRIDGE_POC_SUBJECT      = "user@example.com"（poc:sts の正常ケースで使う利用者）
 #   AWSBRIDGE_ACCESS_TEAM_DOMAIN = "https://team.example.cloudflareaccess.com"（Access のチームドメイン。secrets タスクが Worker secret ACCESS_TEAM_DOMAIN に登録）

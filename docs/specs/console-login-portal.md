@@ -112,9 +112,9 @@ cto の決裁（条件つき承認。承認の範囲は、設計の方向と段�
 | アカウント | 300〜500 | [資料: 利用者の回答] |
 | Organization | 5 程度（管理外を含む。今後増える） | 同上 |
 | チーム | 3（インフラ `infra`・開発 `dev`・SolutionArchitect `sa`）。JIT を入れると Admin の階層のチームが増える（設計上申では各チームに 1 つで 3 つ。§11.3 の例では Admin を受ける `infra-elevated`・`dev-elevated` の 2 つ） | [資料: 設計上申 §4.6] |
-| ロール | Admin / Developer / ReadOnly（`/awsbridge-console/admin/ConsoleAdmin` など） | 同上 |
+| ロール | Admin / Developer / ReadOnly（`/awsbridge-console/admin/FederatedAdministrator` など） | 同上 |
 
-この表は会社の下流リポジトリでの見込みで、チームとロールは上流では決めない。下流の設定ファイルで定義する（§11）。個人用の下流ではチーム 1 つ・ロール 1〜2 つを想定する（§11.7）。この文書で `infra` / `dev` / `sa` や `ConsoleDeveloper` と書くのは例である。
+この表は会社の下流リポジトリでの見込みで、チームとロールは上流では決めない。下流の設定ファイルで定義する（§11）。個人用の下流ではチーム 1 つ・ロール 1〜2 つを想定する（§11.7）。この文書で `infra` / `dev` / `sa` や `FederatedDeveloper` と書くのは例である。
 | 1 アカウントあたりのロール | 2〜3 | 同上 |
 | 一覧の行数（アカウント × ロール） | 最大 1,500 程度。1 チームから見えるのはその一部 | [推測] |
 
@@ -311,7 +311,7 @@ ASCII の図は構成を示すもので、見た目の確定ではない。ア�
 │ email: aws+svc-b-prod@<domain>                               [コピー]       │
 │                                                                            │
 │ ロール（このチームで入れるもの）                                               │
-│   (•) Developer   /awsbridge-console/std/ConsoleDeveloper  セッション: 8 時間 ※1 │
+│   (•) Developer   /awsbridge-console/std/FederatedDeveloper セッション: 8 時間 ※1 │
 │                                                                            │
 │ リージョン: [ap-northeast-1 ▼]                                               │
 │                                                                            │
@@ -357,7 +357,7 @@ ASCII の図は構成を示すもので、見た目の確定ではない。ア�
 │    └────────────────────────────────────────────────────────────────────┘  │
 │                                                                            │
 │ 4. 開いたブラウザで、次のセッションを選ぶ                                       │
-│      アカウント xxxx-xxxx-0006 / ConsoleDeveloper / console-<email>          │
+│      アカウント xxxx-xxxx-0006 / FederatedDeveloper / console-<email>        │
 │    既定のブラウザが別なら、表示された URL を、コンソールを開いたブラウザに貼る        │
 │                                                                            │
 │ 5. 確かめる:  aws sts get-caller-identity --profile svc-b-prod-developer      │
@@ -422,7 +422,7 @@ ASCII の図は構成を示すもので、見た目の確定ではない。ア�
 │                                                                            │
 │ 問い合わせるときに貼る情報                                          [コピー]      │
 │   時刻 2026-11-11T10:23:45Z  要求 ID <request-id>                              │
-│   チーム dev  アカウント xxxx-xxxx-0006  ロール ConsoleDeveloper                  │
+│   チーム dev  アカウント xxxx-xxxx-0006  ロール FederatedDeveloper                │
 │                                                                            │
 │ [一覧へ戻る]   [問い合わせ先]                                                  │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -516,7 +516,7 @@ Standard 用と Admin 用で **別のファイル** を生成し、それぞれ�
       "roles": [
         {
           "role": "developer",
-          "roleArn": "arn:aws:iam::<account-id>:role/awsbridge-console/std/ConsoleDeveloper",
+          "roleArn": "arn:aws:iam::<account-id>:role/awsbridge-console/std/FederatedDeveloper",
           "teams": ["dev"],
           "sessionSeconds": 28800
         }
@@ -1028,15 +1028,15 @@ cto の条件（MCP 用 Worker のバンドルにコンソールログイン用�
   ],
   "roles": [
     {
-      "name": "admin", "roleName": "ConsoleAdmin", "displayName": "Admin", "tier": "admin", "sessionSeconds": 3600,
+      "name": "admin", "roleName": "FederatedAdministrator", "displayName": "Admin", "tier": "admin", "sessionSeconds": 3600,
       "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/AdministratorAccess"] }
     },
     {
-      "name": "developer", "roleName": "ConsoleDeveloper", "displayName": "Developer", "sessionSeconds": 28800,
+      "name": "developer", "roleName": "FederatedDeveloper", "displayName": "Developer", "sessionSeconds": 28800,
       "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/PowerUserAccess"] }
     },
     {
-      "name": "readonly", "roleName": "ConsoleReadOnly", "displayName": "ReadOnly", "sessionSeconds": 43200,
+      "name": "readonly", "roleName": "FederatedViewer", "displayName": "ReadOnly", "sessionSeconds": 43200,
       "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/ReadOnlyAccess"] }
     }
   ],
@@ -1154,9 +1154,9 @@ cto の条件との整合:
     { "name": "me", "displayName": "自分", "access": { "aud": "<access-aud>" } }
   ],
   "roles": [
-    { "name": "readonly", "roleName": "ConsoleReadOnly", "sessionSeconds": 43200,
+    { "name": "readonly", "roleName": "FederatedViewer", "sessionSeconds": 43200,
       "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/ReadOnlyAccess"] } },
-    { "name": "developer", "roleName": "ConsoleDeveloper", "sessionSeconds": 14400,
+    { "name": "developer", "roleName": "FederatedDeveloper", "sessionSeconds": 14400,
       "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/PowerUserAccess"] } }
   ],
   "kinds": [{ "name": "default", "assign": { "readonly": ["me"], "developer": ["me"] } }],

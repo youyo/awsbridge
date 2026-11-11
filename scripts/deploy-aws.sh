@@ -2,7 +2,8 @@
 # CloudFormation で IAM OIDC プロバイダーと Worker 発行 JWT 用ロール（読み取り専用・デバッグの 2 つ）をデプロイする。
 # 値は環境変数（mise.local.toml や下流の mise 設定ファイル）から読む。
 # 上書きできる既定値: AWS_PROFILE / AWSBRIDGE_AUDIENCE / AWSBRIDGE_STACK_NAME（すべて awsbridge）
-# 任意: AWSBRIDGE_READONLY_ROLE_NAME / AWSBRIDGE_DEBUG_ROLE_NAME（未設定ならテンプレートの既定 FederatedMcpReadOnly / FederatedMcpDebug）、
+# 任意: AWSBRIDGE_READONLY_ROLE_NAME / AWSBRIDGE_DEBUG_ROLE_NAME（未設定なら、新規スタックではテンプレートの既定 FederatedMcpViewer / FederatedMcpDebugger、
+#       既存スタックの更新では aws cloudformation deploy がスタックの既存の値を使う）、
 #       AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS（デバッグロールに追加する管理ポリシー ARN。カンマ区切り）、
 #       AWSBRIDGE_DEBUG_PASSABLE_ECS_TASK_ROLE_ARNS（ecs:RunTask で渡せるタスクロール ARN。カンマ区切り。空なら iam:PassRole を付けない）
 set -euo pipefail

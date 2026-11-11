@@ -116,29 +116,36 @@ awsbridge は利用者の認証を Cloudflare Access に任せ、Access が発�
 
 | ロール（既定名） | 目的 | 権限 | 利用者 |
 |---|---|---|---|
-| `FederatedMcpReadOnly` | 普段の調査・参照 | AWS 管理ポリシー `ReadOnlyAccess` + インラインの明示 Deny（`ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`、Resource `*`、条件なし） | `AllowedSubjects` |
-| `FederatedMcpDebug` | 障害調査（秘密値の参照・運用操作・実行を伴う） | `ReadOnlyAccess` + インラインポリシー + 任意の追加管理ポリシー（`DebugAdditionalPolicyArns`） | `DebugAllowedSubjects` |
+| `FederatedMcpViewer` | 普段の調査・参照 | AWS 管理ポリシー `ReadOnlyAccess` + インラインの明示 Deny（`DenySsmParameterRead`: `ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`、`DenySecretsManagerRead`: `secretsmanager:GetSecretValue` / `BatchGetSecretValue`。Resource `*`、条件なし） | `AllowedSubjects` |
+| `FederatedMcpDebugger` | 障害調査（運用操作・実行を伴う） | `ReadOnlyAccess` + インラインポリシー + 任意の追加管理ポリシー（`DebugAdditionalPolicyArns`） | `DebugAllowedSubjects` |
 
+- 既定名は 2026-11 に `FederatedMcpReadOnly` / `FederatedMcpDebug` から変えた。パラメーター名・出力名・環境変数名・論理 ID は変えていない（移行は README「移行（既定のロール名の変更とデバッグロールの縮小）」）。
+- **MCP 用ロールは、人のコンソールログインの階層（Viewer / Developer / Administrator、[console-login.md](console-login.md) §2.3）と独立している。** ロールは共有せず（console-login.md §2.3 の決裁 S2）、人にコンソールのロールを与えても MCP 側の権限には効かない。MCP 用ロールを渡す人は、人の階層と次のように揃える:
+  - MCP の Viewer（`FederatedMcpViewer`）は全員が使える。
+  - MCP の Debugger（`FederatedMcpDebugger`）は、人の Administrator か Developer を持つ人にだけ渡す。Viewer だけの人には渡さない。Debugger はリモートシェルなどで実行先（インスタンス・タスク）のロールの権限を得られ、その権限には MCP 経由の条件が付かないため、人に Developer / Administrator を渡すかどうかの判断と揃える。
+  - 原則は「そのアカウントで Administrator か Developer を持つ人に渡す」。ただし、人の権限の所持から自動で判定することは今はできない（MCP 側の認可は email の許可リスト `DebugAllowedSubjects` で、チームの情報を持たない）。当面は、グループ（チーム）ごとに Debugger を渡すかを決めてよい。
+  - 運用: 下流が「Debugger を渡すチーム」をアカウントごとに決め、そのチームのメンバーを `DebugAllowedSubjects` に入れる。許可リストはアカウントごとの設定なので、合わせる単位は「そのアカウント」（別のアカウントで Developer を持つだけの人は入れない）。チームのメンバーが変わったときや、人から Developer / Administrator を外したときは、`DebugAllowedSubjects` も直す。外し忘れは気付きにくいので、所属変更の手順に入れる。
+  - 将来: MCP 側の認可をチーム（Access アプリ → セッションタグ）に寄せれば、チームごとの割り当てを自動で強制できる（別の設計として扱う。未着手）。
 - インラインポリシーは Statement をグループ（Sid）に分けて持つ。Allow はすべて `StringEquals aws:CalledViaAWSMCP = aws-mcp.amazonaws.com`、Resource は `*`。削除系・IAM 変更・組織変更は含めない。Action はワイルドカードを使わず個別に並べる。
   - `Investigation`: ログ・トレース・CloudTrail・Athena・Config・EC2 コンソール出力など、`ReadOnlyAccess` より深い調査用の読み取り。
-  - `SecretRead`: `secretsmanager:GetSecretValue`、`ssm:GetParameter(s)` / `GetParametersByPath`。秘密値を読めるので実行系と同等のリスク。別 Statement の `kms:Decrypt` は `kms:ViaService`（`secretsmanager.*.amazonaws.com` / `ssm.*.amazonaws.com`）に限定する。
-  - `DenyParameterReadOutsideMCP`（Deny）: `ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory` を `StringNotEquals aws:CalledViaAWSMCP = aws-mcp.amazonaws.com` で拒否する。`ReadOnlyAccess` の `ssm:Get*` を上から塞ぎ、AWS MCP を経由しない直接の取得を止める。否定の演算子はキーが無いと true になる（IAM の条件演算子の文書）ことと、`aws:CalledViaAWSMCP` は直接の呼び出しには付かない（グローバル条件キーの文書）ことから、直接の呼び出しには効き、MCP 経由には効かない。`...IfExists` や `Null` にしない。
+  - `DenySsmParameterRead` / `DenySecretsManagerRead`（Deny、条件なし）: `ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory` と `secretsmanager:GetSecretValue` / `BatchGetSecretValue` を拒否する。読み取り専用ロールと同じ。AWS MCP を経由しても効き、`ReadOnlyAccess` の `ssm:Get*` や `DebugAdditionalPolicyArns` で足した管理ポリシーの Allow も上から塞ぐ。`kms:Decrypt` はどの Statement にも付けない（2026-11 に、MCP 経由で秘密値を読む `SecretRead` と `SecretDecrypt` を削除し、MCP を経由しない取得だけを拒否していた `DenyParameterReadOutsideMCP` をこの無条件の Deny に替えた）。
   - `Operations`: ECS / EC2 / Lambda（`PutFunctionConcurrency` のみ）/ Auto Scaling（`SetDesiredCapacity` のみ）/ RDS / ElastiCache / CloudFront / Bedrock Knowledge Bases（`StartIngestionJob` / `StopIngestionJob`）の軽い運用操作（再起動・停止・台数変更・無効化・同期など。削除の API は含めない。ただし Knowledge Bases の同期は、S3 から消えた文書をベクトルストアからも消す）。加えて、止める・再起動する操作（Step Functions・Glue・CodeBuild の停止と `RetryBuild`、Auto Scaling のプロセスの停止・再開、RDS のフェイルオーバー・クラスター再起動、ElastiCache の `TestFailover`、Elastic Beanstalk の `RestartAppServer`）と、止める・抑える操作（アラームのアクションの無効化・有効化、EventBridge のルールの有効化・無効化と `CancelReplay`、`SetInstanceHealth` / `EnterStandby` / `ExitStandby`、RDS の起動・停止、`ssm:StopAutomationExecution`、`batch:CancelJob`、`codepipeline:StopPipelineExecution`）。
   - `CostIncurring`: 主な副作用が費用の操作。Bedrock の `InvokeModel` / `InvokeModelWithResponseStream` / `ApplyGuardrail` / `RetrieveAndGenerate`、SageMaker の `InvokeEndpoint` / `InvokeEndpointAsync`、`rds:CreateDBSnapshot` / `CreateDBClusterSnapshot`、`ec2:CreateSnapshot`、`lambda:PutProvisionedConcurrencyConfig`。スナップショットの共有権限は含めない。
   - `Execution`: SSM のコマンド・セッション、EC2 Instance Connect、ECS Exec / RunTask、Lambda 実行、Step Functions（`StartExecution` / `StartSyncExecution` / `RedriveExecution`）、SQS / SNS、`rds-db:connect`。加えて業務ロジック・デプロイの実行（`bedrock:InvokeAgent`、`lambda:InvokeFunctionUrl`、Glue の `StartCrawler` / `StartWorkflowRun`、`ssm:StartAutomationExecution`（`iam:PassRole` は付けないので呼び出し元の権限で動く）、`events:StartReplay` / `PutEvents`、`codepipeline:RetryStageExecution`）。`codepipeline:StartPipelineExecution` は `sourceRevisions` / `variables` でソースや値を差し替えられるので含めない（`codebuild:StartBuild` と同じ扱い）。`glue:StartJobRun` と `batch:SubmitJob` も、引数・コマンド・環境変数の上書きでジョブのロールの権限により任意のコードを動かせるので含めない（利用者の決定、2026-11-11）。`ecs:RunTask` 用の `iam:PassRole` は別 Statement で、パラメーター `DebugPassableEcsTaskRoleArns`（既定は空）を指定したときだけ付く（`Fn::If` + `AWS::NoValue`）。Resource はその ARN、`iam:PassedToService = ecs-tasks.amazonaws.com` に限定する。空ならタスクロール無しのタスク定義だけ実行できる。
 - Athena の結果バケットへの書き込み（`s3:PutObject`）はこのポリシーに含めない。必要なら `DebugAdditionalPolicyArns` で足す。
-- インラインポリシーの上限は 10,240 文字。テストで文書が上限未満であることを確かめている（現状 約 4.0k 文字。空白を除いた JSON）。
+- インラインポリシーの上限は 10,240 文字。テストで文書が上限未満であることを確かめている（現状 約 3.5k 文字。空白を除いた JSON）。
 - 権限を広げるときはテンプレートの該当グループに Action を足すか、`DebugAdditionalPolicyArns` で管理ポリシーを足す。
 - 利用者の範囲はロールごとに別のパラメーターで決める。デバッグは読み取り専用より狭くする想定。
 - Worker から見ると 2 ロールは別のプロファイルで、1 アカウントにつき `<env>-readonly` と `<env>-debug` をプロファイル一覧に並べる（default は readonly 側）。ロールごとに `RoleSessionName` が分かれるので CloudTrail で見分けられる。
 
 注意:
 
-- **デバッグロールはリモート実行相当の権限と秘密値の参照を含む。** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` はリモートシェルと同等で、秘密情報・認証情報・ファイルが見えうる。`SecretRead` は秘密値そのものを読める。`Operations` や `lambda:InvokeFunction` などは副作用のある処理を実行する。`CostIncurring` は費用がかかり、`codepipeline:RetryStageExecution` は本番のデプロイを走らせうる。
+- **デバッグロールはリモート実行相当の権限を含む。** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` はリモートシェルと同等で、インスタンス・タスクのロールの権限で秘密情報・認証情報・ファイルが見えうる。`Operations` や `lambda:InvokeFunction` などは副作用のある処理を実行する。`CostIncurring` は費用がかかり、`codepipeline:RetryStageExecution` は本番のデプロイを走らせうる。
 - **権限昇格の経路は塞いでいる。** `iam:PassRole` を `*` に付けると任意のロールでタスクを動かせるため、既定では付けず `DebugPassableEcsTaskRoleArns` の明示ロールに限る。`lambda:UpdateFunctionConfiguration`（実行ロール・環境変数の差し替え）と `autoscaling:UpdateAutoScalingGroup`（起動テンプレートの差し替え）は付けない。`codepipeline:StartPipelineExecution`・`codebuild:StartBuild`・`glue:StartJobRun`・`batch:SubmitJob`・`states:TestState` も付けない。テストでこれらの不在と PassRole の既定なしを確かめている。
 - **残るリスク:** `ssm:SendCommand` / `ssm:StartSession` / `ecs:ExecuteCommand` / EC2 Instance Connect は、対象インスタンス・タスクのロールの権限で動ける。強いロールを持つ対象が同一アカウントにあるとその権限を借りられる。本番ではタグ条件や SSM ドキュメントで対象を絞る。
-- **読み取り専用ロールの SSM Deny と残余リスク。** `ReadOnlyAccess`（v191）は `ssm:Get*` を含み、SecureString も `aws/ssm` キーの key policy により SSM 経由で復号できる。設計上、秘密値の参照はデバッグロール（`SecretRead`）専用なので、読み取り専用ロールには SSM パラメーター取得の明示 Deny を付ける（MCP 経由かどうかに関わらず拒否）。デバッグロールには、MCP を経由しない取得だけを拒否する Deny（`DenyParameterReadOutsideMCP`）を付ける。Lambda の環境変数（`lambda:Get*` / `ListFunctions`）や `s3:GetObject` も `ReadOnlyAccess` に含まれるが、調査で日常的に使うため Deny しない。この残余リスクは許容し、必要なら利用者側で `AllowedSubjects` を絞る・権限境界や SCP で Deny する。
-- **`ReadOnlyAccess` は MCP 経由に限定されない。** AWS 管理ポリシーには IAM 条件を付けられないため、セッションの認証情報で直接 API を呼んでも読み取りは効く。`aws:CalledViaAWSMCP` で絞られるのはインラインの操作と、デバッグロールの SSM パラメーター取得の Deny だけ。
+- **Secrets Manager と SSM パラメーターストアの値は、両ロールとも API で直接は読めない。** `ReadOnlyAccess`（v191）は `ssm:Get*` を含み、SecureString も `aws/ssm` キーの key policy により SSM 経由で復号できるので、両ロールに SSM パラメーター取得の無条件の Deny を付ける。`ReadOnlyAccess` は `secretsmanager:GetSecretValue` と `kms:Decrypt` を含まないが、`DebugAdditionalPolicyArns` で足した管理ポリシーが許しても止めるよう、`secretsmanager:GetSecretValue` / `BatchGetSecretValue` も無条件で Deny する。
+- **残る経路（「秘密値を読めない」わけではない）。** リモートシェル（デバッグロール。インスタンス・タスクのロールの権限で読める）、Lambda の環境変数（`lambda:Get*`）、ECS のタスク定義・CodeBuild プロジェクトの環境変数、S3 のオブジェクト（`s3:GetObject`）、ログ、`rds-db:connect`（デバッグロール）。多くは `ReadOnlyAccess` に含まれ、調査で日常的に使うため Deny しない。この残余リスクは許容し、必要なら利用者側で `AllowedSubjects` / `DebugAllowedSubjects` を絞る・権限境界や SCP で Deny する。
+- **`ReadOnlyAccess` は MCP 経由に限定されない。** AWS 管理ポリシーには IAM 条件を付けられないため、セッションの認証情報で直接 API を呼んでも読み取りは効く。`aws:CalledViaAWSMCP` で絞られるのは、デバッグロールのインラインポリシーの Allow だけ。
 - 本番では Resource を ARN・タグ・SSM ドキュメントで絞り、セッションログ（SSM Session Manager、ECS Exec、Lambda の CloudWatch Logs）を必ず有効にする。CloudTrail だけでは足りない。`DebugAllowedSubjects` は読み取り専用より絞る。
 
 ## マルチアカウント（aws_profile）
@@ -159,10 +166,10 @@ awsbridge は利用者の認証を Cloudflare Access に任せ、Access が発�
 {
   "default": "dev-readonly",
   "profiles": [
-    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpReadOnly", "description": "任意" },
-    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebug" },
-    { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpReadOnly" },
-    { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebug" }
+    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpViewer", "description": "任意" },
+    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebugger" },
+    { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpViewer" },
+    { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebugger" }
   ]
 }
 ```

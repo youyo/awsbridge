@@ -27,7 +27,7 @@ export function companyConfig(): Raw {
     roles: [
       {
         name: "admin",
-        roleName: "ConsoleAdmin",
+        roleName: "FederatedAdministrator",
         displayName: "Admin",
         tier: "admin",
         sessionSeconds: 3600,
@@ -35,13 +35,13 @@ export function companyConfig(): Raw {
       },
       {
         name: "developer",
-        roleName: "ConsoleDeveloper",
+        roleName: "FederatedDeveloper",
         sessionSeconds: 28800,
         permissions: { managedPolicyArns: ["arn:aws:iam::aws:policy/PowerUserAccess"] },
       },
       {
         name: "readonly",
-        roleName: "ConsoleReadOnly",
+        roleName: "FederatedViewer",
         sessionSeconds: 43200,
         permissions: { managedPolicyArns: ["arn:aws:iam::aws:policy/ReadOnlyAccess"] },
       },
@@ -112,13 +112,13 @@ export function personalConfig(): Raw {
     roles: [
       {
         name: "readonly",
-        roleName: "ConsoleReadOnly",
+        roleName: "FederatedViewer",
         sessionSeconds: 43200,
         permissions: { managedPolicyArns: ["arn:aws:iam::aws:policy/ReadOnlyAccess"] },
       },
       {
         name: "developer",
-        roleName: "ConsoleDeveloper",
+        roleName: "FederatedDeveloper",
         sessionSeconds: 14400,
         permissions: { managedPolicyArns: ["arn:aws:iam::aws:policy/PowerUserAccess"] },
       },
