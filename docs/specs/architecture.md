@@ -19,7 +19,7 @@ MCP クライアント
    │
    ▼
 Cloudflare MCP Server Portal（Access アプリ, Managed OAuth）
-   │  Access が利用者を認証（IdP: 開発=Google / 本番=Entra ID）
+   │  Access が利用者を認証（IdP は Access に設定したもの。例 Google・Entra ID）
    ▼
 awsbridge Worker（self-hosted Access アプリ / Managed OAuth 有効）
    │ 1. Cf-Access-Jwt-Assertion を検証（iss=チームドメイン, aud=このアプリの AUD, JWKS=/cdn-cgi/access/certs）
@@ -36,7 +36,7 @@ Worker は IAM 向けに以下を公開する（この 2 パスのみ Access を
   GET /.well-known/jwks.json
 ```
 
-信頼の連鎖: **AWS IAM → awsbridge（OIDC issuer）→ Cloudflare Access → IdP（Google / Entra ID）**
+信頼の連鎖: **AWS IAM → awsbridge（OIDC issuer）→ Cloudflare Access → IdP（Access に設定した OIDC / SAML の IdP）**
 
 ### なぜ Worker が JWT を再発行するのか（PoC 結果）
 
@@ -72,17 +72,19 @@ Access JWT の実物（開発環境）で確認した claim:
 | 認証 | Cloudflare Access に委譲（awsbridge は OAuth/ログインを実装しない） |
 | AWS が信頼する IdP | awsbridge Worker 自身（自前の OIDC issuer） |
 | 利用者識別子 | 既定 `email`。設定で `sub` / `custom.<claim>`（例: Entra の `oid`）に切替可能 |
-| 環境 | 開発 = 個人 Zero Trust `<team>`（IdP: Google）、本番 = 会社 Zero Trust（IdP: Entra ID）。差分は wrangler の環境設定のみ |
+| 環境 | デプロイ先ごとに Zero Trust と IdP が違ってよい（例 個人の Zero Trust は Google、会社の Zero Trust は Entra ID）。awsbridge は IdP を直接扱わず、Access の JWT だけを見る。差分は wrangler の環境設定のみ |
 | 署名鍵 | 環境ごとに別鍵（開発鍵で本番 AWS に入れないこと）。Worker secret / Secrets Store に保管 |
 | SigV4 | `aws4fetch`。aws-sdk-js-v3 は使わない |
 | STS | `fetch` + XML パース。`AssumeRoleWithWebIdentity` は署名不要 |
 | デプロイ先 | `*.workers.dev`（開発） |
 
-### Entra ID について
+### IdP について
 
-- Access の Entra IdP 設定の **Email claim** により JWT の `email` が決まる。会社では AWS SSO（Access SAML）で email を使用済みなので追加設定は不要の見込み
-- Entra の `oid` / `groups` を使いたい場合は Access IdP 設定の「OIDC Claims」に追加 → JWT の `custom` に入る（約 1KB 超で切り捨て、best-effort）。完全な情報が必要なら `/cdn-cgi/access/get-identity`
-- 開発環境（Google）では groups が出ないため、グループ認可は unit テスト（フィクスチャ）で検証し、最終確認は会社環境で行う
+awsbridge は利用者の認証を Cloudflare Access に任せ、Access が発行した JWT（OIDC の ID トークン相当）だけを見る。どの IdP を使うか（Google、Entra ID、Access のワンタイム PIN など）は Access 側の設定で、awsbridge の前提ではない。IdP によって変わるのは JWT の claim だけ。
+
+- `email`: IdP によらず Access の JWT に入る。既定の利用者識別子。Entra ID のように IdP 側の設定（Email claim）で値が決まるものもあるので、デプロイ先の環境で確かめる
+- IdP 固有の claim（例 Entra の `oid` / `groups`）を使うときは、Access の IdP 設定の「OIDC Claims」に追加すると JWT の `custom` に入る（約 1KB を超えると切り捨て、best-effort）。完全な情報が要るなら `/cdn-cgi/access/get-identity`
+- groups を出さない IdP（例 Google）もある。グループを使う機能は unit テスト（フィクスチャ）で検証し、最終確認はその IdP を使う環境で行う
 
 ## 却下した案
 
