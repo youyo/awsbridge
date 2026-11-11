@@ -21,6 +21,17 @@ export const PORTAL_DEFAULTS = {
   awsProfile: "awsbridge",
 } as const;
 
+/**
+ * ポータルの入口（= issuer）のホスト名の接頭辞。PoC 用のホストだけを受け付けるガードに使う。
+ * awsbridge-console-poc は利用者が承認した PoC のホスト名（<prefix>.<zone>）。Worker・スタック・Access アプリの名前のガードは PORTAL_PREFIX のまま。
+ */
+export const PORTAL_HOST_PREFIXES = [PORTAL_PREFIX, "awsbridge-console-poc"] as const;
+
+/** ホスト名が PoC 用の接頭辞（<prefix>.…）で始まるか。 */
+export function hasPortalHostPrefix(host: string): boolean {
+  return PORTAL_HOST_PREFIXES.some((p) => host.startsWith(`${p}.`));
+}
+
 export const TIERS = ["std", "admin"] as const;
 export type Tier = (typeof TIERS)[number];
 
@@ -32,9 +43,9 @@ export function normalizePortalBase(input: string): string {
   const s = input.replace(/\/+$/, "");
   const m = /^https:\/\/([^/?#:]+)$/.exec(s);
   const host = m?.[1];
-  if (!host || !HOST_RE.test(host) || !host.startsWith(`${PORTAL_PREFIX}.`))
+  if (!host || !HOST_RE.test(host) || !hasPortalHostPrefix(host))
     throw new Error(
-      `ポータルの URL は https://${PORTAL_PREFIX}.<subdomain>.workers.dev の形（パス・ポート不可）`,
+      `ポータルの URL は https://<${PORTAL_HOST_PREFIXES.join(" か ")}>.<ゾーン> の形（パス・ポート不可）`,
     );
   return s;
 }
@@ -57,8 +68,10 @@ export function providerIdOf(issuer: string): string {
 /** PoC のポータルの OIDC プロバイダー（末尾が providerId と一致し、ホストが PoC のポータル）の ARN だけを受け付ける。 */
 export function assertPortalProviderArn(arn: string, providerId: string): string {
   const m = /^arn:aws[a-z-]*:iam::\d{12}:oidc-provider\/(.+)$/.exec(arn);
-  if (!m || m[1] !== providerId || !providerId.startsWith(`${PORTAL_PREFIX}.`))
-    throw new Error(`PoC のポータルの OIDC プロバイダー（${PORTAL_PREFIX}.*）ではない: '${arn}'`);
+  if (!m || m[1] !== providerId || !hasPortalHostPrefix(providerId))
+    throw new Error(
+      `PoC のポータルの OIDC プロバイダー（${PORTAL_HOST_PREFIXES.map((p) => `${p}.*`).join("・")}）ではない: '${arn}'`,
+    );
   return arn;
 }
 

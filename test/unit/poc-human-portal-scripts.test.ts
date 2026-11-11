@@ -21,8 +21,10 @@ const root = new URL("../../", import.meta.url).pathname;
 const toml = readFileSync(join(root, "mise.toml"), "utf8");
 const tsx = join(root, "node_modules/.bin/tsx");
 const PORTAL = "scripts/poc/human/portal";
-const BASE = "https://awsbridge-human-poc-portal.example.workers.dev";
-const HOST = "awsbridge-human-poc-portal.example.workers.dev";
+// 入口は自社ドメインの Custom Domain（workers.dev は無効にした）
+const HOST = "awsbridge-human-poc-portal.example.com";
+const BASE = `https://${HOST}`;
+const WORKERS_DEV_BASE = "https://awsbridge-human-poc-portal.example.workers.dev";
 const ACCOUNT = "123456789012";
 const TEAM_DOMAIN = "https://example-team.cloudflareaccess.com";
 
@@ -212,6 +214,7 @@ describe("mise タスク poc:human:portal:*", () => {
     "poc:human:portal:revoke-tokens": `${PORTAL}/access-revoke.ts`,
     "poc:human:portal:destroy": `${PORTAL}/destroy.sh`,
     "poc:human:portal:lint": `${PORTAL}/poc-portal.yaml`,
+    "poc:human:portal:bypass-check": `${PORTAL}/bypass-check.ts`,
   };
   for (const [name, script] of Object.entries(tasks)) {
     it(`${name} は ${script} を使い、MCP 用の wrangler.sh / deploy-aws.sh・infra/cloudflare を使わない`, () => {
@@ -225,6 +228,12 @@ describe("mise タスク poc:human:portal:*", () => {
     const apply = section('tasks."poc:human:portal:access-apply"');
     expect(apply).toContain(`terraform -chdir=${PORTAL}/access apply -auto-approve`);
     expect(section('tasks."poc:human:portal:access-plan"')).not.toContain("-auto-approve");
+  });
+  it("access-plan / access-apply は Access を掛けるホストを AWSBRIDGE_HUMAN_POC_PORTAL_HOST から渡す（tfvars より優先）", () => {
+    for (const t of ["access-plan", "access-apply"])
+      expect(section(`tasks."poc:human:portal:${t}"`), t).toContain(
+        '-var "worker_host=${AWSBRIDGE_HUMAN_POC_PORTAL_HOST:?',
+      );
   });
   it("wrangler を呼む tail は CLOUDFLARE_API_TOKEN を外す（Workers は wrangler login の OAuth）", () => {
     expect(section('tasks."poc:human:portal:tail"')).toMatch(
@@ -242,12 +251,21 @@ describe("mise タスク poc:human:portal:*", () => {
 });
 
 describe(`${PORTAL}/wrangler.jsonc と access/.gitignore`, () => {
-  it("Worker 名は awsbridge-human-poc-portal、workers.dev、プレビュー URL なし、vars・secret を書かない", () => {
+  it("Worker 名は awsbridge-human-poc-portal、workers.dev・プレビュー URL なし、入口は Custom Domain（ダミーのホスト）、vars・secret を書かない", () => {
     const cfg = readFileSync(join(root, PORTAL, "wrangler.jsonc"), "utf8");
     expect(cfg).toMatch(/"name":\s*"awsbridge-human-poc-portal"/);
-    expect(cfg).toMatch(/"workers_dev":\s*true/);
+    expect(cfg).toMatch(/"workers_dev":\s*false/);
     expect(cfg).toMatch(/"preview_urls":\s*false/);
+    expect(cfg).toMatch(/"custom_domain":\s*true/);
+    expect(cfg).toContain('"pattern": "awsbridge-human-poc-portal.example.invalid"');
     expect(cfg).not.toMatch(/"vars"|"env"\s*:/);
+  });
+  it("Access の Terraform の worker_host は workers.dev を受け付けない（入口は自社ドメイン）", () => {
+    const tf = readFileSync(join(root, PORTAL, "access/variables.tf"), "utf8");
+    expect(tf).toContain('!endswith(var.worker_host, ".workers.dev")');
+    expect(tf).toContain("awsbridge-console-poc");
+    const ex = readFileSync(join(root, PORTAL, "access/terraform.tfvars.example"), "utf8");
+    expect(ex).not.toContain("workers.dev");
   });
   it("Terraform の state と tfvars はコミットしない", () => {
     const gi = readFileSync(join(root, PORTAL, "access/.gitignore"), "utf8");
@@ -272,11 +290,42 @@ describe("keygen.ts", () => {
 
 describe("deploy-aws.sh", () => {
   const S = `${PORTAL}/deploy-aws.sh`;
-  it("URL が未設定なら終了コード 1 で aws を呼ばない", () => {
+  it("HOST も URL も未設定なら終了コード 1 で aws を呼ばない", () => {
     const r = runSh(S, {});
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain("AWSBRIDGE_HUMAN_POC_PORTAL_URL");
+    expect(r.stderr).toContain("AWSBRIDGE_HUMAN_POC_PORTAL_HOST");
     expect(r.calls).toEqual([]);
+  });
+  it("HOST が awsbridge-console-poc.<zone> でもデプロイする。似た名前・workers.dev は拒否する", () => {
+    const ok = runSh(S, { AWSBRIDGE_HUMAN_POC_PORTAL_HOST: "awsbridge-console-poc.example.com" });
+    expect(ok.status, ok.stderr).toBe(0);
+    const d = ok.calls.find((c) => c[1] === "cloudformation" && c[2] === "deploy") as string[];
+    expect(d).toContain("IssuerHost=awsbridge-console-poc.example.com");
+    expect(argOf(d, "--stack-name")).toBe("awsbridge-human-poc-portal");
+    for (const bad of [
+      "awsbridge-console.example.com",
+      "awsbridge-console-poc.example.workers.dev",
+    ]) {
+      const r = runSh(S, { AWSBRIDGE_HUMAN_POC_PORTAL_HOST: bad });
+      expect(r.status, bad).toBe(1);
+      expect(r.calls).toEqual([]);
+    }
+  });
+  it("HOST から issuer のホストを決める。URL と食い違う・workers.dev・不正な HOST は拒否する", () => {
+    const ok = runSh(S, { AWSBRIDGE_HUMAN_POC_PORTAL_HOST: HOST });
+    expect(ok.status, ok.stderr).toBe(0);
+    const d = ok.calls.find((c) => c[1] === "cloudformation" && c[2] === "deploy") as string[];
+    expect(d).toContain(`IssuerHost=${HOST}`);
+    for (const env of [
+      { AWSBRIDGE_HUMAN_POC_PORTAL_HOST: HOST, AWSBRIDGE_HUMAN_POC_PORTAL_URL: WORKERS_DEV_BASE },
+      { AWSBRIDGE_HUMAN_POC_PORTAL_HOST: "awsbridge-human-poc-portal.example.workers.dev" },
+      { AWSBRIDGE_HUMAN_POC_PORTAL_HOST: `https://${HOST}` },
+      { AWSBRIDGE_HUMAN_POC_PORTAL_URL: WORKERS_DEV_BASE },
+    ]) {
+      const r = runSh(S, env);
+      expect(r.status, JSON.stringify(env)).toBe(1);
+      expect(r.calls).toEqual([]);
+    }
   });
   for (const bad of [
     "https://awsbridge.example.workers.dev",
@@ -367,6 +416,17 @@ describe("destroy.sh", () => {
     expect(existsSync(join(out, "access-cookie.txt"))).toBe(false);
     expect(existsSync(join(out, "signing-key-std.json"))).toBe(true);
   });
+  it("HOST があれば Terraform の destroy に worker_host を渡し、デプロイ用の wrangler の設定を消し、片付けの確認を案内する", () => {
+    const out = tmp("awsbridge-portal-destroy-");
+    writeFileSync(join(out, "wrangler.deploy.json"), "{}");
+    const r = runSh(S, { ...env(accessDir(true), out), AWSBRIDGE_HUMAN_POC_PORTAL_HOST: HOST });
+    expect(r.status, r.stderr).toBe(0);
+    const tf = r.calls.find((c) => c[0] === "terraform" && c.includes("destroy")) as string[];
+    expect(tf).toContain("-var");
+    expect(tf).toContain(`worker_host=${HOST}`);
+    expect(existsSync(join(out, "wrangler.deploy.json"))).toBe(false);
+    expect(r.stdout + r.stderr).toContain("poc:human:portal:bypass-check -- --after-destroy");
+  });
   it("wrangler には CLOUDFLARE_API_TOKEN を渡さず、Terraform には渡す", () => {
     const r = runSh(S, { ...env(accessDir(true)), CLOUDFLARE_API_TOKEN: "cf-token" });
     expect(r.status, r.stderr).toBe(0);
@@ -406,12 +466,12 @@ describe("deploy.ts", () => {
   const S = `${PORTAL}/deploy.ts`;
   const env = () => ({
     AWSBRIDGE_HUMAN_POC_PORTAL_OUT_DIR: outDir,
-    AWSBRIDGE_HUMAN_POC_PORTAL_URL: BASE,
+    AWSBRIDGE_HUMAN_POC_PORTAL_HOST: HOST,
     AWSBRIDGE_HUMAN_POC_PORTAL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
   });
-  it("URL・チームドメインが未設定なら wrangler を呼ばない", () => {
+  it("HOST・チームドメインが未設定なら wrangler を呼ばない", () => {
     for (const k of [
-      "AWSBRIDGE_HUMAN_POC_PORTAL_URL",
+      "AWSBRIDGE_HUMAN_POC_PORTAL_HOST",
       "AWSBRIDGE_HUMAN_POC_PORTAL_ACCESS_TEAM_DOMAIN",
     ]) {
       const { [k as keyof ReturnType<typeof env>]: _, ...rest } = env();
@@ -426,7 +486,16 @@ describe("deploy.ts", () => {
     expect(r.status, r.stderr).toBe(0);
     const w = r.calls.find((c) => c[0] === "pnpm") as string[];
     expect(w.slice(1, 4)).toEqual(["exec", "wrangler", "deploy"]);
-    expect(argOf(w, "--config")).toBe(join(root, PORTAL, "wrangler.jsonc"));
+    // ダミーのホストを HOST に置き換えたデプロイ用の設定（workers.dev・Preview URL は無効のまま）
+    const deployConfig = argOf(w, "--config") as string;
+    expect(deployConfig).toBe(join(outDir, "wrangler.deploy.json"));
+    expect(JSON.parse(readFileSync(deployConfig, "utf8"))).toMatchObject({
+      name: "awsbridge-human-poc-portal",
+      main: join(root, PORTAL, "worker.ts"),
+      workers_dev: false,
+      preview_urls: false,
+      routes: [{ pattern: HOST, custom_domain: true }],
+    });
     expect(w).toContain("--dry-run");
     const secretsFile = argOf(w, "--secrets-file") as string;
     expect(secretsFile).toBe(join(outDir, "worker-secrets.json"));
@@ -463,11 +532,51 @@ describe("deploy.ts", () => {
     expect(vars).toContain("ACCESS_AUD_MAP:{}");
     expect(vars.some((v) => v.startsWith("ACCESS_ENTRY_AUD:"))).toBe(false);
   });
+  it("workers.dev の URL（HOST なし）では止める（workers.dev は無効にしたので入口にならない）", () => {
+    const { AWSBRIDGE_HUMAN_POC_PORTAL_HOST: _h, ...rest } = env();
+    const r = runTs(S, ["--dry-run"], {
+      ...rest,
+      AWSBRIDGE_HUMAN_POC_PORTAL_URL: WORKERS_DEV_BASE,
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("AWSBRIDGE_HUMAN_POC_PORTAL_HOST");
+    expect(r.calls.some((c) => c[0] === "pnpm")).toBe(false);
+  });
+  it("HOST が awsbridge-console-poc.<zone> でも、そのホストの Custom Domain でデプロイする（Worker 名は変えない）", () => {
+    const r = runTs(
+      S,
+      ["--dry-run"],
+      { ...env(), AWSBRIDGE_HUMAN_POC_PORTAL_HOST: "awsbridge-console-poc.example.com" },
+      {
+        tfOutput: { ...TF_OUTPUT, worker_host: { value: "awsbridge-console-poc.example.com" } },
+      },
+    );
+    expect(r.status, r.stderr).toBe(0);
+    const w = r.calls.find((c) => c[0] === "pnpm") as string[];
+    const cfg = JSON.parse(readFileSync(argOf(w, "--config") as string, "utf8"));
+    expect(cfg.name).toBe("awsbridge-human-poc-portal");
+    expect(cfg.routes).toEqual([
+      { pattern: "awsbridge-console-poc.example.com", custom_domain: true },
+    ]);
+    expect(w.filter((_, i) => w[i - 1] === "--var")).toContain(
+      "PORTAL_BASE:https://awsbridge-console-poc.example.com",
+    );
+  });
+  it("PoC 専用の poc-token は --poc-token のときだけ開ける（既定は閉じる）", () => {
+    const vars = (args: string[]) => {
+      const r = runTs(S, ["--dry-run", ...args], env());
+      expect(r.status, r.stderr).toBe(0);
+      const w = r.calls.find((c) => c[0] === "pnpm") as string[];
+      return w.filter((_, i) => w[i - 1] === "--var");
+    };
+    expect(vars([]).some((v) => v.startsWith("POC_TOKEN_ENDPOINT"))).toBe(false);
+    expect(vars(["--poc-token"])).toContain("POC_TOKEN_ENDPOINT:enabled");
+  });
   it("Terraform の worker_host が URL と違えば止める", () => {
     const r = runTs(S, ["--dry-run"], env(), {
       tfOutput: {
         ...TF_OUTPUT,
-        worker_host: { value: "awsbridge-human-poc-portal.other.workers.dev" },
+        worker_host: { value: "awsbridge-human-poc-portal.other.example.com" },
       },
     });
     expect(r.status).toBe(1);
@@ -717,5 +826,451 @@ describe("keygen.ts の鍵の形", () => {
     expect(jwk.kty).toBe("RSA");
     expect(typeof jwk.d).toBe("string");
     expect(typeof jwk.kid).toBe("string");
+  });
+});
+
+describe("bypass-check.ts（cto の条件 (2): Access を経由しない入口が閉じているか）", () => {
+  const S = `${PORTAL}/bypass-check.ts`;
+  const SUB = "secret-sub-x";
+  const VERSION = "18f97339-c287-4872-9bdd-e2135c07ec12";
+  const AUD_INFRA = "a".repeat(64);
+  const domain = (o: Record<string, unknown> = {}) => ({
+    id: "d1",
+    hostname: HOST,
+    service: "awsbridge-human-poc-portal",
+    environment: "production",
+    zone_id: "zonesecret1",
+    zone_name: "example.com",
+    enabled: true,
+    previews_enabled: false,
+    ...o,
+  });
+
+  interface ApiState {
+    status?: number;
+    subdomain?: Record<string, unknown> | null;
+    domainsByService?: unknown[];
+    domainsByHost?: unknown[];
+    routes?: unknown[];
+    revoked?: boolean;
+  }
+  // Cloudflare API の擬似サーバー（読み取りと、access-revoke.ts の失効だけ）
+  async function cfApi(st: ApiState) {
+    const seen: string[] = [];
+    const s = await server((req, _body, res) => {
+      seen.push(`${req.method} ${req.url} ${req.headers.authorization}`);
+      res.setHeader("content-type", "application/json");
+      const ok = (result: unknown) =>
+        res.end(JSON.stringify({ success: true, errors: [], result }));
+      const u = new URL(req.url ?? "/", "http://x");
+      if (st.status !== undefined) {
+        res.statusCode = st.status;
+        res.end(JSON.stringify({ success: false, errors: [{ code: 10000, message: "auth" }] }));
+        return;
+      }
+      if (u.pathname === "/accounts/acc1/workers/scripts/awsbridge-human-poc-portal/subdomain") {
+        if (st.subdomain === null) {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ success: false, errors: [{ code: 10007, message: "nf" }] }));
+          return;
+        }
+        return ok(st.subdomain ?? { enabled: false, previews_enabled: false });
+      }
+      if (u.pathname === "/accounts/acc1/workers/subdomain") return ok({ subdomain: SUB });
+      if (u.pathname === "/accounts/acc1/workers/scripts/awsbridge-human-poc-portal/versions")
+        return ok({ items: [{ id: VERSION, number: 2 }] });
+      if (u.pathname === "/accounts/acc1/workers/domains") {
+        if (u.searchParams.get("service") === "awsbridge-human-poc-portal")
+          return ok(st.domainsByService ?? [domain()]);
+        if (u.searchParams.get("hostname") === HOST) return ok(st.domainsByHost ?? [domain()]);
+        return ok([]);
+      }
+      if (u.pathname === "/zones/zonesecret1/workers/routes") return ok(st.routes ?? []);
+      if (u.pathname === "/accounts/acc1/access/apps/id-infra" && req.method === "GET")
+        return ok({ id: "id-infra", name: "awsbridge-human-poc-portal-infra" });
+      if (u.pathname === "/accounts/acc1/access/apps/id-infra/revoke_tokens") {
+        st.revoked = true;
+        res.statusCode = 202;
+        return ok(null);
+      }
+      res.statusCode = 404;
+      res.end("{}");
+    });
+    return { ...s, seen };
+  }
+
+  const loginRedirect = (res: ServerResponse) => {
+    res.statusCode = 302;
+    res.setHeader(
+      "location",
+      `${TEAM_DOMAIN}/cdn-cgi/access/login/${HOST}?kid=${AUD_INFRA}&redirect_url=%2Ft%2Finfra%2Fwhoami&meta=secret-meta`,
+    );
+    res.end();
+  };
+  const whoamiOk = (res: ServerResponse) => {
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ verified: true, team_match: true, aud_team: "infra", iat: 1 }));
+  };
+
+  async function run(
+    args: string[],
+    extra: Record<string, string> = {},
+    servers: { api?: string; portal?: string; wdev?: string } = {},
+  ) {
+    const out = tmp("awsbridge-portal-bypass-");
+    return runTsAsync(S, args, {
+      AWSBRIDGE_HUMAN_POC_PORTAL_OUT_DIR: out,
+      AWSBRIDGE_HUMAN_POC_PORTAL_HOST: HOST,
+      AWSBRIDGE_HUMAN_POC_PORTAL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+      CLOUDFLARE_API_TOKEN: "cf-token-secret",
+      AWSBRIDGE_HUMAN_POC_PORTAL_CF_ACCOUNT_ID: "acc1",
+      ...(servers.api ? { AWSBRIDGE_HUMAN_POC_PORTAL_CF_API_BASE: servers.api } : {}),
+      ...(servers.portal ? { AWSBRIDGE_HUMAN_POC_PORTAL_BYPASS_PORTAL_BASE: servers.portal } : {}),
+      ...(servers.wdev ? { AWSBRIDGE_HUMAN_POC_PORTAL_BYPASS_WORKERS_DEV_BASE: servers.wdev } : {}),
+      ...extra,
+    });
+  }
+  const noSecrets = (text: string, extra: string[] = []) => {
+    for (const s of [
+      HOST,
+      SUB,
+      VERSION.slice(0, 8),
+      "zonesecret1",
+      "acc1",
+      "cf-token-secret",
+      "secret-meta",
+      AUD_INFRA,
+      ...extra,
+    ])
+      expect(text, s).not.toContain(s);
+  };
+
+  it("B1: workers.dev と Version URL に直接リクエストし、Cloudflare のエラー（1042）なら PASS。ホスト・サブドメインは出さない", async () => {
+    const api = await cfApi({});
+    const uas: string[] = [];
+    const paths: string[] = [];
+    const wdev = await server((req, _b, res) => {
+      uas.push(String(req.headers["user-agent"]));
+      paths.push(String(req.url));
+      res.statusCode = 404;
+      res.end("error code: 1042");
+    });
+    try {
+      const r = await run(["--case", "B1"], {}, { api: api.url, wdev: wdev.url });
+      expect(r.status, r.stderr).toBe(0);
+      expect(paths).toEqual(
+        expect.arrayContaining(["/std/.well-known/jwks.json", "/t/infra/whoami"]),
+      );
+      expect(paths.length).toBe(3); // workers.dev の 2 つと Version URL の 1 つ
+      expect(uas.every((u) => u.startsWith("awsbridge-poc-bypass-check/"))).toBe(true);
+      expect(r.stdout).toMatch(/\| B1-1 \|.*\| 1042 \|.*\| PASS \|/);
+      expect(r.stdout).toMatch(/\| B1-3 \|.*Version URL.*\| PASS \|/);
+      noSecrets(r.stdout + r.stderr);
+    } finally {
+      api.close();
+      wdev.close();
+    }
+  });
+  it("B1: workers.dev で Worker が応答したら（JWKS が返る）FAIL で終了コード 1", async () => {
+    const api = await cfApi({});
+    const wdev = await server((_req, _b, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ keys: [{ kty: "RSA" }] }));
+    });
+    try {
+      const r = await run(["--case", "B1"], {}, { api: api.url, wdev: wdev.url });
+      expect(r.status).toBe(1);
+      expect(r.stdout).toMatch(/\| B1-1 \|.*worker_document.*\| FAIL \|/);
+    } finally {
+      api.close();
+      wdev.close();
+    }
+  });
+  it("B2: API でスクリプトの workers.dev・Preview URL・Custom Domain・ゾーンのルートを読み、Custom Domain 1 つだけなら PASS（読み取りだけ）", async () => {
+    const api = await cfApi({
+      routes: [{ id: "r1", pattern: "other.example.com/*", script: "x" }],
+    });
+    try {
+      const r = await run(["--case", "B2"], {}, { api: api.url });
+      expect(r.status, r.stderr).toBe(0);
+      const got = api.seen.map((x) => x.split(" ").slice(0, 2).join(" "));
+      expect(got).toEqual(
+        expect.arrayContaining([
+          "GET /accounts/acc1/workers/scripts/awsbridge-human-poc-portal/subdomain",
+          "GET /accounts/acc1/workers/domains?service=awsbridge-human-poc-portal",
+          `GET /accounts/acc1/workers/domains?hostname=${HOST}`,
+          "GET /zones/zonesecret1/workers/routes",
+        ]),
+      );
+      expect(api.seen.every((x) => x.startsWith("GET "))).toBe(true);
+      expect(api.seen.every((x) => x.endsWith("Bearer cf-token-secret"))).toBe(true);
+      expect(r.stdout).not.toMatch(/\| FAIL \|/);
+      expect(r.stdout).toMatch(/workers\.dev.*\| false \| false \| PASS \|/);
+      noSecrets(r.stdout + r.stderr);
+    } finally {
+      api.close();
+    }
+  });
+  it("B2: workers.dev が有効・ルートが残っていれば FAIL", async () => {
+    const api = await cfApi({
+      subdomain: { enabled: true, previews_enabled: false },
+      routes: [{ id: "r2", pattern: `${HOST}/*`, script: "awsbridge-human-poc-portal" }],
+    });
+    try {
+      const r = await run(["--case", "B2"], {}, { api: api.url });
+      expect(r.status).toBe(1);
+      expect((r.stdout.match(/\| FAIL \|/g) ?? []).length).toBe(2);
+    } finally {
+      api.close();
+    }
+  });
+  it("B2: トークンの権限が足りなければ（403）必要な権限を出して止まる", async () => {
+    const api = await cfApi({ status: 403 });
+    try {
+      const r = await run(["--case", "B2"], {}, { api: api.url });
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain("Workers Scripts Read");
+      expect(r.stderr).toContain("Workers Routes Read");
+      noSecrets(r.stdout + r.stderr);
+    } finally {
+      api.close();
+    }
+  });
+  it("B3: 偽の Cf-Access-Jwt-Assertion（チームドメインの iss・infra の AUD・別の鍵）を Cookie なしで送り、Access のログインへのリダイレクトなら PASS", async () => {
+    const seen: { method: string; url: string; jwt: string; cookie: string; origin: string }[] = [];
+    const portal = await server((req, _b, res) => {
+      seen.push({
+        method: String(req.method),
+        url: String(req.url),
+        jwt: String(req.headers["cf-access-jwt-assertion"]),
+        cookie: String(req.headers.cookie),
+        origin: String(req.headers.origin),
+      });
+      loginRedirect(res);
+    });
+    try {
+      const r = await run(["--case", "B3"], {}, { portal: portal.url });
+      expect(r.status, r.stderr).toBe(0);
+      expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([
+        "GET /t/infra/whoami",
+        "POST /t/infra/login",
+      ]);
+      for (const s of seen) {
+        expect(s.cookie).toBe("undefined");
+        const { decodeJwt } = await import("jose");
+        expect(decodeJwt(s.jwt)).toMatchObject({ iss: TEAM_DOMAIN, aud: [AUD_INFRA] });
+      }
+      expect(seen[1]?.origin).toBe(BASE);
+      expect(r.stdout).toMatch(/\| B3-1 \|.*access_login_redirect.*\| PASS \|/);
+      expect(r.stdout).toMatch(/\| B3-2 \|.*access_login_redirect.*\| PASS \|/);
+      noSecrets(r.stdout + r.stderr, [seen[0]?.jwt ?? "x"]);
+    } finally {
+      portal.close();
+    }
+  });
+  it("B3: Worker の応答（401 の whoami JSON・HTML のエラーページ）が返れば FAIL", async () => {
+    const portal = await server((req, _b, res) => {
+      if (req.method === "GET") {
+        res.statusCode = 401;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ verified: false, error: "JWSSignatureVerificationFailed" }));
+      } else {
+        res.statusCode = 401;
+        res.setHeader("content-type", "text/html");
+        res.end("<p>awsbridge PoC（人間のログイン）のポータル。本番ではない。</p>");
+      }
+    });
+    try {
+      const r = await run(["--case", "B3"], {}, { portal: portal.url });
+      expect(r.status).toBe(1);
+      expect(r.stdout).toMatch(/\| B3-1 \|.*worker_json.*\| FAIL \|/);
+      expect(r.stdout).toMatch(/\| B3-2 \|.*worker_html.*\| FAIL \|/);
+    } finally {
+      portal.close();
+    }
+  });
+
+  async function tokenFile(expSeconds = 3600): Promise<{ file: string; jwt: string }> {
+    const { generateKeyPair, SignJWT } = await import("jose");
+    const { privateKey } = await generateKeyPair("RS256");
+    const now = Math.floor(Date.now() / 1000);
+    const jwt = await new SignJWT({ email: "u@example.com" })
+      .setProtectedHeader({ alg: "RS256" })
+      .setIssuer(TEAM_DOMAIN)
+      .setAudience([AUD_INFRA])
+      .setIssuedAt(now)
+      .setExpirationTime(now + expSeconds)
+      .sign(privateKey);
+    const file = join(tmp("awsbridge-portal-jwt-"), "access-jwt.txt");
+    writeFileSync(file, `${jwt}\n`, { mode: 0o600 });
+    return { file, jwt };
+  }
+
+  it("B4 --revoke: 失効前は Cookie で通り、access-revoke で infra のアプリを失効させ、Cookie・ヘッダーとも Access がログインへ送るまでリトライして時刻を出す。トークンは出さない", async () => {
+    const st: ApiState = {};
+    const api = await cfApi(st);
+    const { file, jwt } = await tokenFile();
+    const seen: string[] = [];
+    const portal = await server((req, _b, res) => {
+      const cookie = String(req.headers.cookie ?? "");
+      const viaCookie = cookie === `CF_Authorization=${jwt}`;
+      const viaToken = req.headers["cf-access-token"] === jwt;
+      const viaHeader = req.headers["cf-access-jwt-assertion"] === jwt;
+      seen.push(viaCookie ? "cookie" : viaToken ? "token" : viaHeader ? "header" : "none");
+      if ((viaCookie || viaToken) && !st.revoked) return whoamiOk(res);
+      loginRedirect(res);
+    });
+    try {
+      const r = await run(
+        ["--case", "B4", "--revoke", "--interval", "0.2", "--timeout", "10"],
+        { AWSBRIDGE_HUMAN_POC_PORTAL_TOKEN_FILE: file },
+        { api: api.url, portal: portal.url },
+      );
+      expect(r.status, r.stderr).toBe(0);
+      expect(st.revoked).toBe(true);
+      expect(api.seen.filter((x) => x.startsWith("POST"))).toEqual([
+        "POST /accounts/acc1/access/apps/id-infra/revoke_tokens Bearer cf-token-secret",
+      ]);
+      expect(seen).toEqual(expect.arrayContaining(["cookie", "header", "token"]));
+      expect(r.stdout).toMatch(/\| B4-1 \|.*Cookie.*worker_json.*\| PASS \|/);
+      expect(r.stdout).toMatch(
+        /Cookie.*\| \d{4}-\d\d-\d\dT[\d:.]+Z \|.*access_login_redirect.*\| PASS \|/,
+      );
+      expect(r.stdout).toMatch(/Cf-Access-Jwt-Assertion.*access_login_redirect.*\| PASS \|/);
+      noSecrets(r.stdout + r.stderr, [jwt, jwt.split(".")[1] as string]);
+    } finally {
+      api.close();
+      portal.close();
+    }
+  });
+  it("B4 --revoked-at: 判断できない応答（5xx）では止まらず、Access のログインへ送られるまでリトライする", async () => {
+    const { file, jwt } = await tokenFile();
+    let n = 0;
+    const portal = await server((req, _b, res) => {
+      const viaCookie = String(req.headers.cookie ?? "") === `CF_Authorization=${jwt}`;
+      if (viaCookie) n++;
+      // Cookie: 1 回目は 503（判断できない）、2 回目から Access のログインへ
+      if (viaCookie && n === 1) {
+        res.statusCode = 503;
+        res.end("upstream");
+        return;
+      }
+      loginRedirect(res);
+    });
+    try {
+      const r = await run(
+        [
+          "--case",
+          "B4",
+          "--revoked-at",
+          new Date().toISOString(),
+          "--interval",
+          "0.2",
+          "--timeout",
+          "10",
+        ],
+        { AWSBRIDGE_HUMAN_POC_PORTAL_TOKEN_FILE: file },
+        { portal: portal.url },
+      );
+      expect(r.status, r.stderr).toBe(0);
+      expect(n).toBeGreaterThanOrEqual(2);
+      expect(r.stdout).toMatch(
+        /Cookie.*\| \d{4}-\d\d-\d\dT[\d:.]+Z \|.*access_login_redirect.*\| PASS \|/,
+      );
+    } finally {
+      portal.close();
+    }
+  });
+  it("B1: サブドメインを変数で渡しトークンが無ければ、Version URL は未実施（記録）にして API を呼ばない", async () => {
+    const wdev = await server((_req, _b, res) => {
+      res.statusCode = 404;
+      res.end("error code: 1042");
+    });
+    try {
+      const r = await run(
+        ["--case", "B1"],
+        { AWSBRIDGE_HUMAN_POC_PORTAL_WORKERS_DEV_SUBDOMAIN: SUB, CLOUDFLARE_API_TOKEN: "" },
+        { wdev: wdev.url },
+      );
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/\| B1-1 \|.*\| PASS \|/);
+      expect(r.stdout).toMatch(/\| B1-3 \|.*未実施.*\| 記録 \|/);
+    } finally {
+      wdev.close();
+    }
+  });
+  it("B4: 失効前に Cookie で通らなければ、失効させずに止まる", async () => {
+    const st: ApiState = {};
+    const api = await cfApi(st);
+    const { file } = await tokenFile();
+    const portal = await server((_req, _b, res) => loginRedirect(res));
+    try {
+      const r = await run(
+        ["--case", "B4", "--revoke", "--interval", "0.2", "--timeout", "2"],
+        { AWSBRIDGE_HUMAN_POC_PORTAL_TOKEN_FILE: file },
+        { api: api.url, portal: portal.url },
+      );
+      expect(r.status).toBe(1);
+      expect(st.revoked).toBeUndefined();
+      expect(api.seen.some((x) => x.startsWith("POST"))).toBe(false);
+    } finally {
+      api.close();
+      portal.close();
+    }
+  });
+  it("B4: トークンのファイルが無い・期限がリトライの時間より短いなら、何も送らずに止まる", async () => {
+    const st: ApiState = {};
+    const api = await cfApi(st);
+    let hits = 0;
+    const portal = await server((_req, _b, res) => {
+      hits++;
+      loginRedirect(res);
+    });
+    try {
+      const r1 = await run(
+        ["--case", "B4", "--revoke"],
+        { AWSBRIDGE_HUMAN_POC_PORTAL_TOKEN_FILE: "/nonexistent/x.txt" },
+        { api: api.url, portal: portal.url },
+      );
+      expect(r1.status).not.toBe(0);
+      expect(r1.stderr).toContain("AWSBRIDGE_HUMAN_POC_PORTAL_TOKEN_FILE");
+      const { file } = await tokenFile(60);
+      const r2 = await run(
+        ["--case", "B4", "--revoke", "--timeout", "300"],
+        { AWSBRIDGE_HUMAN_POC_PORTAL_TOKEN_FILE: file },
+        { api: api.url, portal: portal.url },
+      );
+      expect(r2.status).not.toBe(0);
+      expect(r2.stderr).toContain("期限");
+      expect(hits).toBe(0);
+      expect(st.revoked).toBeUndefined();
+    } finally {
+      api.close();
+      portal.close();
+    }
+  });
+  it("--after-destroy: Custom Domain・スクリプトが残っていなければ PASS、残っていれば FAIL", async () => {
+    const gone = await cfApi({ subdomain: null, domainsByService: [], domainsByHost: [] });
+    const left = await cfApi({});
+    try {
+      const r1 = await run(["--after-destroy"], {}, { api: gone.url });
+      expect(r1.status, r1.stderr).toBe(0);
+      expect(r1.stdout).not.toMatch(/\| FAIL \|/);
+      const r2 = await run(["--after-destroy"], {}, { api: left.url });
+      expect(r2.status).toBe(1);
+      noSecrets(r1.stdout + r2.stdout);
+    } finally {
+      gone.close();
+      left.close();
+    }
+  });
+  it("宛先の差し替えは 127.0.0.1 だけ。HOST が無ければ止まる", async () => {
+    const r1 = await run(["--case", "B3"], {
+      AWSBRIDGE_HUMAN_POC_PORTAL_BYPASS_PORTAL_BASE: "https://evil.example.com",
+    });
+    expect(r1.status).not.toBe(0);
+    const r2 = await run(["--case", "B3"], { AWSBRIDGE_HUMAN_POC_PORTAL_HOST: "" });
+    expect(r2.status).not.toBe(0);
+    expect(r2.stderr).toContain("AWSBRIDGE_HUMAN_POC_PORTAL_HOST");
   });
 });

@@ -106,6 +106,10 @@ beforeAll(async () => {
     .join("\n");
   const config = JSON.parse(jsonc) as Record<string, unknown>;
   expect(config.name).toBe("awsbridge-human-poc-portal");
+  // 入口は Custom Domain だけ（workers.dev・Preview URL は無効）。手元の起動では使わないので routes は外す
+  expect(config.workers_dev).toBe(false);
+  expect(config.preview_urls).toBe(false);
+  delete config.routes;
   const wranglerConfig = join(tmp, "wrangler.e2e.jsonc");
   writeFileSync(
     wranglerConfig,
@@ -124,6 +128,8 @@ beforeAll(async () => {
         SIGNING_JWK_ADMIN: JSON.stringify(adminJwk),
         STS_ENDPOINT: `${fakeBase}/sts`,
         FEDERATION_ENDPOINT: `${fakeBase}/federation`,
+        // PoC 専用の poc-token（bypass-check の B4 の準備）。deploy.ts --poc-token と同じ値
+        POC_TOKEN_ENDPOINT: "enabled",
       },
     }),
   );
@@ -281,5 +287,28 @@ describe("PoC ポータル Worker（wrangler dev）: N1 / N10", () => {
     expect(await post(AUD_DEV, "/t/infra/login", BASE)).toBe(403);
     expect(await post(AUD_INFRA, "/t/infra/login")).toBe(403);
     expect(stsSeen.length).toBe(before);
+  });
+});
+
+describe("PoC ポータル Worker（wrangler dev）: PoC 専用の poc-token（B4 の持ち込み用）", () => {
+  it("検証できてチームが一致した Access JWT をそのまま添付ファイルで返す", async () => {
+    const jwt = await accessJwt(AUD_INFRA);
+    const r = await fetch(`${base}/t/infra/poc-token`, {
+      headers: { "Cf-Access-Jwt-Assertion": jwt },
+    });
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-disposition")).toContain("awsbridge-poc-access-jwt.txt");
+    expect(r.headers.get("cache-control")).toBe("no-store");
+    expect(await r.text()).toBe(`${jwt}\n`);
+  });
+  it("チームが食い違う・JWT が無ければ返さない。トークンはログに出さない", async () => {
+    const dev = await accessJwt(AUD_DEV);
+    const r1 = await fetch(`${base}/t/infra/poc-token`, {
+      headers: { "Cf-Access-Jwt-Assertion": dev },
+    });
+    expect(r1.status).toBe(403);
+    expect(await r1.text()).not.toContain(dev);
+    expect((await fetch(`${base}/t/infra/poc-token`)).status).toBe(401);
+    expect(logs).not.toContain(dev);
   });
 });

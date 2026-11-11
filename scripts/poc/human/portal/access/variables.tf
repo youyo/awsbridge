@@ -4,12 +4,16 @@ variable "account_id" {
 }
 
 variable "worker_host" {
-  description = "PoC のポータル Worker のホスト名（スキーム・パスなし）。awsbridge-human-poc-portal.<subdomain>.workers.dev"
+  description = <<-EOT
+    PoC のポータル Worker の入口のホスト名（スキーム・パスなし）。自社ドメインの Custom Domain の awsbridge-human-poc-portal.<ゾーン> か awsbridge-console-poc.<ゾーン>。
+    workers.dev は Worker 側で無効にしたので不可。mise の access-plan / access-apply と destroy.sh が
+    AWSBRIDGE_HUMAN_POC_PORTAL_HOST から -var で渡す（tfvars の値より優先）。
+  EOT
   type        = string
 
   validation {
-    condition     = can(regex("^awsbridge-human-poc-portal\\.[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", var.worker_host))
-    error_message = "worker_host は awsbridge-human-poc-portal.<subdomain>.workers.dev の形（スキーム・パスなし）。"
+    condition     = can(regex("^(awsbridge-human-poc-portal|awsbridge-console-poc)\\.[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", var.worker_host)) && !endswith(var.worker_host, ".workers.dev")
+    error_message = "worker_host は awsbridge-human-poc-portal.<ゾーン> か awsbridge-console-poc.<ゾーン> の形（スキーム・パスなし。workers.dev は不可）。"
   }
 }
 

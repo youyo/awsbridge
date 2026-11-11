@@ -476,3 +476,57 @@ describe("そのほかの経路", () => {
     expect(r.status).toBe(500);
   });
 });
+
+describe("PoC 専用: GET /t/<team>/poc-token（生の Access JWT を返す。B4 の持ち込み用。本番の Worker には入れない）", () => {
+  const on = (): PortalEnv => ({ ...env, POC_TOKEN_ENDPOINT: "enabled" });
+  it("既定（POC_TOKEN_ENDPOINT なし・enabled 以外）では 404（知らないパスと同じ）", async () => {
+    const jwt = await accessJwt(AUD_INFRA);
+    for (const e of [env, { ...env, POC_TOKEN_ENDPOINT: "true" }]) {
+      const r = await req("/t/infra/poc-token", { jwt }, e);
+      expect(r.status).toBe(404);
+      expect(await r.text()).not.toContain(jwt);
+    }
+  });
+  it("有効なら、検証できてチームが一致した Access JWT をそのまま添付ファイル（no-store）で返す", async () => {
+    const jwt = await accessJwt(AUD_INFRA);
+    const r = await req("/t/infra/poc-token", { jwt }, on());
+    expect(r.status).toBe(200);
+    expect(await r.text()).toBe(`${jwt}\n`);
+    expect(r.headers.get("content-type")).toMatch(/^text\/plain/);
+    expect(r.headers.get("content-disposition")).toBe(
+      'attachment; filename="awsbridge-poc-access-jwt.txt"',
+    );
+    expect(r.headers.get("cache-control")).toBe("no-store");
+  });
+  it("JWT なし・署名違い・チームの食い違い・入口の AUD では返さない", async () => {
+    const other = await generateKeyPair("RS256");
+    const forged = await new SignJWT({ email: EMAIL })
+      .setProtectedHeader({ alg: "RS256" })
+      .setIssuer(TEAM_DOMAIN)
+      .setAudience(AUD_INFRA)
+      .setIssuedAt()
+      .setExpirationTime("10m")
+      .sign(other.privateKey);
+    const dev = await accessJwt(AUD_DEV);
+    const entry = await accessJwt(AUD_ENTRY);
+    for (const [label, jwt, status] of [
+      ["なし", undefined, 401],
+      ["署名違い", forged, 401],
+      ["dev の AUD で infra のパス", dev, 403],
+      ["入口の AUD", entry, 403],
+    ] as const) {
+      const r = await req("/t/infra/poc-token", jwt ? { jwt } : {}, on());
+      expect(r.status, label).toBe(status);
+      const text = await r.text();
+      if (jwt) expect(text, label).not.toContain(jwt);
+      expect(r.headers.get("content-disposition"), label).toBeNull();
+    }
+  });
+  it("GET 以外は 405。/poc-token（チームなし）は 404", async () => {
+    const jwt = await accessJwt(AUD_INFRA);
+    expect((await req("/t/infra/poc-token", { jwt, method: "POST", body: "x" }, on())).status).toBe(
+      405,
+    );
+    expect((await req("/poc-token", { jwt }, on())).status).toBe(404);
+  });
+});

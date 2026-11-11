@@ -82,6 +82,65 @@ describe("portalSettings（AWSBRIDGE_HUMAN_POC_PORTAL_* だけを読む）", () 
   });
 });
 
+describe("portalSettings: 入口のホスト（AWSBRIDGE_HUMAN_POC_PORTAL_HOST）と B4 の設定", () => {
+  const CUSTOM = "awsbridge-human-poc-portal.example.com";
+  it("HOST から base（https://<HOST>）を作る。URL と両方あれば一致が必要", () => {
+    expect(portalSettings({ AWSBRIDGE_HUMAN_POC_PORTAL_HOST: CUSTOM }, ROOT).base).toBe(
+      `https://${CUSTOM}`,
+    );
+    expect(
+      portalSettings(
+        {
+          AWSBRIDGE_HUMAN_POC_PORTAL_HOST: CUSTOM,
+          AWSBRIDGE_HUMAN_POC_PORTAL_URL: `https://${CUSTOM}/`,
+        },
+        ROOT,
+      ).base,
+    ).toBe(`https://${CUSTOM}`);
+    expect(() =>
+      portalSettings(
+        { AWSBRIDGE_HUMAN_POC_PORTAL_HOST: CUSTOM, AWSBRIDGE_HUMAN_POC_PORTAL_URL: BASE },
+        ROOT,
+      ),
+    ).toThrow();
+  });
+  it("HOST は awsbridge-console-poc.<zone> も受け付ける", () => {
+    expect(
+      portalSettings({ AWSBRIDGE_HUMAN_POC_PORTAL_HOST: "awsbridge-console-poc.example.com" }, ROOT)
+        .base,
+    ).toBe("https://awsbridge-console-poc.example.com");
+    expect(() =>
+      portalSettings({ AWSBRIDGE_HUMAN_POC_PORTAL_HOST: "awsbridge-console.example.com" }, ROOT),
+    ).toThrow();
+  });
+  it("HOST は awsbridge-human-poc-portal.<zone> のホスト名だけ（スキーム・パス・workers.dev は不可）", () => {
+    for (const bad of [
+      `https://${CUSTOM}`,
+      `${CUSTOM}/x`,
+      "awsbridge.example.com",
+      HOST, // workers.dev
+    ])
+      expect(() => portalSettings({ AWSBRIDGE_HUMAN_POC_PORTAL_HOST: bad }, ROOT), bad).toThrow();
+  });
+  it("B4 のトークンのファイル（既定 <OUT_DIR>/access-jwt.txt）と workers.dev のサブドメイン（任意）", () => {
+    const s = portalSettings({}, ROOT);
+    expect(s.tokenFile).toBe("/repo/.secrets/poc-human/portal/access-jwt.txt");
+    expect(s.workersDevSubdomain).toBeUndefined();
+    const t = portalSettings(
+      {
+        AWSBRIDGE_HUMAN_POC_PORTAL_TOKEN_FILE: "/tmp/t.txt",
+        AWSBRIDGE_HUMAN_POC_PORTAL_WORKERS_DEV_SUBDOMAIN: "my-sub",
+      },
+      ROOT,
+    );
+    expect(t.tokenFile).toBe("/tmp/t.txt");
+    expect(t.workersDevSubdomain).toBe("my-sub");
+    expect(() =>
+      portalSettings({ AWSBRIDGE_HUMAN_POC_PORTAL_WORKERS_DEV_SUBDOMAIN: "a.b" }, ROOT),
+    ).toThrow();
+  });
+});
+
 describe("audFromTerraformOutput（terraform output -json → Worker の ACCESS_AUD_MAP）", () => {
   const out = (host = HOST) =>
     JSON.stringify({
@@ -153,6 +212,23 @@ describe("deployVars / workerSecrets", () => {
       "REGION:ap-northeast-1",
     ]);
     expect(vars.join(" ")).not.toMatch(/SIGNING_JWK/);
+  });
+  it("PoC 専用の poc-token は pocToken: true のときだけ POC_TOKEN_ENDPOINT:enabled を渡す", () => {
+    const p = {
+      base: BASE,
+      teamDomain: "https://example-team.cloudflareaccess.com",
+      audMap: {},
+      entryAud: undefined,
+      roles: [],
+      sessionDuration: "3600",
+      audience: "awsbridge-human-poc-portal",
+      region: "ap-northeast-1",
+    };
+    expect(deployVars(p).some((v) => v.startsWith("POC_TOKEN_ENDPOINT"))).toBe(false);
+    expect(deployVars({ ...p, pocToken: false }).some((v) => v.startsWith("POC_TOKEN"))).toBe(
+      false,
+    );
+    expect(deployVars({ ...p, pocToken: true })).toContain("POC_TOKEN_ENDPOINT:enabled");
   });
   it("secret は SIGNING_JWK_STD / SIGNING_JWK_ADMIN（--secrets-file に書く）", () => {
     const s = workerSecrets({ kty: "RSA", d: "x1" }, { kty: "RSA", d: "x2" });

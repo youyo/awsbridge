@@ -2,10 +2,17 @@
 // （MCP 用の AWSBRIDGE_* も、既存の PoC の AWSBRIDGE_HUMAN_POC_* も読まない。AWS_PROFILE / AWS_REGION は共通）。
 // 既定値はここで補う（mise.toml の [env] には置かない）。
 import { join } from "node:path";
+import { assertCustomHost } from "./bypass-lib";
 import { assertPortalName, normalizePortalBase, PORTAL_DEFAULTS } from "./lib";
 
+/** ポータルの土台の URL を決める変数（エラーの案内に使う）。 */
+export const BASE_VARS = "AWSBRIDGE_HUMAN_POC_PORTAL_HOST（または AWSBRIDGE_HUMAN_POC_PORTAL_URL）";
+
 export interface PortalSettings {
-  /** https://awsbridge-human-poc-portal.<subdomain>.workers.dev */
+  /**
+   * ポータルの土台の URL。https://<AWSBRIDGE_HUMAN_POC_PORTAL_HOST>（自社ドメインの Custom Domain）。
+   * HOST が無ければ AWSBRIDGE_HUMAN_POC_PORTAL_URL（以前の workers.dev の形。deploy は受け付けない）
+   */
   base: string | undefined;
   /** https://<team>.cloudflareaccess.com */
   teamDomain: string | undefined;
@@ -26,6 +33,10 @@ export interface PortalSettings {
   sessionDuration: string;
   /** N9 の checks が JWT の sub と SourceIdentity に入れる値（信頼ポリシーは sub を照合しない） */
   subject: string;
+  /** bypass-check の B4 が持ち込む Access JWT（poc-token で取ったもの。権限 600） */
+  tokenFile: string;
+  /** bypass-check の B1 が使う workers.dev のアカウントのサブドメイン（無ければ API で読む） */
+  workersDevSubdomain: string | undefined;
 }
 
 export function portalSettings(
@@ -35,6 +46,21 @@ export function portalSettings(
   const get = (k: string) => env[`AWSBRIDGE_HUMAN_POC_PORTAL_${k}`] || undefined;
   const outDir = get("OUT_DIR") ?? join(repoRoot, ".secrets/poc-human/portal");
   const url = get("URL");
+  const hostRaw = get("HOST");
+  let base = url === undefined ? undefined : normalizePortalBase(url);
+  if (hostRaw !== undefined) {
+    const fromHost = normalizePortalBase(`https://${assertCustomHost(hostRaw)}`);
+    if (base !== undefined && base !== fromHost)
+      throw new Error(
+        "AWSBRIDGE_HUMAN_POC_PORTAL_HOST と AWSBRIDGE_HUMAN_POC_PORTAL_URL が食い違う（HOST だけにする）",
+      );
+    base = fromHost;
+  }
+  const workersDevSubdomain = get("WORKERS_DEV_SUBDOMAIN");
+  if (workersDevSubdomain !== undefined && !/^[a-z0-9-]+$/.test(workersDevSubdomain))
+    throw new Error(
+      "AWSBRIDGE_HUMAN_POC_PORTAL_WORKERS_DEV_SUBDOMAIN は <subdomain>.workers.dev の <subdomain> だけ",
+    );
   const domainRaw = get("ACCESS_TEAM_DOMAIN")?.replace(/\/+$/, "");
   if (domainRaw !== undefined && !/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/.test(domainRaw))
     throw new Error(
@@ -53,7 +79,7 @@ export function portalSettings(
   if (!/^[\w+=,.@-]{2,64}$/.test(subject))
     throw new Error("AWSBRIDGE_HUMAN_POC_PORTAL_SUBJECT は 2〜64 文字の [A-Za-z0-9_+=,.@-]");
   return {
-    base: url === undefined ? undefined : normalizePortalBase(url),
+    base,
     teamDomain: domainRaw,
     audience: get("AUDIENCE") ?? PORTAL_DEFAULTS.audience,
     stackName,
@@ -67,5 +93,7 @@ export function portalSettings(
     accessDir: get("ACCESS_DIR") ?? join(repoRoot, "scripts/poc/human/portal/access"),
     sessionDuration,
     subject,
+    tokenFile: get("TOKEN_FILE") ?? join(outDir, "access-jwt.txt"),
+    workersDevSubdomain,
   };
 }
