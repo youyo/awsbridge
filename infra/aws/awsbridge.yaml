@@ -8,7 +8,8 @@ Description: >-
 #
 #   ReadOnlyRole  AWS managed ReadOnlyAccess + an inline explicit Deny on ssm:GetParameter* (see below).
 #   DebugRole     ReadOnlyAccess + an inline policy in groups (Investigation / SecretRead /
-#                 Operations / Execution, all gated by aws:CalledViaAWSMCP)
+#                 Operations / CostIncurring / Execution, all Allows gated by aws:CalledViaAWSMCP,
+#                 plus a Deny on ssm:GetParameter* outside AWS MCP)
 #                 (+ optional extra managed policies via DebugAdditionalPolicyArns).
 #
 # WARNING (ReadOnlyRole):
@@ -16,7 +17,8 @@ Description: >-
 #   values are decryptable through SSM with the aws/ssm key. Secret values are meant to be read only by
 #   the debug role (SecretRead), so the inline policy explicitly denies ssm:GetParameter, GetParameters,
 #   GetParametersByPath and GetParameterHistory. The Deny has no condition: it applies whether or not the
-#   call goes through the AWS MCP server. The debug role does not get this Deny.
+#   call goes through the AWS MCP server. The debug role instead denies them only outside AWS MCP
+#   (DenyParameterReadOutsideMCP), so its SecretRead still works through MCP.
 # - Residual risk: ReadOnlyAccess also lets this role read Lambda function environment variables
 #   (lambda:Get*, ListFunctions), S3 objects (s3:GetObject) and similar data. They are used daily for
 #   investigation, so they are NOT denied here. If secrets live there, narrow AllowedSubjects or add your
@@ -27,10 +29,12 @@ Description: >-
 # WARNING (DebugRole):
 # - ReadOnlyAccess is NOT restricted to the AWS MCP path. AWS managed policies cannot carry
 #   IAM conditions, so its read permissions apply even to direct API calls with the session.
-#   Only the inline policy below is gated by aws:CalledViaAWSMCP.
+#   Only the inline policy below is gated by aws:CalledViaAWSMCP (its Deny on ssm:GetParameter*
+#   closes the direct path for SSM parameters).
 # - The inline policy grants remote-execution-equivalent permissions: ssm:SendCommand and
 #   ecs:ExecuteCommand are equivalent to a remote shell (secrets, credentials and files can
 #   be exposed); lambda:InvokeFunction runs business logic that may have side effects.
+#   CostIncurring actions are billed, and codepipeline:RetryStageExecution can run deployments.
 # - Escalation paths closed: iam:PassRole is not granted unless DebugPassableEcsTaskRoleArns lists
 #   specific roles, and lambda:UpdateFunctionConfiguration / autoscaling:UpdateAutoScalingGroup
 #   (which can swap in a more privileged execution role / launch template) are not granted.
@@ -219,9 +223,11 @@ Resources:
         - PolicyName: OperationalAccessViaMCP
           PolicyDocument:
             Version: "2012-10-17"
-            # Every statement is gated by aws:CalledViaAWSMCP. Keep it that way when adding Actions,
+            # Every Allow statement is gated by aws:CalledViaAWSMCP. Keep it that way when adding Actions,
             # and prefer narrowing Resource over adding broad Actions. No delete, IAM-write or
-            # organizations actions here. Inline policy size limit is 10,240 characters.
+            # organizations actions here (a Knowledge Base sync in Operations can still remove indexed
+            # documents; see there). List actions one by one (no wildcards).
+            # Inline policy size limit is 10,240 characters.
             Statement:
               # Investigation: deeper read access than ReadOnlyAccess (queries, traces, live tail, console output, Config).
               # Athena also needs s3:PutObject on its result bucket; that is intentionally NOT granted here.
@@ -266,6 +272,22 @@ Resources:
                 Condition:
                   StringEquals:
                     "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
+              # DenyParameterReadOutsideMCP: ReadOnlyAccess includes ssm:Get*, so without this the session
+              # credentials could read SSM parameters directly (SecureString with aws/ssm decrypts via the key policy).
+              # StringNotEquals is true when the key is absent (a direct call), so the Deny applies there;
+              # through AWS MCP the key equals aws-mcp.amazonaws.com and the Deny does not apply.
+              # Do not change this to ...IfExists or a Null check.
+              - Sid: DenyParameterReadOutsideMCP
+                Effect: Deny
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                  - ssm:GetParameterHistory
+                Resource: "*"
+                Condition:
+                  StringNotEquals:
+                    "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
               # SecretDecrypt: kms:Decrypt only when the call comes through Secrets Manager or SSM,
               # so keys cannot be used to decrypt arbitrary data.
               - Sid: SecretDecrypt
@@ -281,6 +303,10 @@ Resources:
                       - "secretsmanager.*.amazonaws.com"
                       - "ssm.*.amazonaws.com"
               # Operations: light, reversible-ish operational actions with side effects. No delete actions.
+              # Exception in effect: bedrock:StartIngestionJob syncs a Knowledge Base data source, and documents
+              # removed from the source (e.g. S3) are removed from the vector store too. Resource stays "*"
+              # like the other groups; to limit it, edit Resource to knowledge-base ARNs
+              # (arn:${Partition}:bedrock:${Region}:${Account}:knowledge-base/${KnowledgeBaseId}) or use aws:ResourceTag.
               - Sid: Operations
                 Effect: Allow
                 Action:
@@ -294,6 +320,56 @@ Resources:
                   - rds:RebootDBInstance
                   - elasticache:RebootCacheCluster
                   - cloudfront:CreateInvalidation
+                  - bedrock:StartIngestionJob
+                  - bedrock:StopIngestionJob
+                  # Stop / restart / fail over.
+                  - states:StopExecution
+                  - glue:BatchStopJobRun
+                  - glue:StopCrawler
+                  - codebuild:RetryBuild
+                  - codebuild:StopBuild
+                  - autoscaling:SuspendProcesses
+                  - autoscaling:ResumeProcesses
+                  - rds:FailoverDBCluster
+                  - rds:RebootDBCluster
+                  - elasticache:TestFailover
+                  - elasticbeanstalk:RestartAppServer
+                  # Stop or suppress. Forgetting to undo these hides incidents (alarm actions, rules) or
+                  # disables self-healing; SetInstanceHealth Unhealthy terminates and replaces the instance.
+                  - cloudwatch:DisableAlarmActions
+                  - cloudwatch:EnableAlarmActions
+                  - events:EnableRule
+                  - events:DisableRule
+                  - events:CancelReplay
+                  - autoscaling:SetInstanceHealth
+                  - autoscaling:EnterStandby
+                  - autoscaling:ExitStandby
+                  - rds:StartDBInstance
+                  - rds:StopDBInstance
+                  - rds:StartDBCluster
+                  - rds:StopDBCluster
+                  - ssm:StopAutomationExecution
+                  - batch:CancelJob
+                  - codepipeline:StopPipelineExecution
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
+              # CostIncurring: actions whose main side effect is cost (model / endpoint inference, snapshots,
+              # provisioned concurrency). No snapshot sharing (ModifyDBSnapshotAttribute etc.) is granted.
+              - Sid: CostIncurring
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock:ApplyGuardrail
+                  - bedrock:RetrieveAndGenerate
+                  - sagemaker:InvokeEndpoint
+                  - sagemaker:InvokeEndpointAsync
+                  - rds:CreateDBSnapshot
+                  - rds:CreateDBClusterSnapshot
+                  - ec2:CreateSnapshot
+                  - lambda:PutProvisionedConcurrencyConfig
                 Resource: "*"
                 Condition:
                   StringEquals:
@@ -317,6 +393,22 @@ Resources:
                   - sqs:SendMessage
                   - sns:Publish
                   - rds-db:connect
+                  # Business logic and deployments. ssm:StartAutomationExecution runs with the caller's permissions
+                  # only (no iam:PassRole for AutomationAssumeRole). RetryStageExecution can re-run deploy stages.
+                  # codepipeline:StartPipelineExecution is intentionally NOT granted: sourceRevisions / variables can
+                  # swap the source and inject values (like codebuild:StartBuild). glue:StartJobRun and
+                  # batch:SubmitJob are NOT granted either: argument / command overrides can run arbitrary code
+                  # with the job's role.
+                  - states:RedriveExecution
+                  - states:StartSyncExecution
+                  - bedrock:InvokeAgent
+                  - lambda:InvokeFunctionUrl
+                  - glue:StartCrawler
+                  - glue:StartWorkflowRun
+                  - ssm:StartAutomationExecution
+                  - events:StartReplay
+                  - events:PutEvents
+                  - codepipeline:RetryStageExecution
                 Resource: "*"
                 Condition:
                   StringEquals:
