@@ -293,9 +293,7 @@ describe("権限", () => {
         "bedrock:InvokeAgent",
         "lambda:InvokeFunctionUrl",
         "glue:StartCrawler",
-        "glue:StartJobRun",
         "glue:StartWorkflowRun",
-        "batch:SubmitJob",
         "ssm:StartAutomationExecution",
         "events:StartReplay",
         "events:PutEvents",
@@ -455,6 +453,8 @@ describe("権限", () => {
       for (const a of [
         "codepipeline:StartPipelineExecution", // sourceRevisions・variables で差し替えられる
         "codebuild:StartBuild",
+        "glue:StartJobRun", // Arguments の上書きで、ジョブのロールの権限で任意のコードを動かせる
+        "batch:SubmitJob", // containerOverrides のコマンド・環境変数の上書きで同上
         "states:TestState",
         "cloudwatch:SetAlarmState",
         "autoscaling:StartInstanceRefresh",

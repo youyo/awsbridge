@@ -393,19 +393,18 @@ Resources:
                   - sqs:SendMessage
                   - sns:Publish
                   - rds-db:connect
-                  # Business logic and deployments. glue:StartJobRun arguments and batch:SubmitJob overrides can run
-                  # commands with the job's role (like ecs:RunTask). ssm:StartAutomationExecution runs with the
-                  # caller's permissions only (no iam:PassRole for AutomationAssumeRole). RetryStageExecution can
-                  # re-run deploy stages. codepipeline:StartPipelineExecution is intentionally NOT granted:
-                  # sourceRevisions / variables can swap the source and inject values (like codebuild:StartBuild).
+                  # Business logic and deployments. ssm:StartAutomationExecution runs with the caller's permissions
+                  # only (no iam:PassRole for AutomationAssumeRole). RetryStageExecution can re-run deploy stages.
+                  # codepipeline:StartPipelineExecution is intentionally NOT granted: sourceRevisions / variables can
+                  # swap the source and inject values (like codebuild:StartBuild). glue:StartJobRun and
+                  # batch:SubmitJob are NOT granted either: argument / command overrides can run arbitrary code
+                  # with the job's role.
                   - states:RedriveExecution
                   - states:StartSyncExecution
                   - bedrock:InvokeAgent
                   - lambda:InvokeFunctionUrl
                   - glue:StartCrawler
-                  - glue:StartJobRun
                   - glue:StartWorkflowRun
-                  - batch:SubmitJob
                   - ssm:StartAutomationExecution
                   - events:StartReplay
                   - events:PutEvents
