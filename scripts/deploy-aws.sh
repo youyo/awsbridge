@@ -74,7 +74,7 @@ params=(
   "AllowedSubjects=${AWSBRIDGE_ALLOWED_SUBJECTS}"
   "DebugAllowedSubjects=${AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS}"
 )
-# 任意の値は設定されているときだけ渡す（未設定ならテンプレートの既定値を使う）
+# 任意の値は設定されているときだけ渡す（未設定なら、新規スタックではテンプレートの既定値、既存スタックの更新では aws cloudformation deploy がスタックの既存の値を使う）
 if [ -n "${AWSBRIDGE_READONLY_ROLE_NAME:-}" ]; then
   params+=("ReadOnlyRoleName=${AWSBRIDGE_READONLY_ROLE_NAME}")
 fi
