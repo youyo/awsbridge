@@ -13,6 +13,9 @@ coverage/
 mise.local.toml
 # プロファイル一覧（アカウント ID を含む。config/profiles.example.json をコピーして作る）
 config/profiles.json
+# 人間のログインの設定ファイル（config/human.example.json などをコピーして作る）と、その生成物（AUD・email を含む）
+config/human.json
+.generated/
 
 # Terraform
 infra/cloudflare/.terraform/

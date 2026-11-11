@@ -1,0 +1,12 @@
+{
+  // PoC（人間のログイン）のポータル Worker。MCP 用の wrangler.jsonc、既存の PoC の issuer Worker（../wrangler.jsonc）とは別。
+  // N9（パス付き issuer）・N1（パスごとの Access アプリと AUD）・N10（Access + Worker の通し経路）を確かめる。
+  // vars と secret は deploy.ts が渡す（ここには実値を書かない）。デプロイ: mise run poc:human:portal:deploy、
+  // 削除: mise run poc:human:portal:destroy（scripts/poc/human/portal/README.md）。
+  "$schema": "../../../../node_modules/wrangler/config-schema.json",
+  "name": "awsbridge-human-poc-portal",
+  "main": "worker.ts",
+  "compatibility_date": "2026-07-21",
+  "workers_dev": true,
+  "preview_urls": false
+}

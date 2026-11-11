@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "portal": {
+    "standardOrigin": "https://portal.example.com",
+    "adminOrigin": "https://admin-portal.example.com",
+    "routing": "path",
+    "regions": { "allowed": ["ap-northeast-1", "us-east-1"], "default": "ap-northeast-1" },
+    "supportUrl": "https://support.example.com/aws"
+  },
+  "teams": [
+    {
+      "name": "infra",
+      "displayName": "インフラ",
+      "access": { "groupObjectIds": ["00000000-0000-0000-0000-000000000001"] }
+    },
+    {
+      "name": "dev",
+      "displayName": "開発",
+      "access": { "groupObjectIds": ["00000000-0000-0000-0000-000000000002"] }
+    },
+    {
+      "name": "sa",
+      "displayName": "SolutionArchitect",
+      "access": { "groupObjectIds": ["00000000-0000-0000-0000-000000000003"] }
+    },
+    {
+      "name": "infra-elevated",
+      "displayName": "インフラ（Admin）",
+      "tier": "admin",
+      "access": { "groupObjectIds": ["00000000-0000-0000-0000-000000000004"] }
+    },
+    {
+      "name": "dev-elevated",
+      "displayName": "開発（Admin）",
+      "tier": "admin",
+      "access": { "groupObjectIds": ["00000000-0000-0000-0000-000000000005"] }
+    }
+  ],
+  "roles": [
+    {
+      "name": "admin",
+      "roleName": "HumanAdmin",
+      "displayName": "Admin",
+      "tier": "admin",
+      "sessionSeconds": 3600,
+      "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/AdministratorAccess"] }
+    },
+    {
+      "name": "developer",
+      "roleName": "HumanDeveloper",
+      "displayName": "Developer",
+      "sessionSeconds": 28800,
+      "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/PowerUserAccess"] }
+    },
+    {
+      "name": "readonly",
+      "roleName": "HumanReadOnly",
+      "displayName": "ReadOnly",
+      "sessionSeconds": 43200,
+      "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/ReadOnlyAccess"] }
+    }
+  ],
+  "kinds": [
+    { "name": "A", "assign": { "admin": ["infra-elevated"], "readonly": ["sa", "infra"] } },
+    {
+      "name": "B",
+      "assign": { "admin": ["infra-elevated", "dev-elevated"], "readonly": ["sa", "infra"] }
+    },
+    {
+      "name": "C",
+      "assign": { "admin": ["infra-elevated"], "developer": ["dev"], "readonly": ["sa", "infra"] }
+    },
+    {
+      "name": "P",
+      "displayName": "管理外の先方",
+      "assign": { "developer": ["dev"], "readonly": ["sa", "infra"] }
+    }
+  ],
+  "boundaries": [
+    {
+      "name": "managed",
+      "issuers": {
+        "standard": "https://id.example.com/standard",
+        "admin": "https://id.example.com/admin"
+      }
+    },
+    { "name": "partner:partner-x", "issuers": { "standard": "https://id.example.com/partner-x" } }
+  ],
+  "organizations": [
+    {
+      "name": "org-main",
+      "displayName": "本体",
+      "boundary": "managed",
+      "placement": "ou",
+      "inventoryRoleArn": "arn:aws:iam::111111111111:role/awsbridge-inventory",
+      "kindOus": {
+        "A": ["ou-abcd-11111111"],
+        "B": ["ou-abcd-22222222"],
+        "C": ["ou-abcd-33333333"]
+      }
+    },
+    {
+      "name": "partner-x",
+      "displayName": "先方 X",
+      "boundary": "partner:partner-x",
+      "placement": "accounts",
+      "accounts": [{ "accountId": "222222222222", "name": "partner-x-dev", "kind": "P" }]
+    }
+  ],
+  "inventory": { "accountEmail": { "managed": "full", "partner": "full" } }
+}

@@ -15,6 +15,9 @@ MCP だけでなく人間の AWS ログインにも使えるかを確かめる�
 - **P3 SourceIdentity**: JWT の `https://aws.amazon.com/source_identity` を信頼ポリシーで必須にでき、CloudTrail に残るか
 - **P4 緊急停止**: ロールの Revoke Sessions と OIDC プロバイダーの削除で、発行済みの認証情報・コンソール・`aws login` が止まるまでの時間
 
+段階 1 の前のゲートの PoC（N9 パス付き issuer・N1 の M2 パスごとの Access アプリと AUD・N10 Access + Worker の通し経路）は
+[portal/README.md](portal/README.md)（ポータル Worker `awsbridge-human-poc-portal`。このページの道具とは別のスタック・Worker・鍵）。
+
 ## 構成（MCP 経路とは分ける）
 
 ```

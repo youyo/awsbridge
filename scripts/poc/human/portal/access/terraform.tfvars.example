@@ -1,0 +1,13 @@
+# コピーして terraform.tfvars にして使う（*.tfvars は gitignore 済み）。値はすべてダミー。
+account_id      = "00000000000000000000000000000000"
+worker_host     = "awsbridge-human-poc-portal.example.workers.dev"
+allowed_idp_ids = ["00000000-0000-0000-0000-000000000000"] # Google の IdP
+
+teams = {
+  infra = { emails = ["user@example.com"] }
+  dev   = { emails = ["user@example.com", "other@example.com"], session_duration = "15m" }
+}
+
+# entry_session_duration = "24h"
+# path_cookie_attribute  = true
+# enable_binding_cookie  = false

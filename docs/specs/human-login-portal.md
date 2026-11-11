@@ -2,7 +2,8 @@
 
 - 作成日: 2026-11-11
 - 改訂: 2026-11-11 利用者の決定 3 点を反映（検索項目にアカウントの email を加える・チーム / ロール / 種類を設定ファイルで定義する・ポータルのホスト名は自社ドメイン）
-- 状態: 設計案（段階 0 の詳細設計）。実装はまだない。段階 1 の前のゲートで Sol のレビューを受け、cto に再上申する
+- 改訂: 2026-11-11 利用者の決定 2 点を反映（Q-P9 一覧の email は既定ですべて表示・Q-P10 会社用の下流リポジトリとレビュー担当）。§11 の設定ファイルの検証と生成を実装し、実装に合わせて §11 を直した
+- 状態: 設計案（段階 0 の詳細設計）。ポータル本体の実装はまだない。設定ファイルのスキーマ・検証・生成（§11）だけを実装した（`src/human/`・`scripts/human/config.ts`・mise タスク `human:config:check` / `human:config:generate`）。段階 1 の前のゲートで Sol のレビューを受け、cto に再上申する
 - 対象: awsbridge 方式（自前の OIDC issuer → 各アカウントの IAM OIDC プロバイダー → `AssumeRoleWithWebIdentity`）による、人間のコンソールログインと `aws login` の入口になる画面
 - 関連: [architecture.md](architecture.md)（MCP 用の構成。CSRF・エラー応答・email の正規化の書き方を踏襲する）、[scripts/poc/human/README.md](../../scripts/poc/human/README.md)（PoC の手順と結果）
 - 「設計上申」は cto への設計上申（人間の AWS ログイン全体の設計案。D1〜D10 と PoC N1〜N12 を含む）を指す。上申と cto の決裁はこのリポジトリの外にあるので、この画面に効く決定は §0 にまとめた
@@ -59,6 +60,8 @@ cto の決裁（条件つき承認。承認の範囲は、設計の方向と段�
 | 検索項目 | アカウント名・ID・Organization・種類に加えて、**アカウントの email**（Organizations の `ListAccounts` / `DescribeAccount` が返す `Email`。アカウントのルートの email）で探せるようにする | §4.2・§5.1・§5.2・§5.6 |
 | チーム・ロールの定義 | 「どんなチームがいて、どんなロールを用意するか」と「種類 × チーム → ロール」は**設定ファイルで定義する**。awsbridge は OSS（public）なので、上流はスキーマと例（`*.example.json`）だけを持ち、実際の値は下流リポジトリ（会社用・個人用）の設定ファイルに置く。MCP 用の `config/profiles.json` と同じ流儀 | §11 |
 | ポータルのホスト名 | **自社ドメイン**（`<domain>`）のホストにする。`workers.dev` は使わない | §3.1・§8・§9.1・§11.3 |
+| 一覧のアカウントの email（Q-P9） | 既定は**すべて表示**（管理下・管理外とも `full`）。ポータルを使うのは社員だけという前提 | §5.6・§11.3・§11.8 |
+| 会社用の下流とレビュー担当（Q-P10） | 設定ファイルは**会社用の下流リポジトリ**に置く。CODEOWNERS のレビュー担当は**利用者本人** | §11.1・§11.5 |
 
 ---
 
@@ -574,7 +577,7 @@ CI で検査すること（生成のたび）:
 |---|---|
 | 出どころ | 管理下: `ListAccounts` の `Email`（§5.1）。管理外: 先方から教えてもらったものを設定ファイルの登録に書いたときだけ。どちらもないときは空で、検索に当たらない。**手で書いた email は設定ファイルごと下流（private）にコミットされる**（生成物をコミットしない §5.3 の例外）。それを避けたいなら書かない |
 | 表示する場所 | **そのチームの行**の S1（2 行目）と S2 だけ。S0・S3・S4・S5 には出さない。他のチームの行の email は、HTML にも埋め込む JSON にも入れない（§5.4 と同じサーバー側の絞り込み） |
-| 一覧の応答に含める範囲 | ポータルに JSON の API はない（§9.2）。「一覧の応答」は S1 の HTML に埋め込む JSON のこと。ここに入れる email は境界ごとの設定 `inventory.accountEmail`（§11.3）で決める: `full`（そのまま）/ `masked`（ローカル部の先頭 2 文字だけを残し、`aw***@<domain>` の形）/ `hidden`（入れない）。既定は **管理下 `full`、管理外 `hidden`**。`masked` と `hidden` は生成の時点で伏せる・落とすので、元の値はバンドルにも入らない。`masked` の行は伏せた形に対してだけ検索が当たる |
+| 一覧の応答に含める範囲 | ポータルに JSON の API はない（§9.2）。「一覧の応答」は S1 の HTML に埋め込む JSON のこと。ここに入れる email は境界ごとの設定 `inventory.accountEmail`（§11.3）で決める: `full`（そのまま）/ `masked`（ローカル部の先頭 2 文字だけを残し、`aw***@<domain>` の形。ローカル部が 2 文字以下なら先頭 1 文字）/ `hidden`（入れない）。既定は **管理下・管理外とも `full`（すべて表示）**（Q-P9 の決定）。`masked` と `hidden` は生成の時点で伏せる・落とすので、元の値はバンドルにも入らない。`masked` の行は伏せた形に対してだけ検索が当たる |
 | 検索 | ブラウザ内の絞り込みでは、埋め込んだ JSON の email に部分一致（大文字と小文字を区別しない）。JS なしの `?q=` では、要求の URL に検索語が入る。Workers のログや Logpush の要求の記録に URL のクエリが残るか [未検証]（P-7）。残るなら、JS なしの検索は email を対象にせず、案内に「email で探すには JavaScript が要る」と出す |
 | ログ | 監査ログ（§10.3）・エラーのログ・例外の文に**アカウントの email を出さない**（アカウント ID で足りる）。`?q=` の値もログに出さない。利用者の email（監査の主体）は従来どおり残す。この 2 つを取り違えない |
 | localStorage | お気に入り・最近使ったものに email を入れない（§9.6）。共有端末やブラウザの同期に広がるのを避ける |
@@ -584,7 +587,7 @@ CI で検査すること（生成のたび）:
 | 応答ヘッダー | 一覧と詳細は既に `Cache-Control: no-store`（§9.6）。email を含む画面も同じ |
 
 - そのチームの人は、その行のアカウントにログインできる人なので、email を見せても新たに開く範囲は小さいと考える [推測]。ただし、ReadOnly のロールではコンソールでルートの email を見られない場合がある（必要な権限による）[推測] ので、ポータルが見せる範囲の方が広くなりうる。これを避けたい下流は `masked` か `hidden` にする
-- 管理外の既定を `hidden` にするのは、先方の email は先方の情報で、先方の承諾なく自社の利用者に広げるべきでないため [推測: 利用者に確認する。§12.1 の Q-P9]
+- 管理外の先方の email も既定で出す（Q-P9 の決定: ポータルを使うのは社員だけで、先方の利用者は使わない前提）。先方の email は先方の情報なので、先方との取り決めで広げられないものは、下流で `partner` を `masked` か `hidden` にするか、登録に書かない
 
 ---
 
@@ -651,6 +654,8 @@ AWS の文書は、ログイン URL を秘密として扱い、302 で渡すこ�
 
 PoC で分かったこと: 同じブラウザに別のフェデレーションのコンソールのセッションが残っていると、新しいログイン URL を開いても切り替わらない [確認済み: PoC の運用上の注意]。PoC のときにマルチセッションが有効だったかは記録がない。
 
+N10 の実測（2026-11-11）: 前の PoC で消したロールのコンソールのセッションがブラウザに残っていると、新しいログイン URL が「Credentials invalid」になった。コンソールからサインアウトすると通った [確認済み: 開発環境の PoC]。そのため、S2 の「切り替わらないとき」の案内には、症状が「切り替わらない」だけでなく「Credentials invalid」になることがある（特に消えたロールのセッションが残っているとき）と書き、サインアウトしてからやり直す導線を置く。
+
 AWS の文書で分かること:
 
 - コンソールは 1 つのブラウザで最大 5 つの ID に同時にサインインできる。対象は root・IAM・フェデレーションのロールの組み合わせ。マルチセッションはブラウザごとのオプトインで、有効にするとコンソールの URL にサブドメインが付く [確認済み: AWS の文書]
@@ -688,8 +693,9 @@ M2 では、Worker は利用者の所属を知らない。チームは「どの 
 |---|---|
 | チームを選ぶ | S0 で全チームを並べる。所属していないチームを選ぶと、Access のブロック画面（S6）になる |
 | 自分が入れるチームを知る | Access の App Launcher（`https://<team-name>.cloudflareaccess.com`）は、利用者が使えるアプリのタイルを表示する [確認済み: Cloudflare の文書（RDP の手順の記載）]。チームのアプリを App Launcher に出せば、所属の確認に使える。ポータルは App Launcher へのリンクを置くだけで、所属を調べない |
-| チームを切り替える | ヘッダーの「チーム ▼」から別のチームの S1 に移る。Access は、そのチームのアプリのポリシーで判定し直す。2 つ目以降のアプリで再ログインが要るか（SSO のセッションの共有）は [未検証]（N1）。R-P で Cookie Path を無効にしていると、切り替えのたびに Cookie が上書きされ、Access への往復が起きうる [推測] |
+| チームを切り替える | ヘッダーの「チーム ▼」から別のチームの S1 に移る。Access は、そのチームのアプリのポリシーで判定し直す。2 つ目以降のアプリで再ログインは要らなかった（IdP のグローバルセッションが共有される）[確認済み: 開発環境の PoC の M2。Google の IdP]。R-P で Cookie Path を無効にしていると、切り替えのたびに Cookie が上書きされ、Access への往復が起きうる [推測] |
 | 同じアカウントに複数のチームで入れる | チームごとに入れるロールが違う（例 種類 B: Admin の階層の `dev-elevated` は Admin、`sa` は ReadOnly。§11.3 の例）。S1・S2 は、今のチームのロールだけを表示する。どのチームを選んでも権限はロールで決まる（権限ポリシーで `aws:PrincipalTag/awsbridge_team` を使わない）[資料: 設計上申 §4.6.5] |
+| 所属の変更が効くまで | ポリシーから外すだけでは、発行済みのアプリのトークン（アプリのセッション時間。PoC の infra は 24 時間）は使い続けられる。外したあと、(1) ポリシーの変更が Access に伝わるのを待つ（PoC では約 20 秒で失効させても新しいトークンが発行され、約 2 分 15 秒後の失効では拒否された）、(2) アプリのトークンを失効させる（`revoke_tokens`）か、期限切れを待つ（期限切れのときにポリシーが判定し直され、IdP の再ログインなしに拒否された）。即時に効く保証はないので、運用の手順には「ポリシー変更 → 数分待つ → 失効」と書き、セッション時間は短くする [確認済み: 開発環境の PoC の N10。Google の IdP。Entra のグループで同じかは会社環境で確かめる（N1・N10 の残り）] |
 | CloudTrail | 引き受けのイベントにタグ `awsbridge_team` が残る [確認済み: PoC の P3（`access_profile` で確認）]。「どのチームの立場で入ったか」が分かる |
 | 最近使ったもの | localStorage にチームと一緒に記録する。S0 では全チーム分を出し、開くとそのチームの S2 へ移る（R-P の場合） |
 | 一覧で見つからない | 他のチームで同じ検索語を開くリンクを出す（中身は見せない） |
@@ -815,7 +821,7 @@ architecture.md の形に合わせる。ポータルは HTML を返すが、`cod
 | ポータル自身の Cookie | **持たない**。認証は Access の Cookie、個人の設定は localStorage |
 | `Cache-Control` | すべての応答で `no-store`（静的なファイルを除く） |
 | `Referrer-Policy` | `same-origin`。AWS への遷移（別のオリジン）では `Referer` を送らない。`no-referrer` にしないのは、Fetch の仕様では `no-referrer` のページからの GET・HEAD 以外のフォーム送信で `Origin: null` になり、§9.3 の 3（Origin の一致）で自分の POST まで拒否してしまうため [推測: 仕様の読み。実ブラウザでは P-4 で確かめる]。T2 で AWS に POST するときは `Origin: null` になる見込みで、AWS が受け付けるかも P-4 で確かめる |
-| `Content-Security-Policy` | `default-src 'self'`、スクリプトは `'self'`（T2 を採るなら nonce）、`frame-ancestors 'none'`、`form-action 'self' https://signin.aws.amazon.com https://*.signin.aws.amazon.com` [推測: 正確な値は実装時に確かめる] |
+| `Content-Security-Policy` | `default-src 'self'`、スクリプトは `'self'`（T2 を採るなら nonce）、`frame-ancestors 'none'`、`form-action 'self' https://signin.aws.amazon.com https://*.signin.aws.amazon.com https://console.aws.amazon.com https://*.console.aws.amazon.com`。`form-action` はフォーム送信後のリダイレクトの連鎖すべてに当たるため、サインインからコンソールへのリダイレクト先まで許す必要がある [確認済み: PoC の N10。signin だけだとコンソールへの遷移が止まった] |
 | `X-Content-Type-Options` | `nosniff` |
 | localStorage に置くもの | お気に入り・最近使ったもの（チーム・アカウント ID・アカウント名・ロール・時刻。**アカウントの email は置かない**。§5.6）、入れたことのあるチーム、リージョンの選択。認証情報・URL・トークンは置かない。消去のボタンを用意する |
 
@@ -860,6 +866,8 @@ cto の条件（MCP 用 Worker のバンドルに人間用の経路が入らな�
 | Admin のバンドル | Standard の一覧の行が含まれない |
 | 設定の読み込み | Standard のデプロイに Admin の階層の行・チーム・issuer が渡されたら、起動時（初回の要求時）に `server_misconfigured` で止まる（生成の段階でも弾く。§11.6） |
 | 設定の分離 | Worker 用の生成物に、種類の定義（`kinds`）・Entra のグループの Object ID・他の階層の AUD が入っていない |
+
+実装済みのもの（§11 の設定の実装と一緒に入れた）: MCP 用のバンドルの検査（`test/e2e/human-bundle.test.ts`。`wrangler deploy --dry-run` の metafile の inputs に `src/human/` がなく、本文にタグのキー・ロールのパス・`/t/` がないこと。`test/unit/human-layout.test.ts` は `src/index.ts` からの静的な import をたどる）と、設定の分離（`test/unit/human-generate.test.ts`）。Standard・Admin のバンドルと設定の読み込みの検査は、ポータル本体と一緒に足す。
 
 ---
 
@@ -916,10 +924,10 @@ cto の条件（MCP 用 Worker のバンドルに人間用の経路が入らな�
 
 | 持ち主 | 持つもの | 持たないもの |
 |---|---|---|
-| 上流（awsbridge。public） | 設定ファイルのスキーマ（`config/human.schema.json`）。例（`config/human.example.json`。値はすべてダミー）。生成と検査の道具（mise のタスク）。固定の約束（ロールのパス `/awsbridge-human/`、タグのキー `awsbridge_team`、`aws login` は `localhost` だけを許すポリシーを全ロールに付けること。§6.5） | 実際のチーム名・Entra のグループ・AUD・アカウント ID・OU・ドメイン・email |
+| 上流（awsbridge。public） | 設定ファイルのスキーマ（`src/human/config.ts` の型と検証。JSON Schema のファイルは置かない）。例（個人用の最小構成 `config/human.example.json` と、会社用を想定した `config/human.company.example.json`。値はすべてダミー）。生成と検査の道具（mise のタスク）。固定の約束（ロールのパス `/awsbridge-human/`、タグのキー `awsbridge_team`、`aws login` は `localhost` だけを許すポリシーを全ロールに付けること。§6.5） | 実際のチーム名・Entra のグループ・AUD・アカウント ID・OU・ドメイン・email |
 | 下流（private） | 設定ファイルの実物（例 `deploy/human.json`）、自前の wrangler の設定、Terraform のルートモジュール、CODEOWNERS | 上流のファイルの編集（architecture.md「下流リポジトリでの運用」と同じく、ファイルを足すだけ） |
 
-- 会社の下流リポジトリは、cto の条件にある「種類の定義を管理する private リポジトリ」そのものである。設計上申で `patterns.yaml` と呼んでいたファイルは、この設定ファイルの `kinds` に当たる（この文書では設定ファイルに一本化する）
+- 会社用の下流リポジトリ（Q-P10 で決定）は、cto の条件にある「種類の定義を管理する private リポジトリ」そのものである。設計上申で `patterns.yaml` と呼んでいたファイルは、この設定ファイルの `kinds` に当たる（この文書では設定ファイルに一本化する）
 - 前の版で利用者への確認事項にしていた「インフラにも ReadOnly を許すか」（旧 Q-P1）は、上流では決めない。下流の設定の `kinds[].assign` で決める（§11.8）
 
 ### 11.2 置き場所とバンドルの流れ（profiles.json との比較）
@@ -929,17 +937,19 @@ cto の条件（MCP 用 Worker のバンドルに人間用の経路が入らな�
    │
    ├─▶ Terraform（for_each で Access アプリとポリシー）──▶ 出力: チーム → AUD
    │                                                        │
-   ├─▶ mise run human:build（生成と検査）◀────────────────────┘
+   ├─▶ mise run human:config:generate（検査と生成）◀──────────┘
    │      │  + インベントリ（ListAccounts など。§5.1）
-   │      ├─▶ .generated/human/standard.json ──alias──▶ Standard の Worker
-   │      └─▶ .generated/human/admin.json    ──alias──▶ Admin の Worker
+   │      ├─▶ .generated/human/worker.standard.json ──alias──▶ Standard の Worker
+   │      ├─▶ .generated/human/worker.admin.json    ──alias──▶ Admin の Worker
+   │      ├─▶ .generated/human/stacksets.json（パラメーター）──▶ StackSets（CI）
+   │      └─▶ .generated/human/access.json（Terraform との突き合わせ用）──▶ CI の検査
    │
-   └─▶ mise run human:stacksets（テンプレートとパラメーターの生成）──▶ StackSets（CI）
+   └─▶ mise run human:config:check（PR の検査。AUD なしで通す。生成物は書かない）
 ```
 
 | 観点 | MCP 用の `profiles.json` | 人間用の設定ファイル |
 |---|---|---|
-| 上流に置くもの | `config/profiles.example.json`（ダミー） | `config/human.example.json`（ダミー）と `config/human.schema.json` |
+| 上流に置くもの | `config/profiles.example.json`（ダミー） | `config/human.example.json`・`config/human.company.example.json`（ダミー）と、スキーマ・生成の道具（`src/human/`・`scripts/human/config.ts`） |
 | 上流の開発用の実物 | `config/profiles.json`（gitignore。例をコピーして作る） | `config/human.json`（gitignore。例をコピーして作る） |
 | 下流 | 自前の JSON に、自前の `wrangler.<name>.jsonc` の `alias` を向ける | 自前の JSON（例 `deploy/human.json`）を、`mise.<name>.toml` の `AWSBRIDGE_HUMAN_CONFIG` で生成のタスクに渡す。自前の `wrangler.<name>-human.jsonc` の `alias` は**生成物**に向ける |
 | Worker に入るもの | ファイルそのもの | **生成物**: その階層のチーム・ロール・境界の issuer と、その階層の一覧の行だけ。`kinds`（種類 × チーム → ロールの表）・Entra のグループの Object ID・Access のポリシー ID・権限ポリシー・他の階層の AUD は入れない |
@@ -951,7 +961,7 @@ cto の条件（MCP 用 Worker のバンドルに人間用の経路が入らな�
 - ファイルをそのままバンドルすると、Standard のバンドルに Admin の AUD と、種類 × チーム → ロールの表が入る。前者は §9.10 の分離に、後者は cto の制約（Worker は対応表を権威として持たない）に反する
 - AUD は Access アプリを作ったときに Cloudflare が決める値で、設定ファイルに先に書けない（§11.4）
 
-モジュール名（例 `awsbridge:human`）・タスク名・生成物のパスは実装時に決める [推測: 案]。生成物と、email を含むインベントリはコミットしない（§5.3・§5.6）。
+タスク名は `human:config:check` / `human:config:generate`、生成物の置き場所は `.generated/human/`（gitignore。`AWSBRIDGE_HUMAN_OUT_DIR` で変えられる）に決めた。入力は環境変数で渡す: 設定ファイル `AWSBRIDGE_HUMAN_CONFIG`（既定 `config/human.json`）、Terraform の出力 `AWSBRIDGE_HUMAN_AUD_FILE`（`{ "teams": { <チーム>: <AUD> }, "entry": { "standard": <AUD>, "admin": <AUD> } }`。`terraform output -json` の値をこの形にする）、インベントリ `AWSBRIDGE_HUMAN_INVENTORY_FILE`（`{ <Organization>: [{ "accountId", "name", "email"?, "ouPath": [<ルートから親までの ID>], "status"? }] }`）、生成物に記録するコミット `AWSBRIDGE_HUMAN_SOURCE_REVISION`。Worker が生成物を読むモジュール名（例 `awsbridge:human`）はポータル本体の実装で決める。生成物と、email を含むインベントリはコミットしない（§5.3・§5.6）。生成物はファイルの権限を 0600 にする。
 
 ### 11.3 スキーマ（案）と例
 
@@ -965,23 +975,36 @@ cto の条件（MCP 用 Worker のバンドルに人間用の経路が入らな�
 | `portal.routing` | 任意（既定 `path`） | `path`（R-P）/ `host`（R-H）。§3.1・G-1 |
 | `portal.regions` | 任意 | `allowed`（リージョンの配列）と `default`。省略するとリージョンの選択を出さず、`Destination` にリージョンを付けない |
 | `portal.supportUrl` | 任意 | 問い合わせ先（S1・S4 のリンク。旧 Q-P6） |
-| `portal.entryAud` | 任意 | 入口のアプリの AUD。Terraform を使わず、チームが 2 つ以上のときだけ手書きする（Terraform なら出力から入る。チームが 1 つなら入口のアプリは要らない。§11.7） |
+| `portal.entryAud` | 任意 | 入口のアプリの AUD。階層ごと（`{ "standard": ..., "admin": ... }`。Standard と Admin のポータルはそれぞれ入口のアプリを持つ。§8）。Terraform を使わず、その階層のチームが 2 つ以上のときだけ手書きする（Terraform なら出力から入る。チームが 1 つなら入口のアプリは要らない。§11.7） |
 | `teams[]` | 1 件以上 | チーム。`name` は `^[a-z][a-z0-9-]{0,31}$`（タグの値・URL のパス・Access アプリの名前に使う）。`displayName`（任意。既定は `name`）。`tier`（`standard` / `admin`。既定 `standard`）。`access` は Access のポリシーの元で、Terraform で作るなら `groupObjectIds`（Entra のグループの Object ID。会社用）か `policyIds`（既存の再利用できるポリシーの ID）のどちらか一方。Terraform を使わない構成では、手で作ったアプリの `access.aud` だけを書く（§11.4・§11.7） |
 | `roles[]` | 1 件以上 | ロール。`name`（`^[a-z][a-z0-9-]{0,31}$`。一覧・`entry`・`kinds` で使う）。`roleName`（IAM のロール名。パスは `/awsbridge-human/` に固定）。`displayName`（任意）。`tier`（既定 `standard`）。`sessionSeconds`（900〜43200。MaxSessionDuration と一覧の表示に使う。旧 Q-P2）。`permissions.managedPolicyArns`（AWS 管理ポリシーの ARN）と `permissions.inlinePolicyFiles`（下流のポリシー文書のパス。任意） |
 | `kinds[]` | 1 件以上 | アカウントの種類。`name`、`displayName`（任意）、`assign`（`{ <ロールの name>: [<チームの name>, ...] }`）。**割り当てるチームとロールの `tier` は一致すること**（Admin のロールは Admin の階層のチームだけを受け付ける） |
 | `boundaries[]` | 1 件以上 | 信頼の境界。`name`（`managed` か `partner:<識別子>`）と `issuers`（`standard` と、Admin を使うなら `admin` の issuer の URL）。issuer のホストとパスは N9 で決める。鍵そのものは書かない（secret / KMS） |
 | `organizations[]` | 1 件以上 | アカウントの出どころ。`name`・`displayName`・`boundary`・`placement`（`ou` = S1 / `accounts` = S3 と管理外・単独のアカウント）。`ou` では `inventoryRoleArn`（`ListAccounts` を読むロール）と `kindOus`（`{ <種類>: [<OU ID>, ...] }`）。`accounts` では `accounts[]`（`accountId`・`name`・`kind`・`email`（任意）） |
-| `inventory.accountEmail` | 任意 | 一覧に入れるアカウントの email。`{ "managed": "full" \| "masked" \| "hidden", "partner": ... }`。既定は `managed: full`、`partner: hidden`（§5.6） |
+| `inventory.accountEmail` | 任意 | 一覧に入れるアカウントの email。`{ "managed": "full" \| "masked" \| "hidden", "partner": ... }`。既定は `managed: full`、`partner: full`（すべて表示。Q-P9 の決定。§5.6） |
 
-未知のキーは誤り（打ち間違いを見逃さないため。`additionalProperties: false`）。
+未知のキーは誤り（打ち間違いを見逃さないため）。例外として、エディターの補完のための `$schema`（文字列）は受け付けて無視する。
+
+実装で決めた規則（上の表に加えたもの。`src/human/config.ts`）:
+
+- `access` は `groupObjectIds`・`policyIds`・`aud` の**どれか 1 つだけ**。`groupObjectIds` と `policyIds` は UUID の形。AUD は英数字 16〜128 文字
+- `portal.*Origin` は `https://<host>` の形そのもの（末尾の `/`・パス・ポート以外の付加物・利用者情報を受け付けない。§9.3 で `Origin` と完全一致させるため）。`workers.dev` とそのサブドメインは大文字小文字を問わず拒否する
+- `portal.regions` は `allowed`（1 件以上）と `default`（`allowed` に含まれること）がどちらも必須
+- `boundaries[].issuers` の URL は `https`、クエリ・フラグメント・末尾の `/` なし。issuer の URL は境界・階層をまたいで重複してはいけない（鍵を境界 × 階層で分けるため。cto の D3）。issuer の `workers.dev` は拒否しない（issuer のホストは N9・G-8 で決める）
+- 管理外の境界（`partner:*`）の Organization は `placement: "accounts"` だけ（先方の `ListAccounts` は読めない。§5.1）
+- `roles[].permissions.managedPolicyArns` は AWS 管理ポリシー（`arn:aws:iam::aws:policy/...`）だけ。`inlinePolicyFiles` は下流のリポジトリ内の相対パス（絶対パスと `..` を受け付けない）
+- ロールの `roleName`（IAM のロール名）も重複してはいけない。ロールの `name` から StackSets のパラメーター名（`read-only` → `ReadOnlyTeams`）を作るので、それが衝突する名前の組（例 `a-1` と `a1`）も誤り
+- OU ID は Organization・種類をまたいで重複してはいけない（2 つの種類に同じ OU を割り当てない）。`kinds[].assign` のチームの一覧の中の重複も誤り
+- `organizations[].accounts[].email` は 6〜64 文字の email の形
 
 #### 例（会社用。値はすべて伏せた形）
 
 設計上申 §4.6.1 の表（種類 A〜C）に、管理外の先方用の種類 P を足した例。チームの `-elevated` は Admin の階層のチームで、PIM の対象のグループに対応する（段階 3）。
 
+上流の `config/human.company.example.json` は、この例の `<...>` をダミーの値（`example.com`・`111111111111` など）に置き換えたもの。
+
 ```json
 {
-  "$schema": "./human.schema.json",
   "schemaVersion": 1,
   "portal": {
     "standardOrigin": "https://portal.<domain>",
@@ -1032,7 +1055,7 @@ cto の条件（MCP 用 Worker のバンドルに人間用の経路が入らな�
       "accounts": [{ "accountId": "<account-id>", "name": "partner-x-dev", "kind": "P" }]
     }
   ],
-  "inventory": { "accountEmail": { "managed": "full", "partner": "hidden" } }
+  "inventory": { "accountEmail": { "managed": "full", "partner": "full" } }
 }
 ```
 
@@ -1045,12 +1068,13 @@ cto の条件（MCP 用 Worker のバンドルに人間用の経路が入らな�
 | 生成するもの | 使う項目 | 方法 | 置き場所 |
 |---|---|---|---|
 | Access アプリとポリシー | `portal`（ホスト・`routing`）、`teams[].name` / `tier` / `access` | 下流の Terraform が設定ファイルを読み（`jsondecode(file(...))`）、入口・チームごと・Bypass のアプリを `for_each` で作る。チームのアプリのポリシーは `access.groupObjectIds` だけを要求する（§9.1） | Cloudflare（Terraform の state は下流） |
-| AUD → チームの対応 | Terraform の出力（チーム名 → AUD） | 生成のタスクが Terraform の出力を読み、Worker 用の生成物に入れる。手書きの `access.aud` は Terraform を使わない構成のためのもの | Worker 用の生成物 |
-| Worker 用の生成物（階層ごと） | その階層の `teams`（名前・表示名・AUD）・入口の AUD・`roles`（`name`・`roleName`・`displayName`・`sessionSeconds`）・`boundaries` の issuer・`portal` の値・一覧の行 | `mise run human:build`（案） | gitignore の生成物 → wrangler の `alias` |
+| AUD → チームの対応 | Terraform の出力（チーム名 → AUD。`AWSBRIDGE_HUMAN_AUD_FILE`） | 生成のタスクが Terraform の出力を読み、Worker 用の生成物に入れる。手書きの `access.aud` は Terraform を使わない構成のためのもの | Worker 用の生成物 |
+| Worker 用の生成物（階層ごと） | その階層の `teams`（名前・表示名・AUD）・入口の AUD・`roles`（`name`・`roleName`・`displayName`・`sessionSeconds`）・`boundaries` の issuer・`portal` の値（もう一方の階層のオリジンは静的なリンク用に `peerOrigin` として入れる）・タグのキー・一覧の行 | `mise run human:config:generate` → `worker.standard.json`（常に作る）・`worker.admin.json`（Admin の階層のチームがあるときだけ。なくなれば前回の分を消す） | gitignore の生成物 → wrangler の `alias` |
 | 表示用インベントリ（一覧の行） | `organizations`・`kinds`・`roles`・`inventory.accountEmail` と、`ListAccounts` の結果 | 種類の割り当てを展開して「アカウント × ロール → チーム」を作り、階層で分ける（§5.2） | Worker 用の生成物の一部 |
-| StackSets のテンプレート | `roles`（`roleName`・`tier`・`sessionSeconds`・`permissions`） | ロールの一覧からテンプレートを生成する。各ロールに、信頼ポリシー（その階層の issuer の OIDC プロバイダー、`aws:RequestTag/awsbridge_team` ∈ パラメーター、`TagKeys`、SourceIdentity 必須）と、`localhost` だけの `aws login` のポリシーを付ける。パラメーターが空のロールは作らない（`Conditions`） | 下流（生成して cfn-lint にかける） |
-| StackSets のパラメーター | `kinds[].assign`、`organizations[].kindOus` | 種類 × Organization ごとに「ロール → 受け付けるチーム（カンマ区切り）」 | 下流の CI が StackSets に反映する |
-| 基盤の StackSet のパラメーター | `boundaries[].issuers` | Organization ごとに OIDC プロバイダー（Standard・Admin） | 同上 |
+| StackSets のテンプレート | `roles`（`roleName`・`tier`・`sessionSeconds`・`permissions`） | **未実装**（K1 / K2 は G-9 で決める。いまはパラメーターの形 `stacksets.json` だけを生成する）。K1 なら、ロールの一覧からテンプレートを生成する。各ロールに、信頼ポリシー（その階層の issuer の OIDC プロバイダー、`aws:RequestTag/awsbridge_team` ∈ パラメーター、`TagKeys`、SourceIdentity 必須）と、`localhost` だけの `aws login` のポリシーを付ける。パラメーターが空のロールは作らない（`Conditions`） | 下流（生成して cfn-lint にかける） |
+| StackSets のパラメーター | `kinds[].assign`、`organizations[].kindOus`（管理外・単独のアカウントは `accounts`） | 種類 × Organization ごとに「ロール → 受け付けるチーム（カンマ区切り）」。パラメーター名はロールの `name` から作る（`readonly` → `ReadonlyTeams`）。割り当てのないロールは空文字（テンプレートの `Conditions` で作らない）。ロールの定義（`roleName`・`tier`・`sessionSeconds`・権限）とタグのキー・ロールのパスも同じファイルに入れる | `mise run human:config:generate` → `stacksets.json`。下流の CI が StackSets に反映する |
+| 基盤の StackSet のパラメーター | `boundaries[].issuers` | Organization ごとに OIDC プロバイダー（Standard・Admin） | 同上（`stacksets.json` の `providers`） |
+| Access の検査用 | `portal`、`teams[].tier` / `access`、AUD | チームごとの階層・ポリシーの元（`groupObjectIds` / `policyIds` / 手書きの AUD）・解決した AUD と、ポータルのオリジン・入口の AUD | `mise run human:config:generate` → `access.json`。CI で Terraform の出力・plan と突き合わせる（§11.5） |
 | 管理外の先方に渡すもの | 先方の種類・境界 | 同じテンプレートと、先方用のパラメーター | 手順書と一緒に先方へ |
 | wrangler の Custom Domain | `portal.*Origin`（R-H ならチーム名も） | 下流の `wrangler.<name>-human.jsonc` は手で書く。CI で設定ファイルと突き合わせる | 下流 |
 
@@ -1069,10 +1093,10 @@ cto の条件（MCP 用 Worker のバンドルに人間用の経路が入らな�
 
 チームを足す PR の時点では Access アプリがまだなく、AUD もない。そのため、反映は次の順にし、AUD を要る検査は適用のあとに回す。
 
-1. PR: スキーマと参照の検査（AUD なしの生成。`terraform plan` は差分の確認とレビューのために出すだけ）
+1. PR: スキーマと参照の検査（AUD なしの生成。`mise run human:config:check`。`terraform plan` は差分の確認とレビューのために出すだけ）
 2. マージ → `terraform apply`（Access アプリができ、AUD が出力に出る）
-3. AUD を要る生成（Worker 用の生成物）→ Worker のデプロイ
-4. 適用のあとと定期: `terraform plan` に差分がないこと、AUD の対応の一致
+3. AUD を要る生成（Worker 用の生成物。`AWSBRIDGE_HUMAN_AUD_FILE` に Terraform の出力を渡して `mise run human:config:generate`）→ Worker のデプロイ
+4. 適用のあとと定期: `terraform plan` に差分がないこと、AUD の対応の一致（`AWSBRIDGE_HUMAN_AUD_FILE` を渡した `mise run human:config:check` は、AUD の欠落・食い違い・重複・設定にないチームまで検査する）
 
 | 検査 | 内容 | 時機 |
 |---|---|---|
@@ -1088,7 +1112,7 @@ cto の条件との整合:
 | cto の条件 | この設計での答え |
 |---|---|
 | AUD → チームの対応は Access の Terraform と同じ元から生成する | 元は設定ファイルの `teams`。Terraform はそこから Access アプリを作り、Worker の対応は Terraform の出力から生成する。どちらかだけを変える経路がない。手書きの `access.aud` が Terraform の出力と食い違えば生成のエラー。会社の下流では手書きの AUD を使わない（CI で `access.aud` がないことを確かめる） |
-| 種類の定義は private リポジトリで管理し、CODEOWNERS とレビューを通す | 設定ファイルは下流（private）にだけ置く。CODEOWNERS で設定ファイルにインフラとセキュリティの担当を必須にする。Admin の階層の割り当てを広げる差分（`kinds[].assign` の Admin のロールにチームが増える、Admin のロールの権限が増える）と、**どの階層でもロールの `permissions` か `tier` を変える差分**は、CI が差分から検出して 2 人の承認を求める [推測: GitHub の機能での実現方法は実装時に決める]。ロールの `tier` は設定の自己申告で、強い権限を Standard のロールに付ければ Admin の分離（別デプロイ・KMS）を通らずに済んでしまうため。Standard のロールに付けてよい権限の上限（例 `AdministratorAccess` や IAM の書き込みを禁じる）を生成で検査するかは G-9 で決める上流のスキーマや生成器の変更は、下流で upstream を取り込む PR として同じレビューを通る |
+| 種類の定義は private リポジトリで管理し、CODEOWNERS とレビューを通す | 設定ファイルは下流（private）にだけ置く。CODEOWNERS で設定ファイルのレビュー担当を**利用者本人**にする（Q-P10 の決定）。Admin の階層の割り当てを広げる差分（`kinds[].assign` の Admin のロールにチームが増える、Admin のロールの権限が増える）と、**どの階層でもロールの `permissions` か `tier` を変える差分**は、CI が差分から検出して目立つように示す（PR のラベルや警告）。承認はレビュー担当 1 人でよい（利用者の決定。2 人の承認は求めない）。ロールの `tier` は設定の自己申告で、強い権限を Standard のロールに付ければ Admin の分離（別デプロイ・KMS）を通らずに済んでしまうため。Standard のロールに付けてよい権限の上限（例 `AdministratorAccess` や IAM の書き込みを禁じる）を生成で検査するかは G-9 で決める（いまの実装は検査しない）。上流のスキーマや生成器の変更は、下流で upstream を取り込む PR として同じレビューを通る |
 | Worker は対応表を権威として持たない。表示用の一覧は持ってよい | `kinds` は Worker に入れない。Worker に入るのは、展開済みの表示用の一覧の行と、AUD → チームの対応（許可の範囲を持たない識別用。§0）だけ |
 | Access ポリシーの形を CI で検査する | §11.5 の Access の検査 |
 
@@ -1099,12 +1123,12 @@ cto の条件との整合:
 | 誤り | 見つける時点 | 扱い |
 |---|---|---|
 | 設定ファイルがない | 生成・ビルド | エラー（wrangler の alias の解決エラーも同じ） |
-| 構文・型・必須の欠落・未知のキー・`schemaVersion` の不一致 | 生成 | エラー。キーのパスと規則を出す |
+| 構文・型・必須の欠落・未知のキー・`schemaVersion` の不一致 | 生成 | エラー。キーのパスと誤りの種別（`required`・`unknown_key` など）を出し、値は出さない。利用者が書いたキーのうち名前の形でないもの（AUD・email・12 桁の数字を含むものなど）はパスの中でも `<redacted>` にする |
 | 未知のチーム・ロール（`kinds[].assign` の参照先がない）、未知の種類・境界（`organizations` の参照先がない） | 生成 | エラー |
 | 名前の重複（チーム・ロール・種類・Organization）、AUD の重複、アカウント ID の重複 | 生成 | エラー |
 | 階層の不一致（Admin のロールに Standard のチーム、など）。境界にない階層の issuer が要る割り当て | 生成 | エラー |
 | `adminOrigin` がないのに Admin の階層がある。`standardOrigin` と `adminOrigin` が同じ。`workers.dev` のホスト | 生成 | エラー |
-| チームの AUD がない（Terraform の出力にも手書きにもない） | デプロイ用の生成（その階層） | エラー（profiles.json の欠落と同じく、黙って動かさない）。PR の検査（AUD なしの生成）では誤りにしない（§11.5 の順） |
+| チームの AUD がない（Terraform の出力にも手書きにもない） | デプロイ用の生成 | エラー（profiles.json の欠落と同じく、黙って動かさない）。生成は全階層をまとめて行うので、どの階層のチームの AUD が欠けても全体がエラーになる（Admin の階層をまだ作らないなら、設定に Admin のチームを書かない）。入口の AUD も、その階層のチームが 2 つ以上なら要る。PR の検査（AUD なしの生成）では誤りにしない（§11.5 の順） |
 | 手書きの AUD と Terraform の出力が違う | 生成 | エラー |
 | どの種類にも割り当てられていないチーム・ロール | 生成 | 警告（一覧が空になるだけで、権限は広がらない。旧 Q-P1 の選び方で起きうる） |
 | どの種類の OU にも属さない管理下のアカウント | インベントリの生成 | 警告（一覧に出さず、件数を出す） |
@@ -1144,8 +1168,8 @@ cto の条件との整合:
 | Terraform | Access アプリを 1 つ手で作り（ポリシーは自分の email など）、AUD を `access.aud` に書く。AUD を書き忘れれば生成のエラー。cto の「同じ元から生成」の条件は会社用の条件と読み、個人用には課さない [推測: §12.2 の G-9 で確かめる] |
 | 入口のアプリ | チームが 1 つなら、そのチームのアプリでホスト全体を守り、S0 はそのチームの S1 へ移すだけにする [推測: 実装の案。N1 と一緒に確かめる] |
 | StackSets・インベントリのジョブ | 単独のアカウントは、生成したテンプレートを CloudFormation で流す（MCP 用の `mise run deploy:aws` と同じ形）。一覧は `accounts` から作る |
-| 省略できる項目の既定値 | `tier` は `standard`、`displayName` は `name`、`routing` は `path`、`regions` なし、`inventory.accountEmail` は管理下 `full` |
-| CI の検査 | スキーマと参照の検査（`mise run human:build`）だけで足りる |
+| 省略できる項目の既定値 | `tier` は `standard`、`displayName` は `name`、`routing` は `path`、`regions` なし、`inventory.accountEmail` は管理下・管理外とも `full` |
+| CI の検査 | スキーマと参照の検査（`mise run human:config:check`）だけで足りる。生成は `mise run human:config:generate`（手書きの AUD を使うので、Terraform の出力は要らない） |
 
 ### 11.8 下流の設定で決めること
 
@@ -1158,7 +1182,7 @@ cto の条件との整合:
 | 問い合わせ先（旧 Q-P6） | `portal.supportUrl` | 社内の窓口 |
 | チームとロールの一覧、Developer の権限の中身 | `teams`・`roles[].permissions` | 設計上申 §4.6 の 3 チーム・3 ロール |
 | ポータルのホスト名 | `portal.standardOrigin` / `adminOrigin` | `<domain>` の下で、段階 1 の前に確定する（§3.1） |
-| 一覧に出すアカウントの email | `inventory.accountEmail` | 管理下 `full`、管理外 `hidden`（§12.1 の Q-P9） |
+| 一覧に出すアカウントの email | `inventory.accountEmail` | **決定**（Q-P9）: 既定のまま、管理下・管理外とも `full`（すべて表示） |
 
 ---
 
@@ -1172,8 +1196,6 @@ cto の条件との整合:
 | Q-P4 | 一覧に出す属性（email は決定済み） | 環境（本番・非本番）・担当・説明など | まず名前・ID・email・Organization・種類・管理下 / 外。環境はアカウントのタグか設定ファイルの登録から取れるなら足す |
 | Q-P5 | 他のチームの一覧の中身を見せるか | 見せない / 入口で全一覧を検索できる | 見せない（管理外の先方の名前を含むため） |
 | Q-P7 | 一覧の表示（GET）を誰が何を見たかまで記録するか | する / 件数だけ | 件数だけ（検索語も残さない） |
-| Q-P9 | アカウントの email をどこまで見せるか（会社の下流の `inventory.accountEmail`） | 管理下: `full` / `masked` / `hidden`。管理外: 同じ | 管理下 `full`、管理外 `hidden`（§5.6）。ReadOnly のロールではルートの email を見られない人にも見せることになる点を了承できるか |
-| Q-P10 | 会社の下流リポジトリ（設定ファイルの置き場所）と、CODEOWNERS の担当・Admin を広げる変更の承認者 | — | インフラとセキュリティの担当（設計上申 §4.6.6） |
 
 前の版から移した事項:
 
@@ -1183,12 +1205,14 @@ cto の条件との整合:
 | Q-P2（セッションの長さ） | 下流の設定の `roles[].sessionSeconds`（§11.8） |
 | Q-P6（問い合わせ先） | 下流の設定の `portal.supportUrl`（§11.8） |
 | Q-P8（ポータルのホスト名） | **決定**: 自社ドメインのホスト。`workers.dev` は使わない（§0・§3.1）。具体的なホスト名は下流の設定の `portal.*Origin` |
+| Q-P9（アカウントの email をどこまで見せるか） | **決定**: 既定はすべて表示（管理下・管理外とも `full`）。社員だけが使う前提（§0・§5.6）。スキーマの既定値も同じ |
+| Q-P10（会社の下流リポジトリと CODEOWNERS の担当） | **決定**: 設定ファイルは会社用の下流リポジトリに置き、レビュー担当は利用者本人（§0・§11.5）。承認は 1 人でよい（2 人の承認は求めない） |
 
 ### 12.2 cto のゲートで決めること
 
 | # | 論点 | 作成者の案 | 決める時機 |
 |---|---|---|---|
-| G-1 | チームの分け方（R-P パス / R-H ホスト） | R-P。N1 で、パスごとに AUD が分かれ、Cookie Path で Cookie が分かれることを確かめる。自社ドメインにしたので R-H も取れる（証明書は Custom Domain で発行される）が、チームを足すたびに Custom Domain が要る（§3.1）。設定ファイルの `portal.routing` で選べる形にし、会社用の既定を決める | 段階 1 の前 |
+| G-1 | チームの分け方（R-P パス / R-H ホスト） | R-P。開発環境の PoC（M2・N9）で、パスごとの Access アプリで `aud` が分かれ、アプリを切り替えても再ログインが要らず、1 つのホストの `/std` と `/admin` を別の OIDC プロバイダーにできた。R-P を採れる見込み（会社環境の Entra で確かめる）。Cookie Path の確認は残る。自社ドメインにしたので R-H も取れる（証明書は Custom Domain で発行される）が、チームを足すたびに Custom Domain が要る（§3.1）。設定ファイルの `portal.routing` で選べる形にし、会社用の既定を決める | 段階 1 の前 |
 | G-2 | 一覧を「選択の検証」（一覧にないロールには発行しない）に使うことが、制約 3（Worker は対応表を権威にしない）の範囲内か | 範囲内。許可を広げない側の絞り込みで、最終判断は信頼ポリシー | 段階 1 の前 |
 | G-3 | ログイン URL の渡し方（T1 302 / T2 POST） | 段階 1 は T1。P-4 の結果で T2 を検討 | 段階 1 の前 |
 | G-4 | `--remote` を塞ぐ方法（ロールに `localhost` だけのポリシー / SCP） | ロールのテンプレートで `localhost` だけ。管理下は SCP も併用 | 段階 3 の前（cto の N2）。ただし同じ端末の `aws login` が使えること（P-2）を段階 1 の前に確かめる |
@@ -1204,8 +1228,8 @@ cto の条件との整合:
 
 | # | 内容 | 決まること | 環境 |
 |---|---|---|---|
-| N1（既存） | 1 つのホストでパスごとに Access アプリを分けたとき、AUD が分かれるか。Cookie Path を有効にしたときの切り替えの見え方。アプリ間で SSO のセッションが共有されるか。App Launcher にチームのアプリが所属どおり出るか。チームのパスの下の静的なファイル（`/t/<team>/assets/*`）が、入口のアプリの Cookie なしで読めるか。Custom block pages をアプリごとに変えられるか | G-1、§7、§4.7 | 開発用 → 会社 |
-| N10（既存） | Access + Worker の署名を通した通しの経路（コンソールと `aws login`） | §6 全体 | 開発用 → 会社 |
+| N1（既存） | 1 つのホストでパスごとに Access アプリを分けたとき、AUD が分かれるか。Cookie Path を有効にしたときの切り替えの見え方。アプリ間で SSO のセッションが共有されるか。App Launcher にチームのアプリが所属どおり出るか。チームのパスの下の静的なファイル（`/t/<team>/assets/*`）が、入口のアプリの Cookie なしで読めるか。Custom block pages をアプリごとに変えられるか | G-1、§7、§4.7 | 開発用 → 会社。開発用の M2 は確認済み（パスごとに `aud` が分かれる・再ログイン不要・`/t/infrastructure` は前方一致にならない・片方のアプリから外すと他方は通る）。会社の Entra のグループは残り |
+| N10（既存） | Access + Worker の署名を通した通しの経路（コンソールと `aws login`） | §6 全体 | 開発用 → 会社。開発用のコンソールの通しと所属の反映は確認済み（§6.4・§7・§9.6。結果は `scripts/poc/human/portal/README.md`）。`aws login` と Entra のグループは残り |
 | P-1（N7 を具体化） | マルチセッションが有効なブラウザで、`getSigninToken` の URL が追加のセッションになるか。5 つを超えたときの挙動。マルチセッションが無効なときに切り替わらないこと（PoC の再現）。公式のサインアウトの手順と、その後にログイン URL を開いたときの挙動 | §6.4 の案内 | 開発用 |
 | P-2 | フェデレーションのセッションから、同じ端末の `aws login`（`--remote` なし）が通るか。`localhost` だけを許すポリシーで `--remote` が拒否されるか | §6.5、G-4 | 開発用 |
 | P-3 | `Issuer` に渡した URL に、コンソールのセッション切れのあと実際に戻るか | S5 | 開発用（短い SessionDuration で） |
