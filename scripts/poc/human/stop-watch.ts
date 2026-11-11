@@ -5,7 +5,10 @@
 // 対象（複数指定・組み合わせ可）:
 //   --credentials <file>   console-url が書いた認証情報ファイル（credentials*.json）。環境変数で aws に渡す（引数には載せない）
 //   --profile <name>       AWS プロファイル（aws login のプロファイルなど）。AWS_CONFIG_FILE / AWS_LOGIN_CACHE_DIRECTORY はそのまま引き継ぐ
-//   --assume base|tagged|notag   毎回 JWT を署名して引き受け直し、新しい認証情報で呼ぶ（新しい引き受けが止まるかを見る）
+//   --assume <ロール>[:second]   毎回 JWT を署名して引き受け直し、新しい認証情報で呼ぶ（新しい引き受けが止まるかを見る）。
+//                          ロールは base / tagged / notag / localonly。:second を付けると 2 人目
+//                          （AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT）の subject・SourceIdentity で引き受ける（(4-b) の対照）
+//   複数の --credentials（例 credentials-tagged.json と credentials-tagged-second.json）を同時に見張れる
 // オプション:
 //   --interval <秒>        間隔（既定 5。0 も可）
 //   --count <回>           回数（既定 0 = Ctrl-C まで）。Ctrl-C でも要約を出して終わる
@@ -33,6 +36,7 @@ import {
   type RoleKey,
   sessionTagClaims,
   sourceIdentityClaim,
+  subjectFor,
   type TemporaryCredentials,
 } from "./lib";
 import { credentialsEnv } from "./ops";
@@ -125,20 +129,28 @@ for (const t of targets) {
   }
 }
 
-// 引き受け直す対象があるときだけ、issuer・subject・ロール ARN を用意する
+// 引き受け直す対象があるときだけ、issuer・subject（対象ごと）・ロール ARN を用意する
 const assumeRoles = new Map<string, string>();
+const assumeSubjects = new Map<string, string>();
 let issuer = "";
-let subject = "";
 if (targets.some((t) => t.kind === "assume")) {
   issuer = required(settings.issuer, "AWSBRIDGE_HUMAN_POC_ISSUER");
-  subject = required(settings.subject, "AWSBRIDGE_HUMAN_POC_SUBJECT");
+  required(settings.subject, "AWSBRIDGE_HUMAN_POC_SUBJECT");
+  for (const t of targets) {
+    if (t.kind !== "assume") continue;
+    try {
+      assumeSubjects.set(t.name, subjectFor(settings, t.who ?? "primary"));
+    } catch (e) {
+      fail(`${(e as Error).message}（mise.local.toml を確認してください）`);
+    }
+  }
   const outputs = stackOutputs(settings);
   for (const t of targets)
     if (t.kind === "assume")
       assumeRoles.set(t.name, roleArnOf(outputs, t.role, settings.stackName));
 }
 
-function assumeClaims(role: RoleKey): Record<string, unknown> {
+function assumeClaims(role: RoleKey, subject: string): Record<string, unknown> {
   if (role !== "tagged") return {};
   return {
     ...sessionTagClaims({ access_profile: values["access-profile"] ?? "poc-admin" }, "nested"),
@@ -166,12 +178,13 @@ async function check(t: WatchTarget): Promise<Outcome> {
       timeoutMs,
     );
   }
+  const subject = assumeSubjects.get(t.name) as string;
   const r = await assumeWithClaims({
     settings,
     issuer,
     subject,
     roleArn: assumeRoles.get(t.name) as string,
-    extraClaims: assumeClaims(t.role),
+    extraClaims: assumeClaims(t.role, subject),
   });
   if (!r.ok) return { ok: false, code: `sts:${r.code}`, detail: failureDetail(r.message) };
   return probeApi(

@@ -35,6 +35,8 @@ export function issuerHost(issuer: string): string {
 export interface HumanPocSettings {
   issuer: string | undefined;
   subject: string | undefined;
+  /** (4-b) 2 人目の利用者（別の SourceIdentity）。Tagged の信頼ポリシーに SecondSubject として足す */
+  secondSubject: string | undefined;
   audience: string;
   stackName: string;
   awsProfile: string;
@@ -52,6 +54,7 @@ export function humanPocSettings(env: Record<string, string | undefined>): Human
   return {
     issuer: issuer === undefined ? undefined : normalizeIssuer(issuer),
     subject: get("AWSBRIDGE_HUMAN_POC_SUBJECT")?.toLowerCase(),
+    secondSubject: get("AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT")?.toLowerCase(),
     audience: get("AWSBRIDGE_HUMAN_POC_AUDIENCE") ?? HUMAN_POC_DEFAULTS.audience,
     stackName: get("AWSBRIDGE_HUMAN_POC_STACK_NAME") ?? HUMAN_POC_DEFAULTS.stackName,
     awsProfile: get("AWS_PROFILE") ?? HUMAN_POC_DEFAULTS.awsProfile,
@@ -92,16 +95,50 @@ export function humanTokenClaims(p: HumanTokenParams) {
 
 // ---- ロールの選択（スタックの Output） ----
 
-export const ROLE_KEYS = ["base", "tagged", "notag"] as const;
+export const ROLE_KEYS = ["base", "tagged", "notag", "localonly"] as const;
 export type RoleKey = (typeof ROLE_KEYS)[number];
 
 export function isRoleKey(v: string): v is RoleKey {
   return (ROLE_KEYS as readonly string[]).includes(v);
 }
 
-/** base = 既存の AwsbridgeHumanPoc、tagged = AwsbridgeHumanPocTagged、notag = AwsbridgeHumanPocNoTag の Output 名。 */
+/**
+ * base = 既存の AwsbridgeHumanPoc、tagged = AwsbridgeHumanPocTagged、notag = AwsbridgeHumanPocNoTag、
+ * localonly = AwsbridgeHumanPocLocalOnly（aws login を localhost だけに絞ったロール）の Output 名。
+ */
 export function roleOutputKey(role: RoleKey): string {
-  return { base: "RoleArn", tagged: "TaggedRoleArn", notag: "NoTagRoleArn" }[role];
+  return {
+    base: "RoleArn",
+    tagged: "TaggedRoleArn",
+    notag: "NoTagRoleArn",
+    localonly: "LocalOnlyRoleArn",
+  }[role];
+}
+
+// ---- 利用者の選択（(4-b) 1 人だけ止める Deny の対照に 2 人目を使う） ----
+
+export const WHO_KEYS = ["primary", "second"] as const;
+export type Who = (typeof WHO_KEYS)[number];
+
+export function isWho(v: string): v is Who {
+  return (WHO_KEYS as readonly string[]).includes(v);
+}
+
+/** primary = AWSBRIDGE_HUMAN_POC_SUBJECT、second = AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT。未設定・同じ値は例外。 */
+export function subjectFor(settings: HumanPocSettings, who: Who): string {
+  if (!settings.subject) throw new Error("AWSBRIDGE_HUMAN_POC_SUBJECT が未設定です");
+  if (who === "primary") return settings.subject;
+  if (!settings.secondSubject) throw new Error("AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT が未設定です");
+  if (settings.secondSubject === settings.subject)
+    throw new Error(
+      "AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT が AWSBRIDGE_HUMAN_POC_SUBJECT と同じです（別の利用者にする）",
+    );
+  return settings.secondSubject;
+}
+
+/** ファイル名の接頭辞の後ろに付ける部分（base・primary は従来どおり何も付けない）。 */
+function fileTag(role: RoleKey, who: Who): string {
+  return [role === "base" ? "" : `-${role}`, who === "primary" ? "" : `-${who}`].join("");
 }
 
 /** describe-stacks --query Stacks[0].Outputs --output json の出力を OutputKey → OutputValue にする。 */
@@ -115,9 +152,9 @@ export function outputsMap(json: string): Record<string, string> {
   return out;
 }
 
-/** 認証情報のファイル名。base は従来どおり credentials.json。destroy.sh は credentials*.json を消す。 */
-export function credentialsFileName(role: RoleKey): string {
-  return role === "base" ? "credentials.json" : `credentials-${role}.json`;
+/** 認証情報のファイル名。base は従来どおり credentials.json、2 人目は -second を付ける。destroy.sh は credentials*.json を消す。 */
+export function credentialsFileName(role: RoleKey, who: Who = "primary"): string {
+  return `credentials${fileTag(role, who)}.json`;
 }
 
 /** 手元の秘密鍵で JWT に署名する（header: alg RS256、kid = JWK thumbprint）。 */
@@ -171,8 +208,8 @@ export function consoleUrlFileName(
   durationSeconds: number | undefined,
   sessionDuration: number | undefined,
   role: RoleKey = "base",
+  who: Who = "primary",
 ): string {
   const dur = durationSeconds === undefined ? "default" : String(durationSeconds);
-  const prefix = role === "base" ? "console-url" : `console-url-${role}`;
-  return `${prefix}-dur-${dur}-sd-${sessionDurationLabel(sessionDuration)}.txt`;
+  return `console-url${fileTag(role, who)}-dur-${dur}-sd-${sessionDurationLabel(sessionDuration)}.txt`;
 }

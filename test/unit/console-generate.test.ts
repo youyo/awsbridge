@@ -1,7 +1,11 @@
-// 人間のログインの設定ファイルからの生成（Worker 用・StackSets 用・Access の検査用）。設計: docs/specs/human-login-portal.md §5.2・§9.10・§11.4〜§11.6。
+// コンソールログインの設定ファイルからの生成（Worker 用・StackSets 用・Access の検査用）。設計: docs/specs/console-login-portal.md §5.2・§9.10・§11.4〜§11.6。
 import { describe, expect, it } from "vitest";
-import { HumanConfigError, type HumanConfigIssue, parseHumanConfig } from "../../src/human/config";
-import { generateHumanArtifacts, type HumanArtifacts } from "../../src/human/generate";
+import {
+  ConsoleConfigError,
+  type ConsoleConfigIssue,
+  parseConsoleConfig,
+} from "../../src/console/config";
+import { type ConsoleArtifacts, generateConsoleArtifacts } from "../../src/console/generate";
 import {
   companyAuds,
   companyConfig,
@@ -9,16 +13,16 @@ import {
   personalConfig,
   type Raw,
   uuid,
-} from "./human-fixtures";
+} from "./console-fixtures";
 
 const AT = "2026-11-11T00:00:00.000Z";
 
 function gen(
   raw: Raw,
   opts: { auds?: Raw; inventory?: Raw; mode?: "check" | "deploy"; sourceRevision?: string } = {},
-): HumanArtifacts {
-  const { config } = parseHumanConfig(raw);
-  return generateHumanArtifacts(config, {
+): ConsoleArtifacts {
+  const { config } = parseConsoleConfig(raw);
+  return generateConsoleArtifacts(config, {
     mode: opts.mode ?? "deploy",
     generatedAt: AT,
     ...(opts.auds !== undefined ? { auds: opts.auds } : {}),
@@ -27,11 +31,11 @@ function gen(
   });
 }
 
-function issuesOf(f: () => unknown): HumanConfigIssue[] {
+function issuesOf(f: () => unknown): ConsoleConfigIssue[] {
   try {
     f();
   } catch (e) {
-    if (e instanceof HumanConfigError) return e.issues;
+    if (e instanceof ConsoleConfigError) return e.issues;
     throw e;
   }
   return [];
@@ -77,7 +81,7 @@ describe("Worker 用の生成物（階層ごと）", () => {
     expect(w.roles.map((r) => r.name)).toEqual(["developer", "readonly"]);
     expect(w.roles[1]).toEqual({
       name: "readonly",
-      roleName: "HumanReadOnly",
+      roleName: "ConsoleReadOnly",
       displayName: "readonly",
       sessionSeconds: 43200,
     });
@@ -111,13 +115,13 @@ describe("Worker 用の生成物（階層ごと）", () => {
       roles: [
         {
           role: "developer",
-          roleArn: "arn:aws:iam::444444444444:role/awsbridge-human/HumanDeveloper",
+          roleArn: "arn:aws:iam::444444444444:role/awsbridge-console/std/ConsoleDeveloper",
           teams: ["dev"],
           sessionSeconds: 28800,
         },
         {
           role: "readonly",
-          roleArn: "arn:aws:iam::444444444444:role/awsbridge-human/HumanReadOnly",
+          roleArn: "arn:aws:iam::444444444444:role/awsbridge-console/std/ConsoleReadOnly",
           teams: ["sa", "infra"],
           sessionSeconds: 43200,
         },
@@ -127,7 +131,7 @@ describe("Worker 用の生成物（階層ごと）", () => {
     expect(admin?.accounts.find((a) => a.accountId === "444444444444")?.roles).toEqual([
       {
         role: "admin",
-        roleArn: "arn:aws:iam::444444444444:role/awsbridge-human/HumanAdmin",
+        roleArn: "arn:aws:iam::444444444444:role/awsbridge-console/admin/ConsoleAdmin",
         teams: ["infra-elevated"],
         sessionSeconds: 3600,
       },
@@ -139,7 +143,7 @@ describe("Worker 用の生成物（階層ごと）", () => {
     const s = JSON.stringify(standard);
     const a = JSON.stringify(admin);
     for (const leak of [
-      "HumanAdmin",
+      "ConsoleAdmin",
       "infra-elevated",
       "dev-elevated",
       "4".repeat(64),
@@ -149,8 +153,8 @@ describe("Worker 用の生成物（階層ごと）", () => {
       expect(s, leak).not.toContain(leak);
     }
     for (const leak of [
-      "HumanReadOnly",
-      "HumanDeveloper",
+      "ConsoleReadOnly",
+      "ConsoleDeveloper",
       '"dev"',
       "1".repeat(64),
       "6".repeat(64),
@@ -212,7 +216,7 @@ describe("Worker 用の生成物（階層ごと）", () => {
 });
 
 describe("アカウントの email（inventory.accountEmail。§5.6）", () => {
-  const emailOf = (r: HumanArtifacts, id: string) =>
+  const emailOf = (r: ConsoleArtifacts, id: string) =>
     r.worker.standard.accounts.find((a) => a.accountId === id)?.email;
 
   it("既定（full）では管理下・管理外ともそのまま入れる", () => {
@@ -359,11 +363,16 @@ describe("StackSets 用の生成物", () => {
   it("ロールの定義（テンプレートに渡す形）と固定の約束を持つ", () => {
     const s = company().stacksets;
     expect(s.tagKey).toBe("awsbridge_team");
-    expect(s.rolePath).toBe("/awsbridge-human/");
+    expect(s.audience).toBe("awsbridge-console");
+    // SCP・aws:PrincipalArn で「コンソールログイン用すべて」を止めるための接頭辞と、ロールごとの階層のパス（P-2）
+    expect(s.rolePathPrefix).toBe("/awsbridge-console/");
+    expect(s).not.toHaveProperty("rolePath");
+    expect(s.roles.find((r) => r.name === "admin")?.rolePath).toBe("/awsbridge-console/admin/");
     expect(s.roles.find((r) => r.name === "readonly")).toEqual({
       name: "readonly",
-      roleName: "HumanReadOnly",
+      roleName: "ConsoleReadOnly",
       tier: "standard",
+      rolePath: "/awsbridge-console/std/",
       sessionSeconds: 43200,
       managedPolicyArns: ["arn:aws:iam::aws:policy/ReadOnlyAccess"],
       inlinePolicyFiles: [],

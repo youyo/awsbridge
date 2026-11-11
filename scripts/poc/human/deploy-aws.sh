@@ -5,6 +5,9 @@
 # 上書きできる既定値: AWS_PROFILE（awsbridge）/ AWS_REGION（ap-northeast-1）/
 #   AWSBRIDGE_HUMAN_POC_STACK_NAME（awsbridge-human-poc）/ AWSBRIDGE_HUMAN_POC_AUDIENCE（awsbridge-human-poc）
 # 任意: AWSBRIDGE_HUMAN_POC_ROLE_NAME（未設定ならテンプレートの既定 AwsbridgeHumanPoc）
+#       AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT（(4-b) Tagged を引き受けられる 2 人目の email。未設定なら none = 2 人目なし）
+#       AWSBRIDGE_HUMAN_POC_UPDATE_MARKER（(4-a) スタックの更新を起こす印。英数字 1〜16 文字。既定 0）
+# SecondSubject と UpdateMarker は毎回明示して渡す（cloudformation deploy は渡さなかったパラメーターの前回値を引き継ぐため）。
 set -euo pipefail
 
 export AWS_PROFILE="${AWS_PROFILE:-awsbridge}"
@@ -33,8 +36,23 @@ if ! [[ "$subject" =~ ^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$ ]]; then
   exit 1
 fi
 
+second="none"
+if [ -n "${AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT:-}" ]; then
+  second="$(printf '%s' "$AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT" | tr '[:upper:]' '[:lower:]')"
+  if ! [[ "$second" =~ ^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$ ]] || [ "$second" = "$subject" ]; then
+    echo "AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT '${AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT}' が不正です（AWSBRIDGE_HUMAN_POC_SUBJECT とは別の 1 人の email）。mise.local.toml を確認してください。" >&2
+    exit 1
+  fi
+fi
+
+marker="${AWSBRIDGE_HUMAN_POC_UPDATE_MARKER:-0}"
+if ! [[ "$marker" =~ ^[A-Za-z0-9]{1,16}$ ]]; then
+  echo "AWSBRIDGE_HUMAN_POC_UPDATE_MARKER '${marker}' が不正です（英数字 1〜16 文字。IAM の Sid に入る）。" >&2
+  exit 1
+fi
+
 template="$(cd "$(dirname "$0")" && pwd)/poc-human.yaml"
-params=("IssuerHost=${host}" "Audience=${audience}" "Subject=${subject}")
+params=("IssuerHost=${host}" "Audience=${audience}" "Subject=${subject}" "SecondSubject=${second}" "UpdateMarker=${marker}")
 if [ -n "${AWSBRIDGE_HUMAN_POC_ROLE_NAME:-}" ]; then
   params+=("RoleName=${AWSBRIDGE_HUMAN_POC_ROLE_NAME}")
 fi

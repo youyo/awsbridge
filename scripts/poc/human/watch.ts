@@ -1,13 +1,14 @@
 // PoC P4（緊急停止）の見張り（stop-watch.ts）の純粋関数: 対象の解釈と、記録の集計。
 import { basename } from "node:path";
 import { markdownTable } from "./cases";
-import { isRoleKey, type RoleKey } from "./lib";
+import { isRoleKey, isWho, ROLE_KEYS, type RoleKey } from "./lib";
 import { maskSensitive } from "./ops";
 
 export type WatchTarget =
   | { kind: "credentials"; name: string; file: string }
   | { kind: "profile"; name: string; profile: string }
-  | { kind: "assume"; name: string; role: RoleKey };
+  /** who は 2 人目（AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT）で引き受けるときだけ付く */
+  | { kind: "assume"; name: string; role: RoleKey; who?: "second" };
 
 export interface Sample {
   /** ISO 8601（UTC） */
@@ -59,9 +60,18 @@ export function parseWatchTargets(opts: {
       throw new Error(`不正なプロファイル名: '${profile}'`);
     out.push({ kind: "profile", name: `profile:${profile}`, profile });
   }
-  for (const role of opts.assume ?? []) {
-    if (!isRoleKey(role)) throw new Error(`--assume は base / tagged / notag: '${role}'`);
-    out.push({ kind: "assume", name: `assume:${role}`, role });
+  for (const spec of opts.assume ?? []) {
+    // <ロール> か <ロール>:<primary|second>（2 人目の subject・SourceIdentity で引き受け直す）
+    const [role = "", who = "primary", ...rest] = spec.split(":");
+    if (!isRoleKey(role) || !isWho(who) || rest.length > 0)
+      throw new Error(
+        `--assume は <ロール>[:primary|second]（ロールは ${ROLE_KEYS.join(" / ")}）: '${spec}'`,
+      );
+    out.push(
+      who === "second"
+        ? { kind: "assume", name: `assume:${role}:second`, role, who }
+        : { kind: "assume", name: `assume:${role}`, role },
+    );
   }
   if (out.length === 0)
     throw new Error("見張る対象がありません（--credentials / --profile / --assume を 1 つ以上）");

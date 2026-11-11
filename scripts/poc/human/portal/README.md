@@ -1,7 +1,7 @@
 # PoC: ポータルの経路（N9・N1 の M2・N10）
 
 人間の AWS ログインの段階 1 の前のゲート（cto の決裁の 3-C）のうち、開発環境（個人の Cloudflare Zero Trust、IdP は Google、
-開発用の AWS アカウント 1 つ）で確かめられるものの道具と手順。設計は [docs/specs/human-login-portal.md](../../../../docs/specs/human-login-portal.md)
+開発用の AWS アカウント 1 つ）で確かめられるものの道具と手順。設計は [docs/specs/console-login-portal.md](../../../../docs/specs/console-login-portal.md)
 （§3.1 の R-P / R-H、§9 のエンドポイント、§12.3 の PoC）。前の PoC（PoC-A/B・P2〜P4）は [../README.md](../README.md)。
 
 | # | 確かめること | 決まること |

@@ -1,28 +1,34 @@
-// 人間の AWS ログイン: チーム・ロール・アカウントの種類を定義する設定ファイルのスキーマと検証。
-// 設計: docs/specs/human-login-portal.md §11（設定ファイル）。上流はスキーマ・例・生成の道具だけを持ち、実際の値は下流に置く。
-// MCP 用 Worker（src/index.ts）からは import しない（cto の D2。test/unit/human-layout.test.ts と test/e2e/human-bundle.test.ts で確かめる）。
-// 副作用のない純粋関数だけを置く（node の API を使わない。生成の CLI は scripts/human/config.ts）。
+// コンソールログイン: チーム・ロール・アカウントの種類を定義する設定ファイルのスキーマと検証。
+// 設計: docs/specs/console-login-portal.md §11（設定ファイル）。上流はスキーマ・例・生成の道具だけを持ち、実際の値は下流に置く。
+// MCP 用 Worker（src/index.ts）からは import しない（cto の D2。test/unit/console-layout.test.ts と test/e2e/console-bundle.test.ts で確かめる）。
+// 副作用のない純粋関数だけを置く（node の API を使わない。生成の CLI は scripts/console/config.ts）。
 // エラーは「キーのパス」と「種別」だけで表し、設定の値（AUD・email・アカウント ID など）を文面に出さない。
 // パスに入る、利用者が書いたキー（未知のキー・assign などのマップのキー）は、名前の形でなければ <redacted> にする（safeKey）。
 
-export const HUMAN_SCHEMA_VERSION = 1;
+export const CONSOLE_SCHEMA_VERSION = 1;
 /** セッションタグのキー（チーム）。cto の D9 で名前空間つきに決めた。 */
 export const TEAM_TAG_KEY = "awsbridge_team";
-/** 人間用のロールの IAM パス。 */
-export const ROLE_PATH = "/awsbridge-human/";
+/** OIDC の audience（全階層・全境界で 1 つ。MCP 用の awsbridge と重ならない）。 */
+export const AUDIENCE = "awsbridge-console";
+/** コンソールログイン用のロールの IAM パスの接頭辞（SCP・aws:PrincipalArn で「すべて」を止めるときに使う）。 */
+export const ROLE_PATH_PREFIX = "/awsbridge-console/";
 export const SESSION_SECONDS_MIN = 900;
 export const SESSION_SECONDS_MAX = 43200;
 
 export type Tier = "standard" | "admin";
 export const TIERS: readonly Tier[] = ["standard", "admin"];
+/** 階層をパスに書くときの名前（issuer のパス /std・/admin と同じ）。 */
+const TIER_SEGMENT: Record<Tier, string> = { standard: "std", admin: "admin" };
+/** ロールの IAM パス（P-2: /awsbridge-console/<tier>/）。階層だけを止める SCP の条件に使える。 */
+export const rolePath = (tier: Tier): string => `${ROLE_PATH_PREFIX}${TIER_SEGMENT[tier]}/`;
 export type EmailMode = "full" | "masked" | "hidden";
 export type Routing = "path" | "host";
 
 export type TeamAccess = { groupObjectIds: string[] } | { policyIds: string[] } | { aud: string };
 
-export type HumanTeam = { name: string; displayName: string; tier: Tier; access: TeamAccess };
+export type ConsoleTeam = { name: string; displayName: string; tier: Tier; access: TeamAccess };
 
-export type HumanRole = {
+export type ConsoleRole = {
   name: string;
   roleName: string;
   displayName: string;
@@ -32,30 +38,30 @@ export type HumanRole = {
   inlinePolicyFiles: string[];
 };
 
-export type HumanKind = {
+export type ConsoleKind = {
   name: string;
   displayName: string;
   /** ロール → 受け付けるチーム（書いた順）。 */
   assign: { role: string; teams: string[] }[];
 };
 
-export type HumanBoundary = { name: string; issuers: { standard: string; admin?: string } };
+export type ConsoleBoundary = { name: string; issuers: { standard: string; admin?: string } };
 
-export type HumanAccount = { accountId: string; name: string; kind: string; email?: string };
+export type ConsoleAccount = { accountId: string; name: string; kind: string; email?: string };
 
 type OrganizationBase = { name: string; displayName: string; boundary: string };
-export type HumanOuOrganization = OrganizationBase & {
+export type ConsoleOuOrganization = OrganizationBase & {
   placement: "ou";
   inventoryRoleArn: string;
   kindOus: { kind: string; ouIds: string[] }[];
 };
-export type HumanAccountsOrganization = OrganizationBase & {
+export type ConsoleAccountsOrganization = OrganizationBase & {
   placement: "accounts";
-  accounts: HumanAccount[];
+  accounts: ConsoleAccount[];
 };
-export type HumanOrganization = HumanOuOrganization | HumanAccountsOrganization;
+export type ConsoleOrganization = ConsoleOuOrganization | ConsoleAccountsOrganization;
 
-export type HumanPortal = {
+export type ConsolePortal = {
   standardOrigin: string;
   adminOrigin?: string;
   routing: Routing;
@@ -65,18 +71,18 @@ export type HumanPortal = {
   entryAud: { standard?: string; admin?: string };
 };
 
-export type HumanConfig = {
+export type ConsoleConfig = {
   schemaVersion: 1;
-  portal: HumanPortal;
-  teams: HumanTeam[];
-  roles: HumanRole[];
-  kinds: HumanKind[];
-  boundaries: HumanBoundary[];
-  organizations: HumanOrganization[];
+  portal: ConsolePortal;
+  teams: ConsoleTeam[];
+  roles: ConsoleRole[];
+  kinds: ConsoleKind[];
+  boundaries: ConsoleBoundary[];
+  organizations: ConsoleOrganization[];
   inventory: { accountEmail: { managed: EmailMode; partner: EmailMode } };
 };
 
-export type HumanConfigIssueCode =
+export type ConsoleConfigIssueCode =
   | "json"
   | "type"
   | "required"
@@ -114,17 +120,17 @@ export type HumanConfigIssueCode =
   | "inventory_missing";
 
 /** 誤り・警告の 1 件。path はキーのパス（例 teams[1].name）。値は持たない。 */
-export type HumanConfigIssue = { path: string; code: HumanConfigIssueCode; count?: number };
+export type ConsoleConfigIssue = { path: string; code: ConsoleConfigIssueCode; count?: number };
 
-export const formatIssue = (i: HumanConfigIssue): string =>
+export const formatIssue = (i: ConsoleConfigIssue): string =>
   `${i.path}: ${i.code}${i.count !== undefined ? ` (${i.count})` : ""}`;
 
 /** 設定の誤り。メッセージはキーのパスと種別だけで、設定の値を含めない（ログに出してよい）。 */
-export class HumanConfigError extends Error {
-  readonly issues: HumanConfigIssue[];
-  constructor(issues: HumanConfigIssue[]) {
-    super(`invalid human config:\n${issues.map((i) => `  ${formatIssue(i)}`).join("\n")}`);
-    this.name = "HumanConfigError";
+export class ConsoleConfigError extends Error {
+  readonly issues: ConsoleConfigIssue[];
+  constructor(issues: ConsoleConfigIssue[]) {
+    super(`invalid console config:\n${issues.map((i) => `  ${formatIssue(i)}`).join("\n")}`);
+    this.name = "ConsoleConfigError";
     this.issues = issues;
   }
 }
@@ -162,8 +168,8 @@ type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 
 export class IssueList {
-  readonly items: HumanConfigIssue[] = [];
-  add(path: string, code: HumanConfigIssueCode, count?: number): void {
+  readonly items: ConsoleConfigIssue[] = [];
+  add(path: string, code: ConsoleConfigIssueCode, count?: number): void {
     this.items.push(count === undefined ? { path, code } : { path, code, count });
   }
 }
@@ -345,7 +351,7 @@ function checkHttpsUrl(v: string | undefined, p: string, out: IssueList, issuer:
 
 // ---- 各項目 ----
 
-function parsePortal(raw: unknown, out: IssueList): HumanPortal | undefined {
+function parsePortal(raw: unknown, out: IssueList): ConsolePortal | undefined {
   if (raw === undefined) {
     out.add("portal", "required");
     return undefined;
@@ -370,7 +376,7 @@ function parsePortal(raw: unknown, out: IssueList): HumanPortal | undefined {
     out,
     false,
   );
-  let regions: HumanPortal["regions"];
+  let regions: ConsolePortal["regions"];
   if (o.regions !== undefined) {
     const r = readObj(o.regions, "portal.regions", ["allowed", "default"], out);
     if (r) {
@@ -385,7 +391,7 @@ function parsePortal(raw: unknown, out: IssueList): HumanPortal | undefined {
       if (allowed && def !== undefined) regions = { allowed, default: def };
     }
   }
-  const entryAud: HumanPortal["entryAud"] = {};
+  const entryAud: ConsolePortal["entryAud"] = {};
   if (o.entryAud !== undefined) {
     const e = readObj(o.entryAud, "portal.entryAud", TIERS, out);
     if (e) {
@@ -406,7 +412,7 @@ function parsePortal(raw: unknown, out: IssueList): HumanPortal | undefined {
   };
 }
 
-function parseTeam(raw: unknown, p: string, out: IssueList): HumanTeam | undefined {
+function parseTeam(raw: unknown, p: string, out: IssueList): ConsoleTeam | undefined {
   const o = readObj(raw, p, ["name", "displayName", "tier", "access"], out);
   if (!o) return undefined;
   const name = readStr(o, "name", p, out, { required: true, re: NAME_RE });
@@ -434,7 +440,7 @@ function parseTeam(raw: unknown, p: string, out: IssueList): HumanTeam | undefin
   return { name, displayName: displayName ?? name, tier, access };
 }
 
-function parseRole(raw: unknown, p: string, out: IssueList): HumanRole | undefined {
+function parseRole(raw: unknown, p: string, out: IssueList): ConsoleRole | undefined {
   const keys = ["name", "roleName", "displayName", "tier", "sessionSeconds", "permissions"];
   const o = readObj(raw, p, keys, out);
   if (!o) return undefined;
@@ -484,12 +490,12 @@ function parseRole(raw: unknown, p: string, out: IssueList): HumanRole | undefin
   };
 }
 
-function parseKind(raw: unknown, p: string, out: IssueList): HumanKind | undefined {
+function parseKind(raw: unknown, p: string, out: IssueList): ConsoleKind | undefined {
   const o = readObj(raw, p, ["name", "displayName", "assign"], out);
   if (!o) return undefined;
   const name = readStr(o, "name", p, out, { required: true, re: KIND_RE });
   const displayName = readStr(o, "displayName", p, out, { max: DISPLAY_NAME_MAX });
-  const assign: HumanKind["assign"] = [];
+  const assign: ConsoleKind["assign"] = [];
   const ap = join(p, "assign");
   if (o.assign === undefined) out.add(ap, "required");
   else {
@@ -502,12 +508,12 @@ function parseKind(raw: unknown, p: string, out: IssueList): HumanKind | undefin
   return { name, displayName: displayName ?? name, assign };
 }
 
-function parseBoundary(raw: unknown, p: string, out: IssueList): HumanBoundary | undefined {
+function parseBoundary(raw: unknown, p: string, out: IssueList): ConsoleBoundary | undefined {
   const o = readObj(raw, p, ["name", "issuers"], out);
   if (!o) return undefined;
   const name = readStr(o, "name", p, out, { required: true, re: BOUNDARY_RE });
   const ip = join(p, "issuers");
-  let issuers: HumanBoundary["issuers"] | undefined;
+  let issuers: ConsoleBoundary["issuers"] | undefined;
   if (o.issuers === undefined) out.add(ip, "required");
   else {
     const i = readObj(o.issuers, ip, TIERS, out);
@@ -526,7 +532,7 @@ function parseBoundary(raw: unknown, p: string, out: IssueList): HumanBoundary |
   return { name, issuers };
 }
 
-function parseAccount(raw: unknown, p: string, out: IssueList): HumanAccount | undefined {
+function parseAccount(raw: unknown, p: string, out: IssueList): ConsoleAccount | undefined {
   const o = readObj(raw, p, ["accountId", "name", "kind", "email"], out);
   if (!o) return undefined;
   const accountId = readStr(o, "accountId", p, out, { required: true, re: ACCOUNT_ID_RE });
@@ -538,7 +544,11 @@ function parseAccount(raw: unknown, p: string, out: IssueList): HumanAccount | u
   return { accountId, name, kind, ...(email !== undefined && isEmail(email) ? { email } : {}) };
 }
 
-function parseOrganization(raw: unknown, p: string, out: IssueList): HumanOrganization | undefined {
+function parseOrganization(
+  raw: unknown,
+  p: string,
+  out: IssueList,
+): ConsoleOrganization | undefined {
   const base = ["name", "displayName", "boundary", "placement"];
   if (!isObj(raw)) {
     out.add(p, "type");
@@ -565,7 +575,7 @@ function parseOrganization(raw: unknown, p: string, out: IssueList): HumanOrgani
       re: ROLE_ARN_RE,
     });
     const kp = join(p, "kindOus");
-    const kindOus: HumanOuOrganization["kindOus"] = [];
+    const kindOus: ConsoleOuOrganization["kindOus"] = [];
     if (o.kindOus === undefined) out.add(kp, "required");
     else {
       const entries = readMap(o.kindOus, kp, out) ?? [];
@@ -578,7 +588,7 @@ function parseOrganization(raw: unknown, p: string, out: IssueList): HumanOrgani
     if (inventoryRoleArn === undefined) return undefined;
     return { ...common, placement, inventoryRoleArn, kindOus };
   }
-  const accounts: HumanAccount[] = [];
+  const accounts: ConsoleAccount[] = [];
   readArray(o, "accounts", p, out).forEach((a, i) => {
     const acc = parseAccount(a, `${join(p, "accounts")}[${i}]`, out);
     if (acc) accounts.push(acc);
@@ -586,9 +596,9 @@ function parseOrganization(raw: unknown, p: string, out: IssueList): HumanOrgani
   return { ...common, placement, accounts };
 }
 
-function parseInventory(raw: unknown, out: IssueList): HumanConfig["inventory"] {
+function parseInventory(raw: unknown, out: IssueList): ConsoleConfig["inventory"] {
   // 既定はすべて表示（Q-P9 の決定: 社員だけが使う前提で、管理外の先方の email も出す）
-  const accountEmail: HumanConfig["inventory"]["accountEmail"] = {
+  const accountEmail: ConsoleConfig["inventory"]["accountEmail"] = {
     managed: "full",
     partner: "full",
   };
@@ -629,12 +639,12 @@ const TOP_KEYS = [
 ];
 
 /**
- * 設定ファイルを検証し、既定値を補った形にする。誤りが 1 つでもあれば HumanConfigError（全件）。
+ * 設定ファイルを検証し、既定値を補った形にする。誤りが 1 つでもあれば ConsoleConfigError（全件）。
  * 警告（どの種類にも割り当てられていないチーム・ロール）は戻り値で返す。
  */
-export function parseHumanConfig(input: unknown): {
-  config: HumanConfig;
-  warnings: HumanConfigIssue[];
+export function parseConsoleConfig(input: unknown): {
+  config: ConsoleConfig;
+  warnings: ConsoleConfigIssue[];
 } {
   const out = new IssueList();
   let raw = input;
@@ -642,13 +652,13 @@ export function parseHumanConfig(input: unknown): {
     try {
       raw = JSON.parse(input);
     } catch {
-      throw new HumanConfigError([{ path: "$", code: "json" }]);
+      throw new ConsoleConfigError([{ path: "$", code: "json" }]);
     }
   }
   const o = readObj(raw, "$", TOP_KEYS, out);
-  if (!o) throw new HumanConfigError(out.items);
+  if (!o) throw new ConsoleConfigError(out.items);
   if (o.schemaVersion === undefined) out.add("schemaVersion", "required");
-  else if (o.schemaVersion !== HUMAN_SCHEMA_VERSION) out.add("schemaVersion", "schema_version");
+  else if (o.schemaVersion !== CONSOLE_SCHEMA_VERSION) out.add("schemaVersion", "schema_version");
   if (o.$schema !== undefined && typeof o.$schema !== "string") out.add("$schema", "type");
 
   const portal = parsePortal(o.portal, out);
@@ -662,27 +672,27 @@ export function parseHumanConfig(input: unknown): {
   const warnings = new IssueList();
   crossCheck({ portal, teams, roles, kinds, boundaries, organizations }, out, warnings);
 
-  if (out.items.length > 0 || !portal) throw new HumanConfigError(out.items);
-  const config: HumanConfig = {
+  if (out.items.length > 0 || !portal) throw new ConsoleConfigError(out.items);
+  const config: ConsoleConfig = {
     schemaVersion: 1,
     portal,
-    teams: teams as HumanTeam[],
-    roles: roles as HumanRole[],
-    kinds: kinds as HumanKind[],
-    boundaries: boundaries as HumanBoundary[],
-    organizations: organizations as HumanOrganization[],
+    teams: teams as ConsoleTeam[],
+    roles: roles as ConsoleRole[],
+    kinds: kinds as ConsoleKind[],
+    boundaries: boundaries as ConsoleBoundary[],
+    organizations: organizations as ConsoleOrganization[],
     inventory,
   };
   return { config, warnings: warnings.items };
 }
 
 type ParsedParts = {
-  portal: HumanPortal | undefined;
-  teams: (HumanTeam | undefined)[];
-  roles: (HumanRole | undefined)[];
-  kinds: (HumanKind | undefined)[];
-  boundaries: (HumanBoundary | undefined)[];
-  organizations: (HumanOrganization | undefined)[];
+  portal: ConsolePortal | undefined;
+  teams: (ConsoleTeam | undefined)[];
+  roles: (ConsoleRole | undefined)[];
+  kinds: (ConsoleKind | undefined)[];
+  boundaries: (ConsoleBoundary | undefined)[];
+  organizations: (ConsoleOrganization | undefined)[];
 };
 
 function crossCheck(c: ParsedParts, out: IssueList, warnings: IssueList): void {
@@ -743,8 +753,8 @@ function crossCheck(c: ParsedParts, out: IssueList, warnings: IssueList): void {
   }
 
   // kinds[].assign の参照と階層
-  const teamByName = new Map(c.teams.filter((t) => t).map((t) => [t?.name, t as HumanTeam]));
-  const roleByName = new Map(c.roles.filter((r) => r).map((r) => [r?.name, r as HumanRole]));
+  const teamByName = new Map(c.teams.filter((t) => t).map((t) => [t?.name, t as ConsoleTeam]));
+  const roleByName = new Map(c.roles.filter((r) => r).map((r) => [r?.name, r as ConsoleRole]));
   const assignedTeams = new Set<string>();
   const assignedRoles = new Set<string>();
   c.kinds.forEach((k, ki) => {
@@ -772,9 +782,9 @@ function crossCheck(c: ParsedParts, out: IssueList, warnings: IssueList): void {
   });
 
   // organizations の参照・境界・アカウント ID と OU の重複
-  const kindByName = new Map(c.kinds.filter((k) => k).map((k) => [k?.name, k as HumanKind]));
+  const kindByName = new Map(c.kinds.filter((k) => k).map((k) => [k?.name, k as ConsoleKind]));
   const boundaryByName = new Map(
-    c.boundaries.filter((b) => b).map((b) => [b?.name, b as HumanBoundary]),
+    c.boundaries.filter((b) => b).map((b) => [b?.name, b as ConsoleBoundary]),
   );
   const accountIds = new Names();
   const ouIds = new Names();

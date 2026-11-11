@@ -103,22 +103,22 @@ run = "bash scripts/deploy-aws.sh"
 description = "CloudFormation スタックを削除"
 run = "bash scripts/destroy-aws.sh"
 
-# ---- 人間の AWS ログイン: チーム・ロール・種類の設定ファイル（docs/specs/human-login-portal.md §11）----
-# 入力と出力の場所は環境変数で変える（既定値は [env] に置かず scripts/human/config.ts 側で補う。下流は mise.<name>.toml で与える）:
-#   AWSBRIDGE_HUMAN_CONFIG          設定ファイル（既定 config/human.json。config/human.example.json か config/human.company.example.json をコピーして作る。gitignore）
-#   AWSBRIDGE_HUMAN_AUD_FILE        Terraform の出力（{ "teams": { <チーム>: <AUD> }, "entry": { "standard": <AUD>, "admin": <AUD> } }。任意）
-#   AWSBRIDGE_HUMAN_INVENTORY_FILE  placement: ou の Organization のアカウント（ListAccounts の結果を整えたもの。任意。email を含むのでコミットしない）
-#   AWSBRIDGE_HUMAN_OUT_DIR         生成物の置き場所（既定 .generated/human。gitignore）
-#   AWSBRIDGE_HUMAN_SOURCE_REVISION 生成物に記録する設定のコミット（任意）
+# ---- コンソールログイン: チーム・ロール・種類の設定ファイル（docs/specs/console-login-portal.md §11）----
+# 入力と出力の場所は環境変数で変える（既定値は [env] に置かず scripts/console/config.ts 側で補う。下流は mise.<name>.toml で与える）:
+#   AWSBRIDGE_CONSOLE_CONFIG          設定ファイル（既定 config/console.json。config/console.example.json か config/console.company.example.json をコピーして作る。gitignore）
+#   AWSBRIDGE_CONSOLE_AUD_FILE        Terraform の出力（{ "teams": { <チーム>: <AUD> }, "entry": { "standard": <AUD>, "admin": <AUD> } }。任意）
+#   AWSBRIDGE_CONSOLE_INVENTORY_FILE  placement: ou の Organization のアカウント（ListAccounts の結果を整えたもの。任意。email を含むのでコミットしない）
+#   AWSBRIDGE_CONSOLE_OUT_DIR         生成物の置き場所（既定 .generated/console。gitignore）
+#   AWSBRIDGE_CONSOLE_SOURCE_REVISION 生成物に記録する設定のコミット（任意）
 # どちらも AWS・Cloudflare・Terraform を呼ばない。
 
-[tasks."human:config:check"]
-description = "人間のログインの設定ファイルを検査する（スキーマ・参照・重複・階層。AUD のファイルを渡せば AUD の対応も）。生成物は書かない"
-run = "pnpm tsx scripts/human/config.ts check"
+[tasks."console:config:check"]
+description = "コンソールログインの設定ファイルを検査する（スキーマ・参照・重複・階層。AUD のファイルを渡せば AUD の対応も）。生成物は書かない"
+run = "pnpm tsx scripts/console/config.ts check"
 
-[tasks."human:config:generate"]
-description = "人間のログインの設定ファイルから、Worker 用（階層ごと）・StackSets 用・Access の検査用の生成物を書く（その階層のチームの AUD が要る）"
-run = "pnpm tsx scripts/human/config.ts generate"
+[tasks."console:config:generate"]
+description = "コンソールログインの設定ファイルから、Worker 用（階層ごと）・StackSets 用・Access の検査用の生成物を書く（その階層のチームの AUD が要る）"
+run = "pnpm tsx scripts/console/config.ts generate"
 
 # ---- 検証用（PoC 由来）。実 AWS を呼ぶので明示的に実行したときだけ使う ----
 
@@ -180,6 +180,25 @@ run = "pnpm tsx scripts/poc/human/revoke.ts delete-provider"
 [tasks."poc:human:recreate-provider"]
 description = "PoC P4 (b): 消した OIDC プロバイダーを同じ URL・client ID・タグで作り直す（deploy-aws では作り直されない）"
 run = "pnpm tsx scripts/poc/human/revoke.ts recreate-provider"
+
+# ---- 段階 1a の前の条件（ADR-003 相当）: (1) aws login を localhost だけに・(4) CFN の外のポリシーと 1 人だけ止める Deny ----
+# 手順は scripts/poc/human/README.md「段階 1a の前の条件」。deny-si / undeny-si は IAM を変える。inline-policies / drift は読み取りとドリフト検出だけ。
+
+[tasks."poc:human:deny-si"]
+description = "PoC (4-b): PoC のロール（既定 Tagged）に AwsbridgeDenySourceIdentity（aws:SourceIdentity が 1 人の利用者と一致するセッションの全操作を Deny）を付け、完了時刻（UTC）を出す（--who primary|second）"
+run = "pnpm tsx scripts/poc/human/revoke.ts deny-si"
+
+[tasks."poc:human:undeny-si"]
+description = "PoC (4-b): deny-si で付けたインラインポリシー AwsbridgeDenySourceIdentity を外し、完了時刻（UTC）を出す"
+run = "pnpm tsx scripts/poc/human/revoke.ts undeny-si"
+
+[tasks."poc:human:inline-policies"]
+description = "PoC (4-a): スタックの全ロールのインラインポリシー名を出し、Tagged に AWSRevokeOlderSessions・AwsbridgeDenySourceIdentity が残っているかを判定する（読み取りだけ）"
+run = "pnpm tsx scripts/poc/human/persist.ts inline"
+
+[tasks."poc:human:drift"]
+description = "PoC (4-a): スタックのドリフト検出を実行し、リソースごとの状態と差分の場所・種類（とポリシー名）を出す（値は出さない。IAM は変えない）"
+run = "pnpm tsx scripts/poc/human/persist.ts drift"
 
 [tasks."poc:human:trail"]
 description = "PoC P2/P3: CloudTrail で直近の AssumeRoleWithWebIdentity と、そのセッションの API イベントの SourceIdentity・セッションタグを出す（email は伏せる）"

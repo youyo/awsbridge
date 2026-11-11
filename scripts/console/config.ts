@@ -1,20 +1,20 @@
-// 人間のログインの設定ファイルの検査と生成の CLI: pnpm tsx scripts/human/config.ts <check|generate>
-// mise タスク human:config:check / human:config:generate から呼ぶ。検証と生成の本体は src/human/（純粋関数）。
-// 入力と出力の場所は環境変数（mise.toml の「人間の AWS ログイン」の節を参照）。AWS・Cloudflare・Terraform は呼ばない。
+// コンソールログインの設定ファイルの検査と生成の CLI: pnpm tsx scripts/console/config.ts <check|generate>
+// mise タスク console:config:check / console:config:generate から呼ぶ。検証と生成の本体は src/console/（純粋関数）。
+// 入力と出力の場所は環境変数（mise.toml の「コンソールログイン」の節を参照）。AWS・Cloudflare・Terraform は呼ばない。
 // 出力にはキーのパスと誤りの種別、ファイルのパスだけを出し、AUD・email・アカウント ID は出さない。
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  ConsoleConfigError,
+  type ConsoleConfigIssue,
   formatIssue,
-  HumanConfigError,
-  type HumanConfigIssue,
-  parseHumanConfig,
-} from "../../src/human/config";
-import { type GenerateMode, generateHumanArtifacts } from "../../src/human/generate";
+  parseConsoleConfig,
+} from "../../src/console/config";
+import { type GenerateMode, generateConsoleArtifacts } from "../../src/console/generate";
 
 const env = process.env;
-const configPath = env.AWSBRIDGE_HUMAN_CONFIG || "config/human.json";
-const outDir = env.AWSBRIDGE_HUMAN_OUT_DIR || ".generated/human";
+const configPath = env.AWSBRIDGE_CONSOLE_CONFIG || "config/console.json";
+const outDir = env.AWSBRIDGE_CONSOLE_OUT_DIR || ".generated/console";
 
 class CliError extends Error {}
 
@@ -25,11 +25,11 @@ function readOptionalJson(path: string | undefined, label: string): unknown {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
   } catch {
-    throw new HumanConfigError([{ path: label, code: "json" }]);
+    throw new ConsoleConfigError([{ path: label, code: "json" }]);
   }
 }
 
-function printWarnings(warnings: HumanConfigIssue[]): void {
+function printWarnings(warnings: ConsoleConfigIssue[]): void {
   for (const w of warnings) console.error(`warning: ${formatIssue(w)}`);
 }
 
@@ -41,14 +41,14 @@ function writePrivate(path: string, value: unknown): void {
 function main(cmd: string): void {
   if (!existsSync(configPath)) throw new CliError(`設定ファイルがありません: ${configPath}`);
   const mode: GenerateMode = cmd === "generate" ? "deploy" : "check";
-  const { config, warnings } = parseHumanConfig(readFileSync(configPath, "utf8"));
-  const auds = readOptionalJson(env.AWSBRIDGE_HUMAN_AUD_FILE, "auds");
-  const inventory = readOptionalJson(env.AWSBRIDGE_HUMAN_INVENTORY_FILE, "inventory");
-  const artifacts = generateHumanArtifacts(config, {
+  const { config, warnings } = parseConsoleConfig(readFileSync(configPath, "utf8"));
+  const auds = readOptionalJson(env.AWSBRIDGE_CONSOLE_AUD_FILE, "auds");
+  const inventory = readOptionalJson(env.AWSBRIDGE_CONSOLE_INVENTORY_FILE, "inventory");
+  const artifacts = generateConsoleArtifacts(config, {
     mode,
     generatedAt: new Date().toISOString(),
-    ...(env.AWSBRIDGE_HUMAN_SOURCE_REVISION
-      ? { sourceRevision: env.AWSBRIDGE_HUMAN_SOURCE_REVISION }
+    ...(env.AWSBRIDGE_CONSOLE_SOURCE_REVISION
+      ? { sourceRevision: env.AWSBRIDGE_CONSOLE_SOURCE_REVISION }
       : {}),
     ...(auds !== undefined ? { auds } : {}),
     ...(inventory !== undefined ? { inventory } : {}),
@@ -83,7 +83,7 @@ if (cmd !== "check" && cmd !== "generate") {
 try {
   main(cmd);
 } catch (e) {
-  if (e instanceof HumanConfigError) {
+  if (e instanceof ConsoleConfigError) {
     for (const i of e.issues) console.error(`error: ${formatIssue(i)}`);
     console.error(`設定に誤りがあります（${e.issues.length} 件）: ${configPath}`);
   } else if (e instanceof CliError) {

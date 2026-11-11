@@ -3,6 +3,7 @@
 - 作成日: 2026-11-05
 - 状態: 本体実装済み・実環境で通し確認済み（2026-11-05: Portal → Access → Worker → STS → AWS MCP、aws_profile による読み取り専用 / デバッグロールの切り替え、デバッグ専用権限が MCP 経由でのみ通ること）
 - 前身: [youyo/aws-mcp-gateway](https://github.com/youyo/aws-mcp-gateway)（Go 製。OIDC 認証付き AWS MCP Server リバースプロキシ）
+- この文書は MCP 用の構成を扱う。コンソールログイン（人が使う AWS コンソールと `aws login`。別の Worker・issuer・鍵・audience・ロール）は [console-login.md](console-login.md)（全体設計）と [console-login-portal.md](console-login-portal.md)（ポータル）を参照
 
 ## 目的
 

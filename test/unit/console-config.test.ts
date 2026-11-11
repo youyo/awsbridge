@@ -1,19 +1,21 @@
-// 人間のログインの設定ファイル（チーム・ロール・種類）の検証。設計: docs/specs/human-login-portal.md §11.3・§11.6。
+// コンソールログインの設定ファイル（チーム・ロール・種類）の検証。設計: docs/specs/console-login-portal.md §11.3・§11.6。
 import { describe, expect, it } from "vitest";
 import {
-  HumanConfigError,
-  type HumanConfigIssue,
-  parseHumanConfig,
-  ROLE_PATH,
+  AUDIENCE,
+  ConsoleConfigError,
+  type ConsoleConfigIssue,
+  parseConsoleConfig,
+  ROLE_PATH_PREFIX,
+  rolePath,
   TEAM_TAG_KEY,
-} from "../../src/human/config";
-import { companyConfig, personalConfig, type Raw, uuid } from "./human-fixtures";
+} from "../../src/console/config";
+import { companyConfig, personalConfig, type Raw, uuid } from "./console-fixtures";
 
-function issuesOf(raw: unknown): HumanConfigIssue[] {
+function issuesOf(raw: unknown): ConsoleConfigIssue[] {
   try {
-    parseHumanConfig(raw);
+    parseConsoleConfig(raw);
   } catch (e) {
-    if (e instanceof HumanConfigError) return e.issues;
+    if (e instanceof ConsoleConfigError) return e.issues;
     throw e;
   }
   return [];
@@ -27,9 +29,9 @@ function withChange(base: () => Raw, change: (c: Raw) => void): Raw {
   return c;
 }
 
-describe("parseHumanConfig: 正しい設定", () => {
+describe("parseConsoleConfig: 正しい設定", () => {
   it("会社用の設定を受け付け、既定値を補う", () => {
-    const { config, warnings } = parseHumanConfig(companyConfig());
+    const { config, warnings } = parseConsoleConfig(companyConfig());
     expect(warnings).toEqual([]);
     expect(config.teams.map((t) => [t.name, t.tier, t.displayName])).toEqual([
       ["infra", "standard", "インフラ"],
@@ -48,19 +50,19 @@ describe("parseHumanConfig: 正しい設定", () => {
   });
 
   it("個人用の最小構成を受け付ける（Admin なし・Terraform なし・Organization なし）", () => {
-    const { config, warnings } = parseHumanConfig(personalConfig());
+    const { config, warnings } = parseConsoleConfig(personalConfig());
     expect(warnings).toEqual([]);
     expect(config.portal.adminOrigin).toBeUndefined();
     expect(config.portal.routing).toBe("path");
   });
 
   it("アカウントの email の既定は管理下・管理外とも full（すべて表示。Q-P9）", () => {
-    const { config } = parseHumanConfig(personalConfig());
+    const { config } = parseConsoleConfig(personalConfig());
     expect(config.inventory.accountEmail).toEqual({ managed: "full", partner: "full" });
     const c = withChange(personalConfig, (x) => {
       x.inventory = { accountEmail: { partner: "hidden" } };
     });
-    expect(parseHumanConfig(c).config.inventory.accountEmail).toEqual({
+    expect(parseConsoleConfig(c).config.inventory.accountEmail).toEqual({
       managed: "full",
       partner: "hidden",
     });
@@ -70,16 +72,25 @@ describe("parseHumanConfig: 正しい設定", () => {
     const c = withChange(personalConfig, (x) => {
       x.$schema = "./anything.json";
     });
-    expect(parseHumanConfig(JSON.stringify(c)).config.teams).toHaveLength(1);
+    expect(parseConsoleConfig(JSON.stringify(c)).config.teams).toHaveLength(1);
   });
 
-  it("固定の約束（タグのキーとロールのパス）", () => {
+  it("固定の約束（タグのキー・audience・ロールのパス）", () => {
     expect(TEAM_TAG_KEY).toBe("awsbridge_team");
-    expect(ROLE_PATH).toBe("/awsbridge-human/");
+    // audience は全階層・全境界で 1 つ（MCP 用の awsbridge と重ならない）
+    expect(AUDIENCE).toBe("awsbridge-console");
+    expect(ROLE_PATH_PREFIX).toBe("/awsbridge-console/");
+  });
+
+  it("ロールのパスは階層ごと（P-2: /awsbridge-console/<tier>/。tier は std / admin で、issuer のパスと同じ）", () => {
+    expect(rolePath("standard")).toBe("/awsbridge-console/std/");
+    expect(rolePath("admin")).toBe("/awsbridge-console/admin/");
+    for (const t of ["standard", "admin"] as const)
+      expect(rolePath(t).startsWith(ROLE_PATH_PREFIX)).toBe(true);
   });
 });
 
-describe("parseHumanConfig: 構文・型・未知のキー", () => {
+describe("parseConsoleConfig: 構文・型・未知のキー", () => {
   it("JSON として読めない文字列は json", () => {
     expect(issuesOf("{")).toEqual([issue("$", "json")]);
   });
@@ -259,7 +270,7 @@ describe("parseHumanConfig: 構文・型・未知のキー", () => {
     });
     let message = "";
     try {
-      parseHumanConfig(c);
+      parseConsoleConfig(c);
     } catch (e) {
       message = (e as Error).message;
     }
@@ -270,7 +281,7 @@ describe("parseHumanConfig: 構文・型・未知のキー", () => {
   });
 });
 
-describe("parseHumanConfig: 値の形", () => {
+describe("parseConsoleConfig: 値の形", () => {
   it.each([
     [
       "teams[0].name",
@@ -432,7 +443,7 @@ describe("parseHumanConfig: 値の形", () => {
   });
 });
 
-describe("parseHumanConfig: ポータルのオリジン", () => {
+describe("parseConsoleConfig: ポータルのオリジン", () => {
   it.each([
     ["https://portal.example.workers.dev", "workers_dev"],
     ["https://PORTAL.Example.Workers.Dev", "workers_dev"],
@@ -480,7 +491,7 @@ describe("parseHumanConfig: ポータルのオリジン", () => {
   });
 });
 
-describe("parseHumanConfig: 参照と重複", () => {
+describe("parseConsoleConfig: 参照と重複", () => {
   it("kinds[].assign の未知のロール・未知のチーム", () => {
     const c = withChange(companyConfig, (x) => {
       x.kinds[0].assign.poweruser = ["sa"];
@@ -579,7 +590,7 @@ describe("parseHumanConfig: 参照と重複", () => {
   });
 });
 
-describe("parseHumanConfig: 階層の一致", () => {
+describe("parseConsoleConfig: 階層の一致", () => {
   it("Admin のロールに Standard のチームを割り当てると tier_mismatch", () => {
     const c = withChange(companyConfig, (x) => {
       x.kinds[0].assign.admin.push("infra");
@@ -609,12 +620,12 @@ describe("parseHumanConfig: 階層の一致", () => {
   });
 });
 
-describe("parseHumanConfig: 警告", () => {
+describe("parseConsoleConfig: 警告", () => {
   it("どの種類にも割り当てられていないチーム・ロールは警告（エラーにしない）", () => {
     const c = withChange(companyConfig, (x) => {
       for (const k of x.kinds) delete k.assign.developer;
     });
-    const { warnings } = parseHumanConfig(c);
+    const { warnings } = parseConsoleConfig(c);
     expect(warnings).toContainEqual(issue("teams[1]", "unassigned_team"));
     expect(warnings).toContainEqual(issue("roles[1]", "unassigned_role"));
   });
