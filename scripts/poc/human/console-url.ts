@@ -9,11 +9,16 @@
 //   --duration-seconds <秒>       STS の DurationSeconds（省略時は送らない = STS の既定 3600 秒）
 //   --session-durations <一覧>    getSigninToken の SessionDuration（既定 none,43200,43199。none は付けない）
 //   --federation-method get|post  getSigninToken の HTTP メソッド（既定 get。AWS の文書は SessionDuration の説明を GET 前提で書いている）
-//   --role base|tagged|notag      引き受けるロール（既定 base = AwsbridgeHumanPoc。tagged / notag は P2〜P4 用。--role-arn があればそちら）
+//   --role base|tagged|notag|localonly
+//                                 引き受けるロール（既定 base = AwsbridgeHumanPoc。tagged / notag は P2〜P4 用、
+//                                 localonly は aws login を localhost だけに絞ったロール。--role-arn があればそちら）
 //                                 base 以外はファイル名にロールを入れる（credentials-<role>.json、console-url-<role>-dur-…）
 //   --access-profile <値>         セッションタグ access_profile を JWT に入れる（例 poc-admin / poc-viewer）
 //   --tag-format nested|flat      セッションタグの書き方（既定 nested）
 //   --source-identity             SourceIdentity（値は subject）を JWT に入れる。tagged ロールは必須
+//   --who primary|second          JWT の subject（既定 primary = AWSBRIDGE_HUMAN_POC_SUBJECT。second = AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT。
+//                                 (4-b) 1 人だけ止める Deny の対照。Tagged の信頼ポリシーに 2 人目を足してから使う）。
+//                                 second はファイル名に -second を付ける（credentials-tagged-second.json など）
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -30,15 +35,18 @@ import {
   humanSessionName,
   isRoleKey,
   isValidTagValue,
+  isWho,
   loginUrl,
   parseSessionDurations,
   parseSigninTokenResponse,
   parseStsExtras,
+  ROLE_KEYS,
   sessionDurationLabel,
   sessionTagClaims,
   signHumanToken,
   sourceIdentityClaim,
   stsEndpoint,
+  subjectFor,
   summarizeBody,
 } from "./lib";
 
@@ -54,6 +62,7 @@ function parse() {
       "access-profile": { type: "string" },
       "tag-format": { type: "string", default: "nested" },
       "source-identity": { type: "boolean", default: false },
+      who: { type: "string", default: "primary" },
     },
   });
 }
@@ -70,7 +79,15 @@ try {
   fail(`AWSBRIDGE_HUMAN_POC_ISSUER が不正です: ${(e as Error).message}`);
 }
 const issuer = required(settings.issuer, "AWSBRIDGE_HUMAN_POC_ISSUER");
-const subject = required(settings.subject, "AWSBRIDGE_HUMAN_POC_SUBJECT");
+required(settings.subject, "AWSBRIDGE_HUMAN_POC_SUBJECT");
+const who = values.who ?? "primary";
+if (!isWho(who)) fail("--who は primary か second");
+let subject: string;
+try {
+  subject = subjectFor(settings, who);
+} catch (e) {
+  fail(`${(e as Error).message}（mise.local.toml を確認してください）`);
+}
 
 const method = (values["federation-method"] ?? "get").toUpperCase();
 if (method !== "GET" && method !== "POST") fail("--federation-method は get か post");
@@ -83,7 +100,7 @@ if (values["duration-seconds"] !== undefined) {
 }
 
 const role = values.role ?? "base";
-if (!isRoleKey(role)) fail("--role は base / tagged / notag");
+if (!isRoleKey(role)) fail(`--role は ${ROLE_KEYS.join(" / ")}`);
 const tagFormat = values["tag-format"] ?? "nested";
 if (tagFormat !== "nested" && tagFormat !== "flat") fail("--tag-format は nested か flat");
 const accessProfile = values["access-profile"];
@@ -157,7 +174,7 @@ console.log(
         : `  SessionTokenUtilization: ${extras.sessionTokenUtilization}%`),
   );
 }
-const credsFile = join(settings.outDir, credentialsFileName(role));
+const credsFile = join(settings.outDir, credentialsFileName(role, who));
 writeSecret(
   credsFile,
   `${JSON.stringify(
@@ -199,7 +216,7 @@ for (const sd of sessionDurations) {
     body = (e as Error).message;
   }
   const signinToken = status === 200 ? parseSigninTokenResponse(body) : undefined;
-  const file = join(settings.outDir, consoleUrlFileName(durationSeconds, sd, role));
+  const file = join(settings.outDir, consoleUrlFileName(durationSeconds, sd, role, who));
   if (!signinToken) {
     // 前回の同じ条件の URL が残っていると、失敗したのに入れたと誤認しうるので消す
     rmSync(file, { force: true });

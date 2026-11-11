@@ -31,6 +31,34 @@ export function revokePolicyDocument(cutoff: Date): string {
   });
 }
 
+// ---- (4-b) SourceIdentity で 1 人だけ止める ----
+// ロールの権限ポリシーに、aws:SourceIdentity が一致するセッションの全操作を Deny する文を足す。
+// SourceIdentity は引き受けのときに付き、そのセッションから派生した認証情報（コンソール・aws login）にも引き継がれる。
+// 出典: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-keys.html#condition-keys-sourceidentity
+// 信頼ポリシーではないので、新しい引き受け自体は止まらない（引き受けたあとの API が拒否される）。
+
+export const DENY_SOURCE_IDENTITY_POLICY_NAME = "AwsbridgeDenySourceIdentity";
+
+/** SourceIdentity（2〜64 文字の [A-Za-z0-9_+=,.@-]。ワイルドカードは使えない）の一覧で Deny する文書（JSON 文字列）。 */
+export function denySourceIdentityPolicyDocument(sourceIdentities: string[]): string {
+  if (sourceIdentities.length === 0) throw new Error("止める SourceIdentity がありません");
+  for (const v of sourceIdentities)
+    if (!/^[\w+=,.@-]{2,64}$/.test(v))
+      throw new Error(`SourceIdentity に使えない値です: '${v}'（2〜64 文字の [A-Za-z0-9_+=,.@-]）`);
+  return JSON.stringify({
+    Version: "2012-10-17",
+    Statement: [
+      {
+        Sid: "DenyBySourceIdentity",
+        Effect: "Deny",
+        Action: "*",
+        Resource: "*",
+        Condition: { StringEquals: { "aws:SourceIdentity": [...new Set(sourceIdentities)] } },
+      },
+    ],
+  });
+}
+
 // ---- PoC 用リソースのガード（destroy.sh の awsbridge-human-poc* と同じ考え方） ----
 
 export const POC_ROLE_PREFIX = "AwsbridgeHumanPoc";

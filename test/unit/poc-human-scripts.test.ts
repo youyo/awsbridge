@@ -198,6 +198,39 @@ describe("scripts/poc/human/deploy-aws.sh", () => {
     expect(args).toContain("PROFILE=prof-x");
     expect(args).toContain("REGION=us-west-2");
   });
+  it("SecondSubject（既定 none）と UpdateMarker（既定 0）を毎回明示して渡す（cloudformation deploy は省いた値の前回値を引き継ぐため）", () => {
+    const r = run("scripts/poc/human/deploy-aws.sh", full);
+    expect(r.status, r.stderr).toBe(0);
+    const args = r.calls.find((c) => c[0] === "aws" && c[2] === "deploy") as string[];
+    expect(args).toContain("SecondSubject=none");
+    expect(args).toContain("UpdateMarker=0");
+  });
+  it("AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT（小文字にする）と AWSBRIDGE_HUMAN_POC_UPDATE_MARKER を渡す", () => {
+    const r = run("scripts/poc/human/deploy-aws.sh", {
+      ...full,
+      AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT: "Second@Example.COM",
+      AWSBRIDGE_HUMAN_POC_UPDATE_MARKER: "2",
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const args = r.calls.find((c) => c[0] === "aws" && c[2] === "deploy") as string[];
+    expect(args).toContain("SecondSubject=second@example.com");
+    expect(args).toContain("UpdateMarker=2");
+  });
+  for (const [env, bad] of [
+    ["AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT", "*@example.com"],
+    ["AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT", "a@example.com,b@example.com"],
+    ["AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT", "User@Example.com"],
+    ["AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT", "none"],
+    ["AWSBRIDGE_HUMAN_POC_UPDATE_MARKER", "a-b"],
+    ["AWSBRIDGE_HUMAN_POC_UPDATE_MARKER", "A".repeat(17)],
+  ]) {
+    it(`${env}=${JSON.stringify(bad)} は拒否する（2 人目は 1 人目と別の 1 人の email、印は英数字 16 文字まで）`, () => {
+      const r = run("scripts/poc/human/deploy-aws.sh", { ...full, [env as string]: bad as string });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain(env);
+      expect(r.calls).toEqual([]);
+    });
+  }
   it("aws が失敗したら失敗で終わる", () => {
     const r = run("scripts/poc/human/deploy-aws.sh", full, 7);
     expect(r.status).toBe(7);

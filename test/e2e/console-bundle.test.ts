@@ -1,11 +1,11 @@
-// MCP 用 Worker の実際のバンドル（wrangler deploy --dry-run）に、人間のログインのコードが入らないことを確かめる（cto の D2 の条件）。
+// MCP 用 Worker の実際のバンドル（wrangler deploy --dry-run）に、コンソールログインのコードが入らないことを確かめる（cto の D2 の条件）。
 // esbuild の metafile の inputs（バンドルに読み込んだモジュール）と、出力の本文の両方を見る。デプロイはしない。
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ROLE_PATH, TEAM_TAG_KEY } from "../../src/human/config";
+import { AUDIENCE, ROLE_PATH_PREFIX, TEAM_TAG_KEY } from "../../src/console/config";
 
 const root = new URL("../../", import.meta.url).pathname;
 let out = "";
@@ -69,15 +69,19 @@ describe("MCP 用 Worker のバンドル", () => {
     expect(bundle).toContain("list_aws_profiles");
   });
 
-  it("人間用のモジュール（src/human/・scripts/）を読み込まない", () => {
-    expect(inputs.filter((p) => p.startsWith("src/human/"))).toEqual([]);
+  it("コンソールログイン用のモジュール（src/console/・scripts/）と PoC（human）を読み込まない", () => {
+    expect(inputs.filter((p) => p.startsWith("src/console/"))).toEqual([]);
     expect(inputs.filter((p) => p.startsWith("scripts/"))).toEqual([]);
+    // パスの区切りで始まる console（node_modules の中も含め、console という名前のディレクトリ・ファイル）
+    expect(inputs.filter((p) => /(^|\/)console([/.-]|$)/i.test(p))).toEqual([]);
     expect(inputs.filter((p) => /human/i.test(p))).toEqual([]);
   });
 
-  it("人間用の固定の名前（タグのキー・ロールのパス・ポータルの経路）が本文にない", () => {
+  it("コンソールログイン用の固定の名前（タグのキー・audience・ロールのパス・ポータルの経路）が本文にない", () => {
     expect(bundle).not.toContain(TEAM_TAG_KEY);
-    expect(bundle).not.toContain(ROLE_PATH);
+    expect(bundle).not.toContain(AUDIENCE);
+    expect(bundle).not.toContain(ROLE_PATH_PREFIX);
+    expect(bundle).not.toContain("awsbridge-console");
     expect(bundle).not.toContain("/t/");
   });
 });

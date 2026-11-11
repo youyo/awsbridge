@@ -1,4 +1,4 @@
-// 人間のログインの設定の CLI（scripts/human/config.ts。mise タスク human:config:check / human:config:generate）を実プロセスで動かし、
+// コンソールログインの設定の CLI（scripts/console/config.ts。mise タスク console:config:check / console:config:generate）を実プロセスで動かし、
 // 終了コード・出力・生成物を確かめる。入力と出力は一時ディレクトリに置き、リポジトリの中には書かない。
 import { spawnSync } from "node:child_process";
 import {
@@ -18,7 +18,7 @@ import {
   companyConfig,
   companyInventory,
   personalConfig,
-} from "../unit/human-fixtures";
+} from "../unit/console-fixtures";
 
 const root = new URL("../../", import.meta.url).pathname;
 const dirs: string[] = [];
@@ -27,7 +27,7 @@ afterAll(() => {
 });
 
 function tmp(): string {
-  const d = mkdtempSync(join(tmpdir(), "awsbridge-human-cli-"));
+  const d = mkdtempSync(join(tmpdir(), "awsbridge-console-cli-"));
   dirs.push(d);
   return d;
 }
@@ -35,7 +35,7 @@ function tmp(): string {
 function run(cmd: string, env: Record<string, string>) {
   return spawnSync(
     join(root, "node_modules/.bin/tsx"),
-    [join(root, "scripts/human/config.ts"), cmd],
+    [join(root, "scripts/console/config.ts"), cmd],
     {
       cwd: root,
       env: { PATH: process.env.PATH ?? "", ...env },
@@ -50,12 +50,12 @@ function write(d: string, name: string, value: unknown): string {
   return p;
 }
 
-describe("human:config:check", () => {
+describe("console:config:check", () => {
   it("会社用の設定を AUD なしで検査して終了コード 0。生成物は書かない", () => {
     const d = tmp();
     const r = run("check", {
-      AWSBRIDGE_HUMAN_CONFIG: write(d, "human.json", companyConfig()),
-      AWSBRIDGE_HUMAN_OUT_DIR: join(d, "out"),
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", companyConfig()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: join(d, "out"),
     });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain("OK");
@@ -69,7 +69,7 @@ describe("human:config:check", () => {
     c.kinds[0].assign.admin.push("infra");
     c.organizations[1].accounts[0].email = "leak@example.org";
     c.organizations[1].accounts.push({ ...c.organizations[1].accounts[0] });
-    const r = run("check", { AWSBRIDGE_HUMAN_CONFIG: write(d, "human.json", c) });
+    const r = run("check", { AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", c) });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("portal.standardOrigin: workers_dev");
     expect(r.stderr).toContain("kinds[0].assign.admin[1]: tier_mismatch");
@@ -84,8 +84,8 @@ describe("human:config:check", () => {
     const auds = companyAuds();
     delete auds.teams.sa;
     const r = run("check", {
-      AWSBRIDGE_HUMAN_CONFIG: write(d, "human.json", companyConfig()),
-      AWSBRIDGE_HUMAN_AUD_FILE: write(d, "auds.json", auds),
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", companyConfig()),
+      AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", auds),
     });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("teams[2].access: aud_missing");
@@ -96,14 +96,14 @@ describe("human:config:check", () => {
     const d = tmp();
     const c = companyConfig();
     for (const k of c.kinds) delete k.assign.developer;
-    const r = run("check", { AWSBRIDGE_HUMAN_CONFIG: write(d, "human.json", c) });
+    const r = run("check", { AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", c) });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stderr).toContain("warning: teams[1]: unassigned_team");
   });
 
   it("設定ファイルがなければ終了コード 1", () => {
     const d = tmp();
-    const r = run("check", { AWSBRIDGE_HUMAN_CONFIG: join(d, "nothing.json") });
+    const r = run("check", { AWSBRIDGE_CONSOLE_CONFIG: join(d, "nothing.json") });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("設定ファイルがありません");
   });
@@ -113,16 +113,16 @@ describe("human:config:check", () => {
   });
 });
 
-describe("human:config:generate", () => {
+describe("console:config:generate", () => {
   it("会社用: 階層ごとの Worker 用・StackSets 用・Access の検査用を書く（他人に読めない権限で）", () => {
     const d = tmp();
     const out = join(d, "out");
     const r = run("generate", {
-      AWSBRIDGE_HUMAN_CONFIG: write(d, "human.json", companyConfig()),
-      AWSBRIDGE_HUMAN_AUD_FILE: write(d, "auds.json", companyAuds()),
-      AWSBRIDGE_HUMAN_INVENTORY_FILE: write(d, "inventory.json", companyInventory()),
-      AWSBRIDGE_HUMAN_OUT_DIR: out,
-      AWSBRIDGE_HUMAN_SOURCE_REVISION: "deadbeef",
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", companyConfig()),
+      AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
+      AWSBRIDGE_CONSOLE_INVENTORY_FILE: write(d, "inventory.json", companyInventory()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
+      AWSBRIDGE_CONSOLE_SOURCE_REVISION: "deadbeef",
     });
     expect(r.status, r.stderr).toBe(0);
     expect(readdirSync(out).sort()).toEqual([
@@ -140,8 +140,21 @@ describe("human:config:generate", () => {
     expect(JSON.stringify(standard)).not.toContain("infra-elevated");
     const admin = JSON.parse(readFileSync(join(out, "worker.admin.json"), "utf8"));
     expect(admin.tier).toBe("admin");
+    // ロールの ARN は階層ごとのパス（P-2）
+    type Rows = { accounts: { roles: { roleArn: string }[] }[] };
+    const arns = (w: Rows) => w.accounts.flatMap((a) => a.roles.map((r) => r.roleArn));
+    for (const [w, seg] of [
+      [standard, "std"],
+      [admin, "admin"],
+    ] as const) {
+      const re = new RegExp(`^arn:aws:iam::\\d{12}:role/awsbridge-console/${seg}/[^/]+$`);
+      expect(arns(w).length).toBeGreaterThan(0);
+      expect(arns(w).filter((a) => !re.test(a))).toEqual([]);
+    }
     const stacksets = JSON.parse(readFileSync(join(out, "stacksets.json"), "utf8"));
     expect(stacksets.assignments).toHaveLength(4);
+    expect(stacksets.audience).toBe("awsbridge-console");
+    expect(stacksets.rolePathPrefix).toBe("/awsbridge-console/");
     // 出力にパスは出してよいが、AUD・email は出さない
     expect(r.stdout).toContain("worker.standard.json");
     expect(r.stdout).not.toContain("1".repeat(64));
@@ -152,8 +165,8 @@ describe("human:config:generate", () => {
     const d = tmp();
     const out = join(d, "out");
     const r = run("generate", {
-      AWSBRIDGE_HUMAN_CONFIG: write(d, "human.json", personalConfig()),
-      AWSBRIDGE_HUMAN_OUT_DIR: out,
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", personalConfig()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
     });
     expect(r.status, r.stderr).toBe(0);
     expect(readdirSync(out).sort()).toEqual([
@@ -167,15 +180,15 @@ describe("human:config:generate", () => {
     const d = tmp();
     const out = join(d, "out");
     const env = {
-      AWSBRIDGE_HUMAN_CONFIG: write(d, "human.json", companyConfig()),
-      AWSBRIDGE_HUMAN_AUD_FILE: write(d, "auds.json", companyAuds()),
-      AWSBRIDGE_HUMAN_OUT_DIR: out,
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", companyConfig()),
+      AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
     };
     expect(run("generate", env).status).toBe(0);
     expect(existsSync(join(out, "worker.admin.json"))).toBe(true);
     const r = run("generate", {
-      AWSBRIDGE_HUMAN_CONFIG: write(d, "human2.json", personalConfig()),
-      AWSBRIDGE_HUMAN_OUT_DIR: out,
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console2.json", personalConfig()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
     });
     expect(r.status, r.stderr).toBe(0);
     expect(existsSync(join(out, "worker.admin.json"))).toBe(false);
@@ -185,8 +198,8 @@ describe("human:config:generate", () => {
     const d = tmp();
     const out = join(d, "out");
     const r = run("generate", {
-      AWSBRIDGE_HUMAN_CONFIG: write(d, "human.json", companyConfig()),
-      AWSBRIDGE_HUMAN_OUT_DIR: out,
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", companyConfig()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
     });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("teams[0].access: aud_missing");
@@ -197,9 +210,9 @@ describe("human:config:generate", () => {
     const d = tmp();
     writeFileSync(join(d, "auds.json"), "{");
     const r = run("generate", {
-      AWSBRIDGE_HUMAN_CONFIG: write(d, "human.json", companyConfig()),
-      AWSBRIDGE_HUMAN_AUD_FILE: join(d, "auds.json"),
-      AWSBRIDGE_HUMAN_OUT_DIR: join(d, "out"),
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", companyConfig()),
+      AWSBRIDGE_CONSOLE_AUD_FILE: join(d, "auds.json"),
+      AWSBRIDGE_CONSOLE_OUT_DIR: join(d, "out"),
     });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("auds: json");

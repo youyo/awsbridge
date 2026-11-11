@@ -1,6 +1,6 @@
-// 人間の AWS ログイン: 1 つの設定ファイルから、Worker 用（階層ごと）・StackSets 用・Access の検査用の生成物を作る。
-// 設計: docs/specs/human-login-portal.md §5.2（一覧の形）・§9.10（分離）・§11.4（生成するもの）・§11.5（検査の順）・§11.6（誤りの扱い）。
-// 副作用のない純粋関数だけを置く（ファイルの読み書きは scripts/human/config.ts）。MCP 用 Worker からは import しない。
+// コンソールログイン: 1 つの設定ファイルから、Worker 用（階層ごと）・StackSets 用・Access の検査用の生成物を作る。
+// 設計: docs/specs/console-login-portal.md §5.2（一覧の形）・§9.10（分離）・§11.4（生成するもの）・§11.5（検査の順）・§11.6（誤りの扱い）。
+// 副作用のない純粋関数だけを置く（ファイルの読み書きは scripts/console/config.ts）。MCP 用 Worker からは import しない。
 //
 // 分離の約束（§9.10・§11.2）: Worker 用の生成物には、その階層のチーム・ロール・境界の issuer・一覧の行だけを入れる。
 // 種類の定義（kinds）・Entra のグループの Object ID・Access のポリシー ID・権限ポリシー・OU・他の階層の AUD は入れない。
@@ -8,19 +8,21 @@
 import {
   ACCOUNT_ID_RE,
   AUD_RE,
+  AUDIENCE,
+  type ConsoleConfig,
+  ConsoleConfigError,
+  type ConsoleConfigIssue,
+  type ConsoleRole,
   type EmailMode,
-  type HumanConfig,
-  HumanConfigError,
-  type HumanConfigIssue,
-  type HumanRole,
   IssueList,
   isEmail,
   join,
-  ROLE_PATH,
+  ROLE_PATH_PREFIX,
   type Routing,
   readMap,
   readObj,
   readStr,
+  rolePath,
   TEAM_TAG_KEY,
   TIERS,
   type Tier,
@@ -87,6 +89,8 @@ export type StackSetsRole = {
   name: string;
   roleName: string;
   tier: Tier;
+  /** IAM のパス（P-2: /awsbridge-console/<tier>/）。 */
+  rolePath: string;
   sessionSeconds: number;
   managedPolicyArns: string[];
   inlinePolicyFiles: string[];
@@ -95,7 +99,10 @@ export type StackSetsRole = {
 };
 export type StackSetsParams = Meta & {
   tagKey: string;
-  rolePath: string;
+  /** OIDC プロバイダーの ClientIdList と信頼ポリシーの <issuer>:aud に入れる値。 */
+  audience: string;
+  /** ロールのパスの接頭辞（停止用の SCP の条件に使う）。ロールごとのパスは roles[].rolePath。 */
+  rolePathPrefix: string;
   roles: StackSetsRole[];
   /** 基盤の StackSet（Organization ごとの OIDC プロバイダー）。 */
   providers: {
@@ -128,11 +135,11 @@ export type AccessSummary = Meta & {
   teams: AccessTeam[];
 };
 
-export type HumanArtifacts = {
+export type ConsoleArtifacts = {
   worker: { standard: WorkerConfig; admin?: WorkerConfig };
   stacksets: StackSetsParams;
   access: AccessSummary;
-  warnings: HumanConfigIssue[];
+  warnings: ConsoleConfigIssue[];
 };
 
 // ---- AUD ----
@@ -165,7 +172,7 @@ function parseAudInput(
 }
 
 function resolveAuds(
-  config: HumanConfig,
+  config: ConsoleConfig,
   raw: unknown,
   requireAud: boolean,
   out: IssueList,
@@ -227,7 +234,7 @@ type Listed = {
 const OU_PATH_RE = /^(r-[0-9a-z]{4,32}|ou-[0-9a-z]{4,32}-[a-z0-9]{8,32})$/;
 
 function listAccounts(
-  config: HumanConfig,
+  config: ConsoleConfig,
   raw: unknown,
   mode: GenerateMode,
   out: IssueList,
@@ -328,13 +335,13 @@ function emailFor(mode: EmailMode, email: string | undefined): { email?: string 
   return { email: mode === "masked" ? maskEmail(email) : email };
 }
 
-const roleArn = (accountId: string, role: HumanRole) =>
-  `arn:aws:iam::${accountId}:role${ROLE_PATH}${role.roleName}`;
+const roleArn = (accountId: string, role: ConsoleRole) =>
+  `arn:aws:iam::${accountId}:role${rolePath(role.tier)}${role.roleName}`;
 
 // ---- 生成 ----
 
 function buildWorker(
-  config: HumanConfig,
+  config: ConsoleConfig,
   tier: Tier,
   auds: ResolvedAuds,
   listed: Listed[],
@@ -413,7 +420,7 @@ function buildWorker(
   };
 }
 
-function buildStackSets(config: HumanConfig, meta: Meta): StackSetsParams {
+function buildStackSets(config: ConsoleConfig, meta: Meta): StackSetsParams {
   const kinds = new Map(config.kinds.map((k) => [k.name, k]));
   const parametersFor = (kind: string) => {
     const assign = kinds.get(kind)?.assign ?? [];
@@ -451,11 +458,13 @@ function buildStackSets(config: HumanConfig, meta: Meta): StackSetsParams {
   return {
     ...meta,
     tagKey: TEAM_TAG_KEY,
-    rolePath: ROLE_PATH,
+    audience: AUDIENCE,
+    rolePathPrefix: ROLE_PATH_PREFIX,
     roles: config.roles.map((r) => ({
       name: r.name,
       roleName: r.roleName,
       tier: r.tier,
+      rolePath: rolePath(r.tier),
       sessionSeconds: r.sessionSeconds,
       managedPolicyArns: [...r.managedPolicyArns],
       inlinePolicyFiles: [...r.inlinePolicyFiles],
@@ -470,7 +479,7 @@ function buildStackSets(config: HumanConfig, meta: Meta): StackSetsParams {
   };
 }
 
-function buildAccess(config: HumanConfig, auds: ResolvedAuds, meta: Meta): AccessSummary {
+function buildAccess(config: ConsoleConfig, auds: ResolvedAuds, meta: Meta): AccessSummary {
   return {
     ...meta,
     routing: config.portal.routing,
@@ -493,13 +502,13 @@ function buildAccess(config: HumanConfig, auds: ResolvedAuds, meta: Meta): Acces
 }
 
 /**
- * 検証済みの設定から生成物を作る。誤り（AUD の欠落・食い違い・重複、インベントリの不正など）は HumanConfigError（全件）。
+ * 検証済みの設定から生成物を作る。誤り（AUD の欠落・食い違い・重複、インベントリの不正など）は ConsoleConfigError（全件）。
  * Standard の生成物は常に作り、Admin の生成物は Admin の階層のチームがあるときだけ作る。
  */
-export function generateHumanArtifacts(
-  config: HumanConfig,
+export function generateConsoleArtifacts(
+  config: ConsoleConfig,
   options: GenerateOptions,
-): HumanArtifacts {
+): ConsoleArtifacts {
   const out = new IssueList();
   const warnings = new IssueList();
   const meta: Meta = {
@@ -510,7 +519,7 @@ export function generateHumanArtifacts(
   const requireAud = options.mode === "deploy" || options.auds !== undefined;
   const auds = resolveAuds(config, options.auds, requireAud, out);
   const listed = listAccounts(config, options.inventory, options.mode, out, warnings);
-  if (out.items.length > 0) throw new HumanConfigError(out.items);
+  if (out.items.length > 0) throw new ConsoleConfigError(out.items);
   const hasAdmin = config.teams.some((t) => t.tier === "admin");
   return {
     worker: {

@@ -22,6 +22,16 @@ Description: >-
 #   P4     Emergency stop: revoke sessions (inline policy AWSRevokeOlderSessions added out of band by
 #          scripts/poc/human/revoke.ts) and OIDC provider deletion.
 #
+# Conditions before stage 1a (ADR-003):
+#   (1)    LocalOnlyRole: `aws login` limited to the same device. Instead of SignInLocalDevelopmentAccess
+#          (oauth2/public-client/*), an inline policy allows the two actions only on
+#          arn:aws:signin:<region>:<account>:oauth2/public-client/localhost, so `aws login --remote`
+#          (oauth2/public-client/remote) should be denied
+#          (https://docs.aws.amazon.com/service-authorization/latest/reference/list_signin.html).
+#   (4)    Out-of-band inline policies (AWSRevokeOlderSessions, AwsbridgeDenySourceIdentity added by
+#          revoke.ts) survive a stack update (UpdateMarker changes TaggedRole's own inline policy), and
+#          a Deny on aws:SourceIdentity stops one user only (SecondSubject adds a second user to TaggedRole).
+#
 # Every trust policy allows exactly one user (sub) with the PoC audience (aud).
 # HumanRole allows sts:SetSourceIdentity and sts:TagSession without conditions (used for the tag size limits).
 
@@ -44,9 +54,34 @@ Parameters:
   RoleName:
     Type: String
     Default: AwsbridgeHumanPoc
-    Description: Name of the PoC IAM role. The P2-P4 roles are named <RoleName>Tagged and <RoleName>NoTag.
-    AllowedPattern: '^[\w+=,.@-]{1,58}$'
-    ConstraintDescription: 1-58 characters of alphanumerics and _+=,.@- (a suffix of up to 6 characters is added for the P2-P4 roles)
+    Description: >-
+      Name of the PoC IAM role. The other roles are named <RoleName>Tagged, <RoleName>NoTag and
+      <RoleName>LocalOnly.
+    AllowedPattern: '^[\w+=,.@-]{1,55}$'
+    ConstraintDescription: 1-55 characters of alphanumerics and _+=,.@- (a suffix of up to 9 characters is added for the other roles)
+  SecondSubject:
+    Type: String
+    Default: none
+    Description: >-
+      (4-b) A second PoC user (lower-case email) that may also assume TaggedRole, with its own
+      SourceIdentity. "none" means no second user.
+    AllowedPattern: '^(none|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+)$'
+    ConstraintDescription: none, or a single email address such as second@example.com (no wildcards, no lists).
+  UpdateMarker:
+    Type: String
+    Default: "0"
+    Description: >-
+      (4-a) Change this value to force an update of TaggedRole's own inline policy (its Sid), and check
+      whether inline policies added outside CloudFormation survive the update.
+    AllowedPattern: "^[A-Za-z0-9]{1,16}$"
+    ConstraintDescription: 1-16 alphanumerics (it becomes part of an IAM Sid).
+
+Conditions:
+  HasSecondSubject:
+    Fn::Not:
+      - Fn::Equals:
+          - Ref: SecondSubject
+          - none
 
 Resources:
   OidcProvider:
@@ -115,43 +150,52 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # P2: the same role grants different permissions depending on the session tag
-              - Sid: DenyListRolesUnlessPocAdmin
+              # P2: the same role grants different permissions depending on the session tag.
+              # (4-a) the Sid ends with UpdateMarker, so changing it updates this CloudFormation-managed policy.
+              - Sid:
+                  Fn::Sub: "DenyListRolesUnlessPocAdmin${UpdateMarker}"
                 Effect: Deny
                 Action: iam:ListRoles
                 Resource: "*"
                 Condition:
                   StringNotEquals:
                     aws:PrincipalTag/access_profile: poc-admin
+      # (4-b) with SecondSubject, sub may be either user (each with its own SourceIdentity).
       AssumeRolePolicyDocument:
-        Fn::Sub: |-
-          {
-            "Version": "2012-10-17",
-            "Statement": [
-              {
-                "Effect": "Allow",
-                "Principal": { "Federated": "${OidcProvider}" },
-                "Action": [
-                  "sts:AssumeRoleWithWebIdentity",
-                  "sts:TagSession",
-                  "sts:SetSourceIdentity"
-                ],
-                "Condition": {
-                  "StringEquals": {
-                    "${IssuerHost}:aud": "${Audience}",
-                    "${IssuerHost}:sub": "${Subject}",
-                    "aws:RequestTag/access_profile": ["poc-admin", "poc-viewer"]
-                  },
-                  "ForAllValues:StringEquals": {
-                    "aws:TagKeys": ["access_profile"]
-                  },
-                  "Null": {
-                    "sts:SourceIdentity": "false"
+        Fn::Sub:
+          - |-
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": { "Federated": "${OidcProvider}" },
+                  "Action": [
+                    "sts:AssumeRoleWithWebIdentity",
+                    "sts:TagSession",
+                    "sts:SetSourceIdentity"
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "${IssuerHost}:aud": "${Audience}",
+                      "${IssuerHost}:sub": ${SubjectList},
+                      "aws:RequestTag/access_profile": ["poc-admin", "poc-viewer"]
+                    },
+                    "ForAllValues:StringEquals": {
+                      "aws:TagKeys": ["access_profile"]
+                    },
+                    "Null": {
+                      "sts:SourceIdentity": "false"
+                    }
                   }
                 }
-              }
-            ]
-          }
+              ]
+            }
+          - SubjectList:
+              Fn::If:
+                - HasSecondSubject
+                - Fn::Sub: '["${Subject}", "${SecondSubject}"]'
+                - Fn::Sub: '"${Subject}"'
       Tags:
         - Key: project
           Value: awsbridge-human-poc
@@ -186,6 +230,55 @@ Resources:
         - Key: project
           Value: awsbridge-human-poc
 
+  # (1) `aws login` only on the same device: no SignInLocalDevelopmentAccess (which allows
+  # oauth2/public-client/*), only the localhost client. `aws login --remote` uses
+  # oauth2/public-client/remote and should be denied. Same trust policy as HumanRole.
+  LocalOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Fn::Sub: "${RoleName}LocalOnly"
+      MaxSessionDuration: 43200
+      ManagedPolicyArns:
+        - Fn::Sub: "arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess"
+      Policies:
+        - PolicyName: AwsLoginLocalhostOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: AwsLoginSameDeviceOnly
+                Effect: Allow
+                Action:
+                  - signin:AuthorizeOAuth2Access
+                  - signin:CreateOAuth2Token
+                Resource:
+                  Fn::Sub: "arn:${AWS::Partition}:signin:*:${AWS::AccountId}:oauth2/public-client/localhost"
+      AssumeRolePolicyDocument:
+        Fn::Sub: |-
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": { "Federated": "${OidcProvider}" },
+                "Action": [
+                  "sts:AssumeRoleWithWebIdentity",
+                  "sts:SetSourceIdentity",
+                  "sts:TagSession"
+                ],
+                "Condition": {
+                  "StringEquals": {
+                    "${IssuerHost}:aud": "${Audience}",
+                    "${IssuerHost}:sub": "${Subject}"
+                  }
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: project
+          Value: awsbridge-human-poc
+
 Outputs:
   RoleArn:
     Description: ARN of the PoC role (assumed with the locally signed JWT).
@@ -203,3 +296,7 @@ Outputs:
     Description: ARN of the P2 role without sts:TagSession.
     Value:
       Fn::GetAtt: [NoTagRole, Arn]
+  LocalOnlyRoleArn:
+    Description: ARN of the (1) role whose `aws login` is limited to the localhost client (no --remote).
+    Value:
+      Fn::GetAtt: [LocalOnlyRole, Arn]

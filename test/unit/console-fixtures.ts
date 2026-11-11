@@ -1,4 +1,4 @@
-// 人間のログインの設定ファイル（src/human/config.ts）のテスト用の設定。値はすべてダミー（example.com・111111111111 など）。
+// コンソールログインの設定ファイル（src/console/config.ts）のテスト用の設定。値はすべてダミー（example.com・111111111111 など）。
 // 呼ぶたびに新しいオブジェクトを返すので、テストの中で書き換えてよい。
 
 // biome-ignore lint/suspicious/noExplicitAny: 誤りの入った設定を作るために書き換えるので any にする
@@ -27,7 +27,7 @@ export function companyConfig(): Raw {
     roles: [
       {
         name: "admin",
-        roleName: "HumanAdmin",
+        roleName: "ConsoleAdmin",
         displayName: "Admin",
         tier: "admin",
         sessionSeconds: 3600,
@@ -35,13 +35,13 @@ export function companyConfig(): Raw {
       },
       {
         name: "developer",
-        roleName: "HumanDeveloper",
+        roleName: "ConsoleDeveloper",
         sessionSeconds: 28800,
         permissions: { managedPolicyArns: ["arn:aws:iam::aws:policy/PowerUserAccess"] },
       },
       {
         name: "readonly",
-        roleName: "HumanReadOnly",
+        roleName: "ConsoleReadOnly",
         sessionSeconds: 43200,
         permissions: { managedPolicyArns: ["arn:aws:iam::aws:policy/ReadOnlyAccess"] },
       },
@@ -112,13 +112,13 @@ export function personalConfig(): Raw {
     roles: [
       {
         name: "readonly",
-        roleName: "HumanReadOnly",
+        roleName: "ConsoleReadOnly",
         sessionSeconds: 43200,
         permissions: { managedPolicyArns: ["arn:aws:iam::aws:policy/ReadOnlyAccess"] },
       },
       {
         name: "developer",
-        roleName: "HumanDeveloper",
+        roleName: "ConsoleDeveloper",
         sessionSeconds: 14400,
         permissions: { managedPolicyArns: ["arn:aws:iam::aws:policy/PowerUserAccess"] },
       },

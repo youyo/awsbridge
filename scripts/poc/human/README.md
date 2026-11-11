@@ -15,6 +15,12 @@ MCP だけでなく人間の AWS ログインにも使えるかを確かめる�
 - **P3 SourceIdentity**: JWT の `https://aws.amazon.com/source_identity` を信頼ポリシーで必須にでき、CloudTrail に残るか
 - **P4 緊急停止**: ロールの Revoke Sessions と OIDC プロバイダーの削除で、発行済みの認証情報・コンソール・`aws login` が止まるまでの時間
 
+段階 1a の前の条件（cto の決裁 ADR-003 相当の (1) と (4)。手順は末尾の「段階 1a の前の条件」）:
+
+- **(1)** `aws login` を同じ端末（localhost）だけに絞ったロールで、`--remote` が拒否されるか
+- **(4)** CloudFormation の外で付けたインラインポリシー（revoke・SourceIdentity の Deny）がスタックの更新で消えないか、
+  `aws:SourceIdentity` の Deny で 1 人だけ止まるまでの時間
+
 段階 1 の前のゲートの PoC（N9 パス付き issuer・N1 の M2 パスごとの Access アプリと AUD・N10 Access + Worker の通し経路）は
 [portal/README.md](portal/README.md)（ポータル Worker `awsbridge-human-poc-portal`。このページの道具とは別のスタック・Worker・鍵）。
 
@@ -46,6 +52,8 @@ MCP だけでなく人間の AWS ログインにも使えるかを確かめる�
 - `poc-human.yaml`: IAM OIDC プロバイダーとロール 3 つ（`mise run lint` の cfn-lint 対象）
 - P2〜P4: `cases.ts`（ケース表）/ `ops.ts`（revoke ポリシー・ガード・伏せ字）/ `watch.ts`（見張りの集計）/ `trail-lib.ts`（CloudTrail の読み取り）が純粋関数。
   `checks.ts` / `stop-watch.ts` / `revoke.ts` / `trail.ts` が手順。テストは `test/unit/poc-human-{claims,cases,ops,watch,trail,ops-scripts}.test.ts`
+- 段階 1a の前の条件: `persist-lib.ts`（インラインポリシーとドリフトの集計）と `ops.ts` の `denySourceIdentityPolicyDocument` が純粋関数。
+  `persist.ts`（inline / drift）と `revoke.ts` の deny-si / undeny-si が手順。テストは `test/unit/poc-human-gate{,-scripts}.test.ts`
 
 ## 前提
 
@@ -242,7 +250,7 @@ P2〜P4 のロール（`AwsbridgeHumanPocTagged` / `AwsbridgeHumanPocNoTag`）�
 ## 追加したリソース（`poc-human.yaml`）
 
 既存のロール `AwsbridgeHumanPoc` はそのまま残し、ロールを 2 つ足した。名前は `<RoleName>Tagged` / `<RoleName>NoTag`
-（`RoleName` は 58 文字まで）。`revoke.ts` は名前が `AwsbridgeHumanPoc` で始まるロールにしか触らないので、`AWSBRIDGE_HUMAN_POC_ROLE_NAME`
+（`RoleName` は 55 文字まで。段階 1a の前の条件で `<RoleName>LocalOnly` も足したため）。`revoke.ts` は名前が `AwsbridgeHumanPoc` で始まるロールにしか触らないので、`AWSBRIDGE_HUMAN_POC_ROLE_NAME`
 で別の名前にしたときは P4 の道具を使えない。
 
 | ロール | 信頼ポリシー（Allow 文 1 つだけ） | 権限 |
@@ -371,7 +379,8 @@ mise run poc:human:unrevoke        # 外す
 - 期待: 発行済みの認証情報・コンソール・`aws login` は拒否される。新しい引き受け（`assume:tagged`）は、基準時刻より後に発行された認証情報なら通る
   （revoke は信頼ポリシーではなく権限ポリシーなので、引き受け自体は止まらない）。基準時刻より前の 30 秒間に発行されたものは拒否される
 - `aws login` の更新後の認証情報が基準時刻より後に発行されたものなら、revoke では止まらない可能性がある（これを確かめるのが見張りを続ける理由）
-- revoke を付けたまま `deploy-aws` をやり直すと、CloudFormation がテンプレートにないインラインポリシーを消すかもしれない。PoC 中は unrevoke してから deploy-aws する
+- revoke を付けたまま `deploy-aws` をやり直したときに CloudFormation がテンプレートにないインラインポリシーを消すかは、末尾の (4-a) で確かめる。
+  (4-a) で確かめるまでは、ほかの測定の途中で deploy-aws しない
 
 ### (b) OIDC プロバイダーの削除
 
@@ -469,3 +478,322 @@ revoke のインラインポリシーが残っていてもスタック削除が�
 - **SessionDuration=43200 が受理されたこと**: 確認済み（PoC-A の A-2、`getSigninToken` が成功し、その URL でコンソールに入れた）
 - **実際に 12 時間続くこと**: 未観測。1 時間を超えて続くかも含めて観測していない。確かめるなら A-2 と同じ URL で入り、
   1 時間後・6 時間後・12 時間後・12 時間 5 分後にページを再読み込みして、ログイン状態を記録する
+
+---
+
+# 段階 1a の前の条件: `aws login` を localhost だけに（1）、CFN の外のポリシーと 1 人だけ止める Deny（4）
+
+cto の決裁（ADR-003 相当、2026-11-11）は、段階 1a の前に開発環境で確かめる条件を挙げた。このうち次の 2 つをここで確かめる。
+
+- **(1)** localhost だけのポリシーで、同じ端末の `aws login` が通り、`aws login --remote` が拒否される。不成立なら段階 1 は `aws login` を案内しない
+- **(4)** revoke と `aws:SourceIdentity` の Deny が CloudFormation の更新で消えないか（4-a）、1 人を止めるまでの時間（4-b）
+
+## 追加・変更したもの
+
+| 種類 | 名前 | 内容 |
+|---|---|---|
+| ロール | `AwsbridgeHumanPocLocalOnly`（`LocalOnlyRole`、Output `LocalOnlyRoleArn`） | 信頼ポリシーは `AwsbridgeHumanPoc` と同じ。権限は ReadOnlyAccess + インライン `AwsLoginLocalhostOnly`（下記）。`SignInLocalDevelopmentAccess` は付けない |
+| パラメーター | `SecondSubject`（既定 `none`） | (4-b) の対照の 2 人目。`AwsbridgeHumanPocTagged` の信頼ポリシーの sub を「1 人目か 2 人目」にする（ほかのロールは変えない） |
+| パラメーター | `UpdateMarker`（既定 `0`） | (4-a) で更新を起こす印。`AwsbridgeHumanPocTagged` の CloudFormation 管理のインラインポリシー `PrincipalTagPermissions` の Sid の末尾（`DenyListRolesUnlessPocAdmin<印>`）になる |
+| 変数 | `AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT` / `AWSBRIDGE_HUMAN_POC_UPDATE_MARKER` | `deploy-aws.sh` が毎回 `SecondSubject` / `UpdateMarker` として明示して渡す（未設定なら `none` / `0`）。`cloudformation deploy` は渡さなかったパラメーターの前回値を引き継ぐため |
+| 選択肢 | `--role localonly`・`--who primary\|second`・`--assume tagged:second` | console-url / revoke / stop-watch。2 人目のファイルは `credentials-tagged-second.json` など（`-second` が付く） |
+
+mise タスク（IAM を変えるのは deny-si / undeny-si だけ。inline-policies / drift は読み取りとドリフト検出だけ）:
+
+| タスク | 内容 |
+|---|---|
+| `poc:human:deny-si` | ロール（既定 Tagged、`--role`）に `AwsbridgeDenySourceIdentity` を付け、「完了: <UTC>」を出す。`--who second` で 2 人目を止める |
+| `poc:human:undeny-si` | `AwsbridgeDenySourceIdentity` を外し、「完了: <UTC>」を出す |
+| `poc:human:inline-policies` | スタックの全ロールのインラインポリシー名と、`--role`（既定 tagged）に `--expect`（既定 `AWSRevokeOlderSessions,AwsbridgeDenySourceIdentity`）が残っているかの判定を出す。`--expect ''` で一覧だけ |
+| `poc:human:drift` | `detect-stack-drift` → 完了を待つ → リソースごとの状態と差分の場所・種類（インラインポリシーならその名前）を出す。値（email・アカウント ID を含む）は出さない |
+
+`AwsbridgeDenySourceIdentity` の本文（`ops.ts` の `denySourceIdentityPolicyDocument`）:
+
+```json
+{ "Version": "2012-10-17",
+  "Statement": [ { "Sid": "DenyBySourceIdentity", "Effect": "Deny", "Action": "*", "Resource": "*",
+                   "Condition": { "StringEquals": { "aws:SourceIdentity": ["<止める利用者の email>"] } } } ] }
+```
+
+ガードは既存の P4 の道具と同じ（スタック名が `awsbridge-human-poc` で始まり、Output のロールが `AwsbridgeHumanPoc*` のときだけ触る）。
+SourceIdentity は 2〜64 文字の `[A-Za-z0-9_+=,.@-]` だけを受け付ける（`*` などで全員を止めないように）。値は `mise.local.toml` の subject から取り、
+標準出力では伏せる。
+
+準備（両方に共通。テンプレートを変えたので 1 回 deploy-aws する）:
+
+```toml
+# mise.local.toml に足す。1 人目とは別の email（ブラウザでは使わない。STS の認証情報だけ。自分の + 付きのアドレスなどでよい）
+AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT = "user+second@example.com"
+```
+
+```sh
+mise run poc:human:deploy-aws      # LocalOnly ロールの追加、Tagged の信頼ポリシーに 2 人目、Sid が ...PocAdmin0 になる
+```
+
+## (1) `aws login` を localhost だけに
+
+### 調べたこと
+
+| 項目 | 内容 | 出典 |
+|---|---|---|
+| リソースの ARN | 同じ端末の `aws login` は `arn:${Partition}:signin:${Region}:${Account}:oauth2/public-client/localhost`、`aws login --remote` は `.../oauth2/public-client/remote` | Service Authorization Reference（AWS Sign-In）の Resource types、CLI のユーザーガイド |
+| `aws login` のアクション | `signin:AuthorizeOAuth2Access`（ブラウザで認可コードを得る）と `signin:CreateOAuth2Token`（コード・リフレッシュトークンをトークンに替える）。管理ポリシー `SignInLocalDevelopmentAccess` はこの 2 つを `arn:aws:signin:*:*:oauth2/public-client/*` に許す | SAR、管理ポリシーの本文 |
+| localhost / remote のリソースを取るほかのアクション | `signin:IntrospectOAuth2Token`・`signin:RevokeOAuth2Token`（管理ポリシーには無い。`aws login` には要らない見込み）。`signin:CreateBearerToken` は `service-principal/*`、`signin:CreateOAuth2PublicClient` は `external-client/dcr/*` で、`aws login` とは別 | SAR |
+| SAR の表の `console` | 2 つのアクションの行に `console*`（`arn:${Partition}:signin:::console/${ConsoleName}`）も並ぶ。管理ポリシーは `oauth2/public-client/*` だけで PoC-B が通ったので、要らないと見ている **[推測]**。LocalOnly で同じ端末の `aws login` が失敗したら、まずここを疑う | SAR |
+| ReadOnlyAccess の `signin:*` | v191 の本文にあるのは `signin:ListTrustedIdentityPropagationApplicationsForConsole` だけ。OAuth のアクションは無いので、LocalOnly の `aws login` の権限はインラインポリシーだけから来る | `aws iam get-policy-version`（AWS 管理ポリシーの読み取り） |
+| 条件キー | `signin:OAuthRedirectUri`（`AuthorizeOAuth2Access`・`CreateOAuth2Token`、localhost と remote の両方のリソースで使える）、`signin:OAuthClientId`（同）、`signin:OAuthGrantType`・`signin:OAuthClientAuthentication`（`CreateOAuth2Token` だけ） | SAR、Sign-In の条件キーのリファレンス |
+
+出典 URL:
+
+- https://docs.aws.amazon.com/service-authorization/latest/reference/list_signin.html
+- https://docs.aws.amazon.com/signin/latest/userguide/reference-signin-condition-keys.html
+- https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html
+- https://docs.aws.amazon.com/signin/latest/userguide/security-iam-awsmanpol.html
+- https://docs.aws.amazon.com/aws-managed-policy/latest/reference/SignInLocalDevelopmentAccess.html
+
+LocalOnly のインラインポリシー `AwsLoginLocalhostOnly`（テンプレートが採る形。リソースで絞る）:
+
+```json
+{ "Sid": "AwsLoginSameDeviceOnly", "Effect": "Allow",
+  "Action": ["signin:AuthorizeOAuth2Access", "signin:CreateOAuth2Token"],
+  "Resource": "arn:${AWS::Partition}:signin:*:${AWS::AccountId}:oauth2/public-client/localhost" }
+```
+
+**案（テンプレートには入れていない）: 条件キー `signin:OAuthRedirectUri` で絞る形。** SAR では両アクションで使える。
+文書の例は AWS MCP Server の OAuth（`service-principal/aws-mcp.amazonaws.com`）向けで、`StringLike "http://localhost:*"` と
+`signin:OAuthGrantType`（`authorization_code`・`refresh_token`）を組み合わせている。`aws login` に当てはめると次のようになる:
+
+```json
+{ "Effect": "Allow",
+  "Action": ["signin:AuthorizeOAuth2Access", "signin:CreateOAuth2Token"],
+  "Resource": "arn:aws:signin:*:<account-id>:oauth2/public-client/*",
+  "Condition": { "StringLike": { "signin:OAuthRedirectUri": ["http://127.0.0.1:*", "http://localhost:*"] } } }
+```
+
+採る前に確かめること（未確認）:
+
+- `aws login` の実際の `redirect_uri` の値。下の手順で、CLI が表示する authorize の URL の `redirect_uri`（URL エンコードを戻したもの）を記録する。
+  `--remote` は `https://<region>.signin.aws.amazon.com/v1/sessions/confirmation` の形と見ている **[推測]**
+- 15 分ごとの更新（`refresh_token` の `CreateOAuth2Token`）に `redirect_uri` が載るか。載らなければ `StringLike` は一致せず更新が拒否される。
+  `...IfExists` にすると条件が無い要求を通すので、絞りが弱くなる
+- このため、段階 1 はリソースで絞る形（上の `AwsLoginLocalhostOnly`）を採り、条件キーは SCP などで重ねる候補にとどめる
+
+### 手順
+
+ブラウザは PoC-A のプロファイル。**試行ごとに**別の設定・キャッシュのディレクトリとプロファイル名を使い、ロールを替える前にコンソールからサインアウトする
+（同じブラウザに別のフェデレーションのセッションが残っていると、新しい URL を開いても切り替わらない）。
+
+```sh
+# 試行ごとに実行する（新しい一時ディレクトリにする）
+poc_fresh() {
+  export POC_DIR="$(mktemp -d)"
+  export AWS_CONFIG_FILE="$POC_DIR/config" AWS_SHARED_CREDENTIALS_FILE="$POC_DIR/credentials" \
+         AWS_LOGIN_CACHE_DIRECTORY="$POC_DIR/login-cache"
+  unset AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+}
+```
+
+| ID | ロール | 操作 | 期待 |
+|---|---|---|---|
+| L-0 | `AwsbridgeHumanPoc`（管理ポリシー） | `poc_fresh; aws login --profile poc-l0 --region ap-northeast-1`（`--remote` なし） | 通る。**対照**（前回の B-2 は `--remote` でしか試していない。これが通らなければ L-1 の失敗をポリシーのせいにできない） |
+| L-0r | 同上 | `poc_fresh; aws login --profile poc-l0r --region ap-northeast-1 --remote` | 通る（B-2 で確認済み。やり直すなら） |
+| L-1 | `AwsbridgeHumanPocLocalOnly` | `poc_fresh; aws login --profile poc-l1 --region ap-northeast-1` | 通る。get-caller-identity の Arn が `assumed-role/AwsbridgeHumanPocLocalOnly/...`。15 分後の更新も通る |
+| L-2 | 同上 | `poc_fresh; aws login --profile poc-l2 --region ap-northeast-1 --remote` | 拒否される（どの段階のどのエラーかを記録） |
+
+1. L-0: `mise run poc:human:console-url -- --session-durations 43200` → `console-url-dur-default-sd-43200.txt` の URL を開く →
+   右上が `AwsbridgeHumanPoc/human-<email>` であることを確かめる → L-0 を実行し、ブラウザでそのセッションを選ぶ。
+   CLI が表示した `https://signin.<region>.amazonaws.com/authorize?...` の `redirect_uri` と `client_id` を記録する（`state`・`code_challenge` は記録しない）
+2. 確認: `aws sts get-caller-identity --profile poc-l0` と `aws s3api list-buckets --profile poc-l0 --query 'length(Buckets)'`
+3. コンソールからサインアウトする
+4. L-1: `mise run poc:human:console-url -- --role localonly --session-durations 43200` →
+   `console-url-localonly-dur-default-sd-43200.txt` の URL を開く → 右上が `AwsbridgeHumanPocLocalOnly/...` → L-1 を実行し、同じく `redirect_uri` を記録 → 2 と同じ確認
+5. L-1 の更新: 別の端末で（L-1 の `AWS_CONFIG_FILE` / `AWS_LOGIN_CACHE_DIRECTORY` を export した状態で）
+   `mise run poc:human:stop-watch -- --profile poc-l1 --interval 30` を **20 分以上**流す。要約で失敗が無いこと（更新の `CreateOAuth2Token` が localhost のリソースで通ること）を確かめる
+6. L-2: 同じコンソールのセッションのまま L-2 を実行し、表示された URL を同じブラウザで開く。どこで止まるかを記録する:
+   - (a) ブラウザでセッションを選んだあとにエラーになり、認可コードが表示されない → `AuthorizeOAuth2Access` が拒否された
+   - (b) 認可コードは表示されるが、CLI に貼ったあとにエラーになる → `CreateOAuth2Token` が拒否された（CLI のエラー文を写す。email・アカウント ID は伏せる）
+   - (c) 通る → 不成立
+   - `--remote` の URL の `redirect_uri` も記録する
+7. CloudTrail（任意。記録されるかも記録する）: `eventSource` が `signin.amazonaws.com` のイベントで、`AuthorizeOAuth2Access` / `CreateOAuth2Token` の
+   `errorCode` を見る。リージョンは `aws login --region` に渡したもの（ap-northeast-1）と us-east-1 の両方を見る
+8. 片付け: `aws logout --profile <各プロファイル>`（それぞれの `POC_DIR` の設定で）、`rm -rf` で一時ディレクトリを消す、コンソールからサインアウト
+
+### 判定基準（(1)）
+
+| 判定 | 条件 |
+|---|---|
+| 成立 | L-0 と L-1 が通り、L-1 の更新が 20 分以上続き、L-2 が拒否される（段階とエラーを記録） |
+| 不成立（remote が通る） | L-2 が通る。ADR どおり段階 1 は `aws login` を案内しない（または SCP で `oauth2/public-client/remote` を Deny する案を cto に上申） |
+| 不成立（localhost が通らない） | L-0 が通り L-1 が拒否される。リソースの ARN の不足（SAR の表の `console` など）を疑い、エラーを記録する |
+| 保留 | L-0 が通らない。ポリシー以外（ブラウザ・セッションの選択・CLI）の問題なので、先にそれを直す |
+
+### 結果の記録（(1)）
+
+実行日・CLI のバージョン・リージョンを書く（アカウント ID・email・URL 全体は書かない）。
+
+| ID | 結果 | 止まった段階（L-2） | エラー（伏せ字） | `redirect_uri` | `client_id` | メモ |
+|---|---|---|---|---|---|---|
+| L-0 | 未実施 | - | - | | | |
+| L-1 | 未実施 | - | - | | | 更新（20 分以上）: |
+| L-2 | 未実施 | | | | | |
+
+## (4) CFN の外のインラインポリシーと、1 人だけ止める Deny
+
+順番: **(4-a) → 両方外す → 全員が戻ったのを確かめる → (4-b)**。前回の P4 では unrevoke の伝播の揺れが次の測定に混ざったので、間を空ける。
+
+### (4-a) スタックの更新で消えないか
+
+```sh
+mise run poc:human:inline-policies -- --expect ''   # 0. 更新前の一覧（Tagged は PrincipalTagPermissions だけ）
+mise run poc:human:drift                            #    更新前のドリフト（IN_SYNC のはず）
+mise run poc:human:revoke                           # 1. Tagged に AWSRevokeOlderSessions（CloudFormation の外）
+mise run poc:human:deny-si                          #    Tagged に AwsbridgeDenySourceIdentity（CloudFormation の外）
+mise run poc:human:inline-policies                  # 2. 判定「すべて残っている」（付けた直後）
+mise run poc:human:drift                            # 3. 付けたあとのドリフト（Tagged がどう見えるか）
+AWSBRIDGE_HUMAN_POC_UPDATE_MARKER=1 mise run poc:human:deploy-aws
+                                                    # 4. 更新: Tagged の CFN 管理のポリシー（Sid）が ...PocAdmin1 に変わる
+mise run poc:human:inline-policies                  # 5. 判定（更新のあと）
+mise run poc:human:drift                            # 6. 更新のあとのドリフト
+mise run poc:human:deploy-aws                       # 7. 印を 0 に戻す更新（もう 1 回の更新でも確かめる）
+mise run poc:human:inline-policies                  # 8. 判定
+```
+
+- 4 と 7 で、本当に Tagged が更新されたかを確かめる: deploy の出力が「No changes to deploy」でないこと、
+  `aws cloudformation describe-stack-events --stack-name awsbridge-human-poc --max-items 20` に `TaggedRole` の `UPDATE_COMPLETE` があること
+- revoke も deny-si も Tagged の全セッションを止めるが、(4-a) の間は Tagged の認証情報を使わないので構わない
+- ドリフト検出で見ること: 外から足したインラインポリシーが `TaggedRole` の `MODIFIED`（`/Policies/<n> ADD（ポリシー名）`）として見えるか、`IN_SYNC` のまま（見えない）か
+- 片付け（(4-b) の前に）:
+
+```sh
+mise run poc:human:unrevoke
+mise run poc:human:undeny-si
+mise run poc:human:inline-policies -- --expect ''   # Tagged は PrincipalTagPermissions だけに戻る
+mise run poc:human:drift                            # IN_SYNC に戻るか
+```
+
+| 判定 | 条件 |
+|---|---|
+| 残る | 5 と 8 で「すべて残っている」。CloudFormation の更新は、テンプレートにないインラインポリシーを消さない |
+| 消える | 5 か 8 で「消えた」。停止のポリシーは更新のたびに付け直すか、テンプレートの側（停止の印。設計書の N8）に置く必要がある |
+| ドリフト | 3・6 で外のポリシーが見えたか（見えるなら、ドリフト検出で停止中のロールを見つけられる） |
+
+### (4-b) 1 人だけ止まるまでの時間
+
+1. 1 人目（止める人）と 2 人目（対照）の認証情報、1 人目のコンソールと `aws login` を用意する:
+
+```sh
+mise run poc:human:console-url -- --role tagged --access-profile poc-admin --source-identity --duration-seconds 43200 --session-durations 43200
+#   → credentials-tagged.json と console-url-tagged-dur-43200-sd-43200.txt（1 人目）
+mise run poc:human:console-url -- --role tagged --access-profile poc-admin --source-identity --duration-seconds 43200 --session-durations none --who second
+#   → credentials-tagged-second.json（2 人目。コンソールは使わない）
+```
+
+   `--duration-seconds 43200` は、認証情報ファイルが見張りの途中で切れないようにするため（既定の 1 時間だと、準備・20 分以上の見張り・復帰待ちで期限に近づき、
+   `ExpiredToken` が「止まった」「戻らない」に見える）。要約では `AccessDenied` 以外のコード（`ExpiredToken` など）を停止に数えない。
+   1 人目のコンソールの URL を開き（先にサインアウト）、右上が `AwsbridgeHumanPocTagged/human-<email>` であることを確かめる。
+   そのセッションから `poc_fresh; aws login --profile human-poc-tagged --region ap-northeast-1` で `aws login` の認証情報を取る（Tagged は管理ポリシーなので `--remote` でもよい）
+
+2. 別の端末で（`aws login` の `AWS_CONFIG_FILE` / `AWS_LOGIN_CACHE_DIRECTORY` を export した状態で）見張りを始める。`--since` なしで起動し、
+   **全対象が 1 分以上 OK** になってから次へ進む（前の操作の揺れを混ぜない）:
+
+```sh
+mise run poc:human:stop-watch -- \
+  --credentials .secrets/poc-human/credentials-tagged.json \
+  --credentials .secrets/poc-human/credentials-tagged-second.json \
+  --profile human-poc-tagged \
+  --assume tagged --assume tagged:second \
+  --interval 5
+```
+
+3. `mise run poc:human:deny-si` →「完了: <T1>」を控える。コンソールは 30 秒おきに IAM のロール一覧を再読み込みし、拒否された時刻を手で記録する
+4. **20 分以上**見張る（`aws login` の 15 分ごとの更新を 1 回越える）
+5. `mise run poc:human:undeny-si` →「完了: <T2>」を控える。1 人目の全対象が OK に戻るまで（数分）見張り、Ctrl-C で止める
+6. 要約を 2 回出す（aws は呼ばない）:
+   - 止まるまで: `mise run poc:human:stop-watch -- --summarize .secrets/poc-human/stop-watch-<時刻>.jsonl --since <T1>` の「since→最初の失敗」。
+     この要約の「失敗のあとの最初の成功」が T2 より後なら、Deny の間は戻らなかったと読む（T2 より前なら、伝播の揺れか止めきれていない）
+   - 戻るまで: 記録（`.jsonl`。1 行に時刻・対象・成否）で、1 人目の各対象の **T2 以降の最初の `"ok":true`** の時刻 − T2。
+     `--since T1` の「失敗のあとの最初の成功」は T2 より前の揺れを拾うことがあるので、戻るまでの時間には使わない。
+     `--since <T2>` で要約し直すと、T2 のあとにまだ拒否が続いた対象の「最初の失敗」「失敗のあとの最初の成功」も確かめられる
+
+期待:
+
+| 対象 | deny-si のあと | undeny-si のあと |
+|---|---|---|
+| `file:credentials-tagged.json`（1 人目の STS） | 数秒〜1 分で AccessDenied | 戻る |
+| `file:credentials-tagged-second.json`（2 人目の STS） | ずっと OK | OK |
+| `profile:human-poc-tagged`（1 人目の `aws login`） | AccessDenied。更新のあとも拒否のまま（更新の認証情報にも SourceIdentity が付くなら） | 戻る |
+| `assume:tagged`（1 人目の新しい引き受け） | STS は通る（信頼ポリシーではないため）が、ListBuckets が AccessDenied。**revoke と違い、新しく発行した認証情報も止まる** | 戻る |
+| `assume:tagged:second`（2 人目の新しい引き受け） | ずっと OK | OK |
+| 1 人目のコンソール（手で記録） | 再読み込みで明示的な Deny | 戻る |
+
+| 判定 | 条件 |
+|---|---|
+| 成立 | 1 人目の STS・`aws login`・新しい引き受け・コンソールが数分以内に拒否され、20 分以上（更新を越えて）戻らず、2 人目は全期間 OK。undeny-si で 1 人目が戻る |
+| 部分的 | 1 人目の `aws login` が更新のあとに通る（更新の認証情報に SourceIdentity が付かない）。この場合、SourceIdentity の Deny は `aws login` を止めきれない |
+| 不成立 | 2 人目も止まる、または 1 人目が止まらない |
+
+補足: この Deny はロールの権限ポリシーなので、そのロールにしか効かない。本番で 1 人を全ロールで止めるには、全ロールに付けるか（StackSets）、
+管理下では SCP の `aws:SourceIdentity` で重ねる（SCP は管理アカウントに効かないので、この PoC では試さない。P4 (c) と同じ）。
+
+### 結果の記録（(4)）
+
+実行日・CLI のバージョン・リージョンを書く（アカウント ID・email は書かない。`inline-policies` と `drift` の出力は伏せ字済みなので貼ってよい）。
+
+| (4-a) | 付けた直後 | 更新 1（印 1） | 更新 2（印 0） | 外したあと |
+|---|---|---|---|---|
+| Tagged のインラインポリシー | 未実施 | 未実施 | 未実施 | 未実施 |
+| ドリフト（Tagged） | 未実施 | 未実施 | - | 未実施 |
+| TaggedRole の UPDATE_COMPLETE | - | 未確認 | 未確認 | - |
+
+| (4-b) 対象 | deny-si 完了（UTC） | 最初の拒否（秒） | 更新のあと | undeny-si 完了（UTC） | 戻るまで（秒） | メモ |
+|---|---|---|---|---|---|---|
+| 1 人目 STS | 未実施 | | - | | | |
+| 1 人目 `aws login` | | | | | | |
+| 1 人目 新しい引き受け | | | - | | | |
+| 1 人目 コンソール | | | - | | | |
+| 2 人目 STS | | （拒否なしが期待） | - | | | |
+| 2 人目 新しい引き受け | | （拒否なしが期待） | - | | | |
+
+### 片付け
+
+- `mise run poc:human:undeny-si`・`mise run poc:human:unrevoke`（付けたままなら）、`AWSBRIDGE_HUMAN_POC_UPDATE_MARKER` を外して `mise run poc:human:deploy-aws`
+- `aws logout`、一時ディレクトリの削除、コンソールのサインアウト
+- PoC を終えるときは `mise run poc:human:destroy`（`credentials-*-second.json` も `credentials*.json` として消える）。
+  deny-si を付けたままでもスタック削除が通るか記録する（revoke を付けたままの削除は前回通った）
+
+### 実測の要約（段階 1a の前の条件。2026-11-11、AWS CLI 2.39.6、ap-northeast-1、開発用の管理アカウント 1 つ）
+
+- **(4-a) 成立**: revoke（AWSRevokeOlderSessions）と AwsbridgeDenySourceIdentity を CloudFormation の外で Tagged に付けたあと、スタックを 2 回更新した（印 1 → 印 0。どちらも TaggedRole が UPDATE_COMPLETE）。2 回とも両方のポリシーが残った。ドリフト検出では、付けた直後も更新のあとも TaggedRole が `MODIFIED`（`/Policies/<n> ADD（ポリシー名）`）。外すと `IN_SYNC` に戻った
+- **(4-b) STS の認証情報と新しい引き受け: 成立**: deny-si の完了から約 10 秒で、1 人目の発行済みの STS 認証情報と新しい引き受け（STS は通り、ListBuckets が AccessDenied）が拒否された。約 5 分のあいだ拒否が続き、その間 2 人目（対照）は 66 回すべて OK。undeny-si の完了から約 8 秒で 1 人目が戻った
+- **(4-b) コンソールと aws login: 未実施**（ブラウザの自動操作が同じ端末の aws login の画面で止まったため。下の (1) を参照）。20 分以上の見張り（aws login の更新を越える）も未実施
+- **(1) 未実施**: 同じ端末の `aws login` の承認画面（client_id `devtools/same-device`、redirect_uri `http://127.0.0.1:<port>/oauth/callback`）を Claude in Chrome で開くと、セッション一覧が読み込まれず、タブが応答しなくなった（2 回）。`--remote` は client_id が `devtools/cross-device` で、前回は同じ操作で通っている。手で操作して確かめる必要がある
+
+### (1) の実測（2026-11-11、利用者の手操作。自動操作は同じ端末用の画面で固まったため手で行った）
+
+| ID | 時刻（UTC） | 結果 | CloudTrail（signin.amazonaws.com、ap-northeast-1） |
+|---|---|---|---|
+| L-0（管理ポリシー、同じ端末） | 05:21:09〜05:21:33 | 通った（rc=0、assumed-role/AwsbridgeHumanPoc、S3 の一覧も取れた） | AuthorizeOAuth2Access・CreateOAuth2Token とも成功。client_id `arn:aws:signin:::devtools/same-device`、redirect_uri `http://127.0.0.1:<port>/oauth/callback` |
+| L-1（localhost だけ、同じ端末） | 05:22:55〜05:23:30 | 通った（rc=0、assumed-role/AwsbridgeHumanPocLocalOnly） | AuthorizeOAuth2Access・CreateOAuth2Token とも成功（client_id・redirect_uri は L-0 と同じ形） |
+| L-2（localhost だけ、--remote） | 05:24:22 開始 | 拒否された。ブラウザに「400 bad request」、コードは表示されない（段階 (a)） | **AuthorizeOAuth2Access が AccessDenied（Failed authorizeOAuth2Access）**。client_id `arn:aws:signin:::devtools/cross-device`、redirect_uri `https://ap-northeast-1.signin.aws.amazon.com/v1/sessions/confirmation`、主体は AwsbridgeHumanPocLocalOnly |
+
+- 判定: **成立**。localhost だけのポリシーで、同じ端末の aws login は通り、--remote は AuthorizeOAuth2Access の段階で IAM により拒否された。ブラウザの「400 bad request」は、その拒否の表示
+- 対照: 管理ポリシーのロールで --remote が通ることは前回の PoC-B（B-2）で確認済み
+- 補足: L-2 の 1 回目（05:23:47）は、入力の取れない環境で実行して EOF で終わった（無効）。L-1 の 15 分ごとの更新が通るかは、後半の見張りとあわせて確かめる（未）
+- 対照の追試（同日）: 利用者が「セッションを選ぶ前に 400 が出た」と報告したため、通常のロール（AwsbridgeHumanPoc）で --remote を同じ手順で試した。ブラウザに認可コードが表示され、CloudTrail の AuthorizeOAuth2Access は 05:32:31Z・05:33:16Z に成功（client_id・redirect_uri は L-2 と同じ）。認可の段階でロールのポリシーだけが違うので、L-2 の拒否は localhost 限定ポリシーによると確定した。L-2 で一覧が出なかったのは、アクティブなセッションが 1 つだけで、そのまま認可を求めたためとみられる（対照でも一覧ではなくコードが出た）
+- 注意: --remote の認可コードは 1,000 文字を超え、macOS のターミナルに貼ると canonical モードの 1 行の上限（1024 バイト）に当たって入力できなかった（`stty -icanon` が要る）。対照は認可の段階で判定したので、CreateOAuth2Token までは進めていない
+
+### (4-b) コンソールと aws login の実測（2026-11-11、利用者の手操作 + 自動の見張り）
+
+deny-si の完了 05:49:19Z、undeny-si の完了 06:10:44Z（Deny の期間 約 21 分。aws login の 15 分ごとの更新を 1 回越えた）。見張りは 5〜6 秒おき（s3:ListBuckets）。
+
+| 対象 | 最初の拒否（deny-si から） | Deny の間 | 戻るまで（undeny-si から） |
+|---|---|---|---|
+| 1 人目 STS（console.sh tagged で発行） | 約 11 秒（AccessDenied） | 拒否のまま | 約 7 秒 |
+| 1 人目 新しい引き受け | 約 11 秒（STS は通り、API が AccessDenied） | 拒否のまま | 約 7 秒 |
+| 1 人目 aws login（同じ端末、login.sh t1） | 約 11 秒（AccessDenied） | 拒否のまま。05:56 以降の自動更新は「signin:CreateOAuth2Token の権限がない」で失敗（見張りのコードは Unknown）し、戻らなかった | 約 20 秒（更新が通るようになった） |
+| 1 人目 コンソール（利用者が再読み込み） | 48 秒以内（IAM のロール一覧で「list roles が拒否されました」。leader の受信 05:50:07Z が上限） | — | 利用者の確認待ち |
+| 2 人目 STS（対照） | 拒否なし（203 回中 1 回だけ Timeout。ネットワークの揺れ） | OK | — |
+| 2 人目 新しい引き受け（対照） | 拒否なし（203 回すべて OK） | OK | — |
+
+- 判定: **成立**。aws:SourceIdentity の Deny で、1 人目の STS 認証情報・新しい引き受け・コンソール・aws login（更新を含む）が止まり、2 人目は止まらなかった。外すと戻った
+- 1 人目のコンソールの復帰: 利用者が再読み込みで一覧の表示を確認（leader の受信 06:17:46Z が上限。正確な時刻は未確認）
