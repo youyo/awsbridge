@@ -111,7 +111,7 @@ issuer の公開文書（discovery と JWKS）: https://<issuer-host>/std/...（
 
 分ける理由（cto の決裁の要約）: 同じ issuer でタグや SourceIdentity を出すと、TagSession / SetSourceIdentity のない既存ロールの引き受けが失敗する [確認済み: PoC の P2 ケース 9]。CSRF の前提が逆。Access ポリシーを別に厳しくできる。鍵が漏れたときの影響範囲を分けられる。
 
-**ロールは共有しない（決裁 S2、2026-11。MCP 用とコンソール用でロールを共有する案 S1 は却下。原則はエージェントの権限 ≤ 人の権限）。** MCP 用ロール（`FederatedMcpViewer` / `FederatedMcpDebugger`）は、人の階層（Viewer / Developer / Administrator。設定例のロール名は `FederatedViewer` / `FederatedDeveloper` / `FederatedAdministrator`）と独立した別のロールで、信頼ポリシー・issuer・audience も別である。人にコンソールのロールを与えても、MCP 側の権限には効かない。MCP 用ロールを渡す人は、人の階層と次のように揃える（利用者の決定）:
+**ロールは共有しない（決裁 S2、2026-11。MCP 用とコンソール用でロールを共有する案 S1 は却下）。** MCP 用ロール（`FederatedMcpViewer` / `FederatedMcpDebugger`）は、人の階層（Viewer / Developer / Administrator。設定例のロール名は `FederatedViewer` / `FederatedDeveloper` / `FederatedAdministrator`）と独立した別のロールで、信頼ポリシー・issuer・audience も別である。人にコンソールのロールを与えても、MCP 側の権限には効かない。MCP 用ロールを渡す人は、人の階層と次のように揃える（利用者の決定）:
 
 - MCP の Viewer（`FederatedMcpViewer`）は全員が使える。
 - MCP の Debugger（`FederatedMcpDebugger`）は、人の Administrator か Developer を持つ人にだけ渡す。Viewer だけの人には渡さない。Debugger はリモートシェルなどで実行先（インスタンス・タスク）のロールの権限を得られ、その権限には MCP 経由の条件が付かないため、人に Developer / Administrator を渡すかどうかの判断と揃える。

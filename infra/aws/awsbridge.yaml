@@ -27,9 +27,10 @@ Description: >-
 #   ReadOnlyAccess does not include secretsmanager:GetSecretValue or kms:Decrypt; no kms:Decrypt is granted.
 # - Residual paths: this is not "cannot read secrets". Secrets can still be reached through
 #   remote shells (debug role: SSM SendCommand / StartSession, ECS Exec, EC2 Instance Connect run with the
-#   instance or task role's permissions, which may read secrets), Lambda function environment variables
-#   (lambda:Get*), task definition and CodeBuild project environment variables, S3 objects (s3:GetObject),
-#   logs, and rds-db:connect (debug role). They are used daily for investigation, so they are NOT denied
+#   instance or task role's permissions, which may read secrets), SSM command / Automation output,
+#   Lambda function environment variables and code URLs (lambda:Get*), plaintext task definition and
+#   CodeBuild project environment variables, EC2 user data, CloudFormation templates and outputs, AppConfig
+#   configuration content, S3 objects (s3:GetObject), logs, and rds-db:connect (debug role). They are used daily for investigation, so they are NOT denied
 #   here. If secrets live there, narrow the allowed subjects or add your own Deny (e.g. through a
 #   permissions boundary or an SCP).
 #
