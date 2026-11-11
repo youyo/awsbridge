@@ -210,8 +210,10 @@ bash scripts/wrangler.sh secret delete AWS_PROFILES
 
 既定のロール名を `FederatedMcpReadOnly` → `FederatedMcpViewer`、`FederatedMcpDebug` → `FederatedMcpDebugger` に変えました（パラメーター名 `ReadOnlyRoleName` / `DebugRoleName`、出力 `ReadOnlyRoleArn` / `DebugRoleArn`、環境変数 `AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME` は変わりません）。
 
-- **既存スタックの更新では、名前を指定しなければ旧名のままです。** `scripts/deploy-aws.sh`（`mise run deploy:aws`）は `aws cloudformation deploy` を使い、ロール名は環境変数を設定したときだけ渡します。既存スタックでは、渡さないパラメーターはスタックの既存の値が使われるので、ロールは旧名のまま残ります。これは `deploy:aws` の場合です。マネジメントコンソールや StackSets など別の方法で流す場合は当てはまらないことがあるので、未指定のパラメーターの扱いを確かめてください。
+- **既存スタックの更新では、名前を指定しなければ旧名のままです。** `scripts/deploy-aws.sh`（`mise run deploy:aws`）は `aws cloudformation deploy` を使い、ロール名は環境変数を設定したときだけ渡します。既存スタックでは、渡さないパラメーターはスタックの既存の値が使われるので、ロールは旧名のまま残ります。
 - **新しい名前に移るとロールが置き換わります。** `AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME` で明示してください。ロール名を変えると CloudFormation はロールを置き換えるので、`roleArn` と一意 ID が変わります。
+- **既存スタックの更新で、名前を指定しなければ旧名が保たれるのは、`scripts/deploy-aws.sh` で流した場合だけです。** 次の場合はロールが置き換えられます（`roleArn` と一意 ID が変わります）: (1) 旧スタック名のまま、`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME` で新しい名前を指定した。(2) `deploy:aws` 以外で流した（マネジメントコンソール、`UsePreviousValue` を付けない `create-change-set` / `update-stack`、StackSets など。指定しないパラメーターにテンプレートの既定値、つまり新しい名前が使われることがあります）。(3) スタックを削除して作り直した。
+- **移行の前に、変更を下見してください。** `scripts/deploy-aws.sh` と同じ引数に `--no-execute-changeset` を付けて `aws cloudformation deploy` を実行し、`aws cloudformation describe-change-set --stack-name <スタック> --change-set-name <名前> --query 'Changes[].ResourceChange.[LogicalResourceId,Action,Replacement]'` で、`ReadOnlyRole` / `DebugRole` に `Replacement: True` が出ないか確かめます。変更セットは実行しなければ何も変わりません。確かめたら `aws cloudformation delete-change-set` で削除してください。
 - **移行の前に、旧ロールの ARN を参照しているものを確かめてください:** KMS のキーポリシー、S3 のバケットポリシー、SCP、ほかのロールの信頼ポリシーなど。旧 ARN を書いたポリシーは新しいロールには当たりません。
 - **デバッグロールで秘密値を API で読めなくなりました。** `SecretRead`（`secretsmanager:GetSecretValue`、`ssm:GetParameter*`）と `SecretDecrypt`（`kms:Decrypt`）を削除し、両ロールでこれらの取得を条件なしで Deny します。これは非互換の変更で、`DebugAdditionalPolicyArns` で追加ポリシーを付けても戻せません（明示 Deny が優先します）。ロール名を変えるかどうかに関係なく、スタックを更新すると効きます。
 
@@ -234,17 +236,18 @@ issuer の URL（Worker の公開 URL）も変えるなら、新しいスタッ�
 - **署名鍵を新旧で同じにするか分けるか。** 同じにすると、鍵が漏れたとき旧スタックを削除するまで旧ロール（秘密値を読める旧デバッグロールを含む）にも届くので、上の期限が特に重要です。分けるなら、`AWSBRIDGE_KEY_FILE` を新しいファイルに向けて `mise run keygen` で新しい鍵を作ります。鍵を更新する機会になります（既存の手順は「署名鍵のローテーション」を参照）。
 - **URL が変わると、Cloudflare Access のアプリ（AUD）と MCP クライアントの接続先も変わります。** 新しいホストも Access のアプリと `/.well-known/*` の bypass で保護し（`infra/cloudflare` を参照）、新しい Worker の `ACCESS_AUD`（`AWSBRIDGE_ACCESS_AUD`）を新しいアプリの AUD にしてください。Worker は `ACCESS_AUD` で Access の JWT を自分でも検証するので、Access を通らずに届いた要求（別のホスト・Preview URL）は 401 になります。新しいホストでもこれを確かめてください（例: Access を通さない `/mcp` が 401 になる）。新しい URL がカスタムドメインなら、workers.dev の URL と Preview URL を閉じることも検討してください。
 
-手順:
+手順（Worker が先です。初回と同じく、IAM は OIDC プロバイダーを作るときに issuer の `/.well-known/openid-configuration` を読みます）:
 
-1. 新しい `AWSBRIDGE_ISSUER`・`AWSBRIDGE_STACK_NAME`・ロール名を設定して、`mise run deploy:aws` で新しいスタックを作る。対象のアカウントすべてで行う
-2. 新しい Worker がバンドルするプロファイル一覧に新しい `roleArn` を書き、新しい URL で応答する Worker を `ISSUER` = 新しい URL でデプロイする（`mise run deploy:worker` は `ISSUER` の指定とプロファイル一覧のバンドルを同じデプロイで行う）。STS は issuer の URL からディスカバリーと JWKS を取りに来て、ディスカバリーの issuer は Worker の `ISSUER` です。Worker は `ISSUER` を 1 つしか持たないので、旧と新を並行稼働するなら別名の Worker が要ります（例: `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` で別の wrangler 設定を使う）
-3. 切り替えの前に、新しいロールを 1 回引き受けられることを確かめる: `AWSBRIDGE_ISSUER=<新しい URL> AWSBRIDGE_STACK_NAME=<新スタック> AWS_PROFILE=<対象> mise run poc:sts`（`AWSBRIDGE_KEY_FILE` の鍵で JWT に署名する。新しい URL の Worker と同じ鍵にする。デバッグロールは `--role-arn <DebugRoleArn>` を渡す）。並行稼働せずに 1 つの Worker で切り替える（`ISSUER` と `roleArn` を同じデプロイで変える）場合に事前に確かめられないなら、切り戻しの手順（旧の `ISSUER` と旧の `roleArn` に戻して再デプロイする。新しい側が動くまで旧スタックは残す）を先に用意する
-4. MCP クライアントの接続先を新しい URL に変える。Worker の URL は MCP の接続先でもあるので、クライアント側の再設定と再認可が要ります
-5. 両ロールで確かめる
-6. 期限までに、すべてのアカウントで旧スタックを削除する（`AWSBRIDGE_STACK_NAME=<旧スタック> AWS_PROFILE=<対象> mise run destroy:aws`）。旧の OIDC プロバイダーとロールが消えます
-7. すべてのアカウントで旧の OIDC プロバイダーが消えてから、旧 Worker を片付け、旧ホスト名を手放す。逆の順にすると、手放したホスト名（特に workers.dev のサブドメイン）を第三者が取ったとき、残ったプロバイダーがそれを発行者として信頼してしまいます
+1. 新しい URL で応答する別名の Worker を、`ISSUER` = 新しい URL でデプロイする（例: `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` で別の wrangler 設定を使い、`AWSBRIDGE_ISSUER` を新しい URL にする。`mise run deploy:worker` は `ISSUER` の指定とプロファイル一覧のバンドルを同じデプロイで行う）。STS は issuer の URL からディスカバリーと JWKS を取りに来て、ディスカバリーの issuer は Worker の `ISSUER` です。Worker は `ISSUER` を 1 つしか持たないので、旧 Worker は新しい issuer を出せません。並行稼働にはこの別名の Worker が要ります。この時点のプロファイル一覧は、初回と同じくダミーでかまいません
+2. 新しい `AWSBRIDGE_ISSUER`・`AWSBRIDGE_STACK_NAME`・ロール名を設定して、`mise run deploy:aws` で新しいスタックを作る。対象のアカウントすべてで行う
+3. 新しい Worker のプロファイル一覧に新しい `roleArn` を書き、もう一度デプロイする
+4. クライアントを切り替える前に、新しいロールを 1 回引き受けられることを確かめる: `AWSBRIDGE_ISSUER=<新しい URL> AWSBRIDGE_STACK_NAME=<新スタック> AWS_PROFILE=<対象> mise run poc:sts`（`AWSBRIDGE_KEY_FILE` の鍵で JWT に署名する。新しい URL の Worker と同じ鍵にする。デバッグロールは `--role-arn <DebugRoleArn>` を渡す）
+5. MCP クライアントの接続先を新しい URL に変える。Worker の URL は MCP の接続先でもあるので、クライアント側の再設定と再認可が要ります
+6. 両ロールで確かめる
+7. 期限までに、すべてのアカウントで旧スタックを削除する（`AWSBRIDGE_STACK_NAME=<旧スタック> AWS_PROFILE=<対象> mise run destroy:aws`）。旧の OIDC プロバイダーとロールが消えます
+8. すべてのアカウントで旧の OIDC プロバイダーが消えてから、旧 Worker を片付け、旧ホスト名を手放す。逆の順にすると、手放したホスト名（特に workers.dev のサブドメイン）を第三者が取ったとき、残ったプロバイダーがそれを発行者として信頼してしまいます
 
-この方法なら、切り替える前に旧と新を並べて確かめられます。
+この方法なら、切り替える前に旧と新を並べて確かめられます。別名の Worker を使わない場合は並行稼働になりません。Worker の `ISSUER` を新しい URL に移してからでないと新しいスタックを作れず、その後、新しいスタックと新しい `roleArn` をデプロイし終えるまで MCP の呼び出しは失敗します（旧ロールは Worker の JWT を受け付けなくなるため）。その方法を取るなら、切り戻しの手順（旧の `ISSUER` と旧の `roleArn` で Worker を再デプロイする。新しい側が動くまで旧スタックは残す）を先に用意してください。
 
 ## セットアップ用スキル（Claude Code）
 

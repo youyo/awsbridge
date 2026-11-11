@@ -311,7 +311,7 @@ ASCII の図は構成を示すもので、見た目の確定ではない。ア�
 │ email: aws+svc-b-prod@<domain>                               [コピー]       │
 │                                                                            │
 │ ロール（このチームで入れるもの）                                               │
-│   (•) Developer   /awsbridge-console/std/FederatedDeveloper セッション: 8 時間 ※1 │
+│   (•) Developer  /awsbridge-console/std/FederatedDeveloper セッション: 8 時間 ※1 │
 │                                                                            │
 │ リージョン: [ap-northeast-1 ▼]                                               │
 │                                                                            │
