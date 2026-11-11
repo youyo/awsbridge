@@ -19,6 +19,7 @@ config/human.json
 
 # Terraform
 infra/cloudflare/.terraform/
+scripts/poc/human/portal/access/.terraform/
 *.tfstate
 *.tfstate.*
 terraform.tfvars
