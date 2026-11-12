@@ -460,9 +460,53 @@ mise run console:reconcile -- --profile <プロファイル> --logs-api --since 
 
 運用:
 
-- **週 1 回は手で回します**。発行記録の保持は 7 日なので、**7 日以内に突き合わせなかった発行は、あとから検証できません**。
+- **Administrator の発行があった日は当日中に、それ以外も 3 日以内に手で回します**。発行記録の保持は 7 日なので、**7 日以内に突き合わせなかった発行は、あとから検証できません**。
 - 毎日の監視（定期の実行と通知）は awsbridge の外です。仕組みは利用者が決めます。
 - ② の最初に、実物で次を確かめます: Cloudflare の API の応答の形（`events`・`$metadata.id` のカーソル・`count` の意味・切られた印が `$workers.truncated` か `$cloudflare.truncated` か）、CloudTrail の `AssumeRoleWithWebIdentity` のフィールド名（`requestParameters.webIdentityTokenId`・`userIdentity.identityProvider` など）。違えば `scripts/console/reconcile-cf.ts`・`src/console/reconcile-input.ts` とフィクスチャを直します。
+
+## コンソールログインの Administrator の残った権限の棚卸し
+
+Administrator は対象のアカウントの全権なので、アクセスキー・ロール・プロバイダー・信頼ポリシーの変更などで、コンソールログインを止めたあとも使える入口を残せます。revoke（L3）や 1 人停止（L3-1）ではこれらは止まりません（`docs/specs/console-login-admin.md` §7）。止めたあと（または定期の確認で）、次の手順で棚卸しし、残ったものを個別に消します。**下のコマンドはまだ実行していない例**で、② の停止の訓練で確かめます。読み取りだけの例で、消す操作はここに書きません。コンソール用のロール以外の主体（IAM Identity Center など）のプロファイルで実行します。
+
+1. **コンソール用のロールそのもの**: `mise run console:inspect -- --profile=<p>` で、信頼ポリシー・管理ポリシー（守りの部品とその版を含む）・インラインポリシー・`MaxSessionDuration`・プロバイダーを、設定から作った期待の形と比べます。道具を使わずに見るときは次のとおりです。
+
+   ```sh
+   aws iam get-role --role-name FederatedAwsBridgeAdministrator --profile <p>                     # 信頼ポリシー（AssumeRolePolicyDocument）・パス・MaxSessionDuration
+   aws iam list-attached-role-policies --role-name FederatedAwsBridgeAdministrator --profile <p>  # 管理ポリシー（AdministratorAccess と Admin の守りの部品だけか）
+   aws iam list-role-policies --role-name FederatedAwsBridgeAdministrator --profile <p>           # インラインポリシーの名前（AwsLogin・予約名の停止など）
+   aws iam get-role-policy --role-name FederatedAwsBridgeAdministrator --policy-name <名前> --profile <p>
+   ```
+
+2. **プロバイダー**: OIDC プロバイダーの一覧が、MCP 用とコンソール用（Standard・Admin の issuer）だけかを見ます。URL・client ID・タグを、base のスタックが作るものと比べます。SAML プロバイダーも見ます。
+
+   ```sh
+   aws iam list-open-id-connect-providers --profile <p>
+   aws iam get-open-id-connect-provider --open-id-connect-provider-arn <ARN> --profile <p>
+   aws iam list-saml-providers --profile <p>
+   ```
+
+3. **その人のセッションが行った書き込み**: CloudTrail の管理イベントから、`userIdentity.sessionContext.sourceIdentity` がその人の SourceIdentity（既定は email）のものを拾います。`lookup-events` は過去 90 日・1 リージョンずつで、絞り込みの属性は 1 回に 1 つだけです。SourceIdentity では絞り込めないので、`EventSource` などで絞ってから、`CloudTrailEvent`（JSON の文字列）の中身で絞ります。IAM のイベントは us-east-1 に記録されます。ほかのサービスは、有効なリージョンごとに見ます。
+
+   ```sh
+   aws cloudtrail lookup-events --region us-east-1 --profile <p> \
+     --lookup-attributes AttributeKey=EventSource,AttributeValue=iam.amazonaws.com \
+     --start-time 2026-11-01T00:00:00Z --output json \
+     | jq '.Events[].CloudTrailEvent | fromjson
+           | select(.userIdentity.sessionContext.sourceIdentity == "user@example.com")
+           | {eventTime, eventName, requestParameters}'
+   ```
+
+   見る操作の例: `CreateUser`・`CreateAccessKey`・`CreateLoginProfile`・`CreateRole`・`UpdateAssumeRolePolicy`・`PutRolePolicy`・`AttachRolePolicy`・`PutUserPolicy`・`AttachUserPolicy`・`CreatePolicyVersion`・`CreateOpenIDConnectProvider`・`AddClientIDToOpenIDConnectProvider`・`CreateSAMLProvider`。IAM の外でも、リソースポリシー（S3 のバケットポリシー・KMS のキーポリシー・Lambda の関数の権限や関数 URL など）を他の主体に開く変更を見ます。
+
+4. **CloudTrail に頼らない一覧**: CloudTrail を止められた・消された可能性もあるので、IAM の今の状態を一覧にして、前回の一覧（または期待する状態）と比べます。
+
+   ```sh
+   aws iam get-account-authorization-details --profile <p> > authz-<日付>.json   # ユーザー・ロール・グループ・ポリシーの全体（中身にアカウント ID を含むので公開リポジトリに置かない）
+   aws iam list-users --profile <p>
+   aws iam list-access-keys --user-name <ユーザー> --profile <p>
+   ```
+
+5. 見つけたものを、原因を確かめてから個別に消し、消したものと時刻を記録します。消し終えるまで、そのアカウントでの停止（L3・L3-1）は外しません（`docs/specs/console-login.md` §6.3 の解除の条件）。
 
 ## セットアップ用スキル（Claude Code）
 

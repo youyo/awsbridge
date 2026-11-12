@@ -2,7 +2,8 @@
 
 - 作成日: 2026-11-12
 - 改訂: 2026-11-12（後半の cto の決裁と利用者の判断）。この文書は G1（Admin の署名を AWS の KMS に置く）の資料だった。決裁「Administrator の発行を Cloudflare で完結」（X1）に合わせて、本文を X1 の設計に書き直した。(1) Admin も Cloudflare の Worker で署名する。鍵は Workers の `secret_key` 型（取り出せない `CryptoKey`）。別の Worker・別の issuer・別の鍵・別のホスト（D3 は保つ）。(2) Admin の issuer は Cloudflare の別ホストの `/admin`（I-B）に戻った。(3) 受容の文面（4 点）と補う手段、鍵の差し替え（別の名前・新旧 2 つの `kid`・90 日以下）、停止、Access JWT の追加の検査、`key-check`、G2・G5 の条件を書いた。(4) C-4（AWS 側の署名役）・I-C（AWS 側の issuer）・KMS の設計と PoC（N6・G1-b）は消さず、「退避先」（付録 A）に移した
-- 状態: 設計は X1 で定まっている。X1 は **① の実装と ② の個人の環境について条件付きで承認**された（cto の決裁）。**③ の会社の Administrator は承認されていない**（G5 で会社のセキュリティの承認を取る）。実装は PR #27（未マージ）が Admin の Worker の署名までを入れた。何が実装済みかは [console-login.md](console-login.md) §7.4.1 にまとめた
+- 改訂: 2026-11-13 cto の決裁 G2 の論点 5（G2 の前に埋める 5 件）と、突き合わせの間隔の訂正（「週 1 回」→「Administrator の発行があった日は当日中、それ以外も 3 日以内」）を反映した。実装の状態は PR #37 までのマージを前提に書き直し、「実装済み（設定がある）」と「実物で確かめた」を分けた
+- 状態: 設計は X1 で定まっている。X1 は **① の実装と ② の個人の環境について条件付きで承認**された（cto の決裁）。**③ の会社の Administrator は承認されていない**（G5 で会社のセキュリティの承認を取る）。実装は PR #16〜#37（マージ済み）と G2 の前の残り（Admin の CSRF の鍵の道具・Admin の `MaxSessionDuration` の強制・Access JWT の大きさの上限）でそろった。何が実装済みかは [console-login.md](console-login.md) §7.4.1 にまとめた。「実装済み」はコードと試験があること（設定がある）を指し、本物の `secret_key`・Cloudflare・AWS での確認（実物の確認）はまだ行っていない（② の最初に行う）
 - 対象: Administrator（Admin の階層）のコンソールログインの発行。署名鍵の持ち方、別の Worker と発行のオリジン、Admin の issuer、受容と補う手段、鍵の差し替え、停止、監査、セッションの長さ、P1・P2、D2、G2 と G5 の条件
 - 関連:
   - [console-login.md](console-login.md): 全体設計。この文書は §2.2（D3・D4）・§3.1（Admin の issuer）・§4.8（Admin の階層の守りの部品）・§6（停止）・§7（段階導入と G1〜G5）を前提にする
@@ -131,7 +132,7 @@ X1 の条件 (f): AWS 側の署名役に求めた検査を、Admin の Worker �
 | aud はちょうど 1 つ | Admin のチームの AUD の表にあること。2 つ以上（混在）は断る。入口の AUD と Standard のチームの AUD は発行に受けない | **G1-b の PoC で、Cookie Path が無効のとき、Standard の階層のアプリで得た JWT の aud に 2 つの AUD が入り、aud の完全一致を見ない実装で Admin の JWT が発行された**（2 回）[確認済み: A.4 の P-a]。実装は PR #18（jose の `audience` は使わず、検証後に自分で判定する）|
 | 人であること | `email` が空でない。`sub` が空でない。`common_name` があれば断る（サービストークン） | サービストークンの実物は `common_name` があり `sub` が空。`type` はどちらも `app` で、種別の判定に使えない [確認済み: A.4 の P-a]。実装は PR #18 |
 | 鮮度 | `iat` を必須にし、`iat` からの経過時間に上限を掛ける（既定 900 秒 = Admin の Access のセッションの長さ。vars `ACCESS_MAX_AGE_SECONDS`）。未来の `iat`（30 秒超）と上限超えは 401。`exp`・`nbf` も見る | Cookie Path が無効のとき、`exp - iat = 86400` の JWT が Admin のパスに届いた [確認済み: A.4 の P-a]。実装は PR #27（Admin だけ。Standard の振る舞いは変えない）。**Access アプリのセッションの長さを、この値に揃える**必要がある |
-| JWT の検証の仕様 | アルゴリズムは RS256 に固定。JWKS はチームドメインから取る（静的に持たない）。未知の `kid` と取得の失敗は断る | [資料: G1-b の決裁 A-2 の (4)]。実装は PR #18（JWKS はチームドメインごとにキャッシュ）。入力の大きさの上限と必須 claim の型の検査は、G2 で確かめる [未検証] |
+| JWT の検証の仕様 | アルゴリズムは RS256 に固定。JWKS はチームドメインから取る（静的に持たない）。未知の `kid` と取得の失敗は断る | [資料: G1-b の決裁 A-2 の (4)]。実装は PR #18（JWKS はチームドメインごとにキャッシュ）。**大きさの上限**: `Cf-Access-Jwt-Assertion` が 16 KiB（16384 文字。`ACCESS_JWT_MAX_LENGTH`）を超えれば、署名の検証と JSON の解析の前に 401（`unauthorized`、理由 `too_large`）。Standard・Admin・入口の一覧のすべての受け口に掛かる（G2 の決裁の論点 5。単体と e2e の試験あり、実物では未確認）。必須 claim の型は `exp`・`sub`・`email`・`aud`・`type`（Admin は `iat` も）を見る |
 | Cookie Path | **Standard も Admin も、すべてのチームのアプリで Cookie Path（`path_cookie_attribute`）を有効にする**（R-P の要件）。無効だと、同じホストの別のアプリの AUD も JWT の `aud` に入る。aud ちょうど 1 つの検査で断られるので、破れるのは可用性だが、ログインができなくなる | [資料: G1-b の決裁]。検査は `mise run console:access:inspect`（Cloudflare API を GET だけで読む。入口のアプリとすべてのチームのアプリを見る。R-P は誤り、R-H は警告）、参考の Terraform は `infra/cloudflare/console/`（`path_cookie_attribute = true` に固定）。Worker では強制しない（cto の決裁。console-login.md §5.4） |
 
 ### 3.2 署名
@@ -196,11 +197,11 @@ X1 の条件 (f): AWS 側の署名役に求めた検査を、Admin の Worker �
 
 ### 4.5 Standard も `secret_key` に揃える
 
-[資料: cto の決裁「Standard も secret_key に揃える」（2026-11-12）。条件付き承認。**決裁済み・未実装**]
+[資料: cto の決裁「Standard も secret_key に揃える」（2026-11-12）。条件付き承認。**実装済み（PR #29。マージ済み）。本物のバインディングでの確認は未実施**]
 
 - 時機: Admin の実装のあとの別 PR で、G2 までに。② は最終の形で試験する。MCP 用の Worker の鍵には効かない（別の上申）
 - 条件（Admin と Standard 共通）: (a) 公開鍵は vars、`webcrypto_modern_algorithms` は使わない (b) 使う前にバインディングが `CryptoKey`・`extractable` false・`usages` が sign だけかを確かめ、合わなければ 503。文字列の JWK を読む経路を本番のバンドルに残さない。試験用の鍵の作り方は別エントリにして、バンドル試験で本番に入らないことを見る (c) 起動後の最初の署名を vars の公開鍵で自己検証し、合わなければ発行しない (d) 差し替えは別の名前で。バインディングの名前の規則（`kid` を含む形）と「今の署名鍵」（名前と `kid` の組）を設定に持つ。同じ名前への PUT を道具が断る (e) 鍵は道具の中でメモリ上に作り API で入れ、ファイルに書かない。投入は人が手元で、CI に secret の書き込みのトークンを置かない。Admin と Standard でトークンを分ける (f) コンソールの Worker では `nodejs_compat` を要らなければ有効にしない (g) デプロイ後の確認に「`exportKey` が失敗する」を入れる (h) Standard を移す前に、`wrangler secret put`・`secret bulk` で別の secret を更新したあとに `secret_key` が残るかを測る (i) 文書で「KMS 相当」と書かない
-- **今の Standard は secret の JSON**（`CONSOLE_SIGNING_KEYS`。PR #21・#22）。`secret_key` への移行は実装していない。(h) は未測定
+- **Standard は PR #29 で境界ごとの `secret_key` に移った**（`STANDARD_KEY_<kid の先頭 8 バイトの 16 進>`、vars `STANDARD_CURRENT_KEYS`・`STANDARD_PUBLIC_JWKS`、道具 `console:standard-key:put` / `retire` / `check`。前の secret の JSON `CONSOLE_SIGNING_KEYS` はやめた）。(h) は開発環境で測った（`wrangler secret put`・`secret bulk`・`secret delete`・`versions secret *` のあとも残る。README）。ダッシュボード・Workers Builds・Terraform の経路は測っておらず、使わない。本物のバインディングでの Worker の確認（`console:standard-key:check`）は ② の最初に行う（未実施）
 - Sol のレビュー: G2 の論点に、`secret_key` の前提と (b)(c) を入れる
 
 ---
@@ -320,7 +321,7 @@ X1 には、署名の独立の記録（KMS の Sign の CloudTrail）が無い�
 | 3 | 引き受けの件数・時刻・アカウントの急な変化 | 鍵の使われ方の異常 |
 
 - **突き合わせは検知の材料で、完全性の証明ではない**。侵害された Worker は偽の発行記録も作れる（その場合、表の 1 に当たらない）。同じ `jti` の JWT を期限内に何度も引き受けに使える。欠けや食い違いを攻撃と断定せず、再試行・重複・反映の遅れを見分ける [資料: Sol のレビュー（2026-11-12）]
-- **検知の道具**: ② は道具で突き合わせる。**道具は未実装**（② の合格条件の (b)(e) で用意する）。**③ は、Administrator の引き受けの全件を人に通知することを G5 の条件にする** [資料: X1 の条件 (g)]
+- **検知の道具**: ② は道具で突き合わせる。道具は `mise run console:reconcile`（PR #37。マージ済み。発行記録は Workers Logs、ファイルと API の両方の入力）。**実物の Cloudflare の API と CloudTrail では未確認**で、② の最初に確かめる。Administrator の発行があった日は当日中、それ以外も 3 日以内に手で回す（7 日以内に突き合わせなかった発行は、あとから検証できない。cto の決裁 G2 で「週 1 回」を訂正した）。**③ は、Administrator の引き受けの全件を人に通知することを G5 の条件にする** [資料: X1 の条件 (g)]
 - CloudTrail のイベント履歴への反映の遅れは、観察した範囲で約 1 分〜2 分 20 秒だった（N6 の K4）。失敗した `AssumeRoleWithWebIdentity`（`InvalidIdentityToken`）はイベント履歴で見当たらなかった（N6、G1-b とも）ので、拒否の見張りを CloudTrail だけに頼らない
 - `RoleSessionName` は `console-<email>` に確定している（console-login.md §3.4）ので、`jti` や鍵の情報を入れる案は採れない
 - 見張り(案。ADR の補う手段にはない): Cloudflare の監査ログ（Worker のデプロイ・secret の更新と削除・DNS・Routes・Custom Domain・API トークンの作成）を外部へ送り、通知する。issuer の discovery と JWKS を定期に取り、期待した `kid` と公開鍵に一致することを確かめる。Admin のログイン（すべて通知）
@@ -336,7 +337,7 @@ X1 には、署名の独立の記録（KMS の Sign の CloudTrail）が無い�
 | コンソールの `SessionDuration` | 900〜43200 秒。文書は「ロールの最大のセッションの長さ以上にはできない」と書く [確認済み: IAM のカスタムの ID ブローカーの文書]。PoC では `MaxSessionDuration` と同じ 43200 が受理された [資料: cto の決裁の記録（前提の訂正）。文書の記述との食い違いは未解決] |
 | `aws login` | 15 分ごとに更新し、ロールのセッションの長さまで使える [資料: portal §6.5] |
 | **決定** | Administrator のロールの `MaxSessionDuration` を **1 時間**（AWS が強制できる最短）にする。Worker の `sessionSeconds` も 1 時間 [資料: G1 の決裁 A-8]。**② で実際に 1 時間で切れるかを測る** |
-| 1 時間より短くしたいとき | Worker が `DurationSeconds`・`SessionDuration` に 900 秒などを渡す形になる。**これは Worker の振る舞いで、AWS の強制ではない**（侵害された Worker や作られた JWT はロールの上限まで取れる）。生成の検査で、Admin の階層のロールの `MaxSessionDuration` に 3600 未満を渡さない（CloudFormation で失敗する）ようにする。**この検査は生成器にまだ無い** [資料: 司令塔の引き継ぎ（後続の作業）] |
+| 1 時間より短くしたいとき | Worker が `DurationSeconds`・`SessionDuration` に 900 秒などを渡す形になる。**これは Worker の振る舞いで、AWS の強制ではない**（侵害された Worker や作られた JWT はロールの上限まで取れる）。**生成器が強制する**（G2 の決裁の論点 5）: ロールのテンプレートは Admin の階層のロールの `MaxSessionDuration` をちょうど 3600 にし（`sessionSeconds` によらない。3600 未満は CloudFormation で失敗する）、設定の `sessionSeconds` は 900〜3600 だけを受け付ける（3600 を超えれば誤り `admin_session_seconds`）。Standard は 900〜43200 のまま。検査の道具（`console:inspect`）の `session_mismatch` も Admin では 3600 を期待する。実物（本物のロール）では未確認 |
 | Access のセッション（Admin の階層のチームのアプリ）| Standard より短く（例 5〜15 分。PIM と合わせて決める。PIM は G3・G5）[資料: console-login.md §6.4]。**Worker の `ACCESS_MAX_AGE_SECONDS`（既定 900 秒）と揃える**（§3.1）|
 
 ---
@@ -382,11 +383,11 @@ X1 には、署名の独立の記録（KMS の Sign の CloudTrail）が無い�
 - **開発環境で、権限のあるロールで実際のコンソールへログインする**。PoC は `getSigninToken` の取得までで、権限なしのロールだった（Sol の指摘 G の 7）
 - **鍵の差し替えの通し**（§6.1。90 日以下の周期を道具にすることを含む）
 - **`secret_key` の前提**: §4.5 の (b)(c)(g)、本番のバンドルに文字列の JWK の経路と試験用の鍵の作り方が入らないこと、`wrangler secret put` / `secret bulk` / ダッシュボード / Workers Builds のあとに `secret_key` が残るか（(h)）
-- Standard の `secret_key` への移行（別 PR。§4.5）
-- 入力の大きさの上限と必須 claim の型の検査（§3.1）
+- Standard の `secret_key` への移行（PR #29 で実装。本物のバインディングでの確認は ②。§4.5）
+- 入力の大きさの上限と必須 claim の型の検査（§3.1。大きさの上限は G2 の前に実装した。実物では未確認）
 - 守りの部品の監査の Deny の中身（G1 の決裁 A-12）
 - Sol のレビュー（X1 の受容の文面と補う手段。§5.4）
-- 発行記録の置き場所と、CloudTrail の引き受けとの不一致の通知(X1 の条件 (g)。検知の道具は未実装。§8)
+- 発行記録の置き場所と、CloudTrail の引き受けとの不一致の通知（X1 の条件 (g)。置き場所は ② では Workers Logs、突き合わせの道具 `console:reconcile` は実装済みで実物では未確認、通知は道具の終了コードまで。§8）
 
 ### 12.2 G5 の条件に足すもの
 
@@ -401,7 +402,7 @@ X1 には、署名の独立の記録（KMS の Sign の CloudTrail）が無い�
 
 ### 12.3 実装の状態（Admin）
 
-[PR #16〜#27 はすべて未マージ。全体は console-login.md §7.4.1]
+[PR #16〜#37 はマージ済み。「実装済み」はコードと試験があること（設定がある）を指し、実物で確かめたかは別に書く。全体は console-login.md §7.4.1]
 
 | 項目 | 状態 |
 |---|---|
@@ -412,8 +413,12 @@ X1 には、署名の独立の記録（KMS の Sign の CloudTrail）が無い�
 | Admin のプロバイダー（基盤のスタック）| 実装済み（cto の決裁 2026-11-13 の P-A）。基盤のスタックの `AdminIssuerHost`（既定は空。Administrator を配るアカウントにだけ渡す）と `AdminPath`（既定 `admin`）で、Admin のプロバイダーと Admin の部品を作る。`IssuerHost` と同じホストは `Rules` で断る（D3）。両方の部品のプロバイダーの Deny に Admin のホストを足した（前の版は Standard のホストだけで、Admin のプロバイダーの削除・作り直し・ClientID の追加が Deny の外だった）。ロールのテンプレートは `AdminProviderArn` をやめ、`AdminIssuerHost`・`AdminPath`・`AWS::AccountId` から ARN を組む（パラメーターにアカウント ID が入らない）。検査の道具は Admin の階層のあるアカウントで 2 つのホストの部品を期待する（古い部品は `guard_version_mismatch`）。L2 はスタックの外で行い、その間はスタックを更新しない（README）。cto の条件「この変更（PR-2）が入るまで Admin のプロバイダーを配らない」は変わらない。実物での確認（Administrator のセッションから Admin のプロバイダーの削除・作成が AccessDenied、L2 の手順の所要時間とスタック更新の挙動）は ② で行う（console-login.md §4.2）|
 | Admin の Worker に対する `secret_key` の実物での確認 | 未実施（`console:admin-key:check` が最初）|
 | Cookie Path の検査（Cloudflare API を読む道具 `console:access:inspect`。入口のアプリにも掛ける。Terraform の参考の例 `infra/cloudflare/console/`）| 実装済み。Worker と生成器では強制しない |
-| Admin の `MaxSessionDuration` の下限（3600）の生成器での強制 | 未実装 |
-| 変更の通知・検知の道具（引き受けの突き合わせ）| 未実装 |
+| Admin の `MaxSessionDuration`（ちょうど 3600）と `sessionSeconds`（3600 以下。誤り `admin_session_seconds`）の生成器での強制 | 実装済み（G2 の決裁の論点 5）。実物のロールでは未確認（② で 1 時間で切れるかを測る。§9）|
+| Access JWT の大きさの上限（16 KiB。署名の検証と解析の前に 401）| 実装済み（G2 の決裁の論点 5。§3.1）。実物では未確認 |
+| Admin の Worker の CSRF の鍵の投入（`console:secrets:admin`。Standard と別の値）と、初回のデプロイの順（README）| 実装済み（G2 の決裁の論点 5）。実物では未実行。Worker が無い状態で鍵を入れられるかは未確認（§2.2）|
+| 検知の道具（引き受けの突き合わせ `console:reconcile`）| 実装済み（PR #37）。実物の Cloudflare の API と CloudTrail では未確認。毎日の監視と通知は awsbridge の外。変更の通知（Cloudflare の監査ログ）は G5 の条件 |
+| 1 人停止の道具（`console:stop:show` / `apply`）| 実装済み（PR #33・#34）。実物では未確認（② の停止の訓練）|
+| Administrator の残った権限の棚卸しの手順 | README に書いた（G2 の決裁の論点 5。例だけで、実行していない）。訓練は ② |
 
 ---
 
@@ -453,12 +458,12 @@ X1 には、署名の独立の記録（KMS の Sign の CloudTrail）が無い�
 - `signing.accountIds` と誤り `signing_account`（署名を置くアカウントにコンソールのロールを配らない。PR #20）: G1 の「署名用アカウント」のために作られた。X1 では署名用アカウントが無いので、残すか退避先専用にするかは未決
 - Admin の issuer のホストに Access が掛かる環境での Bypass（§2.1）、本物の `secret_key` のバインディングでの Worker の検査（§3.3）
 - 新しい Worker に最初の鍵を投入するときの、スクリプトの存在の要否（§2.2）
-- 入力の大きさの上限・必須 claim の型の検査（§3.1）
+- （閉じた）入力の大きさの上限は実装した（§3.1）。必須 claim の型は今の検査のまま
 - ES256・RSA-PSS・`pkcs8` / `key_base64` の形式での `secret_key`（K1 で未試験）
 - 守りの部品の監査の Deny の中身（A-12）
 - PIM と Admin の階層の Access のセッションの長さ（G3・G5）
-- `MaxSessionDuration` の下限の強制（§12.3）
-- 検知の道具の形（引き受けと発行記録の突き合わせ）
+- （閉じた）`MaxSessionDuration` の強制は実装した（§9・§12.3）
+- （閉じた）検知の道具の形は `console:reconcile`（§8）。残るのは実物での確認
 
 ---
 

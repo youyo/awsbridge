@@ -125,3 +125,40 @@ describe("README のコンソールログインの Standard の署名鍵（cto �
     });
   }
 });
+
+describe("README の Administrator の残った権限の棚卸し（cto の決裁 G2 の論点 5）", () => {
+  for (const f of ["README.md", "README_ja.md"]) {
+    it(`${f}: ロールの管理ポリシー・インラインポリシー・信頼ポリシー、プロバイダー、CloudTrail を SourceIdentity で拾う例を載せる`, () => {
+      const text = read(f);
+      for (const s of [
+        "aws iam get-role",
+        "aws iam list-attached-role-policies",
+        "aws iam list-role-policies",
+        "aws iam get-role-policy",
+        "aws iam list-open-id-connect-providers",
+        "aws iam get-open-id-connect-provider",
+        "aws cloudtrail lookup-events",
+        "sourceIdentity",
+        "mise run console:inspect",
+      ])
+        expect(text, s).toContain(s);
+    });
+  }
+});
+
+describe("README の突き合わせの間隔（cto の決裁 G2 の前回の訂正）", () => {
+  it("README_ja.md: Administrator の発行があった日は当日中、それ以外も 3 日以内。7 日の文は残し、週 1 回とは書かない", () => {
+    const text = read("README_ja.md");
+    expect(text).toContain("Administrator の発行があった日は当日中");
+    expect(text).toContain("3 日以内");
+    expect(text).toContain("7 日以内に突き合わせなかった発行は、あとから検証できません");
+    expect(text).not.toContain("週 1 回");
+  });
+  it("README.md: same day after an Administrator issuance, otherwise within 3 days. Keeps the 7-day sentence, no weekly", () => {
+    const text = read("README.md");
+    expect(text).toContain("on the same day");
+    expect(text).toContain("within 3 days");
+    expect(text).toContain("an issuance not reconciled within 7 days cannot be verified later");
+    expect(text).not.toMatch(/once a week/i);
+  });
+});
