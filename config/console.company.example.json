@@ -73,13 +73,13 @@
     {
       "name": "managed",
       "issuers": {
-        "standard": "https://awsbridge-oidc-console.example.com/std",
+        "standard": "https://awsbridge-oidc-console.example.com/standard",
         "admin": "https://awsbridge-oidc-admin-console.example.com/admin"
       }
     },
     {
       "name": "partner:partner-x",
-      "issuers": { "standard": "https://awsbridge-oidc-console.example.com/p/p01/std" }
+      "issuers": { "standard": "https://awsbridge-oidc-console.example.com/p/p01/standard" }
     }
   ],
   "organizations": [

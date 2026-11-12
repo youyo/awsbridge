@@ -10,6 +10,7 @@
 - 改訂: 2026-11-13 MCP 用ロールを人のロールと共有しないことにし、既定名を `FederatedAwsBridgeMcp*` にした（§2.3）。「コンソール」と「ポータル」の使い分けを用語に足した
 - 改訂: 2026-11-13 cto の決裁（P-A）を反映した。Admin のプロバイダーを基盤のスタックに条件付きで置き（`AdminIssuerHost`・`AdminPath`、`EnableAdminTier` は廃止、`Rules` で D3）、両方の守りの部品のプロバイダーの Deny に Admin のホストを足した。ロールのテンプレートは `AdminProviderArn` をやめた。L2 はスタックの外で行う（§4.2・§4.3・§4.8。U-27 を閉じた）
 - 改訂: 2026-11-13 cto の決裁 G2 の論点 5（G2 の前に埋める 5 件）と、突き合わせの間隔の訂正（「週 1 回」→ 毎日。Administrator の発行の有無に関係なく回す。途中で置いた「固定の間隔が主、発行のあった日が従」の案は、利用者の判断で毎日に直した）を反映した。実装の状態は PR #37 までのマージを前提に書き直し、「実装済み（設定がある）」と「実物で確かめた」を分けた
+- 改訂: 2026-11-13 利用者の判断で、Standard の issuer の URL のパスを `/std` から `/standard` に改めた（`StandardPath` の既定・設定の例・§3.1）。ロールの IAM パス `/awsbridge-console/std/` と階層名 `std`、Admin の `/admin` は変えない。PoC の測定値は当時のパス `/std` のまま「PoC のパス」と断った
 - 状態: 設計案。段階導入は「① 完成 → ② 個人で導入・試験 → ③ 会社に導入」（cto の決裁 2026-11-12。§7）。G1 の審議は済み、Admin 側の発行は X1 の設計で定まった（[console-login-admin.md](console-login-admin.md)。X1 は ① の実装と ② の個人の環境まで条件付き承認。③ の会社の Administrator は G5）。実装は PR #16〜#35 と本 PR（マージ済み。#22 は閉じた）にあり、何が入っているかは §7.4.1。PR #16〜#37 はマージ済み（#22 は閉じた）。Standard の `secret_key`（PR #29）、Admin のプロバイダーのスタック（base.yaml の AdminIssuerHost。PR #36）、停止の道具（PR #33・#34）、Cookie Path の検査（PR #35）、突き合わせの道具（PR #37）は実装済み。G2 の前の残り（Admin の CSRF の鍵の道具・Admin の `MaxSessionDuration` の強制・Access JWT の大きさの上限・棚卸しの手順）も入れた。「実装済み」はコードと試験があること（設定がある）を指し、本物の Cloudflare・AWS での確認（実物の確認）は ② の最初に行う（未実施）。前の版の「段階 1 のゲート（1a・1b）」の承認と条件は §1・§7.2・§7.3 に残した（行き先は §7.7）
 - 対象: awsbridge 方式（自前の OIDC issuer → 各アカウントの IAM OIDC プロバイダー → `AssumeRoleWithWebIdentity`）による、人が使う AWS コンソールと `aws login` へのログイン（この仕組みを「コンソールログイン」と呼ぶ）
 - 関連:
@@ -55,7 +56,7 @@
 
 | ゲート | 状態 | 根拠 |
 |---|---|---|
-| N9 パス付き issuer | 成立（開発環境） | 1 つのホストの `/std` と `/admin` を別の OIDC プロバイダーに登録でき、階層をまたぐ引き受けは AccessDenied、issuer の末尾スラッシュ違いは InvalidIdentityToken（完全一致）[確認済み: portal PoC の README]。PoC は 1 つの Worker が両方のパスを出した。Admin の issuer は I-B で確定した（別ホストの `/admin`。X1 の決裁。§3.1）。PoC の N9 は同じホストの `/admin` の形で確かめた。Cloudflare の別の Worker が出す issuer での引き受けは、PoC X1 の K5 で通った [確認済み: PoC X1。console-login-admin.md §4.4] |
+| N9 パス付き issuer | 成立（開発環境） | 1 つのホストの `/std` と `/admin`（PoC のパス。本番の設計は `/standard` と `/admin`）を別の OIDC プロバイダーに登録でき、階層をまたぐ引き受けは AccessDenied、issuer の末尾スラッシュ違いは InvalidIdentityToken（完全一致）[確認済み: portal PoC の README]。PoC は 1 つの Worker が両方のパスを出した。Admin の issuer は I-B で確定した（別ホストの `/admin`。X1 の決裁。§3.1）。PoC の N9 は同じホストの `/admin` の形で確かめた。Cloudflare の別の Worker が出す issuer での引き受けは、PoC X1 の K5 で通った [確認済み: PoC X1。console-login-admin.md §4.4] |
 | N1 の M2（パスごとに AUD が分かれるか） | 成立（開発環境・Google の IdP） | 入口・`/t/infra`・`/t/dev` の `aud` が別。`/t/infrastructure` は前方一致にならない。片方のアプリから外すとそのパスだけ拒否 [確認済み: 同じ README]。**会社の Entra のグループ（Object ID）での確認は 1a-1**（§7.3。行き先は G4） |
 | N10 Access + Worker の通し経路 | コンソールと `aws login`（開発環境）は成立。Entra は残り | コンソールの通し、タグ `awsbridge_team` と SourceIdentity の CloudTrail への記録、別チームの経路での `sts_denied` [確認済み]。所属の反映はポリシーの伝播（約 20 秒では足りず、約 2 分 15 秒で反映）＋トークンの失効、またはアプリのセッションの期限切れ [確認済み]。`aws login` は 1a の前の条件 (1)（書き直し版: 同じ端末と `--remote` の両方が Viewer で通る）で成立（§7.2） |
 | 詳細設計（エンドポイント・CSRF・テンプレート） | 書いた | エンドポイントと CSRF: portal §9.2〜§9.7。テンプレート: この文書 §4。全体と脅威モデル: この文書 |
@@ -87,7 +88,7 @@ STS AssumeRoleWithWebIdentity（各アカウント）
    ▼
 getSigninToken → 302 でコンソール ──（コンソールのセッションから）──▶ aws login（Standard: 同じ端末と --remote / Admin: 同じ端末だけ）
 
-issuer の公開文書（discovery と JWKS）: https://<issuer-host>/std/...（Standard の Worker）。Admin の issuer は Admin の Worker が Cloudflare の別ホストの /admin で出す（I-B。X1）。§3.1
+issuer の公開文書（discovery と JWKS）: https://<issuer-host>/standard/...（Standard の Worker）。Admin の issuer は Admin の Worker が Cloudflare の別ホストの /admin で出す（I-B。X1）。§3.1
 各アカウント: 基盤の StackSet（OIDC プロバイダー）＋ 種類の StackSet（ロール）。§4
 ```
 
@@ -159,7 +160,7 @@ issuer の公開文書（discovery と JWKS）: https://<issuer-host>/std/...（
 
 | 名前 | 確定した値 | 節 |
 |---|---|---|
-| Standard の issuer | `https://<issuer-host>/std`（世代つきのパスの規則も可） | §3.1 |
+| Standard の issuer | `https://<issuer-host>/standard`（世代つきのパスの規則も可） | §3.1 |
 | Admin の issuer | **I-B で確定**（X1 の決裁）: Cloudflare の別ホストの `/admin`。Standard の issuer のホストともポータルのホストとも別（[console-login-admin.md](console-login-admin.md) §2.1） | §3.1 |
 | audience | `awsbridge-console`（定数 1 つ。全階層・全境界で同じ） | §3.2 |
 | ロールのパス | `/awsbridge-console/<tier>/`（P-2。`<tier>` は `std` / `admin`） | §3.3 |
@@ -169,16 +170,16 @@ issuer の公開文書（discovery と JWKS）: https://<issuer-host>/std/...（
 
 ### 3.1 issuer の URL
 
-**確定**: Standard は `https://<issuer-host>/std`（管理外の先方は `https://<issuer-host>/p/<partner-id>/std`）[資料: cto の決裁]
+**確定**: Standard は `https://<issuer-host>/standard`（管理外の先方は `https://<issuer-host>/p/<partner-id>/standard`）[資料: cto の決裁。パスは `/std` から `/standard` に改めた（利用者の判断 2026-11-13）。ロールの IAM パスの階層名 `std`（`/awsbridge-console/std/`）は変えない]
 
 | 部分 | 規則 | 例 |
 |---|---|---|
 | スキーム | `https` | — |
 | ホスト | 自社ドメインの、issuer **専用**のホスト（`<issuer-host>`。例 `awsbridge-oidc-console.<domain>`。Admin は `awsbridge-oidc-admin-console.<domain>`）。ポータルのホストと分ける。`workers.dev` は使わない | — |
-| `<tier>` | `std`（Standard）/ `admin`（Admin） | `/std`・`/admin` |
-| 管理外 | `/p/<partner-id>/<tier>`。`<partner-id>` は先方の名前を含まない不透明な短い ID（`^[a-z0-9]{2,16}$`。例 `p01`）。discovery は誰でも読めるので、URL から取引先が分からないようにする | `/p/p01/std` |
+| `<path>` | `standard`（Standard）/ `admin`（Admin）。ロールの IAM パスの階層名（`std` / `admin`。§3.3）とは別で、Standard だけ名前が違う | `/standard`・`/admin` |
+| 管理外 | `/p/<partner-id>/<path>`。`<partner-id>` は先方の名前を含まない不透明な短い ID（`^[a-z0-9]{2,16}$`。例 `p01`）。discovery は誰でも読めるので、URL から取引先が分からないようにする | `/p/p01/standard` |
 | 末尾 | スラッシュなし。クエリ・フラグメントなし（IAM は issuer を完全一致で照合する [確認済み: N9 のケース 6]） | — |
-| 公開文書 | `<issuer>/.well-known/openid-configuration` と `<issuer>/.well-known/jwks.json`（N9 と同じ） | `/std/.well-known/jwks.json` |
+| 公開文書 | `<issuer>/.well-known/openid-configuration` と `<issuer>/.well-known/jwks.json`（N9 と同じ） | `/standard/.well-known/jwks.json` |
 
 issuer のホストの名前は、接頭辞 `awsbridge-oidc-` を付けた issuer 専用のホストにする（issuer にも `awsbridge` を付けるのは、同じドメインで別の仕組みの OIDC を立てたときに持ち主が分かるようにするため。コンソールの Standard は `awsbridge-oidc-console.<domain>`、Admin は `awsbridge-oidc-admin-console.<domain>`。MCP 用の issuer は `awsbridge-oidc-mcp.<domain>` で、MCP の接続先 `awsbridge-mcp.<domain>` とは別のホストにする）。**issuer のホストは IAM の OIDC プロバイダーが信頼する相手なので、そのドメインを奪われることは issuer を奪われることになる。** ドメインの自動更新を有効にし、レジストラでドメインをロックし、ゾーン（DNS・Routes・Custom Domain。A13・A14）を編集できる人と API トークンを絞る。
 
@@ -192,22 +193,22 @@ Standard と Admin の 2 つの Worker への振り分け（N9 は 1 つの Work
 
 | 案 | 内容 | 利点 | 欠点 |
 |---|---|---|---|
-| I-A 1 ホスト + Workers Routes | `<issuer-host>/std/*`・`<issuer-host>/p/*` を Standard の Worker、`<issuer-host>/admin/*` を Admin の Worker に Routes で向ける（ホストは Cloudflare のプロキシの DNS レコード） | URL が N9 で確かめた形のまま | Routes の振り分けを 2 つの Worker で試していない [未検証]。**同じホストに置くと、ルーティング（Routes）の管理者からは Standard と Admin を隔離できない**。振り分けの設定を変えられる者は Admin の JWKS を差し替えられる [資料: Sol のレビューの指摘 3] |
-| **I-B 階層ごとにホスト**（Admin は X1 の決裁で確定。下の箇条書き） | `https://<issuer-host-std>/std` と `https://<issuer-host-admin>/admin`。それぞれ Custom Domain | Custom Domain だけで済む。Worker ごとにホストが完全に分かれ、Admin のホストの管理権限を分けられる | ホストが 2 つになる。同じゾーン・同じ Cloudflare アカウントのままなら、ゾーンと Workers の管理者からの分離にはならない（Cloudflare アカウントを分けるか（U-7）は G5 の前） |
+| I-A 1 ホスト + Workers Routes | `<issuer-host>/standard/*`・`<issuer-host>/p/*` を Standard の Worker、`<issuer-host>/admin/*` を Admin の Worker に Routes で向ける（ホストは Cloudflare のプロキシの DNS レコード） | URL が N9 で確かめた形のまま | Routes の振り分けを 2 つの Worker で試していない [未検証]。**同じホストに置くと、ルーティング（Routes）の管理者からは Standard と Admin を隔離できない**。振り分けの設定を変えられる者は Admin の JWKS を差し替えられる [資料: Sol のレビューの指摘 3] |
+| **I-B 階層ごとにホスト**（Admin は X1 の決裁で確定。下の箇条書き） | `https://<issuer-host-std>/standard` と `https://<issuer-host-admin>/admin`。それぞれ Custom Domain | Custom Domain だけで済む。Worker ごとにホストが完全に分かれ、Admin のホストの管理権限を分けられる | ホストが 2 つになる。同じゾーン・同じ Cloudflare アカウントのままなら、ゾーンと Workers の管理者からの分離にはならない（Cloudflare アカウントを分けるか（U-7）は G5 の前） |
 
 - **Admin の issuer は I-B で確定した**（cto の決裁 X1。G1・G1-b の審議では第一候補が I-C だったが、X1 で I-B に戻った。前の版は「確定は段階 3」。[console-login-admin.md](console-login-admin.md) §2.1）。Admin の URL は Administrator を配るアカウント（② の個人、会社は G5 のあと）に初めて配るので、会社の Viewer の配布（G3）には影響しない
 - **Admin の issuer の形**: `https://<admin-issuer-host>/admin`（Cloudflare の別ホスト。Admin の Worker が discovery と JWKS を出す）。Admin の発行は Admin のオリジン（`portal.adminOrigin`）の Admin の Worker だけ（portal §8）。issuer のホストは Standard の issuer のホストとも、ポータル（Standard・Admin）やホスト方式のチームのホストとも別にする。生成器が止める誤り（PR #26・#27）: `admin_issuer_host_shared`（Standard の issuer のホストと同じか入れ子）、`issuer_host_overlaps_portal`（どの issuer のホストも、ポータルのホストと同じか入れ子。ラベル単位で比べる。G-8）、`admin_issuer_path`（パスが `/admin` でない）、`admin_issuer_multiple`（Admin の issuer を持つ境界が複数。Admin の鍵と JWKS は 1 組）。「Standard と同じホストの `/admin` でもよい」は取り下げた（Routes の設定を変えられる者が Admin の JWKS を差し替えられる）。P-9 のうち、パスで別の Worker に振り分ける形の確認は要らない。Access を迂回する入口の遮断の確認は残る。**I-B でも、同じ Cloudflare の管理権限からは隔てられない**（admin §2.1・§5.1 の 4 点目）
 - Admin 用の別の Entra グループ（PIM など）は必須にしない（人が決める。PIM は G3・G5 で扱う）
-- Standard の issuer の名前は変えない。Standard のホスト（`<issuer-host>`）の名前は `/std` のパスのまま使う（配った URL を変えない）
+- Standard の issuer のパスは `/standard` に決めた（利用者の判断 2026-11-13。それまでは `/std`）。決めたあとは変えない（配った URL を変えない）。`/std` で作った PoC のプロバイダーがあれば、`/standard` のプロバイダーを新しく作り、古いものを消す（下の世代つきのパスへ移る手順と同じ）
 - P1（Standard と Admin を同じ Worker にする）・P2（Standard と Admin の issuer を 1 つにする）は採らない（G1 の決裁 A-9 で P1' のまま。前の版は「段階 3 のゲートで再上申できる」）。採るには人の受容が要る（P1 は D3 の緩和、P2 は D3・D4 の変更）。評価は [console-login-admin.md](console-login-admin.md) §10。順位は P1' > P1 > P2。どの案でも、Administrator を配るアカウントにはコンソール用のプロバイダーが 2 つ（Standard・Admin）並ぶ（P2 を除く）
-- 鍵が漏れたあとは、同じ URL での作り直し（JWKS のキャッシュ。N5）に頼らず、世代を付けた新しいパス（例 `/std-2`）に移れる規則にしておく（`^[a-z0-9-]+$`）。平常時の URL には世代を入れない。移る手順（新しいプロバイダーの配布 → 信頼ポリシーの切り替え → 古いプロバイダーの削除）の案は [console-login-admin.md](console-login-admin.md) §6.3 に書いた（Standard も同じ手順。生成器は Admin の issuer のパスを `/admin` だけに限っているので、世代つきのパスに移るときはこの規則も変える）。前の版は「段階 2 の前に書く」で、新しい行き先は決裁に明記がない（§7.7）[資料: cto の決裁で可。Sol のレビューの指摘 12]
+- 鍵が漏れたあとは、同じ URL での作り直し（JWKS のキャッシュ。N5）に頼らず、世代を付けた新しいパス（例 `/standard-2`）に移れる規則にしておく（`^[a-z0-9-]+$`）。平常時の URL には世代を入れない。移る手順（新しいプロバイダーの配布 → 信頼ポリシーの切り替え → 古いプロバイダーの削除）の案は [console-login-admin.md](console-login-admin.md) §6.3 に書いた（Standard も同じ手順。生成器は Admin の issuer のパスを `/admin` だけに限っているので、世代つきのパスに移るときはこの規則も変える）。前の版は「段階 2 の前に書く」で、新しい行き先は決裁に明記がない（§7.7）[資料: cto の決裁で可。Sol のレビューの指摘 12]
 
 ### 3.2 audience
 
 **確定**: `awsbridge-console`（全階層・全境界で同じ値。定数 1 つ）[資料: cto の決裁]
 
 - MCP 用の `awsbridge` と重ならない
-- issuer を階層 × 境界で分けているので、aud まで分けなくても、Standard の JWT で Admin のロールには入れない（条件キーが `<issuer-host>/std:aud` と `<issuer-host>/admin:aud` で別。N9 のケース 3・4 で AccessDenied [確認済み]）。共通の audience は、issuer が分かれていれば欠陥ではない [資料: Sol のレビューの指摘 12]
+- issuer を階層 × 境界で分けているので、aud まで分けなくても、Standard の JWT で Admin のロールには入れない（条件キーが `<issuer-host>/standard:aud` と `<issuer-host>/admin:aud` で別。N9 のケース 3・4 で AccessDenied [確認済み]）。共通の audience は、issuer が分かれていれば欠陥ではない [資料: Sol のレビューの指摘 12]
 - 実装: 上流の定数 `AUDIENCE`（`src/console/config.ts`。`TEAM_TAG_KEY`・`ROLE_PATH_PREFIX` と同じ並び）にし、生成物（`stacksets.json` の `audience`）に入れた。下流ごとに変える理由がないので、設定スキーマには入れない
 
 ### 3.3 ロールのパスと名前
@@ -270,7 +271,7 @@ Standard と Admin の 2 つの Worker への振り分け（N9 は 1 つの Work
 | パラメーター | 型と規則 | 生成物の出どころ |
 |---|---|---|
 | `IssuerHost` | ホスト名だけ（スキーム・パス・末尾スラッシュなし。小文字のラベルを `.` でつないだ形、180 文字まで）。例 `awsbridge-oidc-console.example.com` | `stacksets.json` の `providers[].issuers.standard` のホスト部分 |
-| `StandardPath` | `^[a-z0-9-]+(/[a-z0-9-]+)*$`（例 `std`・`p/p01/std`。既定 `std`） | 同じ URL のパス部分 |
+| `StandardPath` | `^[a-z0-9-]+(/[a-z0-9-]+)*$`（例 `standard`・`p/p01/standard`。既定 `standard`） | 同じ URL のパス部分 |
 | `AdminIssuerHost` | 既定は空。空か、`IssuerHost` と同じ規則のホスト名。**空なら Admin のプロバイダーと Admin の部品を作らない**（`Conditions` の `AdminTierEnabled`）。**Admin の issuer は Standard と別のホスト**（§3.1。I-B）で、同じホストは `Rules` で断る（D3。生成器の `admin_issuer_host_shared` と同じ規則をスタック側でも守る。入れ子のホストは生成器だけが見る）。**Administrator を配るアカウントにだけ渡す**（StackSets のパラメーターの上書き）。それ以外のアカウント（会社の G5 の前など）は空。例 `awsbridge-oidc-admin-console.example.com` | `providers[].issuers.admin` のホスト部分（なければ空） |
 | `AdminPath` | `StandardPath` と同じ規則。既定 `admin`。世代つきのパス（`admin-2`）に移れるよう固定にしない（生成器は今は `/admin` に限る。`admin_issuer_path`。移るときは生成器の規則も一緒に変える。admin §6.3） | `providers[].issuers.admin` のパス部分 |
 | `Audience` | `AllowedValues: [awsbridge-console]` | `stacksets.json` の `audience`（上流の定数 `AUDIENCE`。§3.2） |
@@ -314,11 +315,11 @@ Standard と Admin の 2 つの Worker への振り分け（N9 は 1 つの Work
 ```json
 {
   "Effect": "Allow",
-  "Principal": { "Federated": "arn:aws:iam::<account-id>:oidc-provider/<issuer-host>/std" },
+  "Principal": { "Federated": "arn:aws:iam::<account-id>:oidc-provider/<issuer-host>/standard" },
   "Action": ["sts:AssumeRoleWithWebIdentity", "sts:TagSession", "sts:SetSourceIdentity"],
   "Condition": {
     "StringEquals": {
-      "<issuer-host>/std:aud": "awsbridge-console",
+      "<issuer-host>/standard:aud": "awsbridge-console",
       "aws:RequestTag/awsbridge_team": ["<team>", "<team>"]
     },
     "ForAllValues:StringEquals": { "aws:TagKeys": ["awsbridge_team"] },
@@ -991,7 +992,7 @@ cto の決裁（2026-11-12。D8 の段階導入の書き直しを条件付きで
 | # | 論点 | 決定 [資料: cto の決裁] | 反映 |
 |---|---|---|---|
 | G-5 | 変えにくい名前（issuer の URL・audience・ロールのパス・タグ・RoleSessionName） | §3 の冒頭の表のとおり確定 | §3 |
-| G-8 | issuer のホストをポータルと分けること、Admin の issuer の形 | Standard は専用ホストの `https://<issuer-host>/std`。Admin は I-B で確定（X1。別ホストの `/admin`。「同じホストの `/admin` でもよい」は取り下げた。前の版は「確定は段階 3」） | §3.1 |
+| G-8 | issuer のホストをポータルと分けること、Admin の issuer の形 | Standard は専用ホストの `https://<issuer-host>/standard`。Admin は I-B で確定（X1。別ホストの `/admin`。「同じホストの `/admin` でもよい」は取り下げた。前の版は「確定は段階 3」） | §3.1 |
 | G-10 | ロールのパスを階層で分けるか | P-2 `/awsbridge-console/<tier>/` | 実装済み（`rolePath`）。§3.3 |
 | G-11 | audience を上流の定数にすること | 定数 `awsbridge-console` 1 つ | 実装済み（`AUDIENCE`。`stacksets.json` の `audience`）。§3.2 |
 | G-13 | Cloudflare アカウント | 既存を使う。分離（U-7）は G5 の前（前の版は「段階 1 は既存。分離は段階 2 のゲート」） | §2.2 |

@@ -15,7 +15,7 @@ import type { AssumeEvent, ReconRecord } from "../../src/console/reconcile-input
 
 const ACCOUNT = "333333333333";
 const OTHER = "444444444444";
-const STD_ISSUER = "https://awsbridge-oidc-console.example.com/std";
+const STD_ISSUER = "https://awsbridge-oidc-console.example.com/standard";
 const ADMIN_ISSUER = "https://awsbridge-oidc-admin-console.example.com/admin";
 const STD_ROLE = `arn:aws:iam::${ACCOUNT}:role/awsbridge-console/std/FederatedViewer`;
 const ADMIN_ROLE = `arn:aws:iam::${ACCOUNT}:role/awsbridge-console/admin/FederatedAdministrator`;
@@ -151,7 +151,7 @@ describe("reconcile: コンソールの引き受けだけに絞る", () => {
       "error:provider_not_in_config",
     ]);
     const samePathless = evFor(a, {
-      provider: `arn:aws:iam::${ACCOUNT}:oidc-provider/awsbridge-oidc-console.example.com/std2`,
+      provider: `arn:aws:iam::${ACCOUNT}:oidc-provider/awsbridge-oidc-console.example.com/standard2`,
     });
     expect(codes(reconcile(input({ records: [a], events: [samePathless] })))).toEqual([
       "error:provider_not_in_config",
@@ -160,7 +160,7 @@ describe("reconcile: コンソールの引き受けだけに絞る", () => {
 
   it("プロバイダーは ARN の形でも、URL のホストとパスの形でも読む", () => {
     const a = rec();
-    const bare = evFor(a, { provider: "awsbridge-oidc-console.example.com/std" });
+    const bare = evFor(a, { provider: "awsbridge-oidc-console.example.com/standard" });
     expect(codes(reconcile(input({ records: [a], events: [bare] })))).toEqual([]);
   });
 });

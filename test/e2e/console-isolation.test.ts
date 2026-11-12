@@ -469,7 +469,7 @@ describe("3. Admin の Worker のバンドルに Standard の行・署名の実�
       AUD.dev,
       AUD.sa,
       ENTRY_STD,
-      "https://awsbridge-oidc-console.example.com/std",
+      "https://awsbridge-oidc-console.example.com/standard",
       "/awsbridge-console/std/",
       "FederatedAwsBridgeViewer",
     ])

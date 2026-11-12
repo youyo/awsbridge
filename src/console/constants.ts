@@ -21,7 +21,7 @@ export const ADMIN_MAX_SESSION_SECONDS = 3600;
 
 export type Tier = "standard" | "admin";
 export const TIERS: readonly Tier[] = ["standard", "admin"];
-/** 階層をパスに書くときの名前（issuer のパス /std・/admin と同じ）。 */
+/** ロールの IAM パスに書く階層名（/awsbridge-console/std/・/admin/）。issuer のパス（/standard・/admin）とは別。 */
 const TIER_SEGMENT: Record<Tier, string> = { standard: "std", admin: "admin" };
 /** ロールの IAM パス（P-2: /awsbridge-console/<tier>/）。階層だけを止める SCP の条件に使える。 */
 export const rolePath = (tier: Tier): string => `${ROLE_PATH_PREFIX}${TIER_SEGMENT[tier]}/`;

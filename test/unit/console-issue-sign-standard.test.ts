@@ -18,7 +18,7 @@ import { parseStandardKeys, standardBindingName } from "../../src/console/standa
 import { makeStandardKey, type TestKey } from "./console-standard-harness";
 
 const NOW = 1_700_000_000;
-const ISSUER = "https://idp.example.test/std";
+const ISSUER = "https://idp.example.test/standard";
 const P_ISSUER = "https://idp.example.test/p";
 let managed: TestKey;
 let partner: TestKey;

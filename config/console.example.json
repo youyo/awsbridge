@@ -21,7 +21,7 @@
   "boundaries": [
     {
       "name": "managed",
-      "issuers": { "standard": "https://awsbridge-oidc-console.example.com/std" }
+      "issuers": { "standard": "https://awsbridge-oidc-console.example.com/standard" }
     }
   ],
   "organizations": [

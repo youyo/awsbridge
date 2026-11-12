@@ -223,10 +223,11 @@ describe("Parameters", () => {
     for (const ok of ["id.example.com", "a"]) expect(host.test(ok), ok).toBe(true);
     for (const ng of ["https://id.example.com", "id.example.com/", "ID.example.com", "", 'a"b'])
       expect(host.test(ng), ng).toBe(false);
-    expect(p().StandardPath.Default).toBe("std");
+    expect(p().StandardPath.Default).toBe("standard");
     const path = new RegExp(p().StandardPath.AllowedPattern);
-    for (const ok of ["std", "p/p01/std"]) expect(path.test(ok), ok).toBe(true);
-    for (const ng of ["/std", "std/", "STD", "", 'std"']) expect(path.test(ng), ng).toBe(false);
+    for (const ok of ["standard", "p/p01/standard"]) expect(path.test(ok), ok).toBe(true);
+    for (const ng of ["/standard", "standard/", "STANDARD", "", 'standard"'])
+      expect(path.test(ng), ng).toBe(false);
   });
 
   it("AdminIssuerHost は既定が空で、空か base.yaml と同じ規則のホスト名だけ（JSON に差し込めない）。AdminProviderArn は無い", () => {

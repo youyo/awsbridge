@@ -29,7 +29,7 @@ const record = (over: Partial<Parameters<typeof createIssueRecord>[0]> = {}): Is
     row: {
       team: "infra",
       boundary: "managed",
-      issuer: "https://idp.example.test/std",
+      issuer: "https://idp.example.test/standard",
       accountId: "123456789012",
       role: "viewer",
       roleArn: "arn:aws:iam::123456789012:role/awsbridge-console/std/FederatedAwsBridgeViewer",
@@ -66,7 +66,7 @@ describe("createIssueRecord", () => {
         role: "viewer",
         roleArn: "arn:aws:iam::123456789012:role/awsbridge-console/std/FederatedAwsBridgeViewer",
         boundary: "managed",
-        issuer: "https://idp.example.test/std",
+        issuer: "https://idp.example.test/standard",
       },
       jwt: { jti: JTI, iat: 1_700_000_000, exp: 1_700_000_300 },
       sts: {
@@ -139,7 +139,7 @@ describe("maskIssueRecord（画面・共有するログに貼れる形）", () =
       at: "2026-11-12T01:02:03.000Z",
       tier: "standard",
       team: "infra",
-      target: { role: "viewer", boundary: "managed", issuer: "https://idp.example.test/std" },
+      target: { role: "viewer", boundary: "managed", issuer: "https://idp.example.test/standard" },
       jwt: { iat: 1_700_000_000, exp: 1_700_000_300 },
       sts: { region: "ap-northeast-1" },
       session: { seconds: 3600, consoleRegion: "us-east-1" },

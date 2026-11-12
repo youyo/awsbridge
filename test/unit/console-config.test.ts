@@ -79,7 +79,7 @@ describe("parseConsoleConfig: 正しい設定", () => {
     expect(ROLE_PATH_PREFIX).toBe("/awsbridge-console/");
   });
 
-  it("ロールのパスは階層ごと（P-2: /awsbridge-console/<tier>/。tier は std / admin で、issuer のパスと同じ）", () => {
+  it("ロールのパスは階層ごと（P-2: /awsbridge-console/<tier>/。ロールのパスの階層名は std / admin。Standard の issuer のパスは standard で、階層名とは別）", () => {
     expect(rolePath("standard")).toBe("/awsbridge-console/std/");
     expect(rolePath("admin")).toBe("/awsbridge-console/admin/");
     for (const t of ["standard", "admin"] as const)

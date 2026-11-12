@@ -196,7 +196,7 @@ function build(config: ConsoleConfig, kind: string, inline: Map<number, unknown[
     };
     parameters.StandardPath = {
       Type: "String",
-      Default: "std",
+      Default: "standard",
       Description: "Path of the Standard tier issuer. Same value as the base stack.",
       AllowedPattern: ISSUER_PATH_PATTERN,
       MaxLength: 64,

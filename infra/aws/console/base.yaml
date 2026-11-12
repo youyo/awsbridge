@@ -73,9 +73,9 @@ Parameters:
       Do not include https://, a path or a trailing slash.
   StandardPath:
     Type: String
-    Default: std
+    Default: standard
     Description: >-
-      Path of the Standard tier issuer (e.g. std, p/p01/std, std-2). Issuer URL = https://<IssuerHost>/<StandardPath>.
+      Path of the Standard tier issuer (e.g. standard, p/p01/standard, standard-2). Issuer URL = https://<IssuerHost>/<StandardPath>.
     AllowedPattern: "^[a-z0-9-]+(/[a-z0-9-]+)*$"
     MaxLength: 64
     ConstraintDescription: Lowercase letters, digits and '-' separated by single '/'. No leading or trailing slash.

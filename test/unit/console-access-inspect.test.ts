@@ -33,7 +33,7 @@ describe("inspectAccessApps（R-P）", () => {
 
   it("入口のアプリの並びや、関係のないアプリが混ざっていても、AUD で当てる", () => {
     const apps = [
-      app(aud("f6"), "awsbridge-oidc-console.example.com/std/.well-known/jwks.json"),
+      app(aud("f6"), "awsbridge-oidc-console.example.com/standard/.well-known/jwks.json"),
       ...goodApps().reverse(),
     ];
     expect(run(accessSummary(), apps)).toEqual([]);
@@ -155,7 +155,7 @@ describe("inspectAccessApps（R-P）", () => {
     it("コンソールのホストの外（issuer の文書・ほかのサービス）や /t/ の外は警告しない", () => {
       const apps = [
         ...goodApps(),
-        app(aud("f6"), "awsbridge-oidc-console.example.com/std/.well-known/jwks.json"),
+        app(aud("f6"), "awsbridge-oidc-console.example.com/standard/.well-known/jwks.json"),
         app(aud("a7"), "awsbridge-console.example.com/assets"),
         app(aud("b8"), "other.example.com/t/ghost"),
       ];
