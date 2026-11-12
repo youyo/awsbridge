@@ -15,6 +15,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { ConsoleConfigError, formatIssue, parseConsoleConfig } from "../../src/console/config";
 import { formatReport, inspectAccount, redact } from "../../src/console/inspect";
+import { parseStops, StopsError } from "../../src/console/stops";
 import { type AwsRun, readAccountSnapshot } from "./inspect-read";
 
 class InputError extends Error {}
@@ -27,7 +28,6 @@ function stop(message: string): never {
 /** プロファイル名（先頭の - は拒否。引数と取り違えないように）。 */
 const PROFILE_RE = /^[\w.+@][\w.+@-]{0,63}$/;
 const ACCOUNT_RE = /^\d{12}$/;
-const SOURCE_IDENTITY_RE = /^[\w+=,.@-]{2,64}$/;
 
 /** aws CLI を非同期で呼ぶ（execFile。シェルを通さない）。失敗は伏せ字のエラーにする。 */
 function awsRunner(profile: string): AwsRun {
@@ -63,19 +63,15 @@ function readJson(path: string, label: string): unknown {
   }
 }
 
-/** 停止の一覧（値は出さない。形の誤りは位置だけ）。 */
+/** 停止の一覧（値は出さない。形の誤りは位置だけ）。形の検査は src/console/stops.ts。 */
 function readStops(path: string): string[] {
   const raw = readJson(path, "stops");
-  const list =
-    typeof raw === "object" && raw !== null && !Array.isArray(raw)
-      ? (raw as Record<string, unknown>).sourceIdentities
-      : undefined;
-  if (!Array.isArray(list)) throw new InputError("stops.sourceIdentities: type");
-  list.forEach((v, i) => {
-    if (typeof v !== "string" || !SOURCE_IDENTITY_RE.test(v))
-      throw new InputError(`stops.sourceIdentities[${i}]: pattern`);
-  });
-  return [...new Set(list as string[])];
+  try {
+    return parseStops(raw);
+  } catch (e) {
+    if (e instanceof StopsError) throw new InputError(e.message);
+    throw e;
+  }
 }
 
 async function main(): Promise<number> {
