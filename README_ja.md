@@ -447,6 +447,9 @@ mise run console:inspect -- --profile=<p> --stops=.secrets/console-stops.json   
 - 発行記録の置き場所（② の個人の環境）は Workers Logs です（保持は Workers Paid で 7 日）。コンソールの 2 つの Worker の wrangler の設定は、間引きで記録が落ちないよう `observability.head_sampling_rate` を `1` に固定しています。
 - 保持の窓: 既定のさかのぼりは 6 日です（保持の 7 日より短く）。記録の保持より古く記録の無い引き受けは「検証できない（`unverifiable`）」として別に数えます。さかのぼりを保持より長くすると警告です（`--retention-days` で保持の日数を変えられます）。
 - 切られた記録の行（`$cloudflare.truncated` など）と読めない行は、位置だけを出して誤りにします。
+- 時間の検査: 対になった引き受けの時刻が、発行の時刻（`jwt.iat`。無ければ記録の時刻）から「JWT の寿命 300 秒＋時計ずれ」を超えて後なら `assume_time_gap`（警告。終了コードは変わりません）。引き受けが発行より時計ずれを超えて前でも同じ所見です（時計の異常か、作られた JWT に記録を合わせた形。向きは詳細の `+NNNs` / `-NNNs` で見分けます）。時計ずれの既定は 60 秒で、`--clock-skew-seconds <n>` で変えられます。**しきい値は仮です。② で正規の時間差を実測してから決め直し、誤りに上げる予定です**。
+- 利用者の検査: 発行記録の利用者（SourceIdentity に使った値）と、CloudTrail の SourceIdentity が**両方あるとき**だけ、伏せ字（`a***@***.com`）どうしで比べ、食い違えば `identity_mismatch`（警告）です。発行記録は email を伏せて残すため、一致は弱い証拠です（先頭 1 文字と末尾のドメインだけ。食い違いは確実に違いますが、一致は同じ人を証明しません）。どちらかが無い対は、黙って飛ばさず `identity: compared <n>, not compared <m>` と `identity_not_compared`（注記）に件数を出します。SourceIdentity がイベントのどこに出るかは ② の最初に実物で確かめます。
+- 確認済みの区間: アカウントごとに「確認済みの区間の終わり」を状態のファイル（`--state <file>`。既定 `.secrets/console-reconcile-state.json`。`.secrets/` は gitignore 済み）に残します。今回の読み始めがそれより後（間に読んでいない区間がある）なら `coverage_gap`（誤り。終了コード 1）です。ファイルが無い初回は穴なしとして扱い、出力に `coverage: first run` と出します。ファイルにはアカウント ID と時刻だけを書き、トークン・email・`jti` は書きません。**区間を進めるのは終了コード 0 の実行だけ**です（終わりは「今回の終わり − 反映の遅れ」）。誤りや検証できない引き受けのある実行で進めると、次の実行の範囲の外に出て誤りが埋もれるためです。壊れた状態のファイルは初回として扱わず、実行しません（終了コード 2）。穴の誤りを直すには、調べたうえで `--since` を前回の終わり以前に戻して回します（状態のファイルを手で消すのは、穴を受け入れると決めたときだけです）。
 - 出力は伏せ字です（`jti` は先頭 8 文字、email は出さない、アカウント ID は末尾 4 桁）。要約に、読んだ期間・リージョン数・検証できない件数・切られた行・記録をどこから読んだか（`source: api` か `file`）を出します。
 - 終了コード: `0` 誤りなし / `1` 誤りあり、または検証できない引き受けが 1 件以上（誤りが 0 でも 0 で終わらせない）/ `2` 実行できない（入力・aws・API の失敗）。
 - 変数（`mise.local.toml`）: `AWSBRIDGE_CONSOLE_LOGS_TOKEN`（`--logs-api` の API のトークン。環境変数だけ）、`AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID`（Cloudflare のアカウント ID）、`AWSBRIDGE_CONSOLE_LOGS_WORKERS`（任意。Worker の名前。既定 `awsbridge-console-standard,awsbridge-console-admin`）、`AWSBRIDGE_CONSOLE_CONFIG`（設定ファイル）。
@@ -460,7 +463,7 @@ mise run console:reconcile -- --profile <プロファイル> --logs-api --since 
 
 運用:
 
-- **Administrator の発行があった日は当日中に、それ以外も 3 日以内に手で回します**。発行記録の保持は 7 日なので、**7 日以内に突き合わせなかった発行は、あとから検証できません**。
+- **主: 固定の間隔で回します（3 日以内。発行の有無に関係なく）**。**従: Administrator の発行があった日は当日中にも回します**（正規の発行の確認を早めるため）。発行記録の保持は 7 日なので、**7 日以内に突き合わせなかった発行は、あとから検証できません**。回さなかった区間は `coverage_gap`（誤り）で出ます。
 - 毎日の監視（定期の実行と通知）は awsbridge の外です。仕組みは利用者が決めます。
 - ② の最初に、実物で次を確かめます: Cloudflare の API の応答の形（`events`・`$metadata.id` のカーソル・`count` の意味・切られた印が `$workers.truncated` か `$cloudflare.truncated` か）、CloudTrail の `AssumeRoleWithWebIdentity` のフィールド名（`requestParameters.webIdentityTokenId`・`userIdentity.identityProvider` など）。違えば `scripts/console/reconcile-cf.ts`・`src/console/reconcile-input.ts` とフィクスチャを直します。
 

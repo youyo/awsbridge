@@ -61,11 +61,28 @@ describe("readRecordLines（NDJSON のファイルの中身）", () => {
         iat: 1_794_446_523,
         exp: 1_794_446_823,
         kid: "kid-1",
+        identity: "a***@***.com",
         accessKeyId: "ASIA…QQQQ",
         assumedRoleId: "AROA…",
         requestId: "5e1b7c2a…",
       },
     ]);
+  });
+
+  it("利用者は SourceIdentity に使った値（無ければ email）を、伏せ字の形で持つ。素の email が入っていても伏せ字にして持ち、値を残さない", () => {
+    const pick = (user: unknown) =>
+      readRecordLines(JSON.stringify(issue({ user })), "a.ndjson").records[0]?.identity;
+    expect(pick({ email: "a***@***.com", sourceIdentity: "b***@***.org" })).toBe("b***@***.org");
+    expect(pick({ email: "a***@***.com" })).toBe("a***@***.com");
+    expect(pick({ email: "alice@example.com", sourceIdentity: "alice@example.com" })).toBe(
+      "a***@***.com",
+    );
+    expect(pick({ accessSub: "1111…" })).toBeUndefined();
+    expect(pick(undefined)).toBeUndefined();
+    const all = JSON.stringify(
+      readRecordLines(JSON.stringify(issue({ user: { email: "alice@example.com" } })), "a").records,
+    );
+    expect(all).not.toContain("alice");
   });
 
   it("Trace Events の包み（Logs[].Message[0] が JSON の文字列）からも読む", () => {
@@ -194,6 +211,21 @@ describe("parseAssumeEvent（CloudTrail の AssumeRoleWithWebIdentity）", () =>
     const text = JSON.stringify(e);
     expect(text).not.toContain("alice");
     expect(text).not.toContain(ACCESS_KEY_ID);
+  });
+
+  it("SourceIdentity（requestParameters.sourceIdentity。無ければ responseElements.sourceIdentity）は伏せ字にして持つ。素の値を持たない", () => {
+    const e = parseAssumeEvent({
+      ...ev,
+      requestParameters: { ...ev.requestParameters, sourceIdentity: "alice@example.com" },
+    });
+    expect(e.sourceIdentity).toBe("a***@***.com");
+    expect(JSON.stringify(e)).not.toContain("alice");
+    const r = parseAssumeEvent({
+      ...ev,
+      responseElements: { ...ev.responseElements, sourceIdentity: "bob@example.org" },
+    });
+    expect(r.sourceIdentity).toBe("b***@***.org");
+    expect(parseAssumeEvent(ev)).not.toHaveProperty("sourceIdentity");
   });
 
   it("失敗したイベント（errorCode。requestParameters・responseElements が null）も読む", () => {

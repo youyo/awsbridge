@@ -162,3 +162,62 @@ describe("README の突き合わせの間隔（cto の決裁 G2 の前回の訂�
     expect(text).not.toMatch(/once a week/i);
   });
 });
+
+describe("突き合わせの運用と検査の文面（cto の決裁 G2 の途中経過 2026-11-13）", () => {
+  it("README_ja.md: 主は固定の間隔（3 日以内。発行の有無に関係なく）、従は発行のあった日は当日中。時間・利用者・確認済みの区間の検査と仮のしきい値を書く", () => {
+    const text = read("README_ja.md");
+    expect(text).toContain("主: 固定の間隔で回します（3 日以内。発行の有無に関係なく）");
+    expect(text).toContain("従: Administrator の発行があった日は当日中にも回します");
+    expect(text).toContain("7 日以内に突き合わせなかった発行は、あとから検証できません");
+    for (const s of [
+      "assume_time_gap",
+      "--clock-skew-seconds",
+      "しきい値は仮です",
+      "identity_mismatch",
+      "identity_not_compared",
+      "coverage_gap",
+      "--state",
+      ".secrets/console-reconcile-state.json",
+      "区間を進めるのは終了コード 0 の実行だけ",
+    ])
+      expect(text, s).toContain(s);
+  });
+  it("README.md: primary is a fixed interval within 3 days regardless of issuance, secondary is the same day as an Administrator issuance", () => {
+    const text = read("README.md");
+    expect(text).toContain(
+      "Primary: run it at a fixed interval (within 3 days, whether or not anything was issued)",
+    );
+    expect(text).toContain("Secondary: also run it on the same day as any Administrator issuance");
+    expect(text).toContain("an issuance not reconciled within 7 days cannot be verified later");
+    for (const s of [
+      "assume_time_gap",
+      "--clock-skew-seconds",
+      "The thresholds are provisional",
+      "identity_mismatch",
+      "identity_not_compared",
+      "coverage_gap",
+      "--state",
+      ".secrets/console-reconcile-state.json",
+      "Only a run with exit code 0 advances the interval",
+    ])
+      expect(text, s).toContain(s);
+  });
+  for (const f of ["docs/specs/console-login.md", "docs/specs/console-login-admin.md"]) {
+    it(`${f}: 「Cloudflare に頼らない停止は L2 だけ」とは書かず、発行の停止は L2 と信頼ポリシーの拒否、revoke は発行の停止に数えない`, () => {
+      const text = read(f);
+      expect(text).not.toMatch(/Cloudflare に頼らない停止は、(全アカウントの L2 だけ|これだけ)/);
+      expect(text).toMatch(/Cloudflare に頼らない発行の停止は、.*L2.*信頼ポリシー/);
+      expect(text).toContain("revoke は");
+      expect(text).toContain("主は固定の間隔");
+    });
+  }
+  it("docs/specs/console-login.md: 記録で捕まらないものに、発行から 5 分以内に使う同じ jti の作り直し（Workers Logs を読める必要）を挙げる", () => {
+    const text = read("docs/specs/console-login.md");
+    const i = text.indexOf("記録で捕まるもの・捕まらないもの");
+    expect(i).toBeGreaterThan(0);
+    const section = text.slice(i, i + 1500);
+    expect(section).toContain("捕まらない");
+    expect(section).toContain("発行から 5 分以内に使う、同じ `jti` の作り直し");
+    expect(section).toContain("Workers Logs を読める必要がある");
+  });
+});

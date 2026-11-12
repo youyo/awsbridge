@@ -13,7 +13,7 @@
 // CloudTrail のイベントのフィールド名は [推測]（AWS の文書の例に合わせた。② の最初に実物で確かめてフィクスチャを取り直す）。
 // STS の ID は発行記録と同じ伏せ字にしてから持つ（AssumedRoleId のセッション名に email が入るため）。
 import type { Tier } from "./constants";
-import { maskAccessKeyId, maskAssumedRoleId, maskRequestId } from "./issue/record";
+import { maskAccessKeyId, maskAssumedRoleId, maskEmail, maskRequestId } from "./issue/record";
 
 /** 突き合わせに使う発行記録の項目。STS の ID は伏せ字（issueLogRecord の形のまま）。 */
 export type ReconRecord = {
@@ -32,6 +32,11 @@ export type ReconRecord = {
   iat?: number;
   exp?: number;
   kid?: string;
+  /**
+   * 利用者の伏せ字（a***@***.com）。SourceIdentity に使った値（user.sourceIdentity。無ければ user.email）を maskEmail にかけたもの。
+   * 発行記録（issueLogRecord）は email を伏せて残すので、CloudTrail の SourceIdentity も同じ形に伏せて比べる（弱い一致）。
+   */
+  identity?: string;
   accessKeyId?: string;
   assumedRoleId?: string;
   requestId?: string;
@@ -139,6 +144,8 @@ function toRecord(b: Obj, pos: string): ReconRecord {
     stsRegion === undefined
   )
     throw new Unreadable();
+  const user = isObj(b.user) ? b.user : undefined;
+  const who = str(user?.sourceIdentity) ?? str(user?.email);
   const jwt = b.jwt;
   if (jwt !== undefined && (!isObj(jwt) || typeof jwt.jti !== "string" || jwt.jti === ""))
     throw new Unreadable();
@@ -162,6 +169,7 @@ function toRecord(b: Obj, pos: string): ReconRecord {
           ...opt("kid", str(jwt.kid)),
         }
       : {}),
+    ...opt("identity", who !== undefined && who !== "" ? maskEmail(who) : undefined),
     ...opt("accessKeyId", str(sts?.accessKeyId)),
     ...opt("assumedRoleId", str(sts?.assumedRoleId)),
     ...opt("requestId", str(sts?.requestId)),
@@ -258,6 +266,8 @@ export type AssumeEvent = {
   /** requestParameters.webIdentityTokenId（= JWT の jti）。 */
   tokenId?: string;
   errorCode?: string;
+  /** requestParameters.sourceIdentity（無ければ responseElements.sourceIdentity）を maskEmail にかけたもの。素の値は持たない。 */
+  sourceIdentity?: string;
   accessKeyId?: string;
   assumedRoleId?: string;
   requestId?: string;
@@ -290,6 +300,8 @@ export function parseAssumeEvent(raw: unknown): AssumeEvent {
   const accessKeyId = str(creds.accessKeyId);
   const assumedRoleId = str(aru.assumedRoleId);
   const requestId = str(e.requestID);
+  // フィールドの位置は [推測]（資料: N6 の K4 でイベントに sourceIdentity が出ることは確認済み。位置は ② の最初に実物で確かめる）
+  const sourceIdentity = str(rp.sourceIdentity) ?? str(re.sourceIdentity);
   return {
     ...opt("eventId", str(e.eventID)),
     time,
@@ -299,6 +311,10 @@ export function parseAssumeEvent(raw: unknown): AssumeEvent {
     ...opt("provider", str(ui.identityProvider)),
     ...opt("tokenId", str(rp.webIdentityTokenId)),
     ...opt("errorCode", str(e.errorCode)),
+    ...opt(
+      "sourceIdentity",
+      sourceIdentity !== undefined && sourceIdentity !== "" ? maskEmail(sourceIdentity) : undefined,
+    ),
     ...opt("accessKeyId", accessKeyId !== undefined ? maskAccessKeyId(accessKeyId) : undefined),
     ...opt(
       "assumedRoleId",
