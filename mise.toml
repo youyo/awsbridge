@@ -53,6 +53,7 @@ depends = ["typecheck", "lint:terraform"]
 run = [
   "pnpm biome check .",
   "cfn-lint infra/aws/awsbridge.yaml",
+  "cfn-lint infra/aws/console/base.yaml",
   "cfn-lint scripts/poc/human/poc-human.yaml",
 ]
 

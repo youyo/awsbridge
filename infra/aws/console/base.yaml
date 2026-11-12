@@ -1,0 +1,252 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  awsbridge console login - required provider stack (StackSet awsbridge-console-base):
+  the Standard tier IAM OIDC provider and the per-tier guard policies (customer managed,
+  explicit Denies only). Roles are not created here (see the role templates).
+
+# コンソールログインの必須のスタック（設計: docs/specs/console-login.md §4.1・§4.2・§4.8）。
+#
+# 作るもの:
+#   StandardProvider     Standard の階層の OIDC プロバイダー（https://<IssuerHost>/<StandardPath>、client ID = audience）
+#   StandardGuardPolicy  Standard の階層の守りの部品（顧客管理ポリシー。固定の Deny だけ）
+#   AdminGuardPolicy     Admin の階層の守りの部品（同じ中身 + aws login --remote の明示の Deny）。EnableAdminTier=true のときだけ
+#
+# 作らないもの:
+#   - Admin の階層の OIDC プロバイダー（とそのパラメーター）。issuer の形は G1 で審議し、G1-b で足す（司令塔の決定）
+#   - ロール。ロールのテンプレート（参考の形。§4.3）が、このスタックの Export から部品の ARN を読んで付ける
+#
+# 守りの部品（§4.8）は事故防止のためのもので、強制の境界ではない（Administrator は版の作り直し・別の主体などで外せる）。
+# 中身（Standard / Admin 共通。条件なし）:
+#   DenyRoleChaining           ロールチェーンの禁止（§4.7）: sts:AssumeRole と sts:AssumeRoot を Resource "*" で Deny
+#   DenyConsoleRoleWrites      自分自身の保護: /awsbridge-console/* のロールの信頼ポリシー・ポリシー（インライン・管理）・
+#                              パス（IAM ではパスを変えられないので、削除と作成）・削除・タグ・権限境界・設定の変更を Deny
+#   DenyConsoleProviderWrites  コンソール用のプロバイダー（<IssuerHost> の下のすべてのパス）の作成・削除・変更・タグを Deny。
+#                              作成も塞ぐのは、停止（L2 = プロバイダーの削除）のあとに作り直されないようにするため。
+#                              Admin のプロバイダーが別のホストになるなら、G1-b でそのホストを足す
+#   DenyGuardPolicyWrites      部品のポリシー自体（policy/awsbridge-console/*）の作成・版の追加・既定の版の変更・削除・タグを Deny
+#                              （計画の既定の案。G2 で cto が確認する）
+# Admin の部品だけ:
+#   DenyAwsLoginRemote         aws login --remote（.../oauth2/public-client/remote）への signin:AuthorizeOAuth2Access・
+#                              signin:CreateOAuth2Token を明示の Deny（§4.4 の (3)）。Standard の部品には入れない
+# signin の Allow はどちらにも入れない（ロール側に置く。§4.4 の (1)(2)）。
+#
+# 1 人停止の Deny（L3-1。§6.3）は部品に入れない（cto の回答 U-15）:
+#   停止の道具が、CloudFormation の外で、設定の全ロールにインラインポリシー AwsbridgeConsoleDenySourceIdentity
+#   （予約名。src/console/reserved.ts の STOP_USER_INLINE_POLICY_NAME）として書く。このスタックとロールのテンプレートは
+#   この名前のポリシーを管理しない。DenyConsoleRoleWrites は、コンソールログイン用のロールのセッションから
+#   その Deny（と AWSRevokeOlderSessions）を外す操作（DeleteRolePolicy・PutRolePolicy）も塞ぐ。
+#   そのため停止の道具は、コンソールログイン用のロール以外の主体で動かす。
+#
+# 運用上の帰結: CloudFormation は呼び出し元の権限で IAM を変えるので、コンソールログイン用のロール（Administrator を含む）の
+# セッションからは、停止の道具の実行・このスタックの更新・ロールのスタック（PR8）の作成と更新のどれもできない。
+# 配布は StackSets の実行ロール（または別の運用者の主体）で行う。
+#
+# 部品の ManagedPolicyName・Path・Description は配ったあとに変えない（どれも置換になり、名前が固定なので置換は失敗する）。
+#
+# 管理ポリシーの上限（6,144 文字）に収まることは test/unit/console-base-template.test.ts で確かめる。
+# 名前と Export 名は src/console/reserved.ts の定数と一致させる（同じ試験で確かめる）。
+
+Parameters:
+  IssuerHost:
+    Type: String
+    Description: >-
+      Host of the console login issuer, without scheme, path or trailing slash (e.g. id.example.com).
+      Dedicated to the console login issuer (not the portal host, not workers.dev).
+    # 小文字のラベル（[a-z0-9]([a-z0-9-]*[a-z0-9])?）を . でつないだ形だけ。URL 全体（https://<host>/<path>）は
+    # OIDC プロバイダーの上限 255 文字以内: 8 + 180 + 1 + 64 = 253。
+    AllowedPattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$"
+    MaxLength: 180
+    ConstraintDescription: >-
+      Lowercase host name only (labels of a-z, 0-9 and '-' joined by single dots).
+      Do not include https://, a path or a trailing slash.
+  StandardPath:
+    Type: String
+    Default: std
+    Description: >-
+      Path of the Standard tier issuer (e.g. std, p/p01/std, std-2). Issuer URL = https://<IssuerHost>/<StandardPath>.
+    AllowedPattern: "^[a-z0-9-]+(/[a-z0-9-]+)*$"
+    MaxLength: 64
+    ConstraintDescription: Lowercase letters, digits and '-' separated by single '/'. No leading or trailing slash.
+  Audience:
+    Type: String
+    Default: awsbridge-console
+    AllowedValues:
+      - awsbridge-console
+    Description: Audience (aud) of the console login JWT. Also the OIDC client ID. Fixed upstream.
+  EnableAdminTier:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >-
+      true creates the Admin tier guard policy (for accounts that get Administrator).
+      The Admin tier OIDC provider is not created by this version.
+
+Conditions:
+  AdminTierEnabled:
+    Fn::Equals:
+      - Ref: EnableAdminTier
+      - "true"
+
+Resources:
+  StandardProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url:
+        Fn::Sub: "https://${IssuerHost}/${StandardPath}"
+      ClientIdList:
+        - Ref: Audience
+      Tags:
+        - Key: project
+          Value: awsbridge
+        - Key: awsbridge-console-tier
+          Value: standard
+
+  StandardGuardPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: AwsbridgeConsoleGuardStandard
+      Path: /awsbridge-console/
+      Description: awsbridge console login guard policy (Standard tier). Explicit Denies only.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyRoleChaining
+            Effect: Deny
+            Action:
+              - sts:AssumeRole
+              - sts:AssumeRoot
+            Resource: "*"
+          - Sid: DenyConsoleRoleWrites
+            Effect: Deny
+            Action:
+              - iam:UpdateAssumeRolePolicy
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:UpdateRole
+              - iam:UpdateRoleDescription
+              - iam:TagRole
+              - iam:UntagRole
+              - iam:PutRolePermissionsBoundary
+              - iam:DeleteRolePermissionsBoundary
+            Resource:
+              Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/awsbridge-console/*"
+          - Sid: DenyConsoleProviderWrites
+            Effect: Deny
+            Action:
+              - iam:CreateOpenIDConnectProvider
+              - iam:DeleteOpenIDConnectProvider
+              - iam:UpdateOpenIDConnectProviderThumbprint
+              - iam:AddClientIDToOpenIDConnectProvider
+              - iam:RemoveClientIDFromOpenIDConnectProvider
+              - iam:TagOpenIDConnectProvider
+              - iam:UntagOpenIDConnectProvider
+            Resource:
+              Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/${IssuerHost}/*"
+          - Sid: DenyGuardPolicyWrites
+            Effect: Deny
+            Action:
+              - iam:CreatePolicy
+              - iam:CreatePolicyVersion
+              - iam:SetDefaultPolicyVersion
+              - iam:DeletePolicyVersion
+              - iam:DeletePolicy
+              - iam:TagPolicy
+              - iam:UntagPolicy
+            Resource:
+              Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/awsbridge-console/*"
+
+  # Standard の部品と同じ文（YAML のアンカーは使わず、両方に書く。同じであることは試験で確かめる）+ DenyAwsLoginRemote。
+  AdminGuardPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: AdminTierEnabled
+    Properties:
+      ManagedPolicyName: AwsbridgeConsoleGuardAdmin
+      Path: /awsbridge-console/
+      Description: >-
+        awsbridge console login guard policy (Admin tier). Explicit Denies only, including aws login --remote.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyRoleChaining
+            Effect: Deny
+            Action:
+              - sts:AssumeRole
+              - sts:AssumeRoot
+            Resource: "*"
+          - Sid: DenyConsoleRoleWrites
+            Effect: Deny
+            Action:
+              - iam:UpdateAssumeRolePolicy
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:UpdateRole
+              - iam:UpdateRoleDescription
+              - iam:TagRole
+              - iam:UntagRole
+              - iam:PutRolePermissionsBoundary
+              - iam:DeleteRolePermissionsBoundary
+            Resource:
+              Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/awsbridge-console/*"
+          - Sid: DenyConsoleProviderWrites
+            Effect: Deny
+            Action:
+              - iam:CreateOpenIDConnectProvider
+              - iam:DeleteOpenIDConnectProvider
+              - iam:UpdateOpenIDConnectProviderThumbprint
+              - iam:AddClientIDToOpenIDConnectProvider
+              - iam:RemoveClientIDFromOpenIDConnectProvider
+              - iam:TagOpenIDConnectProvider
+              - iam:UntagOpenIDConnectProvider
+            Resource:
+              Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/${IssuerHost}/*"
+          - Sid: DenyGuardPolicyWrites
+            Effect: Deny
+            Action:
+              - iam:CreatePolicy
+              - iam:CreatePolicyVersion
+              - iam:SetDefaultPolicyVersion
+              - iam:DeletePolicyVersion
+              - iam:DeletePolicy
+              - iam:TagPolicy
+              - iam:UntagPolicy
+            Resource:
+              Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/awsbridge-console/*"
+          - Sid: DenyAwsLoginRemote
+            Effect: Deny
+            Action:
+              - signin:AuthorizeOAuth2Access
+              - signin:CreateOAuth2Token
+            Resource:
+              Fn::Sub: "arn:${AWS::Partition}:signin:*:${AWS::AccountId}:oauth2/public-client/remote"
+
+Outputs:
+  StandardProviderArn:
+    # Export しない: issuer のパスを替える（鍵の漏洩のあとの世代つきのパス。§3.1）とプロバイダーの ARN が変わり、
+    # import されている Export は値を変えられず、このスタックの更新が止まるため。ロールのテンプレートは
+    # IssuerHost・StandardPath のパラメーターから ARN を組み立てる（§4.3）。
+    Description: ARN of the Standard tier OIDC provider.
+    Value:
+      Ref: StandardProvider
+  StandardGuardPolicyArn:
+    Description: ARN of the Standard tier guard policy. Imported by the role templates.
+    Value:
+      Ref: StandardGuardPolicy
+    Export:
+      Name: awsbridge-console-guard-standard-arn
+  AdminGuardPolicyArn:
+    Condition: AdminTierEnabled
+    Description: ARN of the Admin tier guard policy. Imported by the Admin tier role templates.
+    Value:
+      Ref: AdminGuardPolicy
+    Export:
+      Name: awsbridge-console-guard-admin-arn
