@@ -250,6 +250,54 @@ Steps (the Worker comes first: IAM reads the issuer's `/.well-known/openid-confi
 
 This way you can check the old and new deployments side by side before you switch. Without a second Worker this is not a parallel migration: the new stack can be created only after the Worker's `ISSUER` has moved to the new URL, and from then until the new stack and the new `roleArn` values are deployed, MCP calls fail (the old roles no longer accept the Worker's tokens). If you do it that way, prepare the rollback first (redeploy the Worker with the old `ISSUER` and the old `roleArn` values; keep the old stack until the new one works).
 
+## Standard signing keys for console login
+
+The Standard Worker for console login (`wrangler.console-standard.jsonc`) signs the JWT it passes to STS with a Workers binding of type `secret_key` (a non-extractable `CryptoKey`; RSASSA-PKCS1-v1_5 / SHA-256, usages `sign` only), one per boundary (`managed`, `partner:<id>`). It works like the Admin signing key, with separate keys, tokens, and Worker. A private JWK stored as a string secret is not used.
+
+- `mise run console:standard-key:put -- --boundary <boundary>` creates the key in its own memory and uploads it with the Cloudflare API. It does not write the key to a file or print it, and the key never passes through CI or logs. A person runs it, only from a local machine.
+- The binding name is `STANDARD_KEY_<first 8 bytes of the kid in hex>`, derived from the kid (the boundary name is not part of it). The tool refuses an existing name. A new key always gets a different name.
+- The Worker reads the vars `STANDARD_CURRENT_KEYS` (boundary -> name and kid of the current key) and `STANDARD_PUBLIC_JWKS` (boundary -> public keys, at most old and new). If either is empty or broken, if a current kid is missing from its boundary's public keys, or if one key appears in two boundaries, every route returns `500 server_misconfigured`. Before signing it checks the boundary's binding (a `CryptoKey`, non-extractable, `sign` only, `exportKey` fails), and it verifies each signed JWT with the public key in the vars. If anything does not match, issuing for that boundary returns `503 signing_unavailable`. Each boundary's issuer JWKS serves only that boundary's public keys from the vars.
+- Until the keys are uploaded (while the vars are empty), every route returns `500`. For the first setup, deploy the Worker, upload the keys and the CSRF key, then set the vars and deploy again.
+- The CSRF key `CONSOLE_CSRF_KEY` stays a `secret_text`. `mise run console:secrets:standard -- --yes` creates 32 random bytes locally and uploads them (no file, not printed). After recreating it, open forms need to be reloaded.
+- Tokens: for `AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN`, use a token that can write only the Standard Worker, separate from the Admin token (without it, the `wrangler login` OAuth token is used, in memory only). The tools do not read the Admin variables. Even though the key cannot be extracted, anyone who can change the Worker's code or secrets can sign any JWT.
+- Update paths: in a development account we confirmed that a `secret_key` binding survives `wrangler deploy`, `wrangler secret put` / `wrangler secret bulk` / `wrangler secret delete` on other secrets, and `wrangler versions secret put / bulk` followed by `versions deploy` (PoC X1-(h)). Managing the Worker's bindings from the dashboard or Terraform was not measured, so do not use those paths.
+- Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_STANDARD_CF_ACCOUNT_ID` (or `account_id` in the wrangler config), `AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN` (optional), `AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG` (default `wrangler.console-standard.jsonc`), `AWSBRIDGE_CONSOLE_STANDARD_ACCESS_TOKEN` (optional; the Access token used for the key-check in `check`).
+
+Checking the bundle and running locally (neither deploys; run `mise run console:config:generate` first. The wrangler config is `AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG`, default `wrangler.console-standard.jsonc`; the MCP-side `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` are not read):
+
+```bash
+mise run console:build:standard   # wrangler deploy --dry-run --outdir dist/console-standard (bundles even while the key vars are empty)
+mise run console:dev              # wrangler dev (local use; a secret_key binding cannot be created locally, so every route returns 500 while the key vars are empty)
+# Deploy by hand after you approve it (check the routes and vars first)
+#   e.g. AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-standard.jsonc AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy
+```
+
+First upload (per boundary):
+
+```bash
+mise run console:standard-key:put -- --boundary managed            # only shows what it would do (no API calls)
+mise run console:standard-key:put -- --boundary managed --yes      # creates the key and uploads it as a secret_key; prints the name, kid, public key, and the vars to set next
+# put reads the vars in the wrangler config and prints them with only this boundary replaced.
+# Before moving to the next boundary, write the printed STANDARD_PUBLIC_JWKS and STANDARD_CURRENT_KEYS into the vars of the wrangler config
+# (if you skip this, the previous boundary is dropped from the next output)
+mise run console:standard-key:put -- --boundary partner:partner-x --yes
+# again, write the printed vars into the wrangler config
+mise run console:secrets:standard -- --yes                         # the CSRF key (secret_text)
+# once the vars cover every boundary, deploy
+mise run console:standard-key:check     # per boundary: binding type, discovery and JWKS, key-check (non-extractable, exportKey fails, self-verification)
+```
+
+Rotation (per boundary; every 90 days or less; always rotate and remove the old kid if a compromise is suspected):
+
+```bash
+mise run console:standard-key:put -- --boundary managed --yes      # 1. upload a new key under a new name
+# 2. set that boundary in vars STANDARD_PUBLIC_JWKS to the old and new keys and deploy (both in the JWKS)
+# -- wait at least 1 hour (24 hours to be safe): until the STS JWKS cache expires --
+# 3. set that boundary in vars STANDARD_CURRENT_KEYS to the new key, deploy, and run mise run console:standard-key:check
+# 4. wait longer than the JWT lifetime (5 minutes), remove the old public key from STANDARD_PUBLIC_JWKS, and deploy
+mise run console:standard-key:retire -- --binding STANDARD_KEY_<old key> --yes   # 5. delete the old key (refuses current keys, keys still in the vars or JWKS, and the CSRF key)
+```
+
 ## Admin signing key for console login
 
 The Admin Worker for console login (`wrangler.console-admin.jsonc`) signs the JWT it passes to STS with a Workers binding of type `secret_key` (a non-extractable `CryptoKey`; RSASSA-PKCS1-v1_5 / SHA-256, usages `sign` only). It is a separate Worker from the Standard one, with its own issuer, key, and host.

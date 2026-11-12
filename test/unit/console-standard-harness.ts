@@ -1,11 +1,12 @@
 // コンソールログインの Standard の Worker（src/console/standard/worker.ts）の試験用の道具。
 // 偽の Access（手元の鍵と JWKS）・STS・getSigninToken を用意し、Worker を直接呼ぶ。値はすべてダミー。
-import { createLocalJWKSet, exportJWK, generateKeyPair, type JWK, SignJWT } from "jose";
+import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { parseConsoleConfig } from "../../src/console/config";
 import { generateConsoleArtifacts } from "../../src/console/generate";
 import { createCsrfToken, importCsrfKey } from "../../src/console/issue/csrf";
+import { bindingNameFor, jwkThumbprint, type PublicJwk } from "../../src/console/signing/key";
+import { STANDARD_KEY_BINDING_PREFIX } from "../../src/console/standard/key";
 import type { DisplayConfig, WorkerConfig } from "../../src/console/types";
-import { generateSigningJwk } from "../../src/keys";
 import { companyAuds, companyConfig, companyInventory } from "./console-fixtures";
 
 export const TEAM_DOMAIN = "https://unit-team.cloudflareaccess.com";
@@ -99,7 +100,8 @@ export type Harness = {
     iat?: number;
   }): Promise<string>;
   csrf(aud: string, sub?: string): Promise<string>;
-  signingJwk: JWK;
+  /** Standard の境界ごとの署名鍵（取り出せない CryptoKey。本番の secret_key と同じ形）。 */
+  stdKeys: Record<string, TestKey>;
   getAccessKey: ReturnType<typeof createLocalJWKSet>;
   fetch: typeof fetch;
 };
@@ -108,13 +110,13 @@ export async function createHarness(): Promise<Harness> {
   const access = await generateKeyPair("RS256", { extractable: true });
   const accessPub = { ...(await exportJWK(access.publicKey)), kid: "unit-access", alg: "RS256" };
   const getAccessKey = createLocalJWKSet({ keys: [accessPub] });
-  const signingJwk = await generateSigningJwk();
+  const stdKeys = await standardTestKeys();
   const csrfKey = await importCsrfKey(CSRF_SECRET);
   const seen: Seen = { sts: [], signin: [], other: [] };
   const h: Harness = {
     seen,
     sts: { status: 200, body: stsXml(ACCESS_KEY_ID) },
-    signingJwk,
+    stdKeys,
     getAccessKey,
     async accessJwt(p = {}) {
       return new SignJWT({ email: p.email ?? EMAIL, type: p.type ?? "app" })
@@ -154,13 +156,72 @@ export type RateLimiterStub = { limit(o: { key: string }): Promise<{ success: bo
 
 export const allowAll: RateLimiterStub = { limit: async () => ({ success: true }) };
 
+/** 試験用の署名鍵（取り出せない CryptoKey と、vars に入れる公開鍵・名前）。 */
+export type TestKey = { privateKey: CryptoKey; publicJwk: PublicJwk; kid: string; binding: string };
+
+/** 取り出せない RSA 2048 の鍵（usages sign）を作る。extractable を true にすると、検査で断られる鍵になる。 */
+export async function makeStandardKey(extractable = false): Promise<TestKey> {
+  const pair = (await crypto.subtle.generateKey(
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      hash: "SHA-256",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+    },
+    extractable,
+    ["sign", "verify"],
+  )) as CryptoKeyPair;
+  const pub = (await crypto.subtle.exportKey("jwk", pair.publicKey)) as JsonWebKey;
+  const n = pub.n as string;
+  const kid = await jwkThumbprint({ n, e: "AQAB" });
+  return {
+    privateKey: pair.privateKey,
+    publicJwk: { kty: "RSA", n, e: "AQAB", kid, alg: "RS256", use: "sig" },
+    kid,
+    binding: bindingNameFor(STANDARD_KEY_BINDING_PREFIX, kid),
+  };
+}
+
+// 鍵の生成は遅いので、境界ごとの鍵はモジュールで 1 回だけ作る（試験の間で値は変えない）
+let sharedStdKeys: Promise<Record<string, TestKey>> | undefined;
+function standardTestKeys(): Promise<Record<string, TestKey>> {
+  sharedStdKeys ??= Promise.all([makeStandardKey(), makeStandardKey()]).then(([m, p]) => ({
+    managed: m as TestKey,
+    "partner:partner-x": p as TestKey,
+  }));
+  return sharedStdKeys;
+}
+
+/**
+ * Standard の署名鍵の vars とバインディング。境界 → 今の鍵（STANDARD_CURRENT_KEYS）、境界 → 公開鍵（STANDARD_PUBLIC_JWKS。
+ * 既定は今の鍵だけ）、バインディング（名前 → CryptoKey）。
+ */
+export function standardKeyEnv(
+  current: Record<string, TestKey>,
+  publicKeys: Record<string, TestKey[]> = Object.fromEntries(
+    Object.entries(current).map(([b, k]) => [b, [k]]),
+  ),
+): Record<string, unknown> {
+  const env: Record<string, unknown> = {
+    STANDARD_CURRENT_KEYS: JSON.stringify(
+      Object.fromEntries(
+        Object.entries(current).map(([b, k]) => [b, { binding: k.binding, kid: k.kid }]),
+      ),
+    ),
+    STANDARD_PUBLIC_JWKS: JSON.stringify(
+      Object.fromEntries(
+        Object.entries(publicKeys).map(([b, ks]) => [b, ks.map((k) => k.publicJwk)]),
+      ),
+    ),
+  };
+  for (const k of Object.values(current)) env[k.binding] = k.privateKey;
+  return env;
+}
+
 export function baseEnv(h: Harness, extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
-    CONSOLE_SIGNING_KEYS: JSON.stringify({
-      managed: h.signingJwk,
-      "partner:partner-x": h.signingJwk,
-    }),
+    ...standardKeyEnv(h.stdKeys),
     CONSOLE_CSRF_KEY: CSRF_SECRET,
     LOGIN_RATE_LIMITER: allowAll,
     ...extra,

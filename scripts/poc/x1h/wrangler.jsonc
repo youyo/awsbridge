@@ -1,0 +1,11 @@
+{
+  // PoC X1-(h)（secret_key が別の secret の更新のあとも残るか）の Worker。MCP 用・コンソールの Worker とは別。
+  // vars は run.ts が .secrets/poc-x1h/wrangler.deploy.json に書いた設定でデプロイする（実値はここに書かない）。
+  // 互換フラグは付けない（コンソールの Worker と同じ。nodejs_compat・webcrypto_modern_algorithms なし）。
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "awsbridge-x1h-poc",
+  "main": "worker.ts",
+  "compatibility_date": "2026-07-21",
+  "workers_dev": true,
+  "preview_urls": false
+}

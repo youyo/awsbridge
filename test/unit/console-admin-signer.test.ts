@@ -1,7 +1,7 @@
 // コンソールログインの Admin の署名（X1 の決裁: Workers の secret_key 型の取り出せない CryptoKey で RS256 の JWS を組む）。
 //   鍵の部品（admin/key.ts）: バインディングの名前の規則（kid から作る）、今の署名鍵（名前と kid の組）、公開鍵の vars、
 //                             バインディングの検査（CryptoKey・private・extractable false・usages sign だけ・RS256・exportKey が失敗する）
-//   JWS（admin/jws.ts）:     WebCrypto だけで組む。jose で検証できる形
+//   JWS（signing/jws.ts）:     WebCrypto だけで組む。jose で検証できる形
 //   署名の部品（admin/sign-admin.ts）: STS 用の claim、kid、vars の公開鍵での自己検証、返す JWT の照合
 // 試験の鍵は手元の WebCrypto で取り出せない形に作る（本番の secret_key と同じ CryptoKey の形）。
 import {
@@ -12,7 +12,6 @@ import {
   jwtVerify,
 } from "jose";
 import { beforeAll, describe, expect, it } from "vitest";
-import { signJws } from "../../src/console/admin/jws";
 import {
   ADMIN_KEY_BINDING_PREFIX,
   bindingNameForKid,
@@ -27,6 +26,7 @@ import { createAdminSigner } from "../../src/console/admin/sign-admin";
 import { AUDIENCE, TEAM_TAG_KEY, UUID_RE } from "../../src/console/constants";
 import { AWS_SOURCE_IDENTITY_CLAIM, AWS_TAGS_CLAIM } from "../../src/console/issue/claims";
 import type { IssueRow, SigningRequest } from "../../src/console/issue/signer";
+import { signJws } from "../../src/console/signing/jws";
 
 const NOW = 1_700_000_000;
 const ISSUER = "https://admin-id.example.com/admin";
@@ -252,7 +252,7 @@ describe("admin/key: バインディングの検査（使う前に。合わな�
   });
 });
 
-describe("admin/jws: WebCrypto だけで RS256 の JWS を組む", () => {
+describe("signing/jws: WebCrypto だけで RS256 の JWS を組む", () => {
   it("header は alg・kid・typ だけで、jose で検証できる", async () => {
     const jwt = await signJws(a.privateKey, a.kid, {
       iss: ISSUER,

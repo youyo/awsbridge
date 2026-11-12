@@ -24,7 +24,9 @@ import {
   SIGNIN_TOKEN,
   STD_ISSUER,
   standardConfig,
+  standardKeyEnv,
   stsErrorXml,
+  type TestKey,
 } from "./console-standard-harness";
 
 let h: Harness;
@@ -485,8 +487,10 @@ describe("生成物と secret の検査（fail-closed）", () => {
   });
 
   it.each([
-    ["署名鍵の JSON が壊れている", { CONSOLE_SIGNING_KEYS: "{" }],
-    ["署名鍵がない", { CONSOLE_SIGNING_KEYS: undefined }],
+    ["今の署名鍵の vars の JSON が壊れている", { STANDARD_CURRENT_KEYS: "{" }],
+    ["今の署名鍵の vars がない", { STANDARD_CURRENT_KEYS: undefined }],
+    ["公開鍵の vars がない", { STANDARD_PUBLIC_JWKS: undefined }],
+    ["公開鍵の vars の JSON が壊れている", { STANDARD_PUBLIC_JWKS: "[" }],
     ["CSRF の鍵が短い", { CONSOLE_CSRF_KEY: "short" }],
     ["チームドメインがない", { ACCESS_TEAM_DOMAIN: undefined }],
     ["チームドメインが https でない", { ACCESS_TEAM_DOMAIN: "http://unit.cloudflareaccess.com" }],
@@ -499,9 +503,11 @@ describe("生成物と secret の検査（fail-closed）", () => {
   });
 
   it("境界の鍵がない行は 503 signing_unavailable（その境界の JWKS は 500）", async () => {
-    const env = baseEnv(h, {
-      CONSOLE_SIGNING_KEYS: JSON.stringify({ "partner:partner-x": h.signingJwk }),
-    });
+    const env = baseEnv(
+      h,
+      standardKeyEnv({ "partner:partner-x": h.stdKeys["partner:partner-x"] as TestKey }),
+    );
+    delete env[(h.stdKeys.managed as TestKey).binding];
     const res = await post({}, env);
     expect(res.status).toBe(503);
     expect(await res.text()).toContain("signing_unavailable");

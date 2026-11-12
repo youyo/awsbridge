@@ -12,7 +12,7 @@
 //     vars の形の誤り（名前が kid の規則と違う・kid が公開鍵に無い・公開鍵に秘密の成分など）は 500。
 //   Access JWT の iat からの経過時間の上限（vars ACCESS_MAX_AGE_SECONDS。既定 900 秒 = Admin の Access のセッションの長さ）。
 //   デプロイ後の確認（GET <team-base>/key-check）: Access の検証の後ろで、鍵の性質（取り出せない・exportKey が失敗する・自己検証）と kid だけを返す。
-//   署名鍵の secret（CONSOLE_SIGNING_KEYS）は持たない。入口の AUD は発行に受けない（AUD → チームの表に載せない）。
+//   Standard の署名鍵（Standard の vars とバインディング）は読まない。入口の AUD は発行に受けない（AUD → チームの表に載せない）。
 // 試験用の差し替え（AdminOverrides）は E2E・unit のためのもので、本番のエントリは何も渡さない。
 import { unavailableSigner } from "../issue/signer";
 import { errorPage, htmlResponse } from "../portal/pages";
