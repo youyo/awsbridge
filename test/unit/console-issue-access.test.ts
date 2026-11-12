@@ -3,6 +3,7 @@
 import { exportJWK, generateKeyPair, type JWTPayload, SignJWT } from "jose";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  ACCESS_JWT_MAX_LENGTH,
   type ConsoleAccessConfig,
   type ConsoleAccessResult,
   verifyConsoleAccess,
@@ -71,6 +72,56 @@ const verify = (token: string | null, team = "dev", c = cfg()) =>
   verifyConsoleAccess(token, team, c, opts());
 
 const codeOf = (r: ConsoleAccessResult) => (r.ok ? "ok" : r.code);
+
+/** 正しく署名した JWT を、余分な claim で長さ length 前後まで水増しする（base64url で 4/3 倍になる）。 */
+async function padded(length: number): Promise<string> {
+  const base = await sign(user);
+  const pad = Math.max(0, Math.floor(((length - base.length) * 3) / 4));
+  return sign({ ...user, pad: "x".repeat(pad) });
+}
+
+describe("Access JWT の大きさの上限（署名の検証と JSON の解析の前に断る。cto の決裁 G2 の論点 5）", () => {
+  it("上限は 16 KiB（16384 文字）", () => {
+    expect(ACCESS_JWT_MAX_LENGTH).toBe(16 * 1024);
+  });
+
+  it("上限を超える、正しく署名した JWT は 401 too_large。鍵の解決（署名の検証）を呼ばない", async () => {
+    const token = await padded(ACCESS_JWT_MAX_LENGTH + 100);
+    expect(token.length).toBeGreaterThan(ACCESS_JWT_MAX_LENGTH);
+    let keyCalls = 0;
+    const r = await verifyConsoleAccess(token, "dev", cfg(), {
+      getKey: async () => {
+        keyCalls++;
+        return good.publicKey;
+      },
+      now: NOW,
+    });
+    expect(r).toEqual({ ok: false, status: 401, code: "unauthorized", reason: "too_large" });
+    expect(keyCalls).toBe(0);
+  });
+
+  it("上限の内側の、正しく署名した JWT は今までどおり通る（陽性の対照）", async () => {
+    const token = await padded(ACCESS_JWT_MAX_LENGTH - 200);
+    expect(token.length).toBeLessThanOrEqual(ACCESS_JWT_MAX_LENGTH);
+    expect(token.length).toBeGreaterThan(ACCESS_JWT_MAX_LENGTH - 400);
+    expect(codeOf(await verify(token))).toBe("ok");
+  });
+
+  it("境界: ちょうど上限の長さは大きさでは断らない（解析で invalid）、1 文字超えると too_large", async () => {
+    const at = await verify("a".repeat(ACCESS_JWT_MAX_LENGTH));
+    expect(at).toMatchObject({ ok: false, status: 401, reason: "invalid" });
+    const over = await verify("a".repeat(ACCESS_JWT_MAX_LENGTH + 1));
+    expect(over).toMatchObject({ ok: false, status: 401, reason: "too_large" });
+  });
+
+  it("設定が壊れていれば大きさより先に 500（今までの順序を保つ）", async () => {
+    const r = await verify("a".repeat(ACCESS_JWT_MAX_LENGTH + 1), "dev", {
+      ...cfg(),
+      teamDomain: "http://insecure.example.com",
+    });
+    expect(codeOf(r)).toBe("server_misconfigured");
+  });
+});
 
 describe("aud はちょうど 1 つで既知のチームの AUD のときだけ通す（§9.3 の 2）", () => {
   it("aud=[devAud, unknown] は unknown_audience（既知と未知が 1 つずつでも通さない）", async () => {

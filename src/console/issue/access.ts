@@ -9,6 +9,16 @@ import { createRemoteJWKSet, errors, type JWTPayload, type JWTVerifyGetKey, jwtV
 /** exp / nbf に許す時計ずれ（秒）。MCP 用の検証と同じ値。 */
 const CLOCK_TOLERANCE_SECONDS = 30;
 
+/**
+ * Access JWT（Cf-Access-Jwt-Assertion）の長さの上限（文字数。JWT は base64url と "." だけなので文字数 = バイト数）。
+ * 16 KiB にした理由: Cloudflare Access のアプリのトークンは数百バイト〜1 KiB 程度（RS256 の署名 342 文字 + 少数の claim。
+ * グループは JWT に入らず get-identity で取る）で、OIDC の追加の claim を足しても桁で余裕がある。一方、上限が無いと、
+ * Access を通った利用者でも大きなヘッダーで base64 の復号・JSON の解析・RSA の検証を Worker にさせられる。
+ * Cloudflare のリクエストヘッダーの上限（全体で 128 KB 程度）より十分小さく、正規のトークンを断らない値として選んだ。
+ * 超えたものは署名の検証と JSON の解析の前に 401（reason: too_large）で断る（cto の決裁 G2 の論点 5）。
+ */
+export const ACCESS_JWT_MAX_LENGTH = 16 * 1024;
+
 export type ConsoleAccessConfig = {
   /** `https://<team>.cloudflareaccess.com`（末尾のスラッシュは無視。パス・クエリは持たない） */
   teamDomain: string;
@@ -49,7 +59,8 @@ export type ConsoleAccessUnauthorizedReason =
   | "service_token"
   | "identity_missing"
   | "too_old"
-  | "iat_future";
+  | "iat_future"
+  | "too_large";
 
 export type ConsoleAccessFailure =
   | { ok: false; status: 401; code: "unauthorized"; reason: ConsoleAccessUnauthorizedReason }
@@ -119,7 +130,7 @@ function remoteJwks(issuer: string): JWTVerifyGetKey {
 /**
  * `POST <team-base>/login` などの発行の経路で、Access JWT を検証し、AUD からチームを決める。
  *
- * 順序（§9.3）: 設定の検査（500）→ 署名・iss・exp・利用者の種別（401）→ aud（403 unknown_audience）
+ * 順序（§9.3）: 設定の検査（500）→ 大きさの上限（401）→ 署名・iss・exp・利用者の種別（401）→ aud（403 unknown_audience）
  * → パスのチームとの一致（403 team_mismatch）。署名を検証する前に aud を見ない。
  *
  * @param pathTeam パス（ホスト）から取り出したチーム名。経路の振り分けにだけ使い、AUD のチームと食い違えば拒否する
@@ -135,6 +146,8 @@ export async function verifyConsoleAccess(
   const maxAge = opts.maxAgeSeconds;
   if (maxAge !== undefined && !(Number.isInteger(maxAge) && maxAge > 0)) return MISCONFIGURED;
   if (typeof token !== "string" || token === "") return unauthorized("missing");
+  // 大きさの上限（署名の検証・base64 の復号・JSON の解析の前）
+  if (token.length > ACCESS_JWT_MAX_LENGTH) return unauthorized("too_large");
 
   const nowSec = opts.now ?? Math.floor(Date.now() / 1000);
   let payload: JWTPayload;
