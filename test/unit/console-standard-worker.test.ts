@@ -1,7 +1,7 @@
 // コンソールログインの Standard の Worker: POST <team-base>/login の 9 段・経路・issuer の文書・画面。
 // 設計: docs/specs/console-login-portal.md §3・§9（9 段・エラー・CSRF・応答ヘッダー）・§10・§11。
 // 偽の Access（手元の鍵）・STS・getSigninToken を相手に、Worker の fetch を直接呼ぶ。
-import { createLocalJWKSet, decodeJwt, jwtVerify } from "jose";
+import { createLocalJWKSet, decodeJwt, decodeProtectedHeader, jwtVerify } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AUDIENCE } from "../../src/console/constants";
 import { createStandardWorker } from "../../src/console/standard/worker";
@@ -175,7 +175,9 @@ describe("POST /t/<team>/login: 通る経路の中身", () => {
     expect(rec.result).toBe("ok");
     expect(rec.tier).toBe("standard");
     expect(rec.team).toBe("infra");
-    expect(rec.target.accountId).toBe("********3333");
+    // cto の決裁 2026-11-13: アカウント ID とロール ARN は全桁（突き合わせのキー。秘密ではない）。email は伏せる
+    expect(rec.target.accountId).toBe("333333333333");
+    expect(rec.target.roleArn).toMatch(/^arn:aws:iam::333333333333:role\//);
     expect(rec.sts.region).toBe("us-east-1");
     expect(rec.session.seconds).toBe(43200);
     const all = logs.join("\n");
@@ -185,7 +187,6 @@ describe("POST /t/<team>/login: 通る経路の中身", () => {
       "unit-secret-value",
       "unit-session-value",
       EMAIL,
-      "333333333333",
       CSRF_SECRET,
     ]) {
       expect(all).not.toContain(s);
@@ -712,14 +713,34 @@ describe("画面（S2・S4・S5 と経路の枠）", () => {
 });
 
 describe("JWT の claim（decodeJwt で中身だけ見る）", () => {
-  it("jti は発行記録に完全な値で残す（CloudTrail の webIdentityTokenId との突き合わせの主キー）。ほかは伏せ字のまま", async () => {
+  it("jti は発行記録に完全な値で残す（CloudTrail の webIdentityTokenId との突き合わせの主キー）。email は伏せ字のまま", async () => {
     await post();
     const jwt = h.seen.sts[0]?.get("WebIdentityToken") ?? "";
     const jti = decodeJwt(jwt).jti as string;
     expect(jti.length).toBeGreaterThan(8);
     const rec = JSON.parse(logs.find((l) => l.includes('"console_issue"')) as string);
     expect(rec.jwt.jti).toBe(jti);
-    expect(rec.target.accountId).toBe("********3333");
+    expect(rec.target.accountId).toBe("333333333333");
     expect(rec.user.email).not.toBe(EMAIL);
+  });
+
+  it("発行記録に署名した鍵の kid（JWT のヘッダーと同じ）を残す", async () => {
+    await post();
+    const jwt = h.seen.sts[0]?.get("WebIdentityToken") ?? "";
+    const kid = decodeProtectedHeader(jwt).kid;
+    expect(typeof kid).toBe("string");
+    const rec = JSON.parse(logs.find((l) => l.includes('"console_issue"')) as string);
+    expect(rec.jwt.kid).toBe(kid);
+  });
+
+  it("発行記録に Worker の版 ID（binding CF_VERSION_METADATA の id）を残す。binding が無ければ項目を持たない", async () => {
+    const versionId = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+    await post({}, baseEnv(h, { CF_VERSION_METADATA: { id: versionId, tag: "", timestamp: "" } }));
+    const rec = JSON.parse(logs.find((l) => l.includes('"console_issue"')) as string);
+    expect(rec.worker).toEqual({ versionId });
+    logs.length = 0;
+    await post();
+    const rec2 = JSON.parse(logs.find((l) => l.includes('"console_issue"')) as string);
+    expect(rec2).not.toHaveProperty("worker");
   });
 });

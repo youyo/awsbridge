@@ -157,3 +157,21 @@ describe("wrangler.console-admin.jsonc（設定の例）", () => {
     expect(standard.name).not.toBe(config.name);
   });
 });
+
+// cto の決裁 2026-11-13「② の発行記録を Workers Logs のままにする」(b): 発行記録は Workers Logs に置くので、
+// 間引き（head-based sampling）で記録が落ちないよう、コンソールの 2 つの Worker の head_sampling_rate を 1 に固定する。
+// あわせて、発行記録に Worker の版 ID を残すため version_metadata の binding（CF_VERSION_METADATA）を持つ。
+describe.each(["wrangler.console-standard.jsonc", "wrangler.console-admin.jsonc"])(
+  "%s: 発行記録の置き場所（Workers Logs）",
+  (file) => {
+    const config = readJsonc(join(root, file));
+
+    it("observability は有効で、head_sampling_rate は 1（間引かない）を明示する", () => {
+      expect(config.observability).toEqual({ enabled: true, head_sampling_rate: 1 });
+    });
+
+    it("version_metadata の binding は CF_VERSION_METADATA（発行記録の worker.versionId）", () => {
+      expect(config.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
+    });
+  },
+);

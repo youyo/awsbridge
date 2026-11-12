@@ -8,7 +8,7 @@
 //   → 本文 → CSRF → 行（このチーム・この階層の行。7 段目）→ 身元（identity_unsupported）→ 回数の制限
 //   → 署名 → STS → getSigninToken → 302
 // どこかで失敗したら発行しない（fail-closed）。例外を握りつぶして続行しない。
-import type { JWTVerifyGetKey } from "jose";
+import { decodeProtectedHeader, type JWTVerifyGetKey } from "jose";
 import { assumeRoleWithWebIdentityDetailed, StsError } from "../../sts";
 import { ACCOUNT_ID_RE, NAME_RE, rolePath, type Tier } from "../constants";
 import { verifyConsoleAccess } from "../issue/access";
@@ -23,7 +23,7 @@ import {
   stsEndpoint,
 } from "../issue/federation";
 import { type AccessIdentity, type ResolvedIdentity, resolveIdentity } from "../issue/identity";
-import { createIssueRecord, maskIssueRecord } from "../issue/record";
+import { createIssueRecord, issueLogRecord } from "../issue/record";
 import { checkLoginRequest } from "../issue/request";
 import type { IssueRow, TokenSigner } from "../issue/signer";
 import type { WorkerConfig } from "../types";
@@ -52,6 +52,8 @@ export type LoginContext = {
   getAccessKey?: JWTVerifyGetKey | undefined;
   /** Access JWT の iat からの経過時間の上限（秒）。Admin だけが渡す（X1 の決裁 (f)）。 */
   accessMaxAgeSeconds?: number | undefined;
+  /** 発行記録に残す Worker の版 ID（binding CF_VERSION_METADATA の id。取れなければ undefined）。 */
+  workerVersionId?: string | undefined;
 };
 
 export type LoginOutcome =
@@ -240,11 +242,11 @@ export async function handleLogin(req: Request, ctx: LoginContext): Promise<Logi
   }
   const resolved = resolvedResult.value;
 
-  // ここからは発行記録（伏せ字の形）を残す
+  // ここからは発行記録（issueLogRecord の形）を残す
   const record = (
     result: "ok" | IssueErrorCode,
     extra: {
-      token?: { jti: string; iat: number; exp: number };
+      token?: { jti: string; iat: number; exp: number; kid?: string | undefined };
       sts?: { accessKeyId?: string; assumedRoleId?: string; requestId?: string };
     } = {},
   ) => {
@@ -263,11 +265,11 @@ export async function handleLogin(req: Request, ctx: LoginContext): Promise<Logi
         generatedAt: ctx.config.generatedAt,
         sourceRevision: ctx.config.sourceRevision,
       },
+      workerVersionId: ctx.workerVersionId,
     });
-    // jti は秘密ではなく、CloudTrail の webIdentityTokenId との突き合わせの主キーなので完全な値で残す。ほかは伏せ字
-    const masked = maskIssueRecord(r);
-    if (masked.jwt && r.jwt) masked.jwt = { ...masked.jwt, jti: r.jwt.jti };
-    ctx.log(JSON.stringify({ event: "console_issue", ...masked }));
+    // jti・kid・アカウント ID・ロール ARN は秘密ではなく、CloudTrail との突き合わせのキーなので全桁で残す。email などは伏せ字
+    // （cto の決裁 2026-11-13。突き合わせの道具 src/console/reconcile.ts がこの形を読む）
+    ctx.log(JSON.stringify({ event: "console_issue", ...issueLogRecord(r) }));
   };
   return issue(ctx, { identity, resolved, row, region, record });
 }
@@ -280,7 +282,7 @@ type IssueState = {
   record: (
     result: "ok" | IssueErrorCode,
     extra?: {
-      token?: { jti: string; iat: number; exp: number };
+      token?: { jti: string; iat: number; exp: number; kid?: string | undefined };
       sts?: { accessKeyId?: string; assumedRoleId?: string; requestId?: string };
     },
   ) => void;
@@ -318,7 +320,12 @@ async function issue(ctx: LoginContext, s: IssueState): Promise<LoginOutcome> {
     record(signed.code);
     return fail(signed.code);
   }
-  const token = { jti: signed.token.jti, iat: signed.token.iat, exp: signed.token.exp };
+  const token = {
+    jti: signed.token.jti,
+    iat: signed.token.iat,
+    exp: signed.token.exp,
+    kid: kidOf(signed.token.jwt),
+  };
 
   try {
     // STS（セッションの長さは行の値を必ず渡す。既定の 900 秒にしない）
@@ -369,5 +376,15 @@ async function issue(ctx: LoginContext, s: IssueState): Promise<LoginOutcome> {
     const code = e instanceof IssueError ? e.code : "server_misconfigured";
     record(code, { token });
     return fail(code);
+  }
+}
+
+/** 署名した鍵の kid（JWT の保護ヘッダー）。発行記録に残すだけで、検証には使わない。読めなければ undefined。 */
+function kidOf(jwt: string): string | undefined {
+  try {
+    const kid = decodeProtectedHeader(jwt).kid;
+    return typeof kid === "string" && kid !== "" ? kid : undefined;
+  } catch {
+    return undefined;
   }
 }

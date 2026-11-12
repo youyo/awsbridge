@@ -374,6 +374,9 @@ describe("Standard の Worker（wrangler dev）: 通しの経路", () => {
     await new Promise((r) => setTimeout(r, 500));
     const logs = normal.logs.join("");
     expect(logs).toContain('"console_issue"');
+    // 発行記録に kid と Worker の版 ID（version_metadata の binding）が入る（cto の決裁 2026-11-13）
+    expect(logs).toMatch(/"kid":"[^"]+"/);
+    expect(logs).toMatch(/"worker":\{"versionId":"[^"]+"\}/);
     for (const s of [SIGNIN_TOKEN, ACCESS_KEY_ID, EMAIL, CSRF_SECRET])
       expect(logs).not.toContain(s);
   });
