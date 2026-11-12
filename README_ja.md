@@ -463,10 +463,10 @@ mise run console:reconcile -- --profile <プロファイル> --logs-api --since 
 
 運用:
 
-- **主: 固定の間隔で回します（3 日以内。発行の有無に関係なく）**。**従: Administrator の発行があった日は当日中にも回します**（正規の発行の確認を早めるため）。発行記録の保持は 7 日なので、**7 日以内に突き合わせなかった発行は、あとから検証できません**。回さなかった区間は `coverage_gap`（誤り）で出ます。
+- **突き合わせは毎日回します。Administrator の発行の有無に関係なく回します**。回せない日があっても、6 日以内に回せば検証の穴はできません。発行記録の保持は 7 日なので、**7 日以内に突き合わせなかった発行は、あとから検証できません**。回さなかった区間は、道具が `coverage_gap`（誤り。終了コード 1）で知らせます。
 - **誤りが出た実行は区間を進めません**。誤りを調べて決着したら、`--since` を前回の終わり以前に戻して回し直し、区間を進めます。ただし記録の保持の 7 日を過ぎた分は検証できません。放置すると、次の実行から `coverage_gap` が重なって出ます。
-- **`--since` は回す間隔より 5 分以上長くします**（確認済みの区間の終わりが「今回の終わり − 反映の遅れ（既定 300 秒）」になるため、ちょうどの長さでは穴が出ます）。例: 3 日おきなら既定の 6 日のままにします。
-- 毎日の監視（定期の実行と通知）は awsbridge の外です。仕組みは利用者が決めます。
+- **`--since` は回す間隔より 5 分以上長くします**（確認済みの区間の終わりが「今回の終わり − 反映の遅れ（既定 300 秒）」になるため、ちょうどの長さでは穴が出ます）。例: 毎日回すなら既定の 6 日のままにします。
+- 毎日の実行は awsbridge の外（MCP 経由のエージェントなど）で行います。awsbridge には定期の実行の仕組みを入れません。通知も awsbridge の外で、仕組みは利用者が決めます。
 - ② の最初に、実物で次を確かめます: Cloudflare の API の応答の形（`events`・`$metadata.id` のカーソル・`count` の意味・切られた印が `$workers.truncated` か `$cloudflare.truncated` か）、CloudTrail の `AssumeRoleWithWebIdentity` のフィールド名（`requestParameters.webIdentityTokenId`・`userIdentity.identityProvider` など）。違えば `scripts/console/reconcile-cf.ts`・`src/console/reconcile-input.ts` とフィクスチャを直します。
 
 ## コンソールログインの Administrator の残った権限の棚卸し

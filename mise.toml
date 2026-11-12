@@ -150,11 +150,11 @@ description = "停止の道具: 対象の全ロールの予約名に --stops の
 run = "pnpm tsx scripts/console/stop.ts apply"
 
 # ---- コンソールログイン: 発行記録と CloudTrail の突き合わせ（README の「コンソールログインの突き合わせ」）----
-# 人が手元で実行する（主は固定の間隔で 3 日以内、従は Administrator の発行があった日は当日中。7 日以内に回さなかった発行はあとから検証できない）。AWS と Cloudflare は照会だけ。
+# 毎日回す（Administrator の発行の有無に関係なく。6 日以内に回せば検証の穴はできず、7 日以内に回さなかった発行はあとから検証できない）。実行は awsbridge の外（MCP 経由のエージェントなど）で行う。AWS と Cloudflare は照会だけ。
 # 変数（[env] に置かず mise.local.toml に置く）: AWSBRIDGE_CONSOLE_LOGS_TOKEN（--logs-api の API のトークン）、
 #   AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID（Cloudflare のアカウント ID）、AWSBRIDGE_CONSOLE_LOGS_WORKERS（任意。Worker の名前）
 [tasks."console:reconcile"]
-description = "コンソールログインの突き合わせの道具: 発行記録（--records <file|dir> か --logs-api）と CloudTrail の AssumeRoleWithWebIdentity（有効な全リージョン）を jti で突き合わせる（--profile <名前> が要る。読み取りだけ。既定のさかのぼり 6 日。出力は伏せ字。--state で確認済みの区間のファイル、--clock-skew-seconds で時計ずれの許容を指定。3 日以内の固定の間隔で回す）"
+description = "コンソールログインの突き合わせの道具: 発行記録（--records <file|dir> か --logs-api）と CloudTrail の AssumeRoleWithWebIdentity（有効な全リージョン）を jti で突き合わせる（--profile <名前> が要る。読み取りだけ。既定のさかのぼり 6 日。出力は伏せ字。--state で確認済みの区間のファイル、--clock-skew-seconds で時計ずれの許容を指定。毎日回す。回せない日があっても 6 日以内に回せば検証の穴はできない）"
 run = "pnpm tsx scripts/console/reconcile.ts"
 
 # ---- コンソールログイン: Admin の署名鍵（Workers の secret_key 型。X1 の決裁）。手順は README の「コンソールログインの Admin の署名鍵」----
