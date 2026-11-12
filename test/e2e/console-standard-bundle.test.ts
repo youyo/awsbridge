@@ -24,11 +24,24 @@ const AUD = {
 const ENTRY_STD = `stdentryaud${"6".repeat(40)}`;
 const ENTRY_ADMIN = `adminentryaud${"7".repeat(40)}`;
 
+// Admin の生成物にだけある値（Standard のバンドルに入ってはならない）
+const ADMIN_ONLY = [
+  AUD["infra-elevated"],
+  AUD["dev-elevated"],
+  ENTRY_ADMIN,
+  "https://id.example.com/admin",
+  "/awsbridge-console/admin/",
+  "FederatedAwsBridgeAdministrator",
+  "infra-elevated",
+  "dev-elevated",
+];
+
 let out = "";
 let inputs: string[] = [];
 let bundle = "";
 let config: Record<string, unknown> = {};
 let standardJson = "";
+let adminJson = "";
 
 beforeAll(() => {
   out = mkdtempSync(join(tmpdir(), "awsbridge-console-std-bundle-"));
@@ -51,7 +64,8 @@ beforeAll(() => {
   });
   standardJson = join(out, "worker.standard.json");
   writeFileSync(standardJson, JSON.stringify(artifacts.worker.standard));
-  writeFileSync(join(out, "worker.admin.json"), JSON.stringify(artifacts.worker.admin));
+  adminJson = join(out, "worker.admin.json");
+  writeFileSync(adminJson, JSON.stringify(artifacts.worker.admin));
 
   const bundleConfig = {
     ...config,
@@ -153,20 +167,19 @@ describe("Standard の Worker のバンドル", () => {
 
   it("Admin の固有値（Admin のチームの AUD・Admin の入口の AUD・Admin の issuer・Admin の行・Admin のチーム）が入らない", () => {
     expect(inputs.filter((p) => p.endsWith("worker.admin.json"))).toEqual([]);
-    for (const s of [
-      AUD["infra-elevated"],
-      AUD["dev-elevated"],
-      ENTRY_ADMIN,
-      "https://id.example.com/admin",
-      "/awsbridge-console/admin/",
-      "FederatedAwsBridgeAdministrator",
-      "infra-elevated",
-      "dev-elevated",
-    ]) {
+    for (const s of ADMIN_ONLY) {
       expect(bundle, s).not.toContain(s);
     }
     // Admin の鍵（KMS）の参照を持たない
     expect(bundle).not.toMatch(/\bkms\b/i);
+  });
+
+  it("陽性の対照: 上の Admin の固有値は、Admin の生成物（worker.admin.json）には実際にある（入らないことの試験が空振りしていない）", () => {
+    const admin = readFileSync(adminJson, "utf8");
+    for (const s of ADMIN_ONLY) expect(admin, s).toContain(s);
+    // 逆向きの対照: Standard の生成物には、Admin の固有値がない
+    const std = readFileSync(standardJson, "utf8");
+    for (const s of ADMIN_ONLY) expect(std, s).not.toContain(s);
   });
 
   it("MCP のコード・設定の解析器と生成器・表示用の生成物・scripts/ を読み込まない", () => {

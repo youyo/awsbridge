@@ -13,6 +13,11 @@ export const PORTAL = "https://portal.example.com";
 export const PORTAL_HOST = "portal.example.com";
 export const ISSUER_HOST = "id.example.com";
 export const STD_ISSUER = "https://id.example.com/standard";
+export const ADMIN_PORTAL = "https://admin-portal.example.com";
+export const ADMIN_HOST = "admin-portal.example.com";
+export const ADMIN_TEAM = "infra-elevated";
+/** infra-elevated のチームが Administrator で入れる行（種類 A のアカウント）。 */
+export const ADMIN_ENTRY = "333333333333:admin";
 export const STS_URL = "https://sts.us-east-1.amazonaws.com/";
 export const FEDERATION = "https://signin.aws.amazon.com/federation";
 export const AUDS = companyAuds() as {
@@ -139,6 +144,19 @@ export function baseEnv(h: Harness, extra: Record<string, unknown> = {}): Record
       managed: h.signingJwk,
       "partner:partner-x": h.signingJwk,
     }),
+    CONSOLE_CSRF_KEY: CSRF_SECRET,
+    LOGIN_RATE_LIMITER: allowAll,
+    ...extra,
+  };
+}
+
+/** Admin の Worker の env（署名鍵の secret は持たない）。 */
+export function adminEnv(
+  _h: Harness,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
     CONSOLE_CSRF_KEY: CSRF_SECRET,
     LOGIN_RATE_LIMITER: allowAll,
     ...extra,
