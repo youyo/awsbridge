@@ -158,7 +158,7 @@ description = "コンソールログインの突き合わせの道具: 発行記
 run = "pnpm tsx scripts/console/reconcile.ts"
 
 # ---- コンソールログイン: Admin の署名鍵（Workers の secret_key 型。X1 の決裁）。手順は README の「コンソールログインの Admin の署名鍵」----
-# 人が手元で実行する（CI から実行しない）。put と retire は -- --yes を付けたときだけ Cloudflare API を書き換える（既定は表示だけ）。
+# 人が手元で実行する（CI から実行しない）。put・retire・secrets（CSRF の鍵）は -- --yes を付けたときだけ Cloudflare API を書き換える（既定は表示だけ）。
 # 変数（[env] に置かず mise.local.toml に置く）: AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID、AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN（任意。無ければ wrangler の OAuth）、
 #   AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG（既定 wrangler.console-admin.jsonc）、AWSBRIDGE_CONSOLE_ADMIN_ACCESS_TOKEN（check の key-check 用。任意）
 
@@ -173,6 +173,10 @@ run = "pnpm tsx scripts/console/admin-key.ts retire"
 [tasks."console:admin-key:check"]
 description = "デプロイ後の確認: 今の鍵が secret_key か、Admin の issuer の discovery と JWKS が vars と合うか、key-check（取り出せない・exportKey が失敗する・自己検証）"
 run = "pnpm tsx scripts/console/admin-key.ts check"
+
+[tasks."console:secrets:admin"]
+description = "Admin の Worker の CSRF の鍵 CONSOLE_CSRF_KEY（secret_text）を、手元で作った 32 バイトの乱数で Cloudflare API から入れる（ファイルに書かない・表示しない。Standard と別の値）。署名鍵は入れない。-- --yes で実行"
+run = "pnpm tsx scripts/console/secrets-admin.ts"
 
 # ---- コンソールログイン: Standard の署名鍵（境界ごとの Workers の secret_key 型。cto の決裁「Standard も secret_key に揃える」）----
 # 手順は README の「コンソールログインの Standard の署名鍵」。人が手元で実行する（CI から実行しない）。

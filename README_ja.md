@@ -373,15 +373,28 @@ mise run console:standard-key:retire -- --binding STANDARD_KEY_<旧い鍵> --yes
 - バインディングの名前は `ADMIN_KEY_<kid の先頭 8 バイトの 16 進>` で、kid から決まります。同じ名前に入れると今の鍵が即座に置き換わるので、道具は同じ名前への投入を断ります。差し替えは必ず別の名前で入れます。
 - Worker は vars の `ADMIN_CURRENT_KEY`（今の鍵の名前と kid）と `ADMIN_PUBLIC_JWKS`（公開鍵。新旧 2 つまで）を読みます。署名の前にバインディングを確かめ（`CryptoKey`・取り出せない・`sign` だけ・`exportKey` が失敗する）、署名した JWT を vars の公開鍵で確かめます。合わなければ発行せず `503 signing_unavailable` を返します。Admin の issuer の discovery と JWKS は、Admin の issuer のホスト（Standard の issuer・ポータルと別のホスト）の `/admin` で同じ Worker が出します。
 - トークン: `AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN` には Admin の Worker だけを書けるトークンを使い、Standard の Worker のデプロイや secret に使うトークンと分けます（無ければ `wrangler login` の OAuth をメモリの中だけで使います）。鍵を取り出せなくても、Worker のコードや secret を書き換えられる人は任意の JWT に署名できます。Cloudflare のアカウントの権限を絞り、Admin のデプロイは Standard と別のトークンで承認を付けて行います。
+- CSRF の鍵 `CONSOLE_CSRF_KEY` は `secret_text` です。`mise run console:secrets:admin -- --yes` が 32 バイトの乱数を手元で作り、Admin の Worker に入れます（ファイルに書かず、表示しません）。実行のたびに新しい値を作るので、Standard の Worker の CSRF の鍵とは別の値になります。トークン・アカウント ID・宛先は署名鍵の道具と同じ Admin 用の変数を使い、Standard 用の変数は読みません。作り直すと、開いている画面のフォームは開き直しが要ります。
 - 変数（`mise.local.toml`）: `AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID`（または wrangler の設定の `account_id`）、`AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN`（任意）、`AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG`（既定 `wrangler.console-admin.jsonc`）、`AWSBRIDGE_CONSOLE_ADMIN_ACCESS_TOKEN`（任意。`check` の key-check に使う Access のトークン）。
 
-初回の投入:
+初回のデプロイの順（**まだ実行していない例**で、② で確かめます）。決裁の順は「鍵 → Worker → プロバイダー」で、Admin の issuer（discovery と JWKS）を公開してから Admin のプロバイダーを配ります（`docs/specs/console-login-admin.md` §2.2）。
+
+1. 準備: 設定から生成物を作り（`mise run console:config:generate`。`worker.admin.json`）、Admin のポータルのホストに Access のアプリを作ります（入口とチーム。Cookie Path の節）。下流は自前の `wrangler.<name>-console-admin.jsonc` に routes と vars（`ACCESS_TEAM_DOMAIN`・`ACCESS_MAX_AGE_SECONDS` など）を書きます。署名鍵の vars（`ADMIN_CURRENT_KEY`・`ADMIN_PUBLIC_JWKS`）は空のままにします。
+2. Admin の Worker をデプロイします（鍵の vars が空なので発行は `503 signing_unavailable`、JWKS は 404）。鍵と secret を入れる先の Worker を先に作るためです。Worker が無い状態で鍵を入れられるかは確かめていません。
+3. CSRF の鍵と署名鍵を入れます（下のコマンド）。
+4. `put` が表示した `ADMIN_PUBLIC_JWKS` と `ADMIN_CURRENT_KEY` を wrangler の設定の vars に書いて、もう一度デプロイします。
+5. `mise run console:admin-key:check` で、バインディングの型、Admin の issuer の discovery と JWKS、key-check を確かめます。
+6. Admin の issuer が公開されたのを確かめてから、base のスタックに `AdminIssuerHost` を渡して Admin のプロバイダーを配り（base の節）、Administrator のロールを配ります。
 
 ```bash
-mise run console:admin-key:put              # 何をするかの表示だけ（API を呼ばない）
-mise run console:admin-key:put -- --yes     # 鍵を作って secret_key として入れる。名前・kid・公開鍵と、次に入れる vars を表示する
-# 表示された ADMIN_PUBLIC_JWKS と ADMIN_CURRENT_KEY を wrangler の設定の vars に書いてデプロイする
-mise run console:admin-key:check            # バインディングの型・discovery と JWKS・key-check（取り出せない・exportKey が失敗する・自己検証）
+# 2. デプロイは承認したあと手で行う（routes と vars を先に確かめる）
+#   例: AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-admin.jsonc AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy
+mise run console:secrets:admin              # 3. 何をするかの表示だけ（API を呼ばない）
+mise run console:secrets:admin -- --yes     #    CSRF の鍵（secret_text）を入れる
+mise run console:admin-key:put              #    何をするかの表示だけ（API を呼ばない）
+mise run console:admin-key:put -- --yes     #    鍵を作って secret_key として入れる。名前・kid・公開鍵と、次に入れる vars を表示する
+# 4. 表示された ADMIN_PUBLIC_JWKS と ADMIN_CURRENT_KEY を wrangler の設定の vars に書いてデプロイする
+mise run console:admin-key:check            # 5. バインディングの型・discovery と JWKS・key-check（取り出せない・exportKey が失敗する・自己検証）
+# 6. base のスタックに AdminIssuerHost を渡す（Administrator を配るアカウントだけ）→ Administrator のロールを配る
 ```
 
 差し替え（90 日以下を目安に。侵害の疑いがあれば必ず替え、旧い kid を外す）:

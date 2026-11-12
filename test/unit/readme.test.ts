@@ -82,6 +82,22 @@ describe("README のコンソールログインの Admin の署名鍵（X1 の�
   }
 });
 
+describe("README のコンソールログインの Admin の CSRF の鍵と初回のデプロイの順（cto の決裁 G2 の論点 5）", () => {
+  for (const f of ["README.md", "README_ja.md"]) {
+    it(`${f}: console:secrets:admin（--yes）と、Admin の初回のデプロイの順を載せる`, () => {
+      const text = read(f);
+      for (const s of [
+        "mise run console:secrets:admin -- --yes",
+        "mise run console:admin-key:put -- --yes",
+        "mise run console:admin-key:check",
+        "AdminIssuerHost",
+        "wrangler.console-admin.jsonc",
+      ])
+        expect(text, s).toContain(s);
+    });
+  }
+});
+
 describe("README のコンソールログインの Standard の署名鍵（cto の決裁「Standard も secret_key に揃える」）", () => {
   for (const f of ["README.md", "README_ja.md"]) {
     it(`${f}: 境界ごとの put（--boundary --yes）・check・retire、CSRF の鍵、secret_key、更新の経路（PoC X1-(h)）を載せ、「KMS 相当」と書かない`, () => {

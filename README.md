@@ -374,15 +374,28 @@ The Admin Worker for console login (`wrangler.console-admin.jsonc`) signs the JW
 - The binding name is `ADMIN_KEY_<first 8 bytes of the kid in hex>`, derived from the kid. Uploading to an existing name replaces the current key at once, so the tool refuses an existing name. A new key always gets a different name.
 - The Worker reads the vars `ADMIN_CURRENT_KEY` (name and kid of the current key) and `ADMIN_PUBLIC_JWKS` (public keys, at most old and new). Before signing it checks the binding (a `CryptoKey`, non-extractable, `sign` only, `exportKey` fails), and it verifies each signed JWT with the public key in the vars. If anything does not match, it does not issue and returns `503 signing_unavailable`. The same Worker serves the Admin issuer's discovery document and JWKS under `/admin` on the Admin issuer host, which is separate from the Standard issuer host and the portal hosts.
 - Tokens: for `AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN`, use a token that can write only the Admin Worker, separate from the token used for the Standard Worker's deployments and secrets (without it, the `wrangler login` OAuth token is used, in memory only). Even though the key cannot be extracted, anyone who can change the Worker's code or secrets can sign any JWT. Keep the Cloudflare account permissions narrow, and deploy the Admin Worker with a separate token from Standard, with an approval step.
+- The CSRF key `CONSOLE_CSRF_KEY` is a `secret_text`. `mise run console:secrets:admin -- --yes` creates 32 random bytes locally and uploads them to the Admin Worker (it does not write them to a file or print them). Each run creates a new value, so it differs from the Standard Worker's CSRF key. It uses the same Admin variables (token, account ID, API base) as the signing key tool and does not read the Standard variables. Recreating it means open forms must be reopened.
 - Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID` (or `account_id` in the wrangler config), `AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN` (optional), `AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG` (default `wrangler.console-admin.jsonc`), `AWSBRIDGE_CONSOLE_ADMIN_ACCESS_TOKEN` (optional; the Access token used for the key-check in `check`).
 
-First upload:
+Order for the first deployment (**an example that has not been run yet**; it is checked in phase ②). The decided order is "key -> Worker -> provider": publish the Admin issuer (discovery and JWKS) before you deploy the Admin provider (`docs/specs/console-login-admin.md` §2.2).
+
+1. Prepare: generate the artifacts from the config (`mise run console:config:generate`; `worker.admin.json`) and create the Access applications on the Admin portal host (entry and teams; see the Cookie Path section). A downstream repository writes the routes and vars (`ACCESS_TEAM_DOMAIN`, `ACCESS_MAX_AGE_SECONDS`, and so on) in its own `wrangler.<name>-console-admin.jsonc`. Leave the signing key vars (`ADMIN_CURRENT_KEY`, `ADMIN_PUBLIC_JWKS`) empty.
+2. Deploy the Admin Worker (with the key vars empty, issuing returns `503 signing_unavailable` and the JWKS returns 404). This creates the Worker that the key and the secret are uploaded to. Whether a key can be uploaded before the Worker exists has not been checked.
+3. Upload the CSRF key and the signing key (commands below).
+4. Put the `ADMIN_PUBLIC_JWKS` and `ADMIN_CURRENT_KEY` printed by `put` into the vars of the wrangler config and deploy again.
+5. Run `mise run console:admin-key:check` to check the binding type, the Admin issuer's discovery and JWKS, and the key-check.
+6. After you confirm the Admin issuer is published, pass `AdminIssuerHost` to the base stack to deploy the Admin provider (see the base section), then deploy the Administrator role.
 
 ```bash
-mise run console:admin-key:put              # only shows what it would do (no API calls)
-mise run console:admin-key:put -- --yes     # creates the key and uploads it as a secret_key; prints the name, kid, public key, and the vars to set next
-# put the printed ADMIN_PUBLIC_JWKS and ADMIN_CURRENT_KEY into the vars of the wrangler config and deploy
-mise run console:admin-key:check            # binding type, discovery and JWKS, key-check (non-extractable, exportKey fails, self-verification)
+# 2. deploy by hand after you approve it (check the routes and vars first)
+#   e.g. AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-admin.jsonc AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy
+mise run console:secrets:admin              # 3. only shows what it would do (no API calls)
+mise run console:secrets:admin -- --yes     #    uploads the CSRF key (secret_text)
+mise run console:admin-key:put              #    only shows what it would do (no API calls)
+mise run console:admin-key:put -- --yes     #    creates the key and uploads it as a secret_key; prints the name, kid, public key, and the vars to set next
+# 4. put the printed ADMIN_PUBLIC_JWKS and ADMIN_CURRENT_KEY into the vars of the wrangler config and deploy
+mise run console:admin-key:check            # 5. binding type, discovery and JWKS, key-check (non-extractable, exportKey fails, self-verification)
+# 6. pass AdminIssuerHost to the base stack (only in accounts that get Administrator), then deploy the Administrator role
 ```
 
 Rotation (every 90 days or less; always rotate and remove the old kid if a compromise is suspected):

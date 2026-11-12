@@ -2,6 +2,8 @@
 // Cloudflare API は手元（127.0.0.1）の擬似サーバー（AWSBRIDGE_CONSOLE_ADMIN_CF_API_BASE は 127.0.0.1 だけ受け付ける）。実 API は呼ばない。
 // 確かめること: --yes が無ければ API を呼ばない、put は secret_key の本文で PUT し、鍵の値とトークンを出力にもファイルにも残さない、
 // 同じ名前があれば PUT しない、retire は今の鍵を消さない。
+// CSRF の鍵の投入（scripts/console/secrets-admin.ts。console:secrets:admin）も動かす: secret_text で Admin の Worker に入れ、値を残さない。
+// Standard 用のトークン・アカウント ID・宛先の変数を読まない。
 import { spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -46,8 +48,9 @@ beforeAll(async () => {
         return;
       }
       if (req.method === "PUT") {
-        const name = (JSON.parse(body) as { name: string }).name;
-        res.end(JSON.stringify({ success: true, result: { name, type: "secret_key" } }));
+        // 受け取った名前と型をそのまま返す（署名鍵は secret_key、CSRF の鍵は secret_text）
+        const { name, type } = JSON.parse(body) as { name: string; type: string };
+        res.end(JSON.stringify({ success: true, result: { name, type } }));
         return;
       }
       res.end(JSON.stringify({ success: true, result: null }));
@@ -99,11 +102,12 @@ beforeEach(() => {
 function exec(
   args: string[],
   env: Record<string, string>,
+  script = "admin-key.ts",
 ): Promise<{ status: number | null; out: string }> {
   return new Promise((resolve, reject) => {
     const p = spawn(
       join(root, "node_modules/.bin/tsx"),
-      [join(root, "scripts/console/admin-key.ts"), ...args],
+      [join(root, "scripts/console", script), ...args],
       {
         cwd: dir,
         env: { PATH: process.env.PATH ?? "", ...env },
@@ -122,14 +126,16 @@ function exec(
   });
 }
 
-function run(args: string[]) {
-  return exec(args, {
-    AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID: ACCOUNT,
-    AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN: TOKEN,
-    AWSBRIDGE_CONSOLE_ADMIN_CF_API_BASE: base,
-    AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG: join(dir, "wrangler.admin.jsonc"),
-    AWSBRIDGE_CONSOLE_OUT_DIR: join(dir, "out"),
-  });
+const adminEnv = () => ({
+  AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID: ACCOUNT,
+  AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN: TOKEN,
+  AWSBRIDGE_CONSOLE_ADMIN_CF_API_BASE: base,
+  AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG: join(dir, "wrangler.admin.jsonc"),
+  AWSBRIDGE_CONSOLE_OUT_DIR: join(dir, "out"),
+});
+
+function run(args: string[], script = "admin-key.ts") {
+  return exec(args, adminEnv(), script);
 }
 
 function filesUnder(d: string): string[] {
@@ -201,6 +207,82 @@ describe("console:admin-key:retire", () => {
     // 試験の作業ディレクトリには生成物（worker.admin.json）が無いので、Admin の issuer が分からない
     const r = await run(["retire", "--binding", old, "--yes"]);
     expect(r.status, r.out).toBe(1);
+    expect(reqs).toHaveLength(0);
+  });
+});
+
+describe("console:secrets:admin（Admin の CSRF の鍵。G2 の論点 5）", () => {
+  it("--yes が無ければ表示だけ（API を呼ばない）。--yes で Admin の Worker に secret_text の CONSOLE_CSRF_KEY を入れ、値を出力にもファイルにも残さない", async () => {
+    const plan = await run([], "secrets-admin.ts");
+    expect(plan.status, plan.out).toBe(0);
+    expect(plan.out).toContain("console:secrets:admin");
+    expect(reqs).toHaveLength(0);
+    const before = filesUnder(dir);
+    const r = await run(["--yes"], "secrets-admin.ts");
+    expect(r.status, r.out).toBe(0);
+    expect(reqs.map((x) => `${x.method} ${x.url}`)).toEqual([
+      `GET /accounts/${ACCOUNT}/workers/scripts/${SCRIPT}/secrets`,
+      `PUT /accounts/${ACCOUNT}/workers/scripts/${SCRIPT}/secrets`,
+    ]);
+    for (const x of reqs) expect(x.auth).toBe(`Bearer ${TOKEN}`);
+    const put = JSON.parse((reqs[1] as Req).body) as { name: string; type: string; text: string };
+    expect(put).toMatchObject({ name: "CONSOLE_CSRF_KEY", type: "secret_text" });
+    expect(put.text).toMatch(/^[0-9a-f]{64}$/);
+    expect(r.out).not.toContain(put.text);
+    expect(r.out).not.toContain(TOKEN);
+    expect(filesUnder(dir)).toEqual(before);
+    for (const f of filesUnder(dir)) expect(readFileSync(f, "utf8")).not.toContain(put.text);
+  });
+
+  it("初回（vars の鍵が空。鍵を入れる前）でも入れられる", async () => {
+    const cfg = join(dir, "wrangler.admin-empty.jsonc");
+    writeFileSync(
+      cfg,
+      `{\n  // 試験用（初回）\n  "name": "${SCRIPT}",\n  "vars": { "ADMIN_CURRENT_KEY": "", "ADMIN_PUBLIC_JWKS": "" }\n}\n`,
+    );
+    const r = await exec(
+      ["--yes"],
+      { ...adminEnv(), AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG: cfg },
+      "secrets-admin.ts",
+    );
+    expect(r.status, r.out).toBe(0);
+    expect(reqs.map((x) => x.method)).toEqual(["GET", "PUT"]);
+  });
+
+  it("Standard 用の変数（アカウント ID・トークン・宛先・wrangler の設定）は読まない", async () => {
+    const STD_TOKEN = ["e2e", "std", "token", "s".repeat(32)].join("-");
+    const r = await exec(
+      ["--yes"],
+      {
+        AWSBRIDGE_CONSOLE_STANDARD_CF_ACCOUNT_ID: ACCOUNT,
+        AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN: STD_TOKEN,
+        AWSBRIDGE_CONSOLE_STANDARD_CF_API_BASE: base,
+        AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG: join(dir, "wrangler.admin.jsonc"),
+      },
+      "secrets-admin.ts",
+    );
+    expect(r.status).toBe(1);
+    expect(r.out).toContain("AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID");
+    expect(r.out).not.toContain(STD_TOKEN);
+    expect(reqs).toHaveLength(0);
+    // Admin の変数がそろっていれば、Standard のトークンがあっても Admin のトークンを使う
+    const ok = await exec(
+      ["--yes"],
+      { ...adminEnv(), AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN: STD_TOKEN },
+      "secrets-admin.ts",
+    );
+    expect(ok.status, ok.out).toBe(0);
+    for (const x of reqs) expect(x.auth).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("Cloudflare API の宛先を 127.0.0.1 以外に向けられない（トークンを外へ送らない）", async () => {
+    const r = await exec(
+      ["--yes"],
+      { ...adminEnv(), AWSBRIDGE_CONSOLE_ADMIN_CF_API_BASE: "https://evil.example.com" },
+      "secrets-admin.ts",
+    );
+    expect(r.status).toBe(1);
+    expect(r.out).not.toContain(TOKEN);
     expect(reqs).toHaveLength(0);
   });
 });

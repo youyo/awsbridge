@@ -113,6 +113,13 @@ describe("mise.toml: コンソールログインの Standard の署名鍵（cto 
     expect(run).not.toMatch(/--yes|wrangler|\baws\b|deploy/);
     expect(sec).toContain("CONSOLE_CSRF_KEY");
   });
+  it("console:secrets:admin は Admin の CSRF の鍵だけを入れる道具（scripts/console/secrets-admin.ts）で、--yes を既定で付けない（G2 の論点 5）", () => {
+    const sec = section('tasks."console:secrets:admin"');
+    const run = /^run\s*=.*$/m.exec(sec)?.[0] ?? "";
+    expect(run).toContain("scripts/console/secrets-admin.ts");
+    expect(run).not.toMatch(/--yes|wrangler|\baws\b|deploy/);
+    expect(sec).toContain("CONSOLE_CSRF_KEY");
+  });
   it("文字列の秘密鍵を作る console:keygen は無い。鍵の道具の変数（トークン・アカウント ID）を [env] に置かない", () => {
     expect(toml).not.toMatch(/^\[tasks\."console:keygen"\]/m);
     expect(section("env")).not.toMatch(/^AWSBRIDGE_CONSOLE_STANDARD_/m);
