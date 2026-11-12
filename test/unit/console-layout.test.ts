@@ -63,6 +63,8 @@ describe("MCP 用 Worker との分離（静的な import）", () => {
       "src/console/guard.ts",
       "src/console/inspect.ts",
       "src/console/access-inspect.ts",
+      "src/console/stops.ts",
+      "src/console/stop-plan.ts",
       "src/console/issue/claims.ts",
       "src/console/issue/errors.ts",
       "src/console/issue/federation.ts",
@@ -121,7 +123,7 @@ describe("検査の道具（src/console/inspect.ts）の置き場所", () => {
     }
   });
 
-  it("src/ と scripts/ のうち検査の判定を（間接にでも）import するのは読み取りの CLI（scripts/console/inspect*.ts）だけ", () => {
+  it("src/ と scripts/ のうち検査の判定を（間接にでも）import するのは、検査と停止の道具（scripts/console/ の CLI とその部品、src/console/stop-plan.ts）だけ", () => {
     const importers: string[] = [];
     const walk = (dir: string) => {
       for (const e of readdirSync(join(root, dir), { withFileTypes: true })) {
@@ -135,10 +137,14 @@ describe("検査の道具（src/console/inspect.ts）の置き場所", () => {
     };
     walk("src");
     walk("scripts");
-    // 読み取りの CLI とその部品（scripts/console/inspect-read.ts）だけ。陽性の対照として CLI を含むこと
+    // 検査の CLI とその部品（inspect-read.ts）、停止の道具の CLI・本体・計画（停止中の判定と読み取りを再利用する）だけ。
+    // 陽性の対照として CLI を含むこと
     expect(importers.sort()).toEqual([
       "scripts/console/inspect-read.ts",
       "scripts/console/inspect.ts",
+      "scripts/console/stop-lib.ts",
+      "scripts/console/stop.ts",
+      "src/console/stop-plan.ts",
     ]);
   });
 });
@@ -245,6 +251,17 @@ describe("mise タスク（console:config:*）", () => {
     expect(run).toContain("scripts/console/access-inspect.ts");
     expect(run).not.toMatch(/wrangler|\baws\b|terraform/);
   });
+  it.each([
+    ["show", 'tasks."console:stop:show"'],
+    ["apply", 'tasks."console:stop:apply"'],
+  ])(
+    "console:stop:%s は scripts/console/stop.ts を呼び、--yes・--allow-remove を既定で付けない。wrangler・terraform を呼ばない",
+    (cmd, name) => {
+      const run = /^run\s*=.*$/m.exec(section(name))?.[0] ?? "";
+      expect(run).toContain(`scripts/console/stop.ts ${cmd}`);
+      expect(run).not.toMatch(/--yes|--allow-remove|wrangler|\baws\b|terraform/);
+    },
+  );
 
   it("入力と出力の場所の既定値を [env] に置かない（下流の mise 設定ファイルで上書きできるように）", () => {
     const env = section("env");
