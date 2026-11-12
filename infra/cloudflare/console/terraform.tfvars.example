@@ -1,0 +1,20 @@
+# コピーして terraform.tfvars にして使う（terraform.tfvars は gitignore 済み）。値はすべてダミー。
+account_id      = "00000000000000000000000000000000"
+standard_host   = "awsbridge-console.example.com"       # 設定ファイルの portal.standardOrigin のホスト
+admin_host      = "awsbridge-admin-console.example.com" # portal.adminOrigin のホスト。Admin の階層のチームがなければ消す
+allowed_idp_ids = ["00000000-0000-0000-0000-000000000000"]
+
+# キーは設定ファイルのチーム名。policy_ids はそのチームの利用者だけを許可する既存の reusable policy
+teams = {
+  infra = { policy_ids = ["00000000-0000-0000-0000-000000000001"] }
+  sec   = { tier = "admin", policy_ids = ["00000000-0000-0000-0000-000000000002"] }
+}
+
+# 入口（ホスト全体）: その階層のチームの利用者をすべて含む範囲
+entry_policy_ids = {
+  standard = ["00000000-0000-0000-0000-000000000003"]
+  admin    = ["00000000-0000-0000-0000-000000000004"]
+}
+
+# standard_session_duration = "24h"
+# admin_session_duration    = "15m"   # Admin の Worker の ACCESS_MAX_AGE_SECONDS（既定 900 秒）に揃える

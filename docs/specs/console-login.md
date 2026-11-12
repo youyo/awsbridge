@@ -578,7 +578,7 @@ Standard の階層の参考の形は Viewer ロール（`FederatedAwsBridgeViewe
 | 偽の `Cf-Access-Jwt-Assertion` | 署名の不正・別のチームドメインの JWT・期限切れは 401 | 1a の前の条件 (2) で、Access を経由しない経路から送って発行されないことを試験する |
 | 失効済みの JWT の持ち込み | Access で失効させた（期限内の）JWT を、Access を経由しない経路で送る | 上の 2 つで入口がないことを示し、1a の前の条件 (2) で発行されないことを試験する |
 | `aud` が複数・未知 | 発行しない（`unknown_audience`） | 単体テスト（1a の前の条件 (3)。G2） |
-| Cookie Path | **すべてのチームの Access アプリで Cookie Path（`path_cookie_attribute`）を有効にする**（R-P の要件。Standard も Admin も）。無効だと、同じホストの別のアプリの AUD も JWT の `aud` に入る。aud ちょうど 1 つの検査で断られるので、破れるのは可用性（ログインができない）。G1-b の PoC では、無効のとき、aud の完全一致を見ない署名役が Standard の階層のアプリの JWT で Admin の JWT を発行した（admin 付録 A.4）[資料: G1-b の決裁] | Access の Terraform・設定の検査・README に要件として書く(**未着手**)。生成器や検査での強制も未実装（admin §12.3）|
+| Cookie Path | **すべてのチームの Access アプリで Cookie Path（`path_cookie_attribute`）を有効にする**（R-P の要件。Standard も Admin も）。無効だと、同じホストの別のアプリの AUD も JWT の `aud` に入る。aud ちょうど 1 つの検査で断られるので、破れるのは可用性（ログインができない）。G1-b の PoC では、無効のとき、aud の完全一致を見ない署名役が Standard の階層のアプリの JWT で Admin の JWT を発行した（admin 付録 A.4）[資料: G1-b の決裁] | 検査: `mise run console:access:inspect`（Cloudflare API を GET だけで読む。トークンは Access: Apps and Policies の Read だけ）が、入口のアプリとすべてのチームのアプリを AUD で当て、対象の場所と Cookie Path を見る（R-P は無効・欠落が誤り、R-H は警告。Standard も Admin も）。参考の Terraform は `infra/cloudflare/console/`（`path_cookie_attribute = true` に固定し、適用後の値も確かめる）。Worker では強制しない [資料: cto の決裁。Access JWT の `pathCookie` の claim は 1 回の観察だけで仕様の保証が無く、認可の形を変えるため採らない]。生成器は強制しない（実物を見る検査の方が、手で変えたアプリや手書き AUD にも効く）|
 | 失敗時 | 判定に使う値が読めない・壊れているときは発行しない（fail-closed） | 単体テスト |
 
 **Cloudflare の信頼基盤**（A13〜A16、T12・T13）: DNS・Routes・デプロイ権限は署名鍵と同じ重さの信頼基盤として扱う [資料: Sol のレビューの指摘 3]
@@ -822,7 +822,7 @@ cto の決裁（2026-11-12。D8 の段階導入の書き直しを条件付きで
 
 - PR の積み方: #19 は #16 の上、#22・#23 は #21 の上、#24 は #20 の上、#25 は #23 の上、#26 は #25 の上、#27 は #26 の上。#20 は #16・#17 を、#21 は #18・#19 をマージした上に積んでいる
 - **生成器の誤りの種別**（`src/console/config.ts` と `template.ts`。`ConsoleConfigIssueCode`）に足したもの: `issuer_host_overlaps_portal`・`admin_issuer_path`・`admin_issuer_multiple`・`admin_issuer_host_shared`（いずれも誤り）、`signing_account`（誤り。署名を置くアカウントにコンソールのロールを配る設定。X1 で署名用アカウントが無くなったので、残すかは未決）、`signin_access_admin`（誤り）・`signin_access_standard`（警告）
-- **未実装・未実施**: Standard の `secret_key` への移行（実装計画の PR14。決裁済み。ブランチだけがあり、コミットは無い）。Admin のプロバイダーのスタック。C-4 の署名役（実装計画の PR12 は止めたまま。X1 で退避先）。Cookie Path の強制。検知の道具（引き受けと発行記録の突き合わせ）。Admin の `MaxSessionDuration` の下限の強制。本物の `secret_key` での Worker の確認。実装の段の順は portal §9.3 の番号の順と同じではない（停止スイッチと要求の検査が先、回数の制限が身元の後。どの段も失敗で止まる点は同じ。PR #21）
+- **未実装・未実施**: Standard の `secret_key` への移行（実装計画の PR14。決裁済み。ブランチだけがあり、コミットは無い）。Admin のプロバイダーのスタック。C-4 の署名役（実装計画の PR12 は止めたまま。X1 で退避先）。検知の道具（引き受けと発行記録の突き合わせ）。Admin の `MaxSessionDuration` の下限の強制。本物の `secret_key` での Worker の確認。実装の段の順は portal §9.3 の番号の順と同じではない（停止スイッチと要求の検査が先、回数の制限が身元の後。どの段も失敗で止まる点は同じ。PR #21）
 
 ### 7.5 ② 個人で導入・試験
 

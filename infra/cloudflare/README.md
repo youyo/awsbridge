@@ -3,6 +3,7 @@
 awsbridge Worker を Cloudflare Access と MCP Portal の背後に置くための**参考実装**です。
 
 - 上流の作者は別の IaC で管理しているため、このサンプルを実際に apply しては検証していません。
+- このディレクトリは **MCP 用**です。コンソールログイン（人の AWS コンソールへのログイン）の入口とチームの Access アプリは別のディレクトリ [`console/`](console/README.md) にあります（別の state。MCP 用のリソースとは混ぜません）。
 - CI で保証するのは `terraform fmt` / `terraform validate` / `tflint` が通ることだけです（`bash infra/cloudflare/check.sh`）。
 - apply する前に、必ず `terraform plan` の差分を読んでください。
 
@@ -81,7 +82,7 @@ terraform apply
 bash infra/cloudflare/check.sh
 ```
 
-`terraform fmt -check`、`terraform init -backend=false`、`terraform validate`、`tflint` を順に実行します。Cloudflare には接続しません。
+`terraform fmt -check`、`terraform init -backend=false`、`terraform validate`、`tflint` を順に実行します（このディレクトリと `console/` の両方）。Cloudflare には接続しません。
 
 ## provider 5.27.0 の注意
 

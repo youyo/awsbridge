@@ -62,6 +62,7 @@ describe("MCP 用 Worker との分離（静的な import）", () => {
       "src/console/generate.ts",
       "src/console/guard.ts",
       "src/console/inspect.ts",
+      "src/console/access-inspect.ts",
       "src/console/stops.ts",
       "src/console/stop-plan.ts",
       "src/console/issue/claims.ts",
@@ -86,7 +87,11 @@ describe("MCP 用 Worker との分離（静的な import）", () => {
 });
 
 describe("検査の道具（src/console/inspect.ts）の置き場所", () => {
-  const INSPECT = ["src/console/inspect.ts", "src/console/guard.ts"];
+  const INSPECT = [
+    "src/console/inspect.ts",
+    "src/console/guard.ts",
+    "src/console/access-inspect.ts",
+  ];
 
   /** リポジトリの wrangler の設定（node_modules を除く）の main（Worker のエントリ）。 */
   function workerEntries(): string[] {
@@ -241,6 +246,11 @@ describe("mise タスク（console:config:*）", () => {
     expect(run).not.toMatch(/wrangler|\baws\b|terraform/);
   });
 
+  it("console:access:inspect は scripts/console/access-inspect.ts を呼び、wrangler・aws・terraform を呼ばない（Cloudflare API の読み取りはスクリプトの中だけ）", () => {
+    const run = /^run\s*=.*$/m.exec(section('tasks."console:access:inspect"'))?.[0] ?? "";
+    expect(run).toContain("scripts/console/access-inspect.ts");
+    expect(run).not.toMatch(/wrangler|\baws\b|terraform/);
+  });
   it.each([
     ["show", 'tasks."console:stop:show"'],
     ["apply", 'tasks."console:stop:apply"'],
