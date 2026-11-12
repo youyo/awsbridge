@@ -32,6 +32,14 @@ export function evaluate(node: Json, params: Record<string, string | string[]>):
       const [sep, str] = arg as [string, Json];
       return (evaluate(str, params) as string).split(sep);
     }
+    if (key === "Fn::Select") {
+      const [index, list] = arg as [Json, Json];
+      const items = evaluate(list, params) as Json[];
+      const i = Number(evaluate(index, params));
+      if (!Array.isArray(items) || i < 0 || i >= items.length)
+        throw new Error(`Fn::Select の範囲外: ${i}`);
+      return items[i];
+    }
     if (key === "Fn::If") {
       // 条件名は params に "true" / "false" で渡す
       const [cond, yes, no] = arg as [string, Json, Json];

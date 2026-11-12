@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -13,6 +14,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { parse } from "yaml";
+import { parseConsoleConfig } from "../../src/console/config";
+import { buildKindTemplate } from "../../src/console/template";
 import {
   companyAuds,
   companyConfig,
@@ -32,12 +36,12 @@ function tmp(): string {
   return d;
 }
 
-function run(cmd: string, env: Record<string, string>) {
+function run(cmd: string, env: Record<string, string>, cwd = root) {
   return spawnSync(
     join(root, "node_modules/.bin/tsx"),
     [join(root, "scripts/console/config.ts"), cmd],
     {
-      cwd: root,
+      cwd,
       env: { PATH: process.env.PATH ?? "", ...env },
       encoding: "utf8",
     },
@@ -235,6 +239,10 @@ describe("console:config:generate", () => {
     expect(readdirSync(out).sort()).toEqual([
       "access.json",
       "display.standard.json",
+      "kind.A.yaml",
+      "kind.B.yaml",
+      "kind.C.yaml",
+      "kind.P.yaml",
       "stacksets.json",
       "worker.admin.json",
       "worker.standard.json",
@@ -286,6 +294,7 @@ describe("console:config:generate", () => {
     expect(readdirSync(out).sort()).toEqual([
       "access.json",
       "display.standard.json",
+      "kind.default.yaml",
       "stacksets.json",
       "worker.standard.json",
     ]);
@@ -331,5 +340,93 @@ describe("console:config:generate", () => {
     });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("auds: json");
+  });
+});
+
+describe("console:config:generate: ロールのテンプレート（種類の StackSet。参考の形）", () => {
+  it("種類ごとに kind.<kind>.yaml を書く。中身は生成器の出力で、パラメーターは stacksets.json と対応する", () => {
+    const d = tmp();
+    const out = join(d, "out");
+    const r = run("generate", {
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", companyConfig()),
+      AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain("kind.C.yaml");
+    const tpl = parse(readFileSync(join(out, "kind.C.yaml"), "utf8"), { customTags: [] });
+    expect(tpl).toEqual(buildKindTemplate(parseConsoleConfig(companyConfig()).config, "C"));
+    const stacksets = JSON.parse(readFileSync(join(out, "stacksets.json"), "utf8"));
+    const c = stacksets.assignments.find((a: { kind: string }) => a.kind === "C");
+    for (const k of Object.keys(c.parameters)) expect(tpl.Parameters[k], k).toBeDefined();
+  });
+
+  it("前回の種類のテンプレートが残っていても、設定から消えた種類のものは消す", () => {
+    const d = tmp();
+    const out = join(d, "out");
+    const env = {
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", companyConfig()),
+      AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
+    };
+    expect(run("generate", env).status).toBe(0);
+    const r = run("generate", {
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console2.json", personalConfig()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(readdirSync(out).filter((f) => f.startsWith("kind."))).toEqual(["kind.default.yaml"]);
+  });
+
+  it("下流のポリシー文書（inlinePolicyFiles）は作業ディレクトリからの相対パスで読み、テンプレートに入れる", () => {
+    const d = tmp();
+    const c = personalConfig();
+    c.roles[0].permissions.inlinePolicyFiles = ["policies/extra.json"];
+    mkdirSync(join(d, "policies"));
+    const extra = {
+      Version: "2012-10-17",
+      Statement: [{ Effect: "Allow", Action: "ce:GetCostAndUsage", Resource: "*" }],
+    };
+    write(d, "policies/extra.json", extra);
+    const out = join(d, "out");
+    const r = run(
+      "generate",
+      { AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", c), AWSBRIDGE_CONSOLE_OUT_DIR: out },
+      d,
+    );
+    expect(r.status, r.stderr).toBe(0);
+    const tpl = parse(readFileSync(join(out, "kind.default.yaml"), "utf8"), { customTags: [] });
+    expect(
+      tpl.Resources.ReadonlyRole.Properties.Policies.find(
+        (p: { PolicyName: string }) => p.PolicyName === "InlinePolicy1",
+      ).PolicyDocument,
+    ).toEqual(extra);
+  });
+
+  it("下流のポリシー文書がない・JSON でなければ、check でも終了コード 1（パスと種別だけ）", () => {
+    const d = tmp();
+    const c = personalConfig();
+    c.roles[0].permissions.inlinePolicyFiles = ["policies/none.json", "policies/bad.json"];
+    mkdirSync(join(d, "policies"));
+    writeFileSync(join(d, "policies/bad.json"), "{");
+    const r = run("check", { AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", c) }, d);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("roles[0].permissions.inlinePolicyFiles[0]: required");
+    expect(r.stderr).toContain("roles[0].permissions.inlinePolicyFiles[1]: json");
+  });
+
+  it("署名を置くアカウントを配る先に含めたら終了コード 1 で、何も書かず、アカウント ID を出さない", () => {
+    const d = tmp();
+    const out = join(d, "out");
+    const c = personalConfig();
+    c.signing = { accountIds: ["111111111111"] };
+    const r = run("generate", {
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", c),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("organizations[0].accounts[0].accountId: signing_account");
+    expect(r.stderr + r.stdout).not.toContain("111111111111");
+    expect(existsSync(out)).toBe(false);
   });
 });

@@ -1,0 +1,218 @@
+# awsbridge のコンソールログイン: ロールのテンプレート（種類の StackSet。参考の形）。
+# 設定ファイルから生成したもの。手で書き換えない（設計: docs/specs/console-login.md §4.3）。
+AWSTemplateFormatVersion: "2010-09-09"
+Description: awsbridge console login - role template (reference) for the kind StackSet awsbridge-console-kind-C. Generated from the console config; do not edit by hand.
+Parameters:
+  IssuerHost:
+    Type: String
+    Description: Host of the console login issuer, without scheme, path or trailing slash. Same value as the base stack.
+    AllowedPattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
+    MaxLength: 180
+  StandardPath:
+    Type: String
+    Default: std
+    Description: Path of the Standard tier issuer. Same value as the base stack.
+    AllowedPattern: ^[a-z0-9-]+(/[a-z0-9-]+)*$
+    MaxLength: 64
+  AdminProviderArn:
+    Type: String
+    Default: ""
+    Description: "ARN of the Admin tier OIDC provider in this account. Empty: the Admin tier roles are not created."
+    AllowedPattern: ^$|^arn:aws(-[a-z]+)*:iam::\d{12}:oidc-provider/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(/[a-z0-9-]+)+$
+    MaxLength: 320
+  AdministratorTeams:
+    Type: String
+    Default: ""
+    Description: "Comma separated teams allowed to assume FederatedAwsBridgeAdministrator. Empty: the role is not created."
+    AllowedPattern: ^$|^(infra-elevated|dev-elevated)(,(infra-elevated|dev-elevated))*$
+  ViewerTeams:
+    Type: String
+    Default: ""
+    Description: "Comma separated teams allowed to assume FederatedAwsBridgeViewer. Empty: the role is not created."
+    AllowedPattern: ^$|^(sa|infra|dev)(,(sa|infra|dev))*$
+Conditions:
+  HasAdminProvider:
+    Fn::Not:
+      - Fn::Equals:
+          - Ref: AdminProviderArn
+          - ""
+  CreateAdministratorRole:
+    Fn::And:
+      - Fn::Not:
+          - Fn::Equals:
+              - Ref: AdministratorTeams
+              - ""
+      - Condition: HasAdminProvider
+  CreateViewerRole:
+    Fn::Not:
+      - Fn::Equals:
+          - Ref: ViewerTeams
+          - ""
+Resources:
+  AdministratorRole:
+    Type: AWS::IAM::Role
+    Condition: CreateAdministratorRole
+    Properties:
+      RoleName: FederatedAwsBridgeAdministrator
+      Path: /awsbridge-console/admin/
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+        - Fn::ImportValue: awsbridge-console-guard-admin-arn
+      Policies:
+        - PolicyName: AwsLogin
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: AllowAwsLogin
+                Effect: Allow
+                Action:
+                  - signin:AuthorizeOAuth2Access
+                  - signin:CreateOAuth2Token
+                Resource:
+                  - Fn::Sub: arn:${AWS::Partition}:signin:*:${AWS::AccountId}:oauth2/public-client/localhost
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |-
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Federated": "${Principal}"
+                  },
+                  "Action": [
+                    "sts:AssumeRoleWithWebIdentity",
+                    "sts:TagSession",
+                    "sts:SetSourceIdentity"
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "${Issuer}:aud": "awsbridge-console",
+                      "aws:RequestTag/awsbridge_team": [
+                        "${Teams}"
+                      ]
+                    },
+                    "ForAllValues:StringEquals": {
+                      "aws:TagKeys": [
+                        "awsbridge_team"
+                      ]
+                    },
+                    "Null": {
+                      "sts:SourceIdentity": "false"
+                    }
+                  }
+                }
+              ]
+            }
+          - Issuer:
+              Fn::Select:
+                - 1
+                - Fn::Split:
+                    - :oidc-provider/
+                    - Fn::Sub: ${AdminProviderArn}:oidc-provider/-
+            Principal:
+              Ref: AdminProviderArn
+            Teams:
+              Fn::Join:
+                - '","'
+                - Fn::Split:
+                    - ","
+                    - Ref: AdministratorTeams
+      Tags:
+        - Key: project
+          Value: awsbridge
+        - Key: awsbridge-console-tier
+          Value: admin
+  ViewerRole:
+    Type: AWS::IAM::Role
+    Condition: CreateViewerRole
+    Properties:
+      RoleName: FederatedAwsBridgeViewer
+      Path: /awsbridge-console/std/
+      MaxSessionDuration: 43200
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+        - Fn::ImportValue: awsbridge-console-guard-standard-arn
+      Policies:
+        - PolicyName: AwsLogin
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: AllowAwsLogin
+                Effect: Allow
+                Action:
+                  - signin:AuthorizeOAuth2Access
+                  - signin:CreateOAuth2Token
+                Resource:
+                  - Fn::Sub: arn:${AWS::Partition}:signin:*:${AWS::AccountId}:oauth2/public-client/localhost
+                  - Fn::Sub: arn:${AWS::Partition}:signin:*:${AWS::AccountId}:oauth2/public-client/remote
+        - PolicyName: DenySecretValueRead
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: DenySsmParameterRead
+                Effect: Deny
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                  - ssm:GetParameterHistory
+                Resource: "*"
+              - Sid: DenySecretsManagerRead
+                Effect: Deny
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:BatchGetSecretValue
+                Resource: "*"
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |-
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Federated": "${Principal}"
+                  },
+                  "Action": [
+                    "sts:AssumeRoleWithWebIdentity",
+                    "sts:TagSession",
+                    "sts:SetSourceIdentity"
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "${Issuer}:aud": "awsbridge-console",
+                      "aws:RequestTag/awsbridge_team": [
+                        "${Teams}"
+                      ]
+                    },
+                    "ForAllValues:StringEquals": {
+                      "aws:TagKeys": [
+                        "awsbridge_team"
+                      ]
+                    },
+                    "Null": {
+                      "sts:SourceIdentity": "false"
+                    }
+                  }
+                }
+              ]
+            }
+          - Issuer:
+              Fn::Sub: ${IssuerHost}/${StandardPath}
+            Principal:
+              Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/${IssuerHost}/${StandardPath}
+            Teams:
+              Fn::Join:
+                - '","'
+                - Fn::Split:
+                    - ","
+                    - Ref: ViewerTeams
+      Tags:
+        - Key: project
+          Value: awsbridge
+        - Key: awsbridge-console-tier
+          Value: standard

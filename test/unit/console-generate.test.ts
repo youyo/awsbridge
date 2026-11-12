@@ -646,3 +646,23 @@ describe("Access の検査用の生成物（Terraform との突き合わせ）",
     ]);
   });
 });
+
+describe("署名を置くアカウント（signing.accountIds。cto の決裁 (5)(b)）", () => {
+  it("インベントリで種類の OU に入るアカウントが署名を置くアカウントなら誤り（停止中でも配る先なので誤り）", () => {
+    for (const id of ["333333333333", "555555555555"]) {
+      const c = companyConfig();
+      c.signing = { accountIds: [id] };
+      const found = issuesOf(() => gen(c, { auds: companyAuds(), inventory: companyInventory() }));
+      expect(found, id).toContainEqual(
+        issue(`inventory.org-main[${id === "333333333333" ? 0 : 2}].accountId`, "signing_account"),
+      );
+      expect(JSON.stringify(found)).not.toContain(id);
+    }
+  });
+
+  it("どの種類の OU にも入らないアカウント（配る先でない）なら誤りにしない", () => {
+    const c = companyConfig();
+    c.signing = { accountIds: ["666666666666"] };
+    expect(() => gen(c, { auds: companyAuds(), inventory: companyInventory() })).not.toThrow();
+  });
+});
