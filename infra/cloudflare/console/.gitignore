@@ -1,0 +1,7 @@
+# Terraform の state と実値の変数はコミットしない
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+crash.log

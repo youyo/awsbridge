@@ -785,7 +785,7 @@ P1' の条件:
 | チーム `<team>`（Admin の階層） | `awsbridge-admin-console.<domain>/t/<team>/`（Admin の発行のオリジン。§8） | 同じ | AUD → `<team>`。Admin の Worker の設定にだけ入れる（Standard のバンドルに入れない） |
 | issuer の公開文書 | `/.well-known/...`（パスは issuer の分け方で決まる。N9） | Bypass（IAM が読む）。**issuer を専用ホストに置く案（[console-login.md](console-login.md) §3.1）ならポータルのホストには不要** | — |
 
-- Access の Cookie の設定（推奨）: Binding cookie を有効にする。HttpOnly は既定のまま有効。SameSite は Lax（Strict はリダイレクトの繰り返しを起こしうると文書にある）。R-P では **Cookie Path をすべてのチームのアプリで有効にする（要件。Standard も Admin も）**。チームごとに Cookie が分かれ、`aud` が 1 つになる。無効だと別のアプリの AUD も `aud` に入り、Worker が断る（可用性の問題）。G1-b の PoC では、無効のとき、aud の完全一致を見ない署名側が Standard の階層のアプリの JWT で Admin の JWT を発行した [確認済み: [console-login-admin.md](console-login-admin.md) 付録 A.4。Cloudflare の文書に各設定の説明]。Access の Terraform・設定の検査・README に要件として書く(**未着手**)。生成器や検査での強制も未実装
+- Access の Cookie の設定（推奨）: Binding cookie を有効にする。HttpOnly は既定のまま有効。SameSite は Lax（Strict はリダイレクトの繰り返しを起こしうると文書にある）。R-P では **Cookie Path をすべてのチームのアプリで有効にする（要件。Standard も Admin も）**。チームごとに Cookie が分かれ、`aud` が 1 つになる。無効だと別のアプリの AUD も `aud` に入り、Worker が断る（可用性の問題）。G1-b の PoC では、無効のとき、aud の完全一致を見ない署名側が Standard の階層のアプリの JWT で Admin の JWT を発行した [確認済み: [console-login-admin.md](console-login-admin.md) 付録 A.4。Cloudflare の文書に各設定の説明]。検査は `mise run console:access:inspect`（Cloudflare API を GET だけで読み、入口のアプリとすべてのチームのアプリで見る。R-P は誤り、R-H は警告。console-login.md §5.4）、参考の Terraform は `infra/cloudflare/console/`（`path_cookie_attribute = true` に固定）。Worker では強制しない（cto の決裁）
 - **CSRF の対策は Access の Cookie の SameSite に頼らない**（既定は None で、設定に依存するため）
 - Access ポリシーの形（チームのアプリが、そのチームのグループの Object ID だけを要求していること）は CI で検査する [資料: cto の条件]
 - この表のアプリ（入口・チームごと・Bypass。Bypass は issuer をポータルのホストに置く場合だけ。専用ホスト案なら不要。console-login.md §3.1）は、下流の設定ファイルの `portal` と `teams` から Terraform で作る（`for_each`）。アプリのドメインは自社ドメインのポータルのホスト（§3.1）。チームを足すのは設定ファイルに 1 件足すだけで、Terraform と Worker の対応が同時に変わる（§11.4）
@@ -1168,7 +1168,7 @@ MCP 用のバンドルの検査（`test/e2e/console-isolation.test.ts`。`wrangl
 | 分離 | Worker 用の生成物の分離（§9.10） | PR |
 | wrangler | Custom Domain のホストが `portal.*Origin` と一致する | PR |
 | ロール（検査の道具） | 信頼ポリシーの形（承認済みの厳格な形だけを許す許可リスト方式）・守りの部品の付与と現在の版・プロバイダーを信頼するロールの棚卸し・正常性（console-login.md §4.9。`mise run console:inspect`。PR #24） | ②（と ③ の最初）は運用者が手で回す。CI の読み取りロールは G3 で決める |
-| Access アプリの Cookie Path | すべてのチームのアプリで有効であること（R-P の要件。§9.1）| Terraform の出力か Access の設定の検査で見る。**未実装** |
+| Access アプリの Cookie Path | すべてのチームのアプリで有効であること（R-P の要件。§9.1）| Access の設定の検査 `mise run console:access:inspect`（Cloudflare API の読み取り。入口のアプリにも掛け、R-P は誤り・R-H は警告）で見る。参考の Terraform は `infra/cloudflare/console/`。Worker では強制しない |
 | 秘密の混入 | gitleaks（`mise run secrets:scan`。PR #27）| PR・定期。Admin の署名鍵の投入は `console:admin-key:put`（[console-login-admin.md](console-login-admin.md) §4.2）|
 
 cto の条件との整合:

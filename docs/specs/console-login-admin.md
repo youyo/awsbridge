@@ -132,7 +132,7 @@ X1 の条件 (f): AWS 側の署名役に求めた検査を、Admin の Worker �
 | 人であること | `email` が空でない。`sub` が空でない。`common_name` があれば断る（サービストークン） | サービストークンの実物は `common_name` があり `sub` が空。`type` はどちらも `app` で、種別の判定に使えない [確認済み: A.4 の P-a]。実装は PR #18 |
 | 鮮度 | `iat` を必須にし、`iat` からの経過時間に上限を掛ける（既定 900 秒 = Admin の Access のセッションの長さ。vars `ACCESS_MAX_AGE_SECONDS`）。未来の `iat`（30 秒超）と上限超えは 401。`exp`・`nbf` も見る | Cookie Path が無効のとき、`exp - iat = 86400` の JWT が Admin のパスに届いた [確認済み: A.4 の P-a]。実装は PR #27（Admin だけ。Standard の振る舞いは変えない）。**Access アプリのセッションの長さを、この値に揃える**必要がある |
 | JWT の検証の仕様 | アルゴリズムは RS256 に固定。JWKS はチームドメインから取る（静的に持たない）。未知の `kid` と取得の失敗は断る | [資料: G1-b の決裁 A-2 の (4)]。実装は PR #18（JWKS はチームドメインごとにキャッシュ）。入力の大きさの上限と必須 claim の型の検査は、G2 で確かめる [未検証] |
-| Cookie Path | **Standard も Admin も、すべてのチームのアプリで Cookie Path（`path_cookie_attribute`）を有効にする**（R-P の要件）。無効だと、同じホストの別のアプリの AUD も JWT の `aud` に入る。aud ちょうど 1 つの検査で断られるので、破れるのは可用性だが、ログインができなくなる | [資料: G1-b の決裁]。Access の Terraform・設定の検査・README に要件として書く(**未着手**)。生成器や検査での強制も未実装（§12.3） |
+| Cookie Path | **Standard も Admin も、すべてのチームのアプリで Cookie Path（`path_cookie_attribute`）を有効にする**（R-P の要件）。無効だと、同じホストの別のアプリの AUD も JWT の `aud` に入る。aud ちょうど 1 つの検査で断られるので、破れるのは可用性だが、ログインができなくなる | [資料: G1-b の決裁]。検査は `mise run console:access:inspect`（Cloudflare API を GET だけで読む。入口のアプリとすべてのチームのアプリを見る。R-P は誤り、R-H は警告）、参考の Terraform は `infra/cloudflare/console/`（`path_cookie_attribute = true` に固定）。Worker では強制しない（cto の決裁。console-login.md §5.4） |
 
 ### 3.2 署名
 
@@ -411,7 +411,7 @@ X1 には、署名の独立の記録（KMS の Sign の CloudTrail）が無い�
 | 負の試験・3 方向のバンドルの分離の試験 | PR #26 |
 | Admin のプロバイダー（基盤のスタック）| **未実装**。基盤のスタック（PR #17）は Admin のプロバイダーを作らない。ロールのテンプレート（PR #20）は `AdminProviderArn` が空なら Admin のロールを作らない。Admin のプロバイダーは別のホストなので、`IssuerHost` を階層ごとに分けるパラメーターの形が要る。`AdminProviderArn` にアカウント ID が入るため、StackSet で 1 つの値にできない。形は未決 |
 | Admin の Worker に対する `secret_key` の実物での確認 | 未実施（`console:admin-key:check` が最初）|
-| Cookie Path の強制（生成器か Terraform の出力で見る）| 未実装 |
+| Cookie Path の検査（Cloudflare API を読む道具 `console:access:inspect`。入口のアプリにも掛ける。Terraform の参考の例 `infra/cloudflare/console/`）| 実装済み。Worker と生成器では強制しない |
 | Admin の `MaxSessionDuration` の下限（3600）の生成器での強制 | 未実装 |
 | 変更の通知・検知の道具（引き受けの突き合わせ）| 未実装 |
 
@@ -457,7 +457,7 @@ X1 には、署名の独立の記録（KMS の Sign の CloudTrail）が無い�
 - ES256・RSA-PSS・`pkcs8` / `key_base64` の形式での `secret_key`（K1 で未試験）
 - 守りの部品の監査の Deny の中身（A-12）
 - PIM と Admin の階層の Access のセッションの長さ（G3・G5）
-- Cookie Path と `MaxSessionDuration` の下限の強制（§12.3）
+- `MaxSessionDuration` の下限の強制（§12.3）
 - 検知の道具の形（引き受けと発行記録の突き合わせ）
 
 ---
