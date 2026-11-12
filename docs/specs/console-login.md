@@ -8,6 +8,7 @@
 - 改訂: 2026-11-12 同じ日の残りの決裁を反映した。(1) **会社の Entra でも SourceIdentity は email**（U-3 を閉じた。§3.4）。停止は過去の email（改名の履歴）も全部 Deny、監査の人の特定は発行記録と Entra の記録を合わせる、会社に入る前に email の再利用を確かめる（§5.6・§6.2・§6.3）。受容の文面を記録した（§6.3）。(2) **段階導入（D8）を「① 完成 → ② 個人で導入・試験 → ③ 会社に導入」に書き直した**。ゲートは G1〜G5（§7）。旧い段階（1a・1b・段階 2・段階 3）の名前で書いた条件を、決裁の「旧条件の行き先」どおりに付け替えた（§7.7）。D4 を言い直した（§2.2）。U-13 は置き換えで閉じた。(3) G1 の資料として Admin 側の発行の設計書（[console-login-admin.md](console-login-admin.md)）を足した
 - 改訂: 2026-11-12 後半の cto の決裁と利用者の判断、実装を反映した。(1) **Administrator の発行を Cloudflare で完結させる**（X1）。Admin の署名鍵は Workers の `secret_key`（取り出せない `CryptoKey`）で、別の Worker・別の issuer・別の鍵・別のホスト（D3 は保つ）。D4（Admin は KMS 必須）は外れ、② は利用者の受容、③ は G5 で会社のセキュリティの承認に置き換わった。AWS 側の署名役（C-4）・AWS 側の issuer（I-C）・KMS は退避先として [console-login-admin.md](console-login-admin.md) の付録 A に残した（§2.2・§3.1・§5・§6・§7）。(2) Admin の issuer は Cloudflare の別ホストの `/admin`（I-B）で確定し、「Standard と同じホストの `/admin` でもよい」は取り下げた（§3.1）。(3) Standard も `secret_key` に揃える（公開鍵は vars。決裁済み・未実装。§2.2）。(4) すべてのチームの Access アプリで Cookie Path を有効にする（R-P の要件。§5.4）。(5) 守りの部品は最初の配布から、中身は固定の Deny だけ。1 人停止の Deny は CloudFormation の外のロールのインライン（予約名）にした（U-15 を閉じた。§4.8）。(6) 実装の状態（PR #16〜#27。すべて未マージ）を §7.4.1 にまとめた。検査の道具（§4.9）、運用の道具、生成器の誤りの種別を足した
 - 改訂: 2026-11-13 MCP 用ロールを人のロールと共有しないことにし、既定名を `FederatedAwsBridgeMcp*` にした（§2.3）。「コンソール」と「ポータル」の使い分けを用語に足した
+- 改訂: 2026-11-13 cto の決裁（P-A）を反映した。Admin のプロバイダーを基盤のスタックに条件付きで置き（`AdminIssuerHost`・`AdminPath`、`EnableAdminTier` は廃止、`Rules` で D3）、両方の守りの部品のプロバイダーの Deny に Admin のホストを足した。ロールのテンプレートは `AdminProviderArn` をやめた。L2 はスタックの外で行う（§4.2・§4.3・§4.8。U-27 を閉じた）
 - 状態: 設計案。段階導入は「① 完成 → ② 個人で導入・試験 → ③ 会社に導入」（cto の決裁 2026-11-12。§7）。G1 の審議は済み、Admin 側の発行は X1 の設計で定まった（[console-login-admin.md](console-login-admin.md)。X1 は ① の実装と ② の個人の環境まで条件付き承認。③ の会社の Administrator は G5）。実装は PR #16〜#27（すべて未マージ）にあり、何が入っているかは §7.4.1。Standard の `secret_key` への移行と Admin のプロバイダーのスタックは未実装。前の版の「段階 1 のゲート（1a・1b）」の承認と条件は §1・§7.2・§7.3 に残した（行き先は §7.7）
 - 対象: awsbridge 方式（自前の OIDC issuer → 各アカウントの IAM OIDC プロバイダー → `AssumeRoleWithWebIdentity`）による、人が使う AWS コンソールと `aws login` へのログイン（この仕組みを「コンソールログイン」と呼ぶ）
 - 関連:
@@ -263,19 +264,32 @@ Standard と Admin の 2 つの Worker への振り分け（N9 は 1 つの Work
 
 ### 4.2 基盤のテンプレート
 
+[資料: cto の決裁 2026-11-13 の P-A。Admin のプロバイダーをこのスタックに条件付きで置く。別スタック（P-B）・`oidc-provider/*` の Deny（P-C）・タグの条件の Deny（P-D）は却下]
+
 | パラメーター | 型と規則 | 生成物の出どころ |
 |---|---|---|
-| `IssuerHost` | ホスト名だけ（スキーム・パス・末尾スラッシュなし） | `stacksets.json` の `providers[].issuers.standard` のホスト部分。**Admin の issuer は別のホスト**（§3.1。I-B）。Admin のホストを渡すパラメーターの形は未決・未実装（PR #17 の基盤のスタックは Admin のプロバイダーを作らない）。`AdminProviderArn` にアカウント ID が入るため、StackSet で 1 つの値にできない点も未決（[console-login-admin.md](console-login-admin.md) §12.3） |
-| `StandardPath` | `^[a-z0-9-]+(/[a-z0-9-]+)*$`（例 `std`・`p/p01/std`） | 同じ URL のパス部分 |
-| `AdminPath` | 同じ規則。**空なら Admin のプロバイダーを作らない**（`Conditions`）。Administrator を配らないアカウント（会社の G5 の前など）は空 | `providers[].issuers.admin`（なければ空） |
+| `IssuerHost` | ホスト名だけ（スキーム・パス・末尾スラッシュなし。小文字のラベルを `.` でつないだ形、180 文字まで）。例 `awsbridge-oidc-console.example.com` | `stacksets.json` の `providers[].issuers.standard` のホスト部分 |
+| `StandardPath` | `^[a-z0-9-]+(/[a-z0-9-]+)*$`（例 `std`・`p/p01/std`。既定 `std`） | 同じ URL のパス部分 |
+| `AdminIssuerHost` | 既定は空。空か、`IssuerHost` と同じ規則のホスト名。**空なら Admin のプロバイダーと Admin の部品を作らない**（`Conditions` の `AdminTierEnabled`）。**Admin の issuer は Standard と別のホスト**（§3.1。I-B）で、同じホストは `Rules` で断る（D3。生成器の `admin_issuer_host_shared` と同じ規則をスタック側でも守る。入れ子のホストは生成器だけが見る）。**Administrator を配るアカウントにだけ渡す**（StackSets のパラメーターの上書き）。それ以外のアカウント（会社の G5 の前など）は空。例 `awsbridge-oidc-admin-console.example.com` | `providers[].issuers.admin` のホスト部分（なければ空） |
+| `AdminPath` | `StandardPath` と同じ規則。既定 `admin`。世代つきのパス（`admin-2`）に移れるよう固定にしない（生成器は今は `/admin` に限る。`admin_issuer_path`。移るときは生成器の規則も一緒に変える。admin §6.3） | `providers[].issuers.admin` のパス部分 |
 | `Audience` | `AllowedValues: [awsbridge-console]` | `stacksets.json` の `audience`（上流の定数 `AUDIENCE`。§3.2） |
+
+`stacksets.json` は今は issuer を URL のまま持つ。ホストとパスへの分解は運用者が行う（U-28。生成物に `baseParameters` を足すかは別の変更）。
 
 | リソース | 内容 |
 |---|---|
 | `StandardProvider` | `AWS::IAM::OIDCProvider`。`Url: https://${IssuerHost}/${StandardPath}`、`ClientIdList: [Audience]`。`ThumbprintList` は付けない（N9 の PoC も付けずに作れた [確認済み]） |
-| `AdminProvider` | 同じ。`Condition: HasAdmin`。**未実装**（PR #17 は作らない。別ホストのパラメーターの形が未決） |
+| `AdminProvider` | 同じ形で `Url: https://${AdminIssuerHost}/${AdminPath}`。`Condition: AdminTierEnabled`。タグ `awsbridge-console-tier: admin`。配る順は、Admin の issuer（discovery と JWKS）を先に公開してから `AdminIssuerHost` を渡す（admin §2.2） |
 | 守りの部品（Standard） | 顧客管理ポリシー。中身は §4.8（ロールチェーンの禁止、awsbridge のロールとプロバイダーへの書き込みの Deny、1 人停止の Deny の置き場所）。signin の Allow は入れない |
-| 守りの部品（Admin） | 同じ中身に、`aws login --remote` の明示の Deny を足したもの（§4.4）。`Condition: HasAdmin`。Administrator を配らないアカウントでは作らない |
+| 守りの部品（Admin） | 同じ中身に、`aws login --remote` の明示の Deny を足したもの（§4.4）。`Condition: AdminTierEnabled`。Administrator を配らないアカウントでは作らない |
+
+| 出力 | Export | 理由 |
+|---|---|---|
+| `StandardProviderArn`・`AdminProviderArn`（Admin は条件付き） | しない | 世代つきのパス（§3.1）でプロバイダーの ARN が変わり、import されている Export は値を変えられず、このスタックの更新が止まるため。ロールのテンプレートはホストとパスのパラメーターと `AWS::AccountId` から ARN を組む（§4.3） |
+| `StandardGuardPolicyArn`・`AdminGuardPolicyArn`（Admin は条件付き） | する（`awsbridge-console-guard-standard-arn`・`awsbridge-console-guard-admin-arn`） | ロールのテンプレートが `Fn::ImportValue` で部品を付ける。Admin のロールのスタックが import している間は `AdminIssuerHost` を空に戻せない（Export を消せない）。Admin をやめるときは Admin のロールを先に消してから空に戻す |
+
+- **L2（Admin のプロバイダーだけを消す停止。admin §7）はこのスタックの外で行う**（cto の決裁 2026-11-13）。消している間はドリフトになる。その間にスタックを更新したときの挙動（失敗するか・作り直すか）は未測定なので、**作り直して戻すまでスタックを更新しない**（§6.3 の revoke と同じ扱い）。② で「消す → 止まる時間 → その間のスタックの更新の挙動 → 作り直して戻す」を測る。手順は README の「コンソールログインの必須のスタック」
+- 守りの部品の Deny は「コンソール用のロールから」の書き込みだけを塞ぐ。L2 を行う運用者（コンソール用のロール以外の主体）には効かない
 
 ### 4.3 種類のテンプレート（ロールごと。参考の形）
 
@@ -292,7 +306,7 @@ Standard と Admin の 2 つの Worker への振り分け（N9 は 1 つの Work
 | `ManagedPolicyArns` | 設定の AWS 管理ポリシー | `roles[].managedPolicyArns` |
 | インラインポリシー | (1) `aws login` の Allow（§4.4。Standard は `localhost` と `remote`、Admin は `localhost` だけ）、(2) 下流のポリシー文書（`inlinePolicyFiles`） | `roles[].inlinePolicyFiles`、上流の固定の文書 |
 | 守りの部品 | 参考の形では、その階層の守りの部品（§4.2・§4.8。自分自身の保護・**ロールチェーンの禁止**・1 人停止の Deny の置き場所、Admin は `--remote` の Deny も）を付ける。前の版はこれらをロールのインラインポリシーに置いていた。部品は最初の配布から配る。中身は固定の Deny だけで、1 人停止の Deny は CloudFormation の外のロールのインライン（予約名）に置く（U-15 を閉じた。§4.8）。Admin のロールは部品を自分で外せる（部品は事故防止で、強制の境界ではない。§4.8） | 基盤のスタックの出力（部品のポリシーの ARN） |
-| 信頼ポリシー | 下の形。`Principal` は、そのロールの階層のプロバイダー（`arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/<その階層の issuer のホスト>/<その階層のパス>`）だけ。Admin の issuer のホストは Standard のものと別（§3.1） | 基盤と同じ issuer のホスト・パス、`tagKey`、`audience` |
+| 信頼ポリシー | 下の形。`Principal` は、そのロールの階層のプロバイダー（`arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/<その階層の issuer のホスト>/<その階層のパス>`）だけ。Standard は `IssuerHost`・`StandardPath`、Admin は `AdminIssuerHost`・`AdminPath`（基盤と同じ名前・同じ規則のパラメーター）から `Fn::Sub` で組む。アカウント ID は `AWS::AccountId` から取るので、パラメーターは StackSet で 1 つの値にできる（前の版の `AdminProviderArn` はやめた）。Admin の issuer のホストは Standard のものと別（§3.1）。`AdminIssuerHost` が空なら Admin のロールを作らない | 基盤と同じ issuer のホスト・パス、`tagKey`、`audience` |
 
 信頼ポリシーの形（PoC の `scripts/poc/human/portal/poc-portal.yaml` と同じ。P2・P3・N9・N10 で許可と拒否が分かれた [確認済み]）:
 
@@ -436,7 +450,7 @@ Standard の階層の参考の形は Viewer ロール（`FederatedAwsBridgeViewe
 | 中身 | Standard の部品 | Admin の部品 |
 |---|---|---|
 | ロールチェーンの禁止（`sts:AssumeRole` の明示の Deny） | あり | あり |
-| awsbridge のロールとプロバイダーへの書き込みの Deny（`/awsbridge-console/*` のロールの信頼ポリシー・ポリシー・パスの変更、コンソールログイン用のプロバイダーの変更）。部品のポリシー自体の変更も Deny に入れるかは未決 | あり | あり |
+| awsbridge のロールとプロバイダーへの書き込みの Deny（`/awsbridge-console/*` のロールの信頼ポリシー・ポリシー・パスの変更、コンソールログイン用のプロバイダーの変更）。プロバイダーは `oidc-provider/<IssuerHost>/*` と、Admin の階層のあるアカウントでは `oidc-provider/<AdminIssuerHost>/*` の両方（Admin の issuer は別のホストなので、前の版の Standard のホストだけでは Admin のプロバイダーの削除・作り直し・ClientID の追加が Deny の外だった。cto の決裁 2026-11-13）。Admin のホストは Standard の部品にも入れる（手作りの強い Standard のロールが Admin のプロバイダーを消せないように）。部品のポリシー自体の変更も Deny に入れる（`DenyGuardPolicyWrites`） | あり | あり |
 | 1 人停止の Deny の置き場所（`aws:SourceIdentity` の値の Deny を足す場所。§6.3） | あり | あり |
 | `aws login --remote` の明示の Deny（§4.4 の (3)） | なし | あり |
 | signin の Allow | 入れない（ロール側に置く） | 入れない |
@@ -808,10 +822,10 @@ cto の決裁（2026-11-12。D8 の段階導入の書き直しを条件付きで
 | 範囲 | PR | 状態 |
 |---|---|---|
 | 生成物を発行用（`worker.<tier>.json`）と表示用（`display.standard.json`）に分割。`identity.sourceIdentity`。Admin の階層のロールの `SignInLocalDevelopmentAccess` は誤り（`signin_access_admin`）、Standard は警告（`signin_access_standard`）。`portal.entryAud.admin` を要求しない | #16 | 実装（未マージ）|
-| プロバイダーのスタック `infra/aws/console/base.yaml`（Standard の OIDC プロバイダー、守りの部品、予約名）| #17 | 実装。**Admin のプロバイダーは作らない** |
+| プロバイダーのスタック `infra/aws/console/base.yaml`（Standard の OIDC プロバイダー、守りの部品、予約名）| #17 | 実装。Admin のプロバイダー（`AdminIssuerHost` を渡したときだけ）と、部品の Deny の Admin のホストは P-A（cto の決裁 2026-11-13）で足した |
 | Access JWT の検証（aud ちょうど 1 つ、サービストークンを断る、alg 固定）・CSRF・要求の検査・応答ヘッダー | #18 | 実装 |
 | 発行の部品（claim・署名の差し込み口 `TokenSigner`・Standard の署名・STS・フェデレーション・発行記録・エラー表）| #19 | 実装 |
-| ロールのテンプレートの生成器と参考のテンプレート（`console:template:example`）。設定 `signing.accountIds` と誤り `signing_account`。Admin のロールは `AdminProviderArn` が空なら作らない | #20 | 実装 |
+| ロールのテンプレートの生成器と参考のテンプレート（`console:template:example`）。設定 `signing.accountIds` と誤り `signing_account`。Admin のロールは `AdminIssuerHost` が空なら作らない（前の版は `AdminProviderArn`。P-A で置き換え）| #20 | 実装 |
 | Standard の Worker（Host での振り分け・発行の 9 段・issuer の文書・停止スイッチ・回数の制限）| #21 | 実装。署名鍵は secret の JSON |
 | 運用の道具 `console:keygen`・`console:secrets:standard`・`console:build:standard`・`console:dev` | #22 | 実装 |
 | Admin の Worker（画面と 9 段。署名は 503）と経路の共通化 | #23 | 実装 |
@@ -1041,7 +1055,7 @@ Sol のレビューの指摘の反映（決裁ではない。採ったものだ�
 | U-24 | X2・X3 の中身（X1 を会社の Administrator に使えないときの代替）| 利用者 / cto（G5 の前）| 決裁に名前だけがあり、このリポジトリの資料に無い（[console-login-admin.md](console-login-admin.md) §13.2）|
 | U-25 | X1 の受容の文面と補う手段への Sol のレビュー | G2 に付ける。G5 の前は必須 | **未実施**（admin §5.4）|
 | U-26 | `signing.accountIds` と誤り `signing_account`（署名を置くアカウントにコンソールのロールを配らない。PR #20）を、X1 で署名用アカウントが無くなったあと残すか | cto / 実装のとき | 未決。G1 の再上申の条件 (b) のために作られた（admin §13.2）|
-| U-27 | Admin のプロバイダーのスタックの形（別ホストのパラメーター、`AdminProviderArn` にアカウント ID が入る点）| 実装のとき | 未決・未実装（§4.2。admin §12.3）|
+| U-27 | Admin のプロバイダーのスタックの形（別ホストのパラメーター、`AdminProviderArn` にアカウント ID が入る点）| 実装のとき | **閉じた**（cto の決裁 2026-11-13 の P-A。§4.2・§4.3）|
 | U-28 | 実装計画の「後続の作業」（司令塔の引き継ぎ）| 実装のとき | 未決: Standard の全ロールに秘密値の Deny を付けている（Viewer の目印が設定に無い）。`stacksets.json` に `IssuerHost` / `StandardPath` の値が無い（運用者が渡す。§4.5 の「分解は生成で」に合わせるか）。Admin の `MaxSessionDuration` の下限（3600）を生成器で強制していない。署名アカウントの検査は inventory を渡したときだけ OU の配る先を見る。大文字小文字だけが違う種類名でファイル名が衝突しうる。古い kind ファイルの掃除が OUT_DIR を `infra/aws/console` にすると `kind.example.yaml` を消す。`managedPolicyArns` の個数の上限（ロール 1 つに 10）を検査していない。バンドル試験の Admin の固有値に陽性の対照を足す。`LOGIN_DISABLED` 未設定は動かす側（現仕様で許容）|
 
 ## 参考

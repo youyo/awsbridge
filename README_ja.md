@@ -266,6 +266,50 @@ issuer の URL（issuer のホスト）も変えるなら、新しいスタッ�
 
 この方法なら、切り替える前に旧と新を並べて確かめられます。別名の Worker を使わない場合は並行稼働になりません。Worker の `ISSUER` を新しい URL に移してからでないと新しいスタックを作れず、その後、新しいスタックと新しい `roleArn` をデプロイし終えるまで MCP の呼び出しは失敗します（旧ロールは Worker の JWT を受け付けなくなるため）。その方法を取るなら、切り戻しの手順（旧の `ISSUER` と旧の `roleArn` で Worker を再デプロイする。新しい側が動くまで旧スタックは残す）を先に用意してください。
 
+## コンソールログインの必須のスタック（base）
+
+[`infra/aws/console/base.yaml`](infra/aws/console/base.yaml)（StackSet `awsbridge-console-base`）は、コンソールログインの IAM の OIDC プロバイダーと、階層ごとの守りの部品（顧客管理ポリシー。明示の Deny だけ）を作ります。ロールは作りません（参考のロールのテンプレートは [`infra/aws/console/kind.example.yaml`](infra/aws/console/kind.example.yaml)。生成器を変えたら `mise run console:template:example` で作り直します）。設計は `docs/specs/console-login.md` §4.2・§4.8 です。
+
+| パラメーター | 既定 | 内容 |
+|---|---|---|
+| `IssuerHost` | なし（必須） | Standard の issuer のホスト（例 `awsbridge-oidc-console.example.com`） |
+| `StandardPath` | `std` | Standard の issuer のパス。issuer は `https://<IssuerHost>/<StandardPath>` |
+| `AdminIssuerHost` | 空 | Admin の issuer のホスト（例 `awsbridge-oidc-admin-console.example.com`）。空なら Admin のプロバイダーと Admin の部品を作りません。`IssuerHost` と同じ値は `Rules` で断ります（Admin の issuer は別のホスト） |
+| `AdminPath` | `admin` | Admin の issuer のパス。issuer は `https://<AdminIssuerHost>/<AdminPath>` |
+| `Audience` | `awsbridge-console` | 固定 |
+
+- **`AdminIssuerHost` は Administrator を配るアカウントにだけ渡します**（StackSets のパラメーターの上書き。`aws cloudformation create-stack-instances` / `update-stack-instances` の `--parameter-overrides`）。それ以外のアカウントは空のままにします。
+- Admin の階層のあるアカウントでは、Standard と Admin の両方の部品が、Admin のプロバイダーへの書き込み（作成・削除・ClientID の追加など）も Deny します。検査の道具（`mise run console:inspect`）は、設定で Admin を配るアカウントでは 2 つのホストを守る部品を、それ以外のアカウントでは Standard のホストだけを守る部品を期待します（違えば `guard_version_mismatch`）。
+- 配る順: Admin の issuer（Admin の Worker の discovery と JWKS）を先に公開してから、`AdminIssuerHost` を渡します。
+- Admin をやめるとき: Admin のロールのスタック（Admin の部品の Export を import しています）を先に消してから、`AdminIssuerHost` を空に戻します。逆の順では Export を消せず、スタックの更新が失敗します。
+- 配布と更新は、コンソール用のロール以外の主体（StackSets の実行ロールなど）で行います。部品が付いたコンソール用のロールのセッションからは、このスタックを更新できません。
+- プロバイダーの ARN は Output に出しますが Export しません。ロールのテンプレートは `AdminIssuerHost`・`AdminPath` とアカウント ID（`AWS::AccountId`）から ARN を組むので、ロールのスタックのパラメーターにアカウント ID は入りません。
+
+### Admin のプロバイダーだけを止める（L2）
+
+Administrator の新しい引き受けを、Cloudflare に頼らずに止める手段です（`docs/specs/console-login-admin.md` §7）。発行済みの AWS のセッションは止まらないので、revoke（L3）と合わせます。**CloudFormation の外で行います。** 下のコマンドと戻す手順はまだ実行していない例で、② で確かめます。
+
+1. コンソール用のロール以外の主体で、対象のアカウントの Admin のプロバイダーを削除します（部品の Deny は、コンソール用のロールからの書き込みだけを塞ぎます）。
+
+   ```sh
+   aws iam delete-open-id-connect-provider --profile <運用者のプロファイル> \
+     --open-id-connect-provider-arn arn:aws:iam::<アカウントID>:oidc-provider/awsbridge-oidc-admin-console.example.com/admin
+   ```
+
+2. **止めている間は、base のスタック（そのアカウントのスタックインスタンス）を更新しません。** プロバイダーはスタックから見てドリフトになっていて、その間の更新の挙動（失敗するか、作り直すか）は未測定です。作り直されると、止めた意味が無くなります。
+3. 戻すときは、同じ URL・同じ client ID・同じタグでプロバイダーを作り直します。ARN は URL で決まるので、ロールの信頼ポリシーは変えません。
+
+   ```sh
+   aws iam create-open-id-connect-provider --profile <運用者のプロファイル> \
+     --url https://awsbridge-oidc-admin-console.example.com/admin \
+     --client-id-list awsbridge-console \
+     --tags Key=project,Value=awsbridge Key=awsbridge-console-tier,Value=admin
+   ```
+
+4. 作り直したら、スタックのドリフトの検出で差が無いことを確かめてから、スタックの更新を再開します（作り直したプロバイダーがドリフトなしと判定されるかは未確認。② で確かめます）。
+
+② で次を測り、この手順に書き足します: 消してから引き受けが止まるまでの時間、止めている間のスタックの更新の挙動、作り直して戻す手順と、戻したあとに引き受けが通るまでの時間。
+
 ## コンソールログインの Access アプリ（Cookie Path）
 
 コンソールログインのポータル（入口の画面）は Cloudflare Access のアプリの背後に置きます。パスでチームを分ける構成（`portal.routing: path`。既定）では、**入口のアプリとすべてのチームのアプリで Cookie Path（`path_cookie_attribute`）を有効にする**ことが要件です（Standard も Admin も）。無効だと、同じホストの別のアプリの AUD も Access JWT の `aud` に入り、Worker の「`aud` はちょうど 1 つ」の検査で断られます（ログインができなくなります）。ホストでチームを分ける構成（`routing: host`）では Cookie もホストで分かれるので、警告にとどめます。Worker は Cookie Path を強制しません。次の 2 つで見ます。
