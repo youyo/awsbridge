@@ -78,6 +78,10 @@ let stdBroken: Instance;
 let stdMismatch: Instance;
 let stdNoKey: Instance;
 let adminBroken: Instance;
+// Access JWT の大きさの上限の試験の送り先（大きなヘッダーの要求を、ほかの試験と同じ wrangler dev に通さない。
+// 同じインスタンスに通すと、あとの「Content-Length つきの大きな本文」の試験が wrangler dev のプロキシの 503 で揺れた）
+let stdBig: Instance;
+let adminBig: Instance;
 let fake: FakeServer;
 let tmp = "";
 let accessKeys: Awaited<ReturnType<typeof generateKeyPair>>;
@@ -112,6 +116,9 @@ async function accessJwt(aud: string | string[] | null, o: JwtOptions = {}): Pro
   if (aud !== null) jwt.setAudience(aud);
   return jwt.sign(o.key ?? accessKeys.privateKey);
 }
+
+/** 大きさの上限の試験の送り先（その階層の、ほかの試験と分けたインスタンス）。 */
+const bigOf = (t: Target): Instance => (t === stdT ? stdBig : adminBig);
 
 /** 正しく署名した JWT を、余分な claim で長さ length 前後まで水増しする（base64url で 4/3 倍になる）。 */
 async function paddedJwt(aud: string, length: number): Promise<string> {
@@ -385,6 +392,8 @@ beforeAll(async () => {
     adminBroken,
     stdMismatch,
     stdNoKey,
+    stdBig,
+    adminBig,
   ] = await Promise.all([
     startWrangler({ name: "std", configPath: stdConfig, stateDir: tmp, ready: stdReady }),
     startWrangler({
@@ -457,6 +466,13 @@ beforeAll(async () => {
         (await send(i, { host: ISSUER_HOST, path: "/standard/.well-known/jwks.json" })).status ===
         500,
     }),
+    startWrangler({ name: "std-big", configPath: stdConfig, stateDir: tmp, ready: stdReady }),
+    startWrangler({
+      name: "admin-big",
+      configPath: adminKeyConfigPath,
+      stateDir: tmp,
+      ready: adminReady,
+    }),
   ]);
 
   // 正しい CSRF トークン（画面から取る。同じ利用者・10 分の有効期限の中で使い回す）
@@ -479,6 +495,8 @@ afterAll(() => {
     adminBroken,
     stdMismatch,
     stdNoKey,
+    stdBig,
+    adminBig,
   ])
     stopWrangler(i);
   fake?.close();
@@ -526,7 +544,7 @@ describe("陽性の対照（同じ道具で正しい要求を送ると、発行�
       const jwt = await paddedJwt(t.aud, ACCESS_JWT_MAX_LENGTH - 200);
       expect(jwt.length).toBeLessThanOrEqual(ACCESS_JWT_MAX_LENGTH);
       expect(jwt.length).toBeGreaterThan(ACCESS_JWT_MAX_LENGTH - 400);
-      const r = await post(t, { jwt });
+      const r = await post(t, { jwt, inst: bigOf(t) });
       expect(r.status, `${t.label}: ${r.body}`).toBe(302);
       expect(fake.seen.sts).toHaveLength(1);
     }
@@ -639,8 +657,8 @@ describe.each([stdT, adminT])("$label の Worker: 負の試験（両階層に共
     it(`大きさの上限（${ACCESS_JWT_MAX_LENGTH} 文字）を超える、正しく署名した JWT → 401 unauthorized（POST も画面も）`, async () => {
       const big = await paddedJwt(t.aud, ACCESS_JWT_MAX_LENGTH + 100);
       expect(big.length).toBeGreaterThan(ACCESS_JWT_MAX_LENGTH);
-      denied(await post(t, { jwt: big }), 401, "unauthorized");
-      expect((await get(t, `${teamBase(t.team)}/`, { jwt: big })).status).toBe(401);
+      denied(await post(t, { jwt: big, inst: bigOf(t) }), 401, "unauthorized");
+      expect((await get(t, `${teamBase(t.team)}/`, { jwt: big, inst: bigOf(t) })).status).toBe(401);
     });
 
     it("チームの食い違い: 別のチームのパスに自分のチームの JWT を送ると 403 team_mismatch（そのチームの CSRF でも）", async () => {
@@ -1052,12 +1070,10 @@ describe("Standard の Worker: 負の試験（Standard 固有）", () => {
     });
     it("入口も、大きさの上限を超える入口の AUD の JWT は 401（上限の内側なら 200）", async () => {
       const entry = AUDS.entry.standard;
-      expect(
-        (await get(t, "/", { jwt: await paddedJwt(entry, ACCESS_JWT_MAX_LENGTH + 100) })).status,
-      ).toBe(401);
-      expect(
-        (await get(t, "/", { jwt: await paddedJwt(entry, ACCESS_JWT_MAX_LENGTH - 200) })).status,
-      ).toBe(200);
+      const over = await paddedJwt(entry, ACCESS_JWT_MAX_LENGTH + 100);
+      const under = await paddedJwt(entry, ACCESS_JWT_MAX_LENGTH - 200);
+      expect((await get(t, "/", { jwt: over, inst: stdBig })).status).toBe(401);
+      expect((await get(t, "/", { jwt: under, inst: stdBig })).status).toBe(200);
     });
   });
 });
