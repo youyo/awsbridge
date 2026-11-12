@@ -1,14 +1,11 @@
 // コンソールログインの設定ファイル（チーム・ロール・種類）の検証。設計: docs/specs/console-login-portal.md §11.3・§11.6。
 import { describe, expect, it } from "vitest";
 import {
-  AUDIENCE,
   ConsoleConfigError,
   type ConsoleConfigIssue,
   parseConsoleConfig,
-  ROLE_PATH_PREFIX,
-  rolePath,
-  TEAM_TAG_KEY,
 } from "../../src/console/config";
+import { AUDIENCE, ROLE_PATH_PREFIX, rolePath, TEAM_TAG_KEY } from "../../src/console/constants";
 import { companyConfig, personalConfig, type Raw, uuid } from "./console-fixtures";
 
 function issuesOf(raw: unknown): ConsoleConfigIssue[] {
@@ -628,5 +625,112 @@ describe("parseConsoleConfig: 警告", () => {
     const { warnings } = parseConsoleConfig(c);
     expect(warnings).toContainEqual(issue("teams[1]", "unassigned_team"));
     expect(warnings).toContainEqual(issue("roles[1]", "unassigned_role"));
+  });
+});
+
+describe("parseConsoleConfig: identity.sourceIdentity（SourceIdentity の値の出どころ。U-14）", () => {
+  const sourceOf = (raw: Raw) => parseConsoleConfig(raw).config.identity.sourceIdentity;
+
+  it("省略すると email", () => {
+    expect(sourceOf(personalConfig())).toBe("email");
+    expect(
+      sourceOf(
+        withChange(personalConfig, (x) => {
+          x.identity = {};
+        }),
+      ),
+    ).toBe("email");
+  });
+
+  it("email と custom.<名前> を受け付ける", () => {
+    for (const v of ["email", "custom.employee_id", "custom.oid"]) {
+      const c = withChange(personalConfig, (x) => {
+        x.identity = { sourceIdentity: v };
+      });
+      expect(sourceOf(c)).toBe(v);
+    }
+  });
+
+  it("sub は受け付けない（Access の sub は発行記録に残す値で、SourceIdentity には使わない）", () => {
+    const c = withChange(personalConfig, (x) => {
+      x.identity = { sourceIdentity: "sub" };
+    });
+    expect(issuesOf(c)).toEqual([issue("identity.sourceIdentity", "pattern")]);
+  });
+
+  it.each(["custom.", "custom", "Email", "custom.a b", "oid", "custom.1a"])(
+    "形が違う値 %s は pattern",
+    (v) => {
+      const c = withChange(personalConfig, (x) => {
+        x.identity = { sourceIdentity: v };
+      });
+      expect(issuesOf(c)).toEqual([issue("identity.sourceIdentity", "pattern")]);
+    },
+  );
+
+  it("文字列でなければ type、未知のキーは unknown_key、identity がオブジェクトでなければ type", () => {
+    const num = withChange(personalConfig, (x) => {
+      x.identity = { sourceIdentity: 1 };
+    });
+    expect(issuesOf(num)).toEqual([issue("identity.sourceIdentity", "type")]);
+    const extra = withChange(personalConfig, (x) => {
+      x.identity = { claim: "email" };
+    });
+    expect(issuesOf(extra)).toEqual([issue("identity.claim", "unknown_key")]);
+    const notObj = withChange(personalConfig, (x) => {
+      x.identity = "email";
+    });
+    expect(issuesOf(notObj)).toEqual([issue("identity", "type")]);
+  });
+});
+
+describe("parseConsoleConfig: SignInLocalDevelopmentAccess（aws login --remote を許す管理ポリシー。U-16）", () => {
+  const POLICY = "arn:aws:iam::aws:policy/SignInLocalDevelopmentAccess";
+  const warningsOf = (raw: Raw) => parseConsoleConfig(raw).warnings;
+  const attach = (roleName: string, arn: string) => (x: Raw) => {
+    const r = x.roles.find((r: Raw) => r.name === roleName);
+    r.permissions.managedPolicyArns.push(arn);
+  };
+
+  it("Admin の階層のロールにあれば誤り（--remote を許してしまう）", () => {
+    const c = withChange(companyConfig, attach("admin", POLICY));
+    const i = companyConfig().roles.findIndex((r: Raw) => r.name === "admin");
+    expect(issuesOf(c)).toEqual([
+      issue(`roles[${i}].permissions.managedPolicyArns[1]`, "signin_access_admin"),
+    ]);
+  });
+
+  it("Standard の階層のロールにあれば警告（誤りにはしない。参考の形は付けない）", () => {
+    const c = withChange(companyConfig, attach("readonly", POLICY));
+    const i = companyConfig().roles.findIndex((r: Raw) => r.name === "readonly");
+    expect(issuesOf(c)).toEqual([]);
+    expect(warningsOf(c)).toEqual([
+      issue(`roles[${i}].permissions.managedPolicyArns[1]`, "signin_access_standard"),
+    ]);
+  });
+
+  it("パーティション違い・大文字小文字違いも同じ扱い", () => {
+    for (const arn of [
+      "arn:aws-us-gov:iam::aws:policy/SignInLocalDevelopmentAccess",
+      "arn:aws:iam::aws:policy/signinlocaldevelopmentaccess",
+    ]) {
+      expect(issuesOf(withChange(companyConfig, attach("admin", arn)))).toHaveLength(1);
+      expect(warningsOf(withChange(companyConfig, attach("readonly", arn)))).toHaveLength(1);
+    }
+  });
+
+  it("似た名前や別のポリシーには反応しない", () => {
+    for (const arn of [
+      "arn:aws:iam::aws:policy/SignInLocalDevelopmentAccessExtra",
+      "arn:aws:iam::aws:policy/service-role/SignIn",
+      "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess",
+    ]) {
+      const c = withChange(companyConfig, (x) => {
+        attach("admin", arn)(x);
+        attach("readonly", arn)(x);
+      });
+      expect(issuesOf(c)).toEqual([]);
+      expect(warningsOf(c)).toEqual([]);
+    }
   });
 });

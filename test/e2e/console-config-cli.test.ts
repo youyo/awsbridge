@@ -133,23 +133,35 @@ describe("設定の例（config/console*.example.json）を CLI に通す", () =
     expect(existsSync(join(out, "worker.admin.json"))).toBe(false);
   });
 
-  it("会社用の例を生成に通すと、ロールは Administrator（admin）と Viewer（std）だけ", () => {
+  it("会社用の例（Admin のチームが 2 つ）を、admin の入口の AUD なしで deploy 生成できる（G-6 が決まるまで要求しない）", () => {
     const d = tmp();
     const out = join(d, "out");
+    const teamAuds = Object.fromEntries(
+      ["infra", "dev", "sa", "infra-elevated", "dev-elevated"].map((t, i) => [
+        t,
+        String(i + 1).repeat(64),
+      ]),
+    );
     const r = run("generate", {
       AWSBRIDGE_CONSOLE_CONFIG: join(root, "config/console.company.example.json"),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
       AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", {
-        teams: Object.fromEntries(
-          ["infra", "dev", "sa", "infra-elevated", "dev-elevated"].map((t, i) => [
-            t,
-            String(i + 1).repeat(64),
-          ]),
-        ),
-        entry: { standard: "a".repeat(64), admin: "b".repeat(64) },
+        teams: teamAuds,
+        entry: { standard: "a".repeat(64) },
+      }),
+      // org-main は placement: ou なので、種類 A の OU（Administrator と Viewer を割り当てた種類）にアカウントを 1 つ置く
+      AWSBRIDGE_CONSOLE_INVENTORY_FILE: write(d, "inventory.json", {
+        "org-main": [
+          {
+            accountId: "333333333333",
+            name: "svc-a-prod",
+            ouPath: ["r-abcd", "ou-abcd-11111111"],
+          },
+        ],
       }),
     });
     expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).not.toContain("entry_aud_missing");
     const stacksets = JSON.parse(readFileSync(join(out, "stacksets.json"), "utf8"));
     expect(
       stacksets.roles.map((x: { roleName: string; rolePath: string }) => [x.roleName, x.rolePath]),
@@ -157,6 +169,31 @@ describe("設定の例（config/console*.example.json）を CLI に通す", () =
       ["FederatedAwsBridgeAdministrator", "/awsbridge-console/admin/"],
       ["FederatedAwsBridgeViewer", "/awsbridge-console/std/"],
     ]);
+
+    // 表示用: Administrator の行と Object ID の対応がある
+    const display = JSON.parse(readFileSync(join(out, "display.standard.json"), "utf8"));
+    expect(display.purpose).toBe("display");
+    expect(display.accounts.filter((a: { tier: string }) => a.tier === "admin")).not.toHaveLength(
+      0,
+    );
+    expect(display.groups).toContainEqual({
+      objectId: "00000000-0000-0000-0000-000000000004",
+      teams: ["infra-elevated"],
+    });
+    // 発行用と表示用のどちらにも Admin のチームの AUD がない
+    const worker = readFileSync(join(out, "worker.standard.json"), "utf8");
+    const shown = readFileSync(join(out, "display.standard.json"), "utf8");
+    for (const aud of [teamAuds["infra-elevated"], teamAuds["dev-elevated"]] as string[]) {
+      expect(worker, "worker.standard.json").not.toContain(aud);
+      expect(shown, "display.standard.json").not.toContain(aud);
+    }
+    // 発行用には Administrator の行も Object ID もない
+    expect(worker).not.toContain("FederatedAwsBridgeAdministrator");
+    expect(worker).not.toContain("00000000-0000-0000-0000-");
+    // Admin の発行用には Standard の行がない
+    const admin = readFileSync(join(out, "worker.admin.json"), "utf8");
+    expect(admin).not.toContain("FederatedAwsBridgeViewer");
+    expect(JSON.parse(admin).identity).toEqual({ sourceIdentity: "email" });
   });
 });
 
@@ -174,6 +211,7 @@ describe("console:config:generate", () => {
     expect(r.status, r.stderr).toBe(0);
     expect(readdirSync(out).sort()).toEqual([
       "access.json",
+      "display.standard.json",
       "stacksets.json",
       "worker.admin.json",
       "worker.standard.json",
@@ -184,6 +222,12 @@ describe("console:config:generate", () => {
     expect(standard.sourceRevision).toBe("deadbeef");
     expect(standard.teams.map((t: { name: string }) => t.name)).toEqual(["infra", "dev", "sa"]);
     expect(standard.accounts.length).toBe(3);
+    expect(standard.purpose).toBe("issue");
+    expect(standard.identity).toEqual({ sourceIdentity: "email" });
+    const display = JSON.parse(readFileSync(join(out, "display.standard.json"), "utf8"));
+    expect(display.purpose).toBe("display");
+    expect(display.sourceRevision).toBe("deadbeef");
+    expect(display.accounts.some((a: { tier: string }) => a.tier === "admin")).toBe(true);
     expect(JSON.stringify(standard)).not.toContain("infra-elevated");
     const admin = JSON.parse(readFileSync(join(out, "worker.admin.json"), "utf8"));
     expect(admin.tier).toBe("admin");
@@ -218,6 +262,7 @@ describe("console:config:generate", () => {
     expect(r.status, r.stderr).toBe(0);
     expect(readdirSync(out).sort()).toEqual([
       "access.json",
+      "display.standard.json",
       "stacksets.json",
       "worker.standard.json",
     ]);
