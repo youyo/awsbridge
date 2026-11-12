@@ -45,7 +45,16 @@ export type PortalEnv = {
   CONSOLE_CSRF_KEY?: string;
   /** binding: Workers の Rate Limiting（利用者ごとの回数の制限）。 */
   LOGIN_RATE_LIMITER?: LoginRateLimiter;
+  /** binding: Worker の版の情報（version_metadata）。id を発行記録に残す（無くても発行は止めない）。 */
+  CF_VERSION_METADATA?: { id?: unknown };
 };
+
+/** 発行記録に残す Worker の版 ID（形の合わない値は残さない）。 */
+const VERSION_ID_RE = /^[0-9A-Za-z-]{1,64}$/;
+function workerVersionId(env: PortalEnv): string | undefined {
+  const id = env.CF_VERSION_METADATA?.id;
+  return typeof id === "string" && VERSION_ID_RE.test(id) ? id : undefined;
+}
 
 export type PortalOverrides = {
   /** Access の certs の代わり（試験用）。 */
@@ -302,6 +311,7 @@ export function createPortalWorker<Env extends PortalEnv>(
         log: (line) => console.log(line),
         getAccessKey: o.getAccessKey,
         accessMaxAgeSeconds: rt.part.accessMaxAgeSeconds,
+        workerVersionId: workerVersionId(env),
       });
       if (out.ok) return new Response(null, { status: 302, headers: { Location: out.location } });
       return htmlResponse(errorPage(out.code, errOpts), out.status);

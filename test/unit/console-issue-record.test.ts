@@ -3,7 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   createIssueRecord,
   type IssueRecord,
+  issueLogRecord,
+  maskAccessKeyId,
+  maskAssumedRoleId,
   maskIssueRecord,
+  maskRequestId,
 } from "../../src/console/issue/record";
 
 const JTI = "0b9a9d6e-1f4e-4c55-9d2a-7f3c1a2b3c4d";
@@ -159,5 +163,61 @@ describe("maskIssueRecord（画面・共有するログに貼れる形）", () =
     const m = maskIssueRecord(record({ token: undefined, sts: { region: "ap-northeast-1" } }));
     expect(m.jwt).toBeUndefined();
     expect(m.sts).toEqual({ region: "ap-northeast-1" });
+  });
+});
+
+describe("記録の中身の追加（cto の決裁 2026-11-13: kid と Worker の版 ID）", () => {
+  it("署名した鍵の kid と Worker の版 ID を持つ（渡されたときだけ）", () => {
+    const r = record({
+      token: { jti: JTI, iat: 1_700_000_000, exp: 1_700_000_300, kid: "kid-abc" },
+      workerVersionId: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+    });
+    expect(r.jwt).toEqual({ jti: JTI, iat: 1_700_000_000, exp: 1_700_000_300, kid: "kid-abc" });
+    expect(r.worker).toEqual({ versionId: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0" });
+    const none = record();
+    expect(none.jwt).not.toHaveProperty("kid");
+    expect(none).not.toHaveProperty("worker");
+  });
+});
+
+describe("issueLogRecord（Worker のログに出す発行記録。cto の決裁: アカウント ID とロール ARN は全桁、email は伏せる）", () => {
+  const log = issueLogRecord(
+    record({
+      token: { jti: JTI, iat: 1_700_000_000, exp: 1_700_000_300, kid: "kid-abc" },
+      workerVersionId: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+    }),
+  );
+  const text = JSON.stringify(log);
+
+  it("jti・kid・アカウント ID・ロール ARN・Worker の版 ID は全桁（突き合わせのキー）", () => {
+    expect(log.jwt).toEqual({ jti: JTI, iat: 1_700_000_000, exp: 1_700_000_300, kid: "kid-abc" });
+    expect(log.target.accountId).toBe("123456789012");
+    expect(log.target.roleArn).toBe(
+      "arn:aws:iam::123456789012:role/awsbridge-console/std/FederatedAwsBridgeViewer",
+    );
+    expect(log.worker).toEqual({ versionId: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0" });
+  });
+
+  it("email・SourceIdentity・Access の sub・oid・STS の ID は伏せたまま（maskIssueRecord と同じ形）", () => {
+    const m = maskIssueRecord(record());
+    expect(log.user).toEqual(m.user);
+    expect(log.sts).toEqual(m.sts);
+    for (const v of [
+      "alice@example.com",
+      ACCESS_KEY_ID,
+      ROLE_ID,
+      "console-alice",
+      REQUEST_ID,
+      "access-sub-0123456789",
+      "oid-0123456789",
+    ])
+      expect(text, v).not.toContain(v);
+    expect(text).not.toMatch(/[^\s"*]+@[^\s"*]+\.[a-z]+/i);
+  });
+
+  it("STS の ID の伏せ字の関数を外に出す（突き合わせの道具が CloudTrail の値を同じ形にして比べる）", () => {
+    expect(maskAccessKeyId(ACCESS_KEY_ID)).toBe("ASIA…QQQQ");
+    expect(maskAssumedRoleId(`${ROLE_ID}:console-alice@example.com`)).toBe("AROA…");
+    expect(maskRequestId(REQUEST_ID)).toBe("5e1b7c2a…");
   });
 });

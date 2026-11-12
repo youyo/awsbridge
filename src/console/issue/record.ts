@@ -4,7 +4,10 @@
 //   AccessKeyId・AssumedRoleId・RequestId と、時刻・アカウント ID で引く。STS のリージョンは CloudTrail の記録先を決める。
 //   Access の sub と（取れれば）Entra の oid も残す（email の変更・再利用のあとで誰の発行かをたどるため）。
 // 記録には、秘密鍵・セッショントークン・SigninToken・ログイン URL を入れない（入力にも持たない）。アカウントの email も残さない。
-// createIssueRecord の戻り値は監査用の置き場所（Logpush）に送る完全な形、maskIssueRecord は画面・共有するログに貼れる形。
+// createIssueRecord の戻り値は完全な形、maskIssueRecord は画面・共有するログに貼れる形。
+// issueLogRecord は Worker のログ（Workers Logs。② の置き場所）に出す形: 突き合わせのキーの jti・kid・アカウント ID・ロール ARN と
+// Worker の版 ID は全桁、email・SourceIdentity・Access の sub・oid・STS の ID は伏せる（cto の決裁 2026-11-13）。
+// 突き合わせの道具（src/console/reconcile.ts）はこの形を読む。
 import type { Tier } from "../constants";
 import type { IssueErrorCode } from "./errors";
 import type { AccessIdentity, ResolvedIdentity } from "./identity";
@@ -31,8 +34,8 @@ export type IssueRecord = {
     boundary: string;
     issuer: string;
   };
-  /** 署名に進んでいなければない。JWT 自体は残さない。 */
-  jwt?: { jti: string; iat: number; exp: number };
+  /** 署名に進んでいなければない。JWT 自体は残さない。kid は署名した鍵（JWT のヘッダー）。 */
+  jwt?: { jti: string; iat: number; exp: number; kid?: string };
   sts: {
     /** AssumeRoleWithWebIdentity を呼んだ STS のリージョン（CloudTrail の記録先）。 */
     region: string;
@@ -45,6 +48,8 @@ export type IssueRecord = {
   cfRay?: string;
   /** 一覧の版。 */
   list?: { generatedAt: string; sourceRevision?: string };
+  /** 発行した Worker の版（CF_VERSION_METADATA の id。取れたときだけ）。 */
+  worker?: { versionId: string };
 };
 
 export type IssueRecordInput = {
@@ -55,11 +60,12 @@ export type IssueRecordInput = {
   identity: AccessIdentity;
   resolved: ResolvedIdentity;
   row: IssueRow;
-  token?: { jti: string; iat: number; exp: number } | undefined;
+  token?: { jti: string; iat: number; exp: number; kid?: string | undefined } | undefined;
   consoleRegion: string;
   sts: IssueRecord["sts"];
   cfRay?: string | undefined;
   list?: { generatedAt: string; sourceRevision?: string | undefined } | undefined;
+  workerVersionId?: string | undefined;
 };
 
 export function createIssueRecord(i: IssueRecordInput): IssueRecord {
@@ -82,7 +88,14 @@ export function createIssueRecord(i: IssueRecordInput): IssueRecord {
       issuer: i.row.issuer,
     },
     ...(i.token !== undefined
-      ? { jwt: { jti: i.token.jti, iat: i.token.iat, exp: i.token.exp } }
+      ? {
+          jwt: {
+            jti: i.token.jti,
+            iat: i.token.iat,
+            exp: i.token.exp,
+            ...(i.token.kid !== undefined ? { kid: i.token.kid } : {}),
+          },
+        }
       : {}),
     sts: {
       region: i.sts.region,
@@ -102,6 +115,7 @@ export function createIssueRecord(i: IssueRecordInput): IssueRecord {
           },
         }
       : {}),
+    ...(i.workerVersionId !== undefined ? { worker: { versionId: i.workerVersionId } } : {}),
   };
 }
 
@@ -125,10 +139,13 @@ export const maskRoleArn = (arn: string): string =>
   arn.replace(/\b\d{12}\b/g, (id) => maskAccountId(id));
 
 /** AccessKeyId の先頭 4 文字（ASIA など）と末尾 4 文字だけ残す。 */
-const maskAccessKeyId = (id: string): string => `${id.slice(0, 4)}…${id.slice(-4)}`;
+export const maskAccessKeyId = (id: string): string => `${id.slice(0, 4)}…${id.slice(-4)}`;
 
 /** AssumedRoleId（<ロール ID>:<セッション名>）は、セッション名に email が入るので ID の先頭 4 文字だけ残す。 */
-const maskAssumedRoleId = (id: string): string => head(id, 4);
+export const maskAssumedRoleId = (id: string): string => head(id, 4);
+
+/** STS の要求 ID（RequestId）は先頭 8 文字だけ残す。 */
+export const maskRequestId = (id: string): string => head(id, 8);
 
 export function maskIssueRecord(r: IssueRecord): IssueRecord {
   return {
@@ -153,7 +170,20 @@ export function maskIssueRecord(r: IssueRecord): IssueRecord {
       ...(r.sts.assumedRoleId !== undefined
         ? { assumedRoleId: maskAssumedRoleId(r.sts.assumedRoleId) }
         : {}),
-      ...(r.sts.requestId !== undefined ? { requestId: head(r.sts.requestId, 8) } : {}),
+      ...(r.sts.requestId !== undefined ? { requestId: maskRequestId(r.sts.requestId) } : {}),
     },
+  };
+}
+
+/**
+ * Worker のログに出す発行記録。maskIssueRecord の伏せ字に、突き合わせのキー（jti・kid・アカウント ID・ロール ARN）を
+ * 全桁で戻した形（cto の決裁 2026-11-13。アカウント ID は秘密ではない。email は伏せたまま）。
+ */
+export function issueLogRecord(r: IssueRecord): IssueRecord {
+  const m = maskIssueRecord(r);
+  return {
+    ...m,
+    target: { ...m.target, accountId: r.target.accountId, roleArn: r.target.roleArn },
+    ...(r.jwt !== undefined ? { jwt: { ...r.jwt } } : {}),
   };
 }

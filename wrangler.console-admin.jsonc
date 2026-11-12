@@ -28,13 +28,16 @@
   //   ADMIN_PUBLIC_JWKS     公開鍵 JWK の配列の JSON 文字列（新旧 2 つまで）。Admin の issuer の JWKS と、署名の自己検証に使う。空なら JWKS は 404
   //   ACCESS_MAX_AGE_SECONDS  Access JWT の iat からの経過時間の上限（秒。60〜86400）。Admin の Access のセッションの長さに合わせる（既定 900）
   // ratelimits: 利用者（Access の sub）ごとの発行の回数の制限。値は仮の既定（G3 で確定）。namespace_id はアカウント内で一意の数字の文字列（Standard の Worker と別の値）。
+  // 発行記録（console_issue の構造化ログ）は Workers Logs に置く（② の決裁。保持 7 日）。間引きで落ちないよう head_sampling_rate は 1 に固定する
+  //   （mise run console:reconcile が読む。README の「コンソールログインの突き合わせ」）。CF_VERSION_METADATA は発行記録に Worker の版 ID を残すための binding。
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "awsbridge-console-admin",
   "main": "src/console/admin/index.ts",
   "compatibility_date": "2026-07-21",
   "workers_dev": false,
   "preview_urls": false,
-  "observability": { "enabled": true },
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "routes": [
     { "pattern": "awsbridge-admin-console.example.com", "custom_domain": true },
     { "pattern": "awsbridge-oidc-admin-console.example.com", "custom_domain": true }

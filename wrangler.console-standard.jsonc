@@ -30,13 +30,16 @@
   //   STANDARD_CURRENT_KEYS 境界の名前 → 今の署名鍵（{"binding":"STANDARD_KEY_…","kid":"…"}）の JSON 文字列。空・壊れていればどの経路も 500
   //   STANDARD_PUBLIC_JWKS  境界の名前 → 公開鍵 JWK の配列（新旧 2 つまで）の JSON 文字列。その境界の issuer の JWKS と、署名の自己検証に使う
   // ratelimits: 利用者（Access の sub）ごとの発行の回数の制限。値は仮の既定（G3 で確定）。namespace_id はアカウント内で一意の数字の文字列。
+  // 発行記録（console_issue の構造化ログ）は Workers Logs に置く（② の決裁。保持 7 日）。間引きで落ちないよう head_sampling_rate は 1 に固定する
+  //   （mise run console:reconcile が読む。README の「コンソールログインの突き合わせ」）。CF_VERSION_METADATA は発行記録に Worker の版 ID を残すための binding。
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "awsbridge-console-standard",
   "main": "src/console/standard/index.ts",
   "compatibility_date": "2026-07-21",
   "workers_dev": false,
   "preview_urls": false,
-  "observability": { "enabled": true },
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "routes": [
     { "pattern": "awsbridge-console.example.com", "custom_domain": true },
     { "pattern": "awsbridge-oidc-console.example.com", "custom_domain": true }

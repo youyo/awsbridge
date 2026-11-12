@@ -115,9 +115,10 @@ describe("Admin の Worker: 9 段目は 503 signing_unavailable（最初の Red�
     expect(rec.tier).toBe("admin");
     expect(rec.result).toBe("signing_unavailable");
     expect(rec.team).toBe(ADMIN_TEAM);
-    expect(rec.target.accountId).toBe("********3333");
+    // cto の決裁 2026-11-13: アカウント ID は全桁（突き合わせのキー）。email は伏せる
+    expect(rec.target.accountId).toBe("333333333333");
     const all = logs.join("\n");
-    for (const s of [EMAIL, "333333333333", CSRF_SECRET]) expect(all).not.toContain(s);
+    for (const s of [EMAIL, CSRF_SECRET]) expect(all).not.toContain(s);
   });
 
   it("503 の応答にも no-store と CSP を付け、Set-Cookie を付けない", async () => {
