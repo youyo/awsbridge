@@ -94,7 +94,7 @@ issuer の公開文書（discovery と JWKS）: https://<issuer-host>/std/...（
 
 | 項目 | 決定・案 | 根拠 |
 |---|---|---|
-| Worker | コンソールログイン用は MCP 用と別の Worker。awsbridge リポジトリ内の別エントリ。MCP 用のバンドルにコンソールログイン用の経路が入らないことをテストで確かめる（実装済み: `test/e2e/console-bundle.test.ts`・`test/unit/console-layout.test.ts`） | [資料: cto の決裁 D2] |
+| Worker | コンソールログイン用は MCP 用と別の Worker。awsbridge リポジトリ内の別エントリ。MCP 用のバンドルにコンソールログイン用の経路が入らないことをテストで確かめる（実装済み: `test/e2e/console-isolation.test.ts`・`test/unit/console-layout.test.ts`） | [資料: cto の決裁 D2] |
 | Standard と Admin | 別の Worker デプロイ（D3 のこの部分は保つ）。**入口と一覧は共通**（P1'。2026-11-12）で、Administrator の行も Standard の一覧に表示用だけで出す。Admin の発行は Admin のオリジンの Worker だけが行い、Standard の Worker は代わりに行わない。Standard のバンドルに Admin の鍵の参照・Admin のチームの AUD・Access のポリシー ID を入れない（portal §8・§9.10） | [資料: cto の決裁 D3、2026-11-12 の P1'] |
 | 鍵 | 「階層（Standard / Admin）× 境界（管理下 / 管理外の先方ごと）」で分ける。issuer も同じ単位で分け、1 つの issuer に 1 つの鍵 | [資料: cto の決裁 D3]。設定の検査（issuer の URL の重複を誤りにする）は実装済み（`src/console/config.ts`） |
 | 鍵の保管 | Standard: 段階 1・2 は Workers secret。Admin: KMS 必須（段階 3。N6 の成立が条件）。Standard を KMS に移すかは段階 3 で見直す | [資料: cto の決裁 D4] |

@@ -1,6 +1,6 @@
 // コンソールログイン: チーム・ロール・アカウントの種類を定義する設定ファイルのスキーマと検証。
 // 設計: docs/specs/console-login-portal.md §11（設定ファイル）。上流はスキーマ・例・生成の道具だけを持ち、実際の値は下流に置く。
-// MCP 用 Worker（src/index.ts）からは import しない（cto の D2。test/unit/console-layout.test.ts と test/e2e/console-bundle.test.ts で確かめる）。
+// MCP 用 Worker（src/index.ts）からは import しない（cto の D2。test/unit/console-layout.test.ts と test/e2e/console-isolation.test.ts で確かめる）。
 // 副作用のない純粋関数だけを置く（node の API を使わない。生成の CLI は scripts/console/config.ts）。
 // エラーは「キーのパス」と「種別」だけで表し、設定の値（AUD・email・アカウント ID など）を文面に出さない。
 // パスに入る、利用者が書いたキー（未知のキー・assign などのマップのキー）は、名前の形でなければ <redacted> にする（safeKey）。
@@ -98,6 +98,7 @@ export type ConsoleConfigIssueCode =
   | "origin"
   | "workers_dev"
   | "origin_same"
+  | "issuer_host_overlaps_portal"
   | "admin_origin_missing"
   | "region_default"
   | "access_shape"
@@ -301,6 +302,16 @@ class Names {
     if (this.seen.has(name)) out.add(path, "duplicate");
     this.seen.add(name);
   }
+}
+
+/** URL のホスト名（小文字。末尾のドット・ポートを除く）。 */
+function hostOf(url: string): string {
+  return new URL(url).hostname.toLowerCase().replace(/\.+$/, "");
+}
+
+/** 同じホスト、またはどちらかがもう一方のサブドメイン（ラベルの境界で見る。myportal.x は portal.x の入れ子ではない）。 */
+function hostsOverlap(a: string, b: string): boolean {
+  return a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`);
 }
 
 function checkOrigin(v: string | undefined, p: string, out: IssueList): string | undefined {
@@ -768,6 +779,23 @@ function crossCheck(c: ParsedParts, out: IssueList, warnings: IssueList): void {
       if (u !== undefined) issuers.check(u, `boundaries[${i}].issuers.${t}`, out);
     }
   });
+
+  // issuer のホストとポータル（とチーム）のホストは分ける（G-8）。同じホスト・入れ子は Bypass・Cookie・ホスト方式のチームのホストが重なる
+  if (c.portal) {
+    const portalHosts = [c.portal.standardOrigin, c.portal.adminOrigin].flatMap((o) =>
+      o === undefined ? [] : [hostOf(o)],
+    );
+    c.boundaries.forEach((b, i) => {
+      if (!b) return;
+      for (const t of TIERS) {
+        const u = b.issuers[t];
+        if (u === undefined) continue;
+        const h = hostOf(u);
+        if (portalHosts.some((p) => hostsOverlap(h, p)))
+          out.add(`boundaries[${i}].issuers.${t}`, "issuer_host_overlaps_portal");
+      }
+    });
+  }
 
   // ポータルのオリジンと Admin の階層
   const usesAdmin =

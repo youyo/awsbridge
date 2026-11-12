@@ -918,7 +918,7 @@ cto の条件（MCP 用 Worker のバンドルにコンソールログイン用�
 | 設定の読み込み | Standard のデプロイに Admin の階層の行・チーム・issuer が渡されたら、起動時（初回の要求時）に `server_misconfigured` で止まる（生成の段階でも弾く。§11.6） |
 | 設定の分離 | Worker 用の生成物に、種類の定義（`kinds`）・Access のポリシー ID・他の階層の AUD が入っていない。Entra のグループの Object ID は表示用の対応表としてだけ入れてよい（U2。前の版は「入れない」だった。いまの生成器と `test/unit/console-generate.test.ts` は前の約束のまま） |
 
-実装済みのもの（§11 の設定の実装と一緒に入れた）: MCP 用のバンドルの検査（`test/e2e/console-bundle.test.ts`。`wrangler deploy --dry-run` の metafile の inputs に `src/console/` がなく、本文にタグのキー・audience（`awsbridge-console`）・ロールのパスの接頭辞・`/t/` がないこと。`test/unit/console-layout.test.ts` は `src/index.ts` からの静的な import をたどる）と、設定の分離（`test/unit/console-generate.test.ts`）。Standard・Admin のバンドルと設定の読み込みの検査は、ポータル本体と一緒に足す。
+実装済みのもの（§11 の設定の実装と一緒に入れた）: MCP 用のバンドルの検査（`test/e2e/console-isolation.test.ts`。`wrangler deploy --dry-run` の metafile の inputs に `src/console/` がなく、本文にタグのキー・audience（`awsbridge-console`）・ロールのパスの接頭辞・`/t/` がないこと。`test/unit/console-layout.test.ts` は `src/index.ts` からの静的な import をたどる）と、設定の分離（`test/unit/console-generate.test.ts`）。Standard・Admin のバンドルと設定の読み込みの検査は、ポータル本体と一緒に足す。
 
 ---
 
@@ -1044,6 +1044,7 @@ cto の条件（MCP 用 Worker のバンドルにコンソールログイン用�
 - `portal.*Origin` は `https://<host>` の形そのもの（末尾の `/`・パス・ポート以外の付加物・利用者情報を受け付けない。§9.3 で `Origin` と完全一致させるため）。`workers.dev` とそのサブドメインは大文字小文字を問わず拒否する
 - `portal.regions` は `allowed`（1 件以上）と `default`（`allowed` に含まれること）がどちらも必須
 - `boundaries[].issuers` の URL は `https`、クエリ・フラグメント・末尾の `/` なし。issuer の URL は境界・階層をまたいで重複してはいけない（鍵を境界 × 階層で分けるため。cto の D3）。issuer の `workers.dev` は拒否しない（issuer のホストは N9・G-8 で決める）
+- issuer のホストは、ポータル（`portal.standardOrigin`・`portal.adminOrigin`）のホストと同じ、またはサブドメインとして入れ子になってはいけない（G-8。Bypass の範囲・Cookie の範囲・ホスト方式のチームのホストが重なるため）。誤りは `boundaries[i].issuers.<tier>: issuer_host_overlaps_portal`（URL の値は出さない）。ホストは小文字・末尾のドットなし・ポートなしで比べる
 - 管理外の境界（`partner:*`）の Organization は `placement: "accounts"` だけ（先方の `ListAccounts` は読めない。§5.1）
 - `roles[].permissions.managedPolicyArns` は AWS 管理ポリシー（`arn:aws:iam::aws:policy/...`）だけ。`inlinePolicyFiles` は下流のリポジトリ内の相対パス（絶対パスと `..` を受け付けない）
 - ロールの `roleName`（IAM のロール名）も重複してはいけない。ロールの `name` から StackSets のパラメーター名（`read-only` → `ReadOnlyTeams`）を作るので、それが衝突する名前の組（例 `a-1` と `a1`）も誤り
