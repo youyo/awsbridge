@@ -810,6 +810,8 @@ cto の決裁（2026-11-12。D8 の段階導入の書き直しを条件付きで
 | 開発環境の PoC | N2（Administrator で `--remote` が拒否されること、セッションの長さ）・N5（JWKS のキャッシュ）・N6（KMS の署名。成立。退避先の根拠）・PoC G1-b・PoC X1（`secret_key`。成立）は済み、守りの部品の版の更新の反映（§4.8） |
 | 文書 | 設計書 §7 の書き直しと、§9.2 の付け替え（この改訂） |
 
+- 注（2026-11-13、G2 の決裁）: 上の表の「開発環境の PoC」の N2・N5 は「済み」と読めるが、結果の記録は見つかっておらず、G2 の決裁では未測定として ② の最初（②-0）で測る。守りの部品の版の更新の反映も同じ（G2 の上申資料 §2.2）
+
 | ゲート | 時機 | 扱うこと |
 |---|---|---|
 | G1 | ① の実装の前（**済み**）| Admin 側の発行の設計（[console-login-admin.md](console-login-admin.md)）は X1 に決まった。N6・G1-b・X1 の PoC は成立。P1' のまま（§3.1）。D2 は ① は同じリポジトリの別エントリ。G1-b に Sol のレビューを取った |
@@ -850,7 +852,7 @@ cto の決裁（2026-11-12。D8 の段階導入の書き直しを条件付きで
 - PR の積み方: #19 は #16 の上、#22・#23 は #21 の上、#24 は #20 の上、#25 は #23 の上、#26 は #25 の上、#27 は #26 の上。#20 は #16・#17 を、#21 は #18・#19 をマージした上に積んでいる
 - **生成器の誤りの種別**（`src/console/config.ts` と `template.ts`。`ConsoleConfigIssueCode`）に足したもの: `issuer_host_overlaps_portal`・`admin_issuer_path`・`admin_issuer_multiple`・`admin_issuer_host_shared`（いずれも誤り）、`signing_account`（誤り。署名を置くアカウントにコンソールのロールを配る設定。X1 で署名用アカウントが無くなったので、残すかは未決）、`signin_access_admin`（誤り）・`signin_access_standard`（警告）、`admin_session_seconds`（誤り。Admin の階層のロールの `sessionSeconds` が 3600 を超える。G2 の決裁の論点 5）
 - **実装済み（コードと試験）**: Standard の `secret_key`（PR #29）、Admin のプロバイダーのスタック（PR #36）、検知の道具 `console:reconcile`（PR #37。§5.6）、停止の道具（PR #33・#34）、Cookie Path の検査（PR #35）、Admin の `MaxSessionDuration` の強制・Admin の CSRF の鍵の道具・Access JWT の大きさの上限（G2 の前の残り）
-- **実物で未確認（② の最初に行う）**: 本物の `secret_key` での Worker の確認（`console:*-key:check`）、Cloudflare の API の応答の形と CloudTrail のフィールド名（`console:reconcile`）、Administrator のセッションからのプロバイダーの書き込みの拒否、停止の道具と棚卸しの訓練、Admin の 1 時間のセッション、Admin の初回のデプロイの順（Worker が無い状態で鍵を入れられるか）
+- **実物で未確認（② の最初に行う）**: 本物の `secret_key` での Worker の確認（`console:*-key:check`）、Cloudflare の API の応答の形と CloudTrail のフィールド名（`console:reconcile`）、Administrator のセッションからのプロバイダーの書き込みの拒否、停止の道具と棚卸しの訓練、Admin の 1 時間のセッション、Admin の初回のデプロイの順（Worker が無い状態で鍵を入れられるか）、実物の Access JWT の長さ（大きさの上限 16 KiB との余裕）、引き受けたあとの操作のイベントに SourceIdentity が残るか（N4。棚卸しの手順の前提）
 - **未実装**: C-4 の署名役（実装計画の PR12 は止めたまま。X1 で退避先）。守りの部品の監査の Deny（A-12。② では足さない。G5 で決め直す）。CODEOWNERS（D2 の条件 (3)。G5 の前）
 - 実装の段の順は portal §9.3 の番号の順と同じではない（停止スイッチと要求の検査が先、回数の制限が身元の後。どの段も失敗で止まる点は同じ。PR #21）
 

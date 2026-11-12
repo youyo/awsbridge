@@ -380,10 +380,10 @@ The Admin Worker for console login (`wrangler.console-admin.jsonc`) signs the JW
 Order for the first deployment (**an example that has not been run yet**; to be confirmed in ②). The decided order is "key -> Worker -> provider": publish the Admin issuer (discovery and JWKS) before you deploy the Admin provider (`docs/specs/console-login-admin.md` §2.2).
 
 1. Prepare: generate the artifacts from the config (`mise run console:config:generate`; `worker.admin.json`) and create the Access applications on the Admin portal host (entry and teams; see the Cookie Path section). A downstream repository writes the routes and vars (`ACCESS_TEAM_DOMAIN`, `ACCESS_MAX_AGE_SECONDS`, and so on) in its own `wrangler.<name>-console-admin.jsonc`. Leave the signing key vars (`ADMIN_CURRENT_KEY`, `ADMIN_PUBLIC_JWKS`) empty.
-2. Deploy the Admin Worker (with the key vars empty, issuing returns `503 signing_unavailable` and the JWKS returns 404). This creates the Worker that the key and the secret are uploaded to. Whether a key can be uploaded before the Worker exists has not been checked.
+2. Deploy the Admin Worker. The CSRF key is not there yet, so the team paths and the issuer documents all return `500 server_misconfigured` (after the CSRF key is uploaded, while the key vars are still empty, issuing returns `503 signing_unavailable` and the JWKS returns 404). This creates the Worker that the key and the secret are uploaded to. Whether a key can be uploaded before the Worker exists has not been checked.
 3. Upload the CSRF key and the signing key (commands below).
 4. Put the `ADMIN_PUBLIC_JWKS` and `ADMIN_CURRENT_KEY` printed by `put` into the vars of the wrangler config and deploy again.
-5. Run `mise run console:admin-key:check` to check the binding type, the Admin issuer's discovery and JWKS, and the key-check.
+5. Run `mise run console:admin-key:check` to check the binding type, the Admin issuer's discovery and JWKS, and the key-check. IAM reads the discovery document when it creates a provider, so if Access covers the Admin issuer host in your environment, put the two paths (discovery and JWKS) behind an Access Bypass (see the notes in `wrangler.console-admin.jsonc`).
 6. After you confirm the Admin issuer is published, pass `AdminIssuerHost` to the base stack to deploy the Admin provider (see the base section), then deploy the Administrator role.
 
 ```bash
@@ -486,7 +486,7 @@ An Administrator has full rights in the target account, so it can leave entry po
    aws iam list-saml-providers --profile <p>
    ```
 
-3. **Writes made by that person's sessions**: from CloudTrail management events, pick those whose `userIdentity.sessionContext.sourceIdentity` is the person's SourceIdentity (email by default). `lookup-events` covers the last 90 days, one region at a time, and takes only one lookup attribute per call. It cannot filter by SourceIdentity, so narrow by `EventSource` or similar first, then filter on the contents of `CloudTrailEvent` (a JSON string). IAM events are recorded in us-east-1. For other services, check each enabled region.
+3. **Writes made by that person's sessions**: from CloudTrail management events, pick those whose `userIdentity.sessionContext.sourceIdentity` is the person's SourceIdentity (email by default). `lookup-events` covers the last 90 days, one region at a time, and takes only one lookup attribute per call. It cannot filter by SourceIdentity, so narrow by `EventSource` or similar first, then filter on the contents of `CloudTrailEvent` (a JSON string). IAM events are mostly recorded in us-east-1 ("Global service events" in the CloudTrail documentation, which notes that some global service events are logged in other regions). Check each enabled region, including for other services. **Whether `sourceIdentity` stays on the events of operations after the assumption (N4) has not been checked in this repository yet.** It is to be checked in ②; if it does not, this procedure will be changed (for example, to pick events by the RoleSessionName `console-<email>`).
 
    ```sh
    aws cloudtrail lookup-events --region us-east-1 --profile <p> \

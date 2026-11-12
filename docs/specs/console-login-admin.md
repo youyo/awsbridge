@@ -105,7 +105,7 @@ issuer の公開文書（discovery と JWKS）: Admin の Worker が <admin-issu
 | 2 | 公開鍵（`ADMIN_PUBLIC_JWKS`）と今の鍵（`ADMIN_CURRENT_KEY`）を vars に入れ、Admin の Worker をデプロイする | Cloudflare | discovery と JWKS が公開されていて、`kid` が鍵と一致する |
 | 3 | Admin のプロバイダー（基盤のスタック）と Administrator のロールを配る | 各アカウント | プロバイダーの作成が成功する。引き受けが通る |
 
-- 決裁のデプロイの順は 鍵 → Worker → プロバイダー [資料: X1 の決裁]。README の手順（鍵の投入 → vars に公開鍵を入れる → デプロイ）はこの順に当たる。新しい Worker に最初の鍵を投入するとき、Worker のスクリプトが先に存在している必要があるかは確かめていない [未検証]
+- 決裁のデプロイの順は 鍵 → Worker → プロバイダー [資料: X1 の決裁]。README の初回の順（G2 の決裁の論点 5 で書いた。実行していない例）は「鍵の vars を空のまま Worker をデプロイ → CSRF の鍵と署名鍵を入れる → vars に公開鍵と今の鍵を書いて再デプロイ → `console:admin-key:check` → Admin のプロバイダー」で、決裁の順の前に空のデプロイを置いた（鍵と secret を入れる先のスクリプトを先に作るため。空のあいだは issuer の JWKS が出ないので、プロバイダーより先に issuer を公開する順は崩れない）。新しい Worker に最初の鍵を投入するとき、Worker のスクリプトが先に存在している必要があるかは確かめていない [未検証。② で確かめる]
 - 世代つきの新しいパスに移るとき（§6.3）も、新しい issuer を先に公開してから新しいプロバイダーを配る
 
 ---
@@ -132,7 +132,7 @@ X1 の条件 (f): AWS 側の署名役に求めた検査を、Admin の Worker �
 | aud はちょうど 1 つ | Admin のチームの AUD の表にあること。2 つ以上（混在）は断る。入口の AUD と Standard のチームの AUD は発行に受けない | **G1-b の PoC で、Cookie Path が無効のとき、Standard の階層のアプリで得た JWT の aud に 2 つの AUD が入り、aud の完全一致を見ない実装で Admin の JWT が発行された**（2 回）[確認済み: A.4 の P-a]。実装は PR #18（jose の `audience` は使わず、検証後に自分で判定する）|
 | 人であること | `email` が空でない。`sub` が空でない。`common_name` があれば断る（サービストークン） | サービストークンの実物は `common_name` があり `sub` が空。`type` はどちらも `app` で、種別の判定に使えない [確認済み: A.4 の P-a]。実装は PR #18 |
 | 鮮度 | `iat` を必須にし、`iat` からの経過時間に上限を掛ける（既定 900 秒 = Admin の Access のセッションの長さ。vars `ACCESS_MAX_AGE_SECONDS`）。未来の `iat`（30 秒超）と上限超えは 401。`exp`・`nbf` も見る | Cookie Path が無効のとき、`exp - iat = 86400` の JWT が Admin のパスに届いた [確認済み: A.4 の P-a]。実装は PR #27（Admin だけ。Standard の振る舞いは変えない）。**Access アプリのセッションの長さを、この値に揃える**必要がある |
-| JWT の検証の仕様 | アルゴリズムは RS256 に固定。JWKS はチームドメインから取る（静的に持たない）。未知の `kid` と取得の失敗は断る | [資料: G1-b の決裁 A-2 の (4)]。実装は PR #18（JWKS はチームドメインごとにキャッシュ）。**大きさの上限**: `Cf-Access-Jwt-Assertion` が 16 KiB（16384 文字。`ACCESS_JWT_MAX_LENGTH`）を超えれば、署名の検証と JSON の解析の前に 401（`unauthorized`、理由 `too_large`）。Standard・Admin・入口の一覧のすべての受け口に掛かる（G2 の決裁の論点 5。単体と e2e の試験あり、実物では未確認）。必須 claim の型は `exp`・`sub`・`email`・`aud`・`type`（Admin は `iat` も）を見る |
+| JWT の検証の仕様 | アルゴリズムは RS256 に固定。JWKS はチームドメインから取る（静的に持たない）。未知の `kid` と取得の失敗は断る | [資料: G1-b の決裁 A-2 の (4)]。実装は PR #18（JWKS はチームドメインごとにキャッシュ）。**大きさの上限**: `Cf-Access-Jwt-Assertion` が 16 KiB（16384 文字。`ACCESS_JWT_MAX_LENGTH`）を超えれば、署名の検証と JSON の解析の前に 401（`unauthorized`、理由 `too_large`）。Standard・Admin・入口の一覧のすべての受け口に掛かる（G2 の決裁の論点 5。単体と e2e の試験あり、実物では未確認）。上限の値は推測で選んだ。**実物の Access JWT の長さは測っていない**（② で測り、正規のトークンとの余裕を確かめる）。必須 claim の型は `exp`・`sub`・`email`・`aud`・`type`（Admin は `iat` も）を見る |
 | Cookie Path | **Standard も Admin も、すべてのチームのアプリで Cookie Path（`path_cookie_attribute`）を有効にする**（R-P の要件）。無効だと、同じホストの別のアプリの AUD も JWT の `aud` に入る。aud ちょうど 1 つの検査で断られるので、破れるのは可用性だが、ログインができなくなる | [資料: G1-b の決裁]。検査は `mise run console:access:inspect`（Cloudflare API を GET だけで読む。入口のアプリとすべてのチームのアプリを見る。R-P は誤り、R-H は警告）、参考の Terraform は `infra/cloudflare/console/`（`path_cookie_attribute = true` に固定）。Worker では強制しない（cto の決裁。console-login.md §5.4） |
 
 ### 3.2 署名

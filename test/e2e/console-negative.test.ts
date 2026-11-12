@@ -78,8 +78,10 @@ let stdBroken: Instance;
 let stdMismatch: Instance;
 let stdNoKey: Instance;
 let adminBroken: Instance;
-// Access JWT の大きさの上限の試験の送り先（大きなヘッダーの要求を、ほかの試験と同じ wrangler dev に通さない。
-// 同じインスタンスに通すと、あとの「Content-Length つきの大きな本文」の試験が wrangler dev のプロキシの 503 で揺れた）
+// Access JWT の大きさの上限の試験の送り先（ほかの試験と別の wrangler dev）。これらの試験を std・admin に送ると、あとの
+// 「Content-Length つきの大きな本文 → 413」の試験が wrangler dev のプロキシの 503（Your worker restarted mid-request）で
+// ときどき落ちた。原因は特定できていない（上限を 8 KiB にしても揺れたので、ヘッダーの大きさだけでは説明できない）。
+// 分けてからは再現していない（回避策）
 let stdBig: Instance;
 let adminBig: Instance;
 let fake: FakeServer;

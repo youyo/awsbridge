@@ -11,10 +11,11 @@ const CLOCK_TOLERANCE_SECONDS = 30;
 
 /**
  * Access JWT（Cf-Access-Jwt-Assertion）の長さの上限（文字数。JWT は base64url と "." だけなので文字数 = バイト数）。
- * 16 KiB にした理由: Cloudflare Access のアプリのトークンは数百バイト〜1 KiB 程度（RS256 の署名 342 文字 + 少数の claim。
- * グループは JWT に入らず get-identity で取る）で、OIDC の追加の claim を足しても桁で余裕がある。一方、上限が無いと、
- * Access を通った利用者でも大きなヘッダーで base64 の復号・JSON の解析・RSA の検証を Worker にさせられる。
- * Cloudflare のリクエストヘッダーの上限（全体で 128 KB 程度）より十分小さく、正規のトークンを断らない値として選んだ。
+ * 16 KiB にした理由（大きさは推測。実物の JWT の長さは測っていない。② で測る）: アプリのトークンの claim は十数個
+ * （aud・email・exp・iat・nbf・iss・type・identity_nonce・sub・country・policy_id など。.claude/handover/poc-cf-idp.md の実測は
+ * キーの一覧だけ）と RS256 の署名（342 文字）で、数 KiB に届かないと見込む。グループは JWT に入らず get-identity で取る。
+ * SourceIdentity に custom.<名前>（IdP の追加の claim）を使うと大きくなりうるので、見込みの数倍の余裕を取った。
+ * 上限が無いと、Access を通った利用者でも大きなヘッダーで base64 の復号・JSON の解析・RSA の検証を Worker にさせられる。
  * 超えたものは署名の検証と JSON の解析の前に 401（reason: too_large）で断る（cto の決裁 G2 の論点 5）。
  */
 export const ACCESS_JWT_MAX_LENGTH = 16 * 1024;

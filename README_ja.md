@@ -379,10 +379,10 @@ mise run console:standard-key:retire -- --binding STANDARD_KEY_<旧い鍵> --yes
 初回のデプロイの順（**まだ実行していない例**で、② で確かめます）。決裁の順は「鍵 → Worker → プロバイダー」で、Admin の issuer（discovery と JWKS）を公開してから Admin のプロバイダーを配ります（`docs/specs/console-login-admin.md` §2.2）。
 
 1. 準備: 設定から生成物を作り（`mise run console:config:generate`。`worker.admin.json`）、Admin のポータルのホストに Access のアプリを作ります（入口とチーム。Cookie Path の節）。下流は自前の `wrangler.<name>-console-admin.jsonc` に routes と vars（`ACCESS_TEAM_DOMAIN`・`ACCESS_MAX_AGE_SECONDS` など）を書きます。署名鍵の vars（`ADMIN_CURRENT_KEY`・`ADMIN_PUBLIC_JWKS`）は空のままにします。
-2. Admin の Worker をデプロイします（鍵の vars が空なので発行は `503 signing_unavailable`、JWKS は 404）。鍵と secret を入れる先の Worker を先に作るためです。Worker が無い状態で鍵を入れられるかは確かめていません。
+2. Admin の Worker をデプロイします。CSRF の鍵がまだ無いので、チームのパスも issuer の文書もすべて `500 server_misconfigured` です（CSRF の鍵を入れたあとも、鍵の vars が空のあいだは発行が `503 signing_unavailable`、JWKS は 404）。鍵と secret を入れる先の Worker を先に作るためです。Worker が無い状態で鍵を入れられるかは確かめていません。
 3. CSRF の鍵と署名鍵を入れます（下のコマンド）。
 4. `put` が表示した `ADMIN_PUBLIC_JWKS` と `ADMIN_CURRENT_KEY` を wrangler の設定の vars に書いて、もう一度デプロイします。
-5. `mise run console:admin-key:check` で、バインディングの型、Admin の issuer の discovery と JWKS、key-check を確かめます。
+5. `mise run console:admin-key:check` で、バインディングの型、Admin の issuer の discovery と JWKS、key-check を確かめます。IAM はプロバイダーを作るときに discovery を読むので、Admin の issuer のホストに Access を掛けている環境では、discovery と JWKS の 2 つのパスを Access の Bypass にしておきます（`wrangler.console-admin.jsonc` の注記）。
 6. Admin の issuer が公開されたのを確かめてから、base のスタックに `AdminIssuerHost` を渡して Admin のプロバイダーを配り（base の節）、Administrator のロールを配ります。
 
 ```bash
@@ -485,7 +485,7 @@ Administrator は対象のアカウントの全権なので、アクセスキー
    aws iam list-saml-providers --profile <p>
    ```
 
-3. **その人のセッションが行った書き込み**: CloudTrail の管理イベントから、`userIdentity.sessionContext.sourceIdentity` がその人の SourceIdentity（既定は email）のものを拾います。`lookup-events` は過去 90 日・1 リージョンずつで、絞り込みの属性は 1 回に 1 つだけです。SourceIdentity では絞り込めないので、`EventSource` などで絞ってから、`CloudTrailEvent`（JSON の文字列）の中身で絞ります。IAM のイベントは us-east-1 に記録されます。ほかのサービスは、有効なリージョンごとに見ます。
+3. **その人のセッションが行った書き込み**: CloudTrail の管理イベントから、`userIdentity.sessionContext.sourceIdentity` がその人の SourceIdentity（既定は email）のものを拾います。`lookup-events` は過去 90 日・1 リージョンずつで、絞り込みの属性は 1 回に 1 つだけです。SourceIdentity では絞り込めないので、`EventSource` などで絞ってから、`CloudTrailEvent`（JSON の文字列）の中身で絞ります。IAM のイベントは基本的に us-east-1 に記録されます（CloudTrail の文書の「Global service events」。ほかのリージョンに記録されるグローバルサービスのイベントもあるとされる）。ほかのサービスも含め、有効なリージョンごとに見ます。**引き受けたあとの操作のイベントに `sourceIdentity` が残るか（N4）は、このリポジトリではまだ確かめていません**。② で確かめ、残らなければこの手順を直します（RoleSessionName の `console-<email>` で拾う形など）。
 
    ```sh
    aws cloudtrail lookup-events --region us-east-1 --profile <p> \
