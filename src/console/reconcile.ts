@@ -19,7 +19,7 @@
 //   warning jti_reused                同じ jti で 2 回以上引き受けた
 //   warning record_without_assume     引き受けがあるはずの記録に、引き受けが無い
 //   warning aux_mismatch              補助のキー（AccessKeyId・RequestId・AssumedRoleId の伏せ字）が食い違う
-//   warning unverifiable              記録の保持より古く、記録の無い引き受け（件数。決裁 (a)）
+//   warning unverifiable              記録の保持より古く、記録の無い引き受け（件数。決裁 (a)。1 件以上なら終了コードは 1）
 //   warning window_exceeds_retention  さかのぼりが記録の保持より長い
 //   note    pending                   反映の遅れ（lagSeconds）より新しく、まだ引き受けが見えない記録
 //   note    record_sts_failed_no_event STS が失敗した記録で、引き受けのイベントが無い（失敗はイベント履歴に出ないことがある）
@@ -300,6 +300,14 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
       unreadableLines: i.lines.unreadable.length,
     },
   };
+}
+
+/**
+ * 終了コード: 1 は誤りがあるか、検証できない引き受け（unverifiable）が 1 件以上あるとき。それ以外は 0（実行できないときの 2 は CLI）。
+ * 検証できない引き受けは所見の区分では警告のままだが、「誤り 0 にもしない」（cto の決裁 (a)）ので 0 で終わらせない（司令塔の判断 2026-11-13）。
+ */
+export function reconcileExitCode(r: ReconcileResult): 0 | 1 {
+  return r.findings.some((f) => f.severity === "error") || r.summary.unverifiable > 0 ? 1 : 0;
 }
 
 // ---- 出力 ----

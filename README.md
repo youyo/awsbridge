@@ -392,7 +392,7 @@ Exit codes: 0 done (or nothing to change; extra values alone still give 0) / 1 s
 - Retention window: the default lookback is 6 days (shorter than the 7-day retention). Assumptions older than the record retention that have no record are counted separately as `unverifiable`. A lookback longer than the retention is a warning (`--retention-days` changes the retention).
 - Truncated record lines (`$cloudflare.truncated` and similar) and unreadable lines are errors; only their positions are printed.
 - The output is redacted (`jti` shows its first 8 characters, no email, account IDs show the last 4 digits). The summary shows the window read, the number of regions, the unverifiable count, truncated lines, and where the records came from (`source: api` or `file`).
-- Exit codes: `0` no errors / `1` errors / `2` could not run (input, aws, or API failure).
+- Exit codes: `0` no errors / `1` errors, or one or more unverifiable assumptions (even with zero errors) / `2` could not run (input, aws, or API failure).
 - Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_LOGS_TOKEN` (API token for `--logs-api`; environment variable only), `AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID` (Cloudflare account ID), `AWSBRIDGE_CONSOLE_LOGS_WORKERS` (optional; Worker names, default `awsbridge-console-standard,awsbridge-console-admin`), `AWSBRIDGE_CONSOLE_CONFIG` (config file).
 - Token: a read-only token is preferable, but according to the Cloudflare API specification `telemetry/query` accepts only the "Workers Observability Write" permission. Whether a Read-only token works is to be checked in stage 2. Limit the token to Workers Observability; do not give it permission to write Workers or secrets.
 

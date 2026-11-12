@@ -333,6 +333,20 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
     noSecrets(r.out, []);
   });
 
+  it("記録の保持より古く記録の無い引き受け（検証できない）が 1 件以上あれば、誤りが 0 でも終了コード 1", async () => {
+    const old = issue({ jti: newJti(), at: now() - 8 * 86_400_000 });
+    const { env, records } = setup({ trails: [{ region: "us-east-1", events: [trail(old)] }] });
+    const r = await run(
+      ["--profile", "reconcile-test", "--records", records, "--since", "10d"],
+      env,
+    );
+    expect(r.out).toContain("unverifiable: 1");
+    expect(r.out).toMatch(/errors: 0,/);
+    expect(r.out).not.toContain("assume_without_record");
+    expect(r.status, r.out).toBe(1);
+    noSecrets(r.out, [old.jwt.jti]);
+  });
+
   it("さかのぼりを記録の保持より長くすると window_exceeds_retention（警告）", async () => {
     const { env, records } = setup({});
     const r = await run(

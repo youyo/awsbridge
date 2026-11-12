@@ -391,7 +391,7 @@ mise run console:inspect -- --profile=<p> --stops=.secrets/console-stops.json   
 - 保持の窓: 既定のさかのぼりは 6 日です（保持の 7 日より短く）。記録の保持より古く記録の無い引き受けは「検証できない（`unverifiable`）」として別に数えます。さかのぼりを保持より長くすると警告です（`--retention-days` で保持の日数を変えられます）。
 - 切られた記録の行（`$cloudflare.truncated` など）と読めない行は、位置だけを出して誤りにします。
 - 出力は伏せ字です（`jti` は先頭 8 文字、email は出さない、アカウント ID は末尾 4 桁）。要約に、読んだ期間・リージョン数・検証できない件数・切られた行・記録をどこから読んだか（`source: api` か `file`）を出します。
-- 終了コード: `0` 誤りなし / `1` 誤りあり / `2` 実行できない（入力・aws・API の失敗）。
+- 終了コード: `0` 誤りなし / `1` 誤りあり、または検証できない引き受けが 1 件以上（誤りが 0 でも 0 で終わらせない）/ `2` 実行できない（入力・aws・API の失敗）。
 - 変数（`mise.local.toml`）: `AWSBRIDGE_CONSOLE_LOGS_TOKEN`（`--logs-api` の API のトークン。環境変数だけ）、`AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID`（Cloudflare のアカウント ID）、`AWSBRIDGE_CONSOLE_LOGS_WORKERS`（任意。Worker の名前。既定 `awsbridge-console-standard,awsbridge-console-admin`）、`AWSBRIDGE_CONSOLE_CONFIG`（設定ファイル）。
 - トークン: 読み取りだけのトークンが望ましいですが、Cloudflare の API の仕様では `telemetry/query` は「Workers Observability Write」の権限しか受け付けません。読み取り（Read）だけで通るかは ② で確かめます。トークンは Workers Observability だけに絞り、Worker や secret を書ける権限を付けません。
 

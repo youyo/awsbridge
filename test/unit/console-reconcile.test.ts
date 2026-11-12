@@ -2,7 +2,12 @@
 // 計画: impl-plan-g2-remaining.md の件 3。cto の決裁（2026-11-13 の 2 件）: 全リージョン（★1）・保持の窓 (a)・切られた行 (c)・
 // 設定に無いプロバイダーでの引き受けは誤り。
 import { describe, expect, it } from "vitest";
-import { formatReconcileReport, type ReconcileInput, reconcile } from "../../src/console/reconcile";
+import {
+  formatReconcileReport,
+  type ReconcileInput,
+  reconcile,
+  reconcileExitCode,
+} from "../../src/console/reconcile";
 import type { AssumeEvent, ReconRecord } from "../../src/console/reconcile-input";
 
 const ACCOUNT = "333333333333";
@@ -354,5 +359,31 @@ describe("formatReconcileReport（伏せ字の出力と要約）", () => {
     expect(text).toContain(a.jti?.slice(0, 8));
     expect(text).not.toMatch(/(?<!\d)\d{12}(?!\d)/);
     expect(text).not.toMatch(/@/);
+  });
+});
+
+describe("reconcileExitCode（終了コード。司令塔の判断 2026-11-13: 検証できない引き受けは 0 で終わらせない）", () => {
+  it("誤りも検証できない引き受けも無ければ 0", () => {
+    const a = rec();
+    expect(reconcileExitCode(reconcile(input({ records: [a], events: [evFor(a)] })))).toBe(0);
+  });
+
+  it("誤りがあれば 1", () => {
+    expect(reconcileExitCode(reconcile(input({ events: [evFor(rec())] })))).toBe(1);
+  });
+
+  it("誤りが 0 でも、検証できない引き受けが 1 件以上あれば 1（所見の区分は unverifiable の警告のまま）", () => {
+    const old = rec({ at: NOW - 8 * DAY });
+    const r = reconcile(
+      input({ window: { since: NOW - 10 * DAY, until: NOW }, events: [evFor(old)] }),
+    );
+    expect(r.findings.filter((f) => f.severity === "error")).toEqual([]);
+    expect(r.findings.find((f) => f.code === "unverifiable")?.severity).toBe("warning");
+    expect(r.summary.unverifiable).toBe(1);
+    expect(reconcileExitCode(r)).toBe(1);
+  });
+
+  it("警告だけ（検証できない引き受けは無い）なら 0", () => {
+    expect(reconcileExitCode(reconcile(input({ records: [rec()] })))).toBe(0);
   });
 });

@@ -15,7 +15,7 @@
 //     AWSBRIDGE_CONSOLE_LOGS_API_BASE     試験用（http://127.0.0.1:<port> だけ）
 // 既定のさかのぼりは 6 日（記録の保持 7 日より短く。決裁 (a)）。
 // 出力は伏せ字（jti は先頭 8 文字、email は出さない、アカウント ID は末尾 4 桁）。
-// 終了コード: 0 誤りなし / 1 誤りあり / 2 実行できない（入力・aws・API の失敗）。
+// 終了コード: 0 誤りなし / 1 誤りあり、または検証できない引き受けが 1 件以上 / 2 実行できない（入力・aws・API の失敗）。
 // 限界: 突き合わせは検知の材料で、完全性の証明ではない。7 日以内に回さなかった発行は、あとから検証できない。
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -30,6 +30,7 @@ import {
   DEFAULT_RETENTION_DAYS,
   formatReconcileReport,
   reconcile,
+  reconcileExitCode,
   redactReconcile,
 } from "../../src/console/reconcile";
 import {
@@ -250,7 +251,7 @@ async function main(): Promise<number> {
     retentionDays,
   });
   console.log(formatReconcileReport(result, { label: `profile ${profile}`, apiCount }));
-  return result.findings.some((f) => f.severity === "error") ? 1 : 0;
+  return reconcileExitCode(result);
 }
 
 function stop(message: string): never {
