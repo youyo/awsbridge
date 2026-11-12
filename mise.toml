@@ -133,6 +133,10 @@ run = "pnpm tsx scripts/console/kind-example.ts"
 description = "コンソールログインの検査の道具: プロファイルのアカウントの IAM を読み（書き込まない）、信頼ポリシー（許可リスト方式）・パス・守りの部品の今の版・予約名の衝突・棚卸し・署名アカウントを確かめる（--profile <名前> が要る。--stops <file> で停止中の確認。出力は伏せ字）"
 run = "pnpm tsx scripts/console/inspect.ts"
 
+[tasks."console:access:inspect"]
+description = "コンソールログインの Access アプリの検査: 生成物の access.json の入口とチームの AUD に当たるアプリを Cloudflare API で読み（GET だけ。書き込まない）、対象が合うか・Cookie Path（path_cookie_attribute）が有効かを確かめる（R-P では無効は誤り、R-H では警告）。AWSBRIDGE_CONSOLE_ACCESS_CF_ACCOUNT_ID と AWSBRIDGE_CONSOLE_ACCESS_READ_TOKEN（Access: Apps and Policies の Read だけ。mise.local.toml に置く）が要る。出力に AUD・トークンを出さない"
+run = "pnpm tsx scripts/console/access-inspect.ts"
+
 # ---- コンソールログイン: Admin の署名鍵（Workers の secret_key 型。X1 の決裁）。手順は README の「コンソールログインの Admin の署名鍵」----
 # 人が手元で実行する（CI から実行しない）。put と retire は -- --yes を付けたときだけ Cloudflare API を書き換える（既定は表示だけ）。
 # 変数（[env] に置かず mise.local.toml に置く）: AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID、AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN（任意。無ければ wrangler の OAuth）、
