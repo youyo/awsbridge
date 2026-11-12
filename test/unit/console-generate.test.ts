@@ -215,6 +215,158 @@ describe("Worker 用の生成物（階層ごと）", () => {
   });
 });
 
+describe("Worker 用の生成物: 契約の印（purpose）と SourceIdentity の出どころ", () => {
+  it("purpose は issue。SourceIdentity の出どころは既定 email で、設定の値が両方の階層に入る", () => {
+    const r = company();
+    expect(r.worker.standard.purpose).toBe("issue");
+    expect(r.worker.admin?.purpose).toBe("issue");
+    expect(r.worker.standard.identity).toEqual({ sourceIdentity: "email" });
+    expect(r.worker.admin?.identity).toEqual({ sourceIdentity: "email" });
+    const c = companyConfig();
+    c.identity = { sourceIdentity: "custom.employee_id" };
+    const custom = gen(c, { auds: companyAuds(), inventory: companyInventory() });
+    expect(custom.worker.standard.identity).toEqual({ sourceIdentity: "custom.employee_id" });
+    expect(custom.worker.admin?.identity).toEqual({ sourceIdentity: "custom.employee_id" });
+  });
+});
+
+describe("表示用の生成物（display.standard.json。U2・P1'）", () => {
+  const display = () => company().display;
+
+  it("Standard のデプロイにだけ渡す表示用の印と、遷移先のオリジンを持つ", () => {
+    expect(display()).toMatchObject({
+      schemaVersion: 1,
+      purpose: "display",
+      tier: "standard",
+      generatedAt: AT,
+      sourceRevision: "abc",
+      portal: {
+        origin: "https://portal.example.com",
+        adminOrigin: "https://admin-portal.example.com",
+        routing: "path",
+        supportUrl: "https://support.example.com/aws",
+      },
+    });
+  });
+
+  it("Administrator の行（表示用だけ）を持つ。アカウント・ロール・チームはあるが、email と roleArn はない", () => {
+    const rows = display().accounts.filter((a) => a.tier === "admin");
+    expect(rows.map((a) => a.accountId)).toEqual(["333333333333", "444444444444"]);
+    expect(rows[1]).toEqual({
+      tier: "admin",
+      accountId: "444444444444",
+      name: "svc-c-dev",
+      orgLabel: "org-main",
+      boundary: "managed",
+      kind: "C",
+      roles: [{ role: "admin", teams: ["infra-elevated"], sessionSeconds: 3600 }],
+    });
+    for (const r of rows) expect("email" in r).toBe(false);
+    expect(display().roles.find((r) => r.name === "admin")).toEqual({
+      name: "admin",
+      displayName: "Admin",
+      tier: "admin",
+      sessionSeconds: 3600,
+    });
+    expect(display().teams.filter((t) => t.tier === "admin")).toEqual([
+      { name: "infra-elevated", displayName: "infra-elevated", tier: "admin" },
+      { name: "dev-elevated", displayName: "dev-elevated", tier: "admin" },
+    ]);
+  });
+
+  it("Standard の行は Worker 用と同じアカウントと email を持つ（email の規則は Standard と同じ）", () => {
+    const rows = display().accounts.filter((a) => a.tier === "standard");
+    expect(rows.map((a) => a.accountId)).toEqual(["333333333333", "444444444444", "222222222222"]);
+    expect(rows[0]?.email).toBe("aws+svc-a-prod@example.com");
+    expect(rows[1]?.roles).toEqual([
+      { role: "developer", teams: ["dev"], sessionSeconds: 28800 },
+      { role: "readonly", teams: ["sa", "infra"], sessionSeconds: 43200 },
+    ]);
+    const c = companyConfig();
+    c.inventory = { accountEmail: { managed: "hidden", partner: "masked" } };
+    const hidden = gen(c, { auds: companyAuds(), inventory: companyInventory() }).display;
+    expect(JSON.stringify(hidden)).not.toContain("aws+svc-a-prod");
+    expect(hidden.accounts.find((a) => a.accountId === "222222222222")?.email).toBe(
+      "aw***@example.org",
+    );
+  });
+
+  it("Entra グループの Object ID → チームの対応表を持つ（Standard・Admin の両方。小文字にそろえる。同じグループを持つチームはまとめる）", () => {
+    const g = display().groups;
+    expect(g).toEqual([
+      { objectId: uuid(1), teams: ["infra"] },
+      { objectId: uuid(2), teams: ["dev"] },
+      { objectId: uuid(3), teams: ["sa"] },
+      { objectId: uuid(4), teams: ["infra-elevated"] },
+      { objectId: uuid(5), teams: ["dev-elevated"] },
+    ]);
+    const c = companyConfig();
+    c.teams[0].access = { groupObjectIds: [uuid(1).toUpperCase()] };
+    c.teams[1].access = { groupObjectIds: [uuid(1), uuid(2)] };
+    const merged = gen(c, { auds: companyAuds(), inventory: companyInventory() }).display.groups;
+    expect(merged).toContainEqual({ objectId: uuid(1), teams: ["infra", "dev"] });
+    expect(merged).toContainEqual({ objectId: uuid(2), teams: ["dev"] });
+    expect(merged.every((x) => x.objectId === x.objectId.toLowerCase())).toBe(true);
+  });
+
+  it("policyIds・手書きの AUD のチームはグループの対応表に入らない", () => {
+    const c = companyConfig();
+    c.teams[2].access = { policyIds: [uuid(77)] };
+    const r = gen(c, { auds: companyAuds(), inventory: companyInventory() });
+    expect(r.display.groups.flatMap((x) => x.teams)).not.toContain("sa");
+    expect(JSON.stringify(r.display)).not.toContain(uuid(77));
+    const p = gen(personalConfig()).display;
+    expect(p.groups).toEqual([]);
+    expect(p.teams).toEqual([{ name: "me", displayName: "自分", tier: "standard" }]);
+  });
+
+  it("AUD・Access のポリシー ID・issuer・タグのキー・roleArn・種類の定義・権限ポリシーを持たない（Admin のチームの AUD も）", () => {
+    const c = companyConfig();
+    c.teams[2].access = { policyIds: [uuid(77)] };
+    const auds = companyAuds();
+    const all = JSON.stringify(gen(c, { auds, inventory: companyInventory() }).display);
+    for (const aud of [...Object.values(auds.teams), ...Object.values(auds.entry)])
+      expect(all, String(aud)).not.toContain(aud as string);
+    for (const leak of [
+      '"aud"',
+      "entryAud",
+      "policyIds",
+      uuid(77),
+      "https://id.example.com",
+      "awsbridge_team",
+      "roleArn",
+      "arn:aws:iam::",
+      "FederatedAdministrator",
+      "kinds",
+      "assign",
+      "kindOus",
+      "inventoryRoleArn",
+      "ou-abcd-",
+      "sourceIdentity",
+    ])
+      expect(all, leak).not.toContain(leak);
+  });
+
+  it("手書きの AUD だけの構成でも、AUD は表示用に出ない", () => {
+    const all = JSON.stringify(gen(personalConfig()).display);
+    expect(all).not.toContain("a".repeat(64));
+  });
+
+  it("check（AUD なし）でも作れる。個人用（Admin なし）には Administrator の行も adminOrigin もない", () => {
+    const r = gen(personalConfig(), { mode: "check" });
+    expect(r.display.accounts.every((a) => a.tier === "standard")).toBe(true);
+    expect(r.display.portal.adminOrigin).toBeUndefined();
+    expect(gen(companyConfig(), { mode: "check" }).display.purpose).toBe("display");
+  });
+
+  it("Worker 用の Standard の生成物には、Administrator の行も Object ID も入らない（発行用と表示用は別のファイル）", () => {
+    const s = JSON.stringify(company().worker.standard);
+    expect(s).not.toContain("00000000-0000-4000-8000-");
+    expect(s).not.toContain('"tier":"admin"');
+    expect(s).not.toContain("infra-elevated");
+  });
+});
+
 describe("アカウントの email（inventory.accountEmail。§5.6）", () => {
   const emailOf = (r: ConsoleArtifacts, id: string) =>
     r.worker.standard.accounts.find((a) => a.accountId === id)?.email;
@@ -268,12 +420,31 @@ describe("AUD（Terraform の出力と手書き）", () => {
     expect(paths.join("\n")).not.toContain("e".repeat(16));
   });
 
-  it("deploy: チームが 2 つ以上の階層で入口の AUD がなければ entry_aud_missing", () => {
+  it("deploy: Standard はチームが 2 つ以上なら入口の AUD が要る（なければ entry_aud_missing）", () => {
     const auds = companyAuds();
+    delete auds.entry;
+    expect(issuesOf(() => gen(companyConfig(), { auds }))).toContainEqual(
+      issue("portal.entryAud.standard", "entry_aud_missing"),
+    );
+  });
+
+  it("deploy: Admin のチームが 2 つ以上でも admin の入口の AUD は要らない（G-6 が決まるまで。entry_aud_missing にしない）", () => {
+    const auds = companyAuds();
+    delete auds.entry.admin;
+    // 会社用の設定は Admin のチームが 2 つ（infra-elevated・dev-elevated）
+    const c = companyConfig();
+    expect(c.teams.filter((t: Raw) => t.tier === "admin")).toHaveLength(2);
+    const r = gen(c, { auds });
+    expect(r.worker.admin?.portal.entryAud).toBeUndefined();
+    // 入口の AUD を全部省いても、誤りは Standard の分だけ
     delete auds.entry;
     const found = issuesOf(() => gen(companyConfig(), { auds }));
     expect(found).toContainEqual(issue("portal.entryAud.standard", "entry_aud_missing"));
-    expect(found).toContainEqual(issue("portal.entryAud.admin", "entry_aud_missing"));
+    expect(found).not.toContainEqual(issue("portal.entryAud.admin", "entry_aud_missing"));
+  });
+
+  it("admin の入口の AUD を渡したときは、これまでどおり Admin の生成物に入る（受け付ける。重複は誤り）", () => {
+    expect(company().worker.admin?.portal.entryAud).toBe("7".repeat(64));
   });
 
   it("check: AUD がなくても誤りにしない（PR の検査。§11.5 の順）", () => {
