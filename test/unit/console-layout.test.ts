@@ -65,6 +65,8 @@ describe("MCP 用 Worker との分離（静的な import）", () => {
       "src/console/access-inspect.ts",
       "src/console/stops.ts",
       "src/console/stop-plan.ts",
+      "src/console/reconcile.ts",
+      "src/console/reconcile-input.ts",
       "src/console/issue/claims.ts",
       "src/console/issue/errors.ts",
       "src/console/issue/federation.ts",
@@ -146,6 +148,40 @@ describe("検査の道具（src/console/inspect.ts）の置き場所", () => {
       "scripts/console/stop.ts",
       "src/console/stop-plan.ts",
     ]);
+  });
+});
+
+describe("突き合わせの道具（src/console/reconcile*.ts）の置き場所", () => {
+  it("どの Worker のエントリ（wrangler の main）からも届かない", () => {
+    for (const entry of [
+      "src/index.ts",
+      "src/console/standard/index.ts",
+      "src/console/admin/index.ts",
+    ]) {
+      const files = importGraph(join(root, entry)).files.map((f) => relative(root, f));
+      // 陽性の対照: コンソールの Worker は発行記録の部品（record.ts）に届いている
+      if (entry !== "src/index.ts") expect(files, entry).toContain("src/console/issue/record.ts");
+      for (const f of ["src/console/reconcile.ts", "src/console/reconcile-input.ts"])
+        expect(files, `${entry} → ${f}`).not.toContain(f);
+    }
+  });
+
+  it("突き合わせの CLI は IAM の検査の判定（src/console/inspect.ts）を import しない（別の道具・別の許可リスト）", () => {
+    for (const f of [
+      "scripts/console/reconcile.ts",
+      "scripts/console/reconcile-read.ts",
+      "scripts/console/reconcile-cf.ts",
+    ]) {
+      const files = importGraph(join(root, f)).files.map((x) => relative(root, x));
+      // 陽性の対照: 依存をたどれている（CLI と読み取りは入力の部品、Cloudflare の照会は共通の API の部品に届く）
+      expect(files, f).toContain(
+        f.endsWith("-cf.ts")
+          ? "scripts/console/key-tool-common.ts"
+          : "src/console/reconcile-input.ts",
+      );
+      expect(files, f).not.toContain("src/console/inspect.ts");
+      expect(files, f).not.toContain("scripts/console/inspect-read.ts");
+    }
   });
 });
 
@@ -237,6 +273,12 @@ describe("mise タスク（console:config:*）", () => {
   ])("%s は scripts/console/config.ts を呼び、wrangler・aws・terraform を呼ばない", (cmd, name) => {
     const run = /^run\s*=.*$/m.exec(section(name))?.[0] ?? "";
     expect(run).toContain(`scripts/console/config.ts ${cmd}`);
+    expect(run).not.toMatch(/wrangler|\baws\b|terraform/);
+  });
+
+  it("console:reconcile は scripts/console/reconcile.ts を呼び、wrangler・terraform を呼ばない（aws と Cloudflare の照会はスクリプトの中だけ）", () => {
+    const run = /^run\s*=.*$/m.exec(section('tasks."console:reconcile"'))?.[0] ?? "";
+    expect(run).toContain("scripts/console/reconcile.ts");
     expect(run).not.toMatch(/wrangler|\baws\b|terraform/);
   });
 
