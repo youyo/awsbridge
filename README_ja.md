@@ -32,7 +32,7 @@ Worker の URL が OIDC issuer になるため、次の順で進めます。
 
 ### AWS 側（対象アカウントごと）
 
-[infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml) を流すだけです。Worker の URL を issuer とする IAM OIDC プロバイダーと、Worker 発行の JWT で引き受ける 2 つのロール（読み取り専用 `FederatedMcpViewer`、デバッグ `FederatedMcpDebugger`）を作ります。この MCP 用ロールは、人のコンソールログインの階層（Viewer / Developer / Administrator）とは独立した別のロールで、人にコンソールのロールを与えても MCP 用ロールの権限は変わりません。Viewer（`FederatedMcpViewer`）は全員が使えます。Debugger（`FederatedMcpDebugger`）は、人の Administrator か Developer を持つ人にだけ渡してください（Viewer だけの人には渡さない）。Debugger はリモートシェルなどで実行先のロールの権限（MCP 経由の条件が付かない）を得られるためです。ただし人の権限の所持から自動で判定することは今はできない（MCP 側の認可は email の許可リストで、チームの情報を持たない）ので、当面はグループ（チーム）ごとに Debugger を渡すかを決めてかまいません。下流が「Debugger を渡すチーム」をアカウントごとに決め、そのチームのメンバーを `DebugAllowedSubjects` に入れます。許可リストはアカウントごとの設定なので、別のアカウントで Developer を持つだけの人は入れません。チームのメンバーが変わったときや、人から Developer / Administrator を外したときは、`DebugAllowedSubjects` も直してください。外し忘れは気付きにくいので、所属変更の手順に入れてください。将来、MCP 側の認可をチーム（Access アプリ → セッションタグ）に寄せれば、チームごとの割り当てを自動で強制できます（別の設計。未着手）。
+[infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml) を流すだけです。Worker の URL を issuer とする IAM OIDC プロバイダーと、Worker 発行の JWT で引き受ける 2 つのロール（読み取り専用 `FederatedMcpViewer`、デバッグ `FederatedMcpDebugger`）を作ります。この MCP 用ロールは、人のコンソールログインのロール（Viewer / Administrator）とは独立した別のロールで、人にコンソールのロールを与えても MCP 用ロールの権限は変わりません。Viewer（`FederatedMcpViewer`）は全員が使えます。Debugger（`FederatedMcpDebugger`）を誰に渡すかは、下流の設定（`DebugAllowedSubjects`）で決めます（上流は規則を持ちません）。渡すときの注意: Debugger はリモートシェルなどで実行先のロールの権限を得られ、その権限には MCP 経由の条件が付きません。
 
 ```
 AWS_PROFILE=<対象> mise run deploy:aws    # CloudFormation をデプロイ（何度でも別アカウントに流せる）

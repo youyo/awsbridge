@@ -39,6 +39,7 @@ const OUTPUTS = [
   { OutputKey: "TaggedRoleArn", OutputValue: role("AwsbridgeHumanPocTagged") },
   { OutputKey: "NoTagRoleArn", OutputValue: role("AwsbridgeHumanPocNoTag") },
   { OutputKey: "LocalOnlyRoleArn", OutputValue: role("AwsbridgeHumanPocLocalOnly") },
+  { OutputKey: "ViewerRoleArn", OutputValue: role("AwsbridgeHumanPocViewer") },
   { OutputKey: "OidcProviderArn", OutputValue: `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}` },
 ];
 
@@ -127,6 +128,7 @@ describe("mise タスク（段階 1a の前の条件）", () => {
     "poc:human:undeny-si": "scripts/poc/human/revoke.ts undeny-si",
     "poc:human:inline-policies": "scripts/poc/human/persist.ts inline",
     "poc:human:drift": "scripts/poc/human/persist.ts drift",
+    "poc:human:trail-signin": "scripts/poc/human/trail.ts --signin",
   };
   for (const [name, script] of Object.entries(tasks)) {
     it(`${name} は ${script} を呼ぶ`, () => {
@@ -167,6 +169,7 @@ describe("revoke.ts deny-si / undeny-si（(4-b) SourceIdentity で 1 人だけ�
     for (const [r0, name] of [
       ["localonly", "AwsbridgeHumanPocLocalOnly"],
       ["base", "AwsbridgeHumanPoc"],
+      ["viewer", "AwsbridgeHumanPocViewer"],
     ]) {
       const r = runTs("scripts/poc/human/revoke.ts", ["deny-si", "--role", r0 as string], subjects);
       expect(r.status, r.stderr).toBe(0);
@@ -221,6 +224,16 @@ describe("revoke.ts deny-si / undeny-si（(4-b) SourceIdentity で 1 人だけ�
     const put = r.calls.find((c) => c[2] === "put-role-policy") as string[];
     expect(argOf(put, "--role-name")).toBe("AwsbridgeHumanPocLocalOnly");
   });
+  it("revoke / unrevoke は --role viewer（AwsbridgeHumanPocViewer）も受け付ける", () => {
+    const r = runTs("scripts/poc/human/revoke.ts", ["revoke", "--role", "viewer"], {});
+    expect(r.status, r.stderr).toBe(0);
+    const put = r.calls.find((c) => c[2] === "put-role-policy") as string[];
+    expect(argOf(put, "--role-name")).toBe("AwsbridgeHumanPocViewer");
+    const u = runTs("scripts/poc/human/revoke.ts", ["unrevoke", "--role", "viewer"], {});
+    expect(u.status, u.stderr).toBe(0);
+    const del = u.calls.find((c) => c[2] === "delete-role-policy") as string[];
+    expect(argOf(del, "--role-name")).toBe("AwsbridgeHumanPocViewer");
+  });
 });
 
 describe("persist.ts inline（(4-a) CFN の外のインラインポリシーが残るか）", () => {
@@ -247,6 +260,7 @@ describe("persist.ts inline（(4-a) CFN の外のインラインポリシーが�
       "AwsbridgeHumanPocLocalOnly",
       "AwsbridgeHumanPocNoTag",
       "AwsbridgeHumanPocTagged",
+      "AwsbridgeHumanPocViewer",
     ]);
     for (const c of lists) expect(c).toContain("PROFILE=awsbridge");
     expect(r.stdout).toContain("AwsLoginLocalhostOnly");
@@ -423,5 +437,25 @@ describe("console-url.ts / stop-watch.ts の 2 人目と localonly（ネット�
     expect(ok.status).toBe(1);
     expect(ok.stderr).toContain("署名鍵を読めません");
     expect(ok.calls.some((c) => c[2] === "describe-stacks")).toBe(true);
+  });
+});
+
+describe("trail.ts --signin（aws login のイベント。remote と localhost の見分け）", () => {
+  it("signin.amazonaws.com のイベントを AWS_REGION と us-east-1 で引く（AssumeRoleWithWebIdentity は引かない）", () => {
+    const r = runTs("scripts/poc/human/trail.ts", ["--signin", "--minutes", "30"], {
+      AWSBRIDGE_HUMAN_POC_ISSUER: `https://${HOST}`,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const lookups = r.calls.filter((c) => c[2] === "lookup-events");
+    expect(lookups.map((c) => argOf(c, "--region")).sort()).toEqual([
+      "ap-northeast-1",
+      "us-east-1",
+    ]);
+    for (const c of lookups) {
+      expect(argOf(c, "--lookup-attributes")).toBe(
+        "AttributeKey=EventSource,AttributeValue=signin.amazonaws.com",
+      );
+      expect(c).toContain("PROFILE=awsbridge");
+    }
   });
 });

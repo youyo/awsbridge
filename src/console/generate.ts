@@ -4,6 +4,8 @@
 //
 // 分離の約束（§9.10・§11.2）: Worker 用の生成物には、その階層のチーム・ロール・境界の issuer・一覧の行だけを入れる。
 // 種類の定義（kinds）・Entra のグループの Object ID・Access のポリシー ID・権限ポリシー・OU・他の階層の AUD は入れない。
+// 2026-11-12 の決裁（P1'・U2）で、Standard の生成物に表示用の Admin の行と、表示用の対応表（Object ID → チーム）を
+// 入れてよいことになった（Admin の AUD・ポリシー ID は入れない）。いまの実装は前の約束のまま（ポータル本体と一緒に足す。§5.2）。
 
 import {
   ACCOUNT_ID_RE,
@@ -71,7 +73,7 @@ export type WorkerConfig = Meta & {
   tagKey: string;
   portal: {
     origin: string;
-    /** もう一方の階層のポータル（静的なリンクだけに使う。§8）。 */
+    /** もう一方の階層のオリジン（Standard では Administrator の行の遷移先、Admin では一覧への戻り先。§8）。 */
     peerOrigin?: string;
     routing: Routing;
     regions?: { allowed: string[]; default: string };

@@ -10,21 +10,14 @@
   ],
   "roles": [
     {
-      "name": "readonly",
-      "roleName": "FederatedViewer",
-      "displayName": "ReadOnly",
+      "name": "viewer",
+      "roleName": "FederatedAwsBridgeViewer",
+      "displayName": "Viewer",
       "sessionSeconds": 43200,
       "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/ReadOnlyAccess"] }
-    },
-    {
-      "name": "developer",
-      "roleName": "FederatedDeveloper",
-      "displayName": "Developer",
-      "sessionSeconds": 14400,
-      "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/PowerUserAccess"] }
     }
   ],
-  "kinds": [{ "name": "default", "assign": { "readonly": ["me"], "developer": ["me"] } }],
+  "kinds": [{ "name": "default", "assign": { "viewer": ["me"] } }],
   "boundaries": [
     { "name": "managed", "issuers": { "standard": "https://id.example.com/standard" } }
   ],

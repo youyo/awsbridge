@@ -200,6 +200,10 @@ run = "pnpm tsx scripts/poc/human/persist.ts inline"
 description = "PoC (4-a): スタックのドリフト検出を実行し、リソースごとの状態と差分の場所・種類（とポリシー名）を出す（値は出さない。IAM は変えない）"
 run = "pnpm tsx scripts/poc/human/persist.ts drift"
 
+[tasks."poc:human:trail-signin"]
+description = "PoC（Viewer の aws login）: CloudTrail の aws login のイベント（signin.amazonaws.com の AuthorizeOAuth2Access / CreateOAuth2Token）を平らにして出す（トークン・コード・email・アカウント ID は伏せる）"
+run = "pnpm tsx scripts/poc/human/trail.ts --signin"
+
 [tasks."poc:human:trail"]
 description = "PoC P2/P3: CloudTrail で直近の AssumeRoleWithWebIdentity と、そのセッションの API イベントの SourceIdentity・セッションタグを出す（email は伏せる）"
 run = "pnpm tsx scripts/poc/human/trail.ts"

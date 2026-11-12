@@ -2,12 +2,12 @@
 // スタックの更新（deploy-aws。AWSBRIDGE_HUMAN_POC_UPDATE_MARKER を変えると Tagged の CFN 管理のポリシーが変わる）のあとも
 // 残るか、ドリフト検出でどう見えるかを記録する。読み取りとドリフト検出だけで、IAM は変えない。
 //
-//   inline   スタックの全ロール（Output の RoleArn / TaggedRoleArn / NoTagRoleArn / LocalOnlyRoleArn）のインラインポリシー名を出し、
+//   inline   スタックの全ロール（Output の RoleArn / TaggedRoleArn / NoTagRoleArn / LocalOnlyRoleArn / ViewerRoleArn）のインラインポリシー名を出し、
 //            --role のロールに --expect のポリシーが残っているかを判定する
 //   drift    detect-stack-drift → 完了を待つ → リソースごとの状態と差分の場所・種類（とポリシー名）を出す。値は出さない
 //
 // オプション:
-//   --role base|tagged|notag|localonly   inline の判定の対象（既定 tagged）
+//   --role base|tagged|notag|localonly|viewer   inline の判定の対象（既定 tagged）
 //   --expect <名前,名前>                 inline で残っているはずのポリシー（既定 AWSRevokeOlderSessions,AwsbridgeDenySourceIdentity。空で判定なし）
 //   --poll-seconds <秒>                  drift の完了を待つ間隔（既定 5）
 //   --max-wait <秒>                      drift の完了を待つ上限（既定 300）

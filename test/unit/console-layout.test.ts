@@ -89,18 +89,23 @@ describe("設定の例（config/console*.example.json）", () => {
     expect(company.organizations.some((o) => o.boundary.startsWith("partner:"))).toBe(true);
   });
 
-  it("例のロール名は Federated* に揃える（MCP 用ロール FederatedMcp* と区別する）", () => {
-    const names = (p: string) =>
-      parseConsoleConfig(read(p)).config.roles.map((r) => [r.name, r.roleName]);
-    expect(names("config/console.example.json")).toEqual([
-      ["readonly", "FederatedViewer"],
-      ["developer", "FederatedDeveloper"],
+  it("例の人のロールは Viewer（Standard）と Administrator（Admin）だけで、名前は FederatedAwsBridge*（cto の決裁 2026-11-12。Developer は廃止）", () => {
+    const roles = (p: string) =>
+      parseConsoleConfig(read(p)).config.roles.map((r) => [r.name, r.roleName, r.tier]);
+    expect(roles("config/console.example.json")).toEqual([
+      ["viewer", "FederatedAwsBridgeViewer", "standard"],
     ]);
-    expect(names("config/console.company.example.json")).toEqual([
-      ["admin", "FederatedAdministrator"],
-      ["developer", "FederatedDeveloper"],
-      ["readonly", "FederatedViewer"],
+    expect(roles("config/console.company.example.json")).toEqual([
+      ["administrator", "FederatedAwsBridgeAdministrator", "admin"],
+      ["viewer", "FederatedAwsBridgeViewer", "standard"],
     ]);
+  });
+
+  it("例に Developer（PowerUserAccess 系）のロールを置かない", () => {
+    for (const p of ["config/console.example.json", "config/console.company.example.json"]) {
+      const raw = read(p);
+      expect(raw, p).not.toMatch(/developer|PowerUserAccess/i);
+    }
   });
 
   it("例はダミーの値だけを持つ（アカウント ID・ドメイン・email）", () => {

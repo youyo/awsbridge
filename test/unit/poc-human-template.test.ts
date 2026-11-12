@@ -70,12 +70,12 @@ describe("PoC（人間のログイン）テンプレート: OIDC プロバイダ
 
 describe("PoC（人間のログイン）テンプレート: ロール", () => {
   const role = tpl.Resources.HumanRole;
-  it("ロールは既存の HumanRole、P2〜P4 用の TaggedRole・NoTagRole、aws login を localhost に絞る LocalOnlyRole の 4 つ", () => {
+  it("ロールは既存の HumanRole、P2〜P4 用の TaggedRole・NoTagRole、aws login を localhost に絞る LocalOnlyRole、Viewer と同じ形の ViewerRole の 5 つ", () => {
     const roles = Object.entries(tpl.Resources as Record<string, Json>)
       .filter(([, r]) => r.Type === "AWS::IAM::Role")
       .map(([k]) => k)
       .sort();
-    expect(roles).toEqual(["HumanRole", "LocalOnlyRole", "NoTagRole", "TaggedRole"]);
+    expect(roles).toEqual(["HumanRole", "LocalOnlyRole", "NoTagRole", "TaggedRole", "ViewerRole"]);
   });
   it("MaxSessionDuration は 43200（12 時間）", () => {
     expect(role.Properties.MaxSessionDuration).toBe(43200);
@@ -265,6 +265,76 @@ describe("PoC（人間のログイン）テンプレート: LocalOnlyRole（(1) 
   });
 });
 
+describe("PoC（人間のログイン）テンプレート: ViewerRole（コンソールの Viewer と同じ形。aws login は localhost と remote）", () => {
+  const role = tpl.Resources.ViewerRole;
+  it("ロール名は <RoleName>Viewer（接尾辞 9 文字以内・PoC のガード AwsbridgeHumanPoc* に収まる）、MaxSessionDuration 43200", () => {
+    expect(evaluate(role.Properties.RoleName, { RoleName: "AwsbridgeHumanPoc" })).toBe(
+      "AwsbridgeHumanPocViewer",
+    );
+    expect("Viewer".length).toBeLessThanOrEqual(9);
+    expect(role.Properties.MaxSessionDuration).toBe(43200);
+  });
+  it("管理ポリシーは ReadOnlyAccess だけ（SignInLocalDevelopmentAccess は付けない）", () => {
+    expect(evaluate(role.Properties.ManagedPolicyArns, { "AWS::Partition": "aws" })).toEqual([
+      "arn:aws:iam::aws:policy/ReadOnlyAccess",
+    ]);
+  });
+  const policies = () =>
+    evaluate(role.Properties.Policies, {
+      "AWS::Partition": "aws",
+      "AWS::AccountId": "123456789012",
+    }) as Json[];
+  it("インラインポリシー: SSM パラメーターと Secrets Manager の値の取得を Deny（infra/aws/awsbridge.yaml の Viewer と同じアクション）", () => {
+    const p = policies().find((x) => x.PolicyName === "DenySecretValueRead");
+    expect(p).toBeDefined();
+    const infra: Json = parse(
+      readFileSync(resolve(import.meta.dirname, "../../infra/aws/awsbridge.yaml"), "utf8"),
+      { customTags: [] },
+    );
+    const infraPolicy = (
+      Object.values(infra.Resources as Record<string, Json>)
+        .flatMap((r) => (r.Properties?.Policies ?? []) as Json[])
+        .find((x) => x.PolicyName === "DenySecretValueRead") as Json
+    ).PolicyDocument.Statement;
+    expect(p?.PolicyDocument.Statement).toEqual(infraPolicy);
+    expect(p?.PolicyDocument.Statement.map((s: Json) => s.Effect)).toEqual(["Deny", "Deny"]);
+  });
+  it("インラインポリシー AwsLoginLocalAndRemote: 2 つのアクションを localhost と remote の 2 つのリソースだけに許す（ワイルドカードなし）", () => {
+    const p = policies().find((x) => x.PolicyName === "AwsLoginLocalAndRemote");
+    expect(p?.PolicyDocument.Statement).toEqual([
+      {
+        Sid: "AwsLoginSameAndCrossDevice",
+        Effect: "Allow",
+        Action: ["signin:AuthorizeOAuth2Access", "signin:CreateOAuth2Token"],
+        Resource: [
+          "arn:aws:signin:*:123456789012:oauth2/public-client/localhost",
+          "arn:aws:signin:*:123456789012:oauth2/public-client/remote",
+        ],
+      },
+    ]);
+    expect(JSON.stringify(policies())).not.toMatch(/public-client\/\*/);
+    expect(
+      policies()
+        .map((x) => x.PolicyName)
+        .sort(),
+    ).toEqual(["AwsLoginLocalAndRemote", "DenySecretValueRead"]);
+  });
+  it("信頼ポリシー: HumanRole と同じ aud・sub・3 つの Action に、SourceIdentity 必須（Null false）を足したもの。タグは求めない", () => {
+    const doc = roleTrust("ViewerRole");
+    const base = trustPolicy();
+    expect(doc.Statement).toHaveLength(1);
+    expect(doc.Statement[0].Principal).toEqual(base.Statement[0].Principal);
+    expect([...doc.Statement[0].Action].sort()).toEqual([...base.Statement[0].Action].sort());
+    expect(doc.Statement[0].Condition).toEqual({
+      ...base.Statement[0].Condition,
+      Null: { "sts:SourceIdentity": "false" },
+    });
+  });
+  it("Output ViewerRoleArn を出す", () => {
+    expect(tpl.Outputs.ViewerRoleArn.Value).toEqual({ "Fn::GetAtt": ["ViewerRole", "Arn"] });
+  });
+});
+
 describe("PoC（人間のログイン）テンプレート: 2 人目の利用者 SecondSubject（(4-b) 1 人だけ止める Deny の対照）", () => {
   const p = tpl.Parameters;
   it("既定は none（2 人目なし）。none か 1 人の email だけ", () => {
@@ -308,7 +378,7 @@ describe("PoC（人間のログイン）テンプレート: 2 人目の利用者
     expect(two.Null).toEqual({ "sts:SourceIdentity": "false" });
   });
   it("2 人目は Tagged だけに足す（ほかのロールの信頼ポリシーは SecondSubject を参照しない）", () => {
-    for (const r of ["HumanRole", "NoTagRole", "LocalOnlyRole"])
+    for (const r of ["HumanRole", "NoTagRole", "LocalOnlyRole", "ViewerRole"])
       expect(JSON.stringify(tpl.Resources[r].Properties.AssumeRolePolicyDocument), r).not.toContain(
         "SecondSubject",
       );

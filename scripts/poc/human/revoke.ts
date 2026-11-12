@@ -8,7 +8,7 @@
 // 操作が返った時刻（UTC）を出す。stop-watch の --since に渡して、止まるまでの秒数を測る。
 //
 // オプション:
-//   --role base|tagged|notag|localonly   revoke / unrevoke / deny-si / undeny-si の対象（既定 tagged）
+//   --role base|tagged|notag|localonly|viewer   revoke / unrevoke / deny-si / undeny-si の対象（既定 tagged）
 //   --future-seconds <秒>      revoke の基準時刻を今から何秒先にするか（既定 30。コンソールと同じく伝播の遅れを見込む）
 //   --who primary|second       deny-si で止める利用者（既定 primary = AWSBRIDGE_HUMAN_POC_SUBJECT、
 //                              second = AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT）。SourceIdentity は subject と同じ値
