@@ -197,7 +197,7 @@ describe("console:stop:apply（偽の aws で実プロセス）", () => {
     expect(writes(r.calls)).toEqual([]);
     expect(r.calls.map((c) => `${c[0]} ${c[1]}`)).toContain("sts get-caller-identity");
     for (const c of r.calls) expect(ALLOWED, c.join(" ")).toContain(`${c[0]} ${c[1]}`);
-    expect(r.out).toMatch(/put\s+FederatedViewer/);
+    expect(r.out).toMatch(/PLAN\s+FederatedViewer\s+config\s.*writes add:put/);
     expect(r.out).toContain("--yes");
     NO_SECRETS(r.out);
   });
@@ -229,7 +229,7 @@ describe("console:stop:apply（偽の aws で実プロセス）", () => {
     expect(rec[0]).toMatchObject({
       event: "awsbridge-console-stop",
       account: "****3333",
-      direction: "stop",
+      mode: "add",
       reason: "incident 42",
       values: 3,
     });
@@ -241,6 +241,9 @@ describe("console:stop:apply（偽の aws で実プロセス）", () => {
     const i = exec(ctx, "inspect.ts", ["--profile", "stop-test", "--stops", ctx.stops]);
     expect(i.out).toContain("errors: 0");
     expect(i.status, i.out).toBe(0);
+    // 最後の案内は、inspect が確かめる範囲を事実どおりに書く
+    expect(r.out).toContain("console:inspect --stops は設定のロールを確かめる");
+    expect(r.out).toContain("この道具の読み直しで確かめた");
   });
 
   it("2 回目は何も書かない（宣言的）", () => {
@@ -266,12 +269,13 @@ describe("console:stop:apply（偽の aws で実プロセス）", () => {
     expect(i.status, i.out).toBe(0);
   });
 
-  it("値が減るのに --allow-remove が無ければ終了コード 2 で、書き込みを呼ばない", () => {
+  it("足す値が無く外す値だけ（解除だけ）で --allow-remove が無ければ終了コード 2 で、書き込みを呼ばない", () => {
     const s = goodSnapshot();
-    role(s, "FederatedViewer").inlinePolicies?.push({
-      policyName: RESERVED,
-      document: stopPolicyDocument([A, B]),
-    });
+    for (const n of ["FederatedViewer", "FederatedAdministrator"])
+      role(s, n).inlinePolicies?.push({
+        policyName: RESERVED,
+        document: stopPolicyDocument([A, B]),
+      });
     const ctx = setup(s, { stops: [A] });
     const r = apply(ctx, ["--yes"]);
     expect(r.status, r.out).toBe(2);
@@ -280,7 +284,50 @@ describe("console:stop:apply（偽の aws で実プロセス）", () => {
     NO_SECRETS(r.out);
   });
 
-  it("解除の方向で途中の書き込みが失敗したら止め、済んだロールと残りを出して終了コード 1", () => {
+  it("ロールに [A, old]・一覧 [A, B] で --allow-remove なし: 足すだけ（old は消さない）。ほかのロールにも B、余分 1 件の報告、終了コード 0", () => {
+    const s = goodSnapshot();
+    role(s, "FederatedViewer").inlinePolicies?.push({
+      policyName: RESERVED,
+      document: stopPolicyDocument([A, "old@example.com"]),
+    });
+    const ctx = setup(s, { stops: [A, B] });
+    const r = apply(ctx, ["--yes"]);
+    expect(r.status, r.out).toBe(0);
+    expect(writes(r.calls).map((c) => `${c[1]} ${c[2]}`)).toEqual([
+      "put-role-policy --role-name=FederatedAdministrator",
+      "put-role-policy --role-name=FederatedViewer",
+    ]);
+    expect(r.out).toMatch(/EXTRA\s+FederatedViewer\s+1/);
+    expect(r.out).toContain("--allow-remove");
+    NO_SECRETS(r.out);
+    // 書いた結果: 全ロールに A と B。Viewer には old が残る（検査では余分の警告）
+    const i = exec(ctx, "inspect.ts", ["--profile", "stop-test", "--stops", ctx.stops]);
+    expect(i.status, i.out).toBe(0);
+    expect(i.out).toMatch(/WARN\s+stop_extra\s+FederatedViewer\s+1/);
+  });
+
+  it("同じ材料で --allow-remove あり: 全ロールに足し終えてから外す。結果は一覧どおり", () => {
+    const s = goodSnapshot();
+    role(s, "FederatedViewer").inlinePolicies?.push({
+      policyName: RESERVED,
+      document: stopPolicyDocument([A, "old@example.com"]),
+    });
+    const ctx = setup(s, { stops: [A, B] });
+    const r = apply(ctx, ["--allow-remove", "--yes"]);
+    expect(r.status, r.out).toBe(0);
+    expect(writes(r.calls).map((c) => `${c[1]} ${c[2]}`)).toEqual([
+      "put-role-policy --role-name=FederatedAdministrator",
+      "put-role-policy --role-name=FederatedViewer",
+      "put-role-policy --role-name=FederatedViewer",
+    ]);
+    expect(r.out).toContain("MaxSessionDuration");
+    NO_SECRETS(r.out);
+    const i = exec(ctx, "inspect.ts", ["--profile", "stop-test", "--stops", ctx.stops]);
+    expect(i.status, i.out).toBe(0);
+    expect(i.out).not.toContain("stop_extra");
+  });
+
+  it("外す段階で 1 つのロールの書き込みが失敗しても、ほかのロールは外し、終了コード 1", () => {
     const s = goodSnapshot();
     for (const n of ["FederatedViewer", "FederatedAdministrator"])
       role(s, n).inlinePolicies?.push({
@@ -293,10 +340,36 @@ describe("console:stop:apply（偽の aws で実プロセス）", () => {
     });
     const r = apply(ctx, ["--allow-remove", "--yes"]);
     expect(r.status, r.out).toBe(1);
-    expect(writes(r.calls).map((c) => c[2])).toEqual(["--role-name=FederatedAdministrator"]);
-    expect(r.out).toMatch(/failed:\s+FederatedAdministrator/);
-    expect(r.out).toMatch(/remaining:\s+FederatedViewer/);
+    expect(writes(r.calls).map((c) => c[2])).toEqual([
+      "--role-name=FederatedAdministrator",
+      "--role-name=FederatedViewer",
+    ]);
+    expect(r.out).toMatch(/failed:\s+FederatedAdministrator\s+remove/);
+    expect(r.out).toMatch(/done:\s+FederatedViewer\s+remove/);
     expect(r.out).toContain("AccessDenied");
+    NO_SECRETS(r.out);
+  });
+
+  it("足す段階で失敗したロールは外す段階を行わない（ほかのロールは続ける）", () => {
+    const s = goodSnapshot();
+    for (const n of ["FederatedViewer", "FederatedAdministrator"])
+      role(s, n).inlinePolicies?.push({
+        policyName: RESERVED,
+        document: stopPolicyDocument([A, "old@example.com"]),
+      });
+    const ctx = setup(s, {
+      stops: [A, B],
+      failOn: "iam put-role-policy --role-name=FederatedAdministrator",
+    });
+    const r = apply(ctx, ["--allow-remove", "--yes"]);
+    expect(r.status, r.out).toBe(1);
+    expect(writes(r.calls).map((c) => c[2])).toEqual([
+      "--role-name=FederatedAdministrator",
+      "--role-name=FederatedViewer",
+      "--role-name=FederatedViewer",
+    ]);
+    expect(r.out).toMatch(/failed:\s+FederatedAdministrator\s+add/);
+    expect(r.out).toMatch(/not run:\s+FederatedAdministrator\s+remove/);
     NO_SECRETS(r.out);
   });
 
@@ -314,7 +387,7 @@ describe("console:stop:apply（偽の aws で実プロセス）", () => {
     NO_SECRETS(r.out);
   });
 
-  it("★4: 止める方向では、あるロールの書き込みが失敗してもほかのロールには書き、終了コード 1", () => {
+  it("★4: 足す段階では、あるロールの書き込みが失敗してもほかのロールには書き、終了コード 1", () => {
     const ctx = setup(goodSnapshot(), {
       stops: [A],
       failOn: "iam put-role-policy --role-name=FederatedAdministrator",
@@ -344,7 +417,7 @@ describe("console:stop:apply（偽の aws で実プロセス）", () => {
     const dry = apply(ctx);
     expect(dry.status, dry.out).toBe(1);
     expect(writes(dry.calls)).toEqual([]);
-    expect(dry.out).toMatch(/put\s+HandmadeConsoleRole\s+unlisted/);
+    expect(dry.out).toMatch(/PLAN\s+HandmadeConsoleRole\s+unlisted\s.*writes add:put/);
     expect(dry.out).toContain("設定に無いロール");
     const r = apply(ctx, ["--yes"]);
     expect(r.status, r.out).toBe(1);

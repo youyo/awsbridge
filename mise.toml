@@ -141,7 +141,7 @@ description = "停止の道具: 対象のロールごとに予約名の有無・
 run = "pnpm tsx scripts/console/stop.ts show"
 
 [tasks."console:stop:apply"]
-description = "停止の道具: 対象の全ロールの予約名の中身を --stops の一覧にそろえる（宣言的）。-- --profile <名前> --stops <file> --reason <理由> で計画の表示（IAM の読み取りはする）、--yes で書き込む。値が減る解除は --allow-remove が要る"
+description = "停止の道具: 対象の全ロールの予約名に --stops の一覧の値を足す（一覧に無い値は消さない）。-- --profile <名前> --stops <file> --reason <理由> で計画の表示（IAM の読み取りはする）、--yes で書き込む。--allow-remove で一覧にそろえる（解除）"
 run = "pnpm tsx scripts/console/stop.ts apply"
 
 # ---- コンソールログイン: Admin の署名鍵（Workers の secret_key 型。X1 の決裁）。手順は README の「コンソールログインの Admin の署名鍵」----

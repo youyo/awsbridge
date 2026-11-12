@@ -1,14 +1,15 @@
 // コンソールログイン: 停止の道具の計画（純粋な関数）。設計: docs/specs/console-login.md §6.3・§4.8。
-// 宣言的: 対象の全ロールの予約名（reserved.ts の STOP_USER_INLINE_POLICY_NAME）のインラインの中身を、停止の一覧にそろえる。
+// 対象の全ロールの予約名（reserved.ts の STOP_USER_INLINE_POLICY_NAME）のインラインの中身を、停止の一覧に合わせる。
 // 読み取り（aws CLI）と書き込みは scripts/console/stop.ts。node の API を使わない。Worker からは import しない。
 //
 // 対象のロール: 設定の roles[].roleName のうちアカウントにあるもの、コンソール用のパス（/awsbridge-console/）のロール、
 // パスの外でコンソールのプロバイダーを信頼するロール（設定に無いロール。検査の unlisted_role）。
-// 方向（cto の決裁 2026-11-13 の ★4・★5）:
-// - 止める方向（どのロールでも値が減らない）: 全体を止めない。予約名の衝突・名前の大文字小文字の違い・容量超え・
-//   詳細を読めていないロールは書かずに報告し（終了コード 1）、ほかのロールには書く
-// - 解除の方向（どれかのロールで値が減る）: --allow-remove が要る。衝突・容量超えなどがあれば何も書かずに止める
-// 結果には値（email）を入れない（件数だけ）。書く文書（document）だけが値を持つ。
+// 値ごとに方向を分ける（cto の決裁 2026-11-13 の ★4・★5 と、同日の司令塔の判断）:
+// - --allow-remove なし（mode: add）: 足すだけ。各ロールを (今の値 ∪ 一覧の値) にする。一覧に無い値は消さず、余分の件数を報告する
+// - --allow-remove あり（mode: sync）: 一覧にそろえる。足す書き込み（今の値 ∪ 一覧）を全ロールで先に行い、外す書き込みはそのあと
+// - どちらでも全体を止めない。予約名の衝突・名前の大文字小文字の違い・容量超え・詳細を読めていないロールは書かずに報告する（終了コード 1）
+// - 足す値が 1 つも無く外す値だけがある実行（解除だけ）は、--allow-remove が無ければ拒否する（終了コード 2）
+// 結果の件数・コードには値（email）を入れない。書き込み（writes）の values と document だけが値を持ち、出力しない。
 
 import type { ConsoleConfig } from "./config";
 import { ROLE_PATH_PREFIX } from "./constants";
@@ -22,39 +23,43 @@ export const INLINE_POLICY_MAX_CHARS = 10_240;
 /** 対象のロールの出どころ: 設定のロール / コンソール用のパスのロール（設定に無い）/ パスの外でプロバイダーを信頼するロール（設定に無い）。 */
 export type RoleSource = "config" | "path" | "unlisted";
 
-export type StopStep = {
-  role: string;
-  source: RoleSource;
-  action: "put" | "delete" | "none";
-  /** 今の予約名の値の件数と、そろえたあとの件数。 */
-  before: number;
-  after: number;
-  /** put のときに書く文書（値を持つ。出力しない）。 */
+/** 1 回の書き込み。values は書いたあとに予約名にある値（読み直しで確かめる）。document は put のときだけ。 */
+export type StopWrite = {
+  phase: "add" | "remove";
+  action: "put" | "delete";
+  values: string[];
   document?: ReturnType<typeof stopPolicyDocument>;
 };
 
-/** 書かずに報告するロール（止める方向）。 */
+export type StopStep = {
+  role: string;
+  source: RoleSource;
+  /** 今の予約名の値の件数と、書き終えたあとの件数。 */
+  before: number;
+  after: number;
+  /** 一覧にあって今は無い値の件数（足す）と、今あって一覧に無い値の件数（余分。mode: sync なら外す）。 */
+  added: number;
+  extra: number;
+  /** 書き込み（add の段階が先、remove の段階があと）。空なら変更なし。 */
+  writes: StopWrite[];
+};
+
+/** 書かずに報告するロール。 */
 export type StopSkip = {
   role: string;
   code: "stop_reserved_conflict" | "reserved_name_case" | "inline_capacity" | "role_unreadable";
 };
 
-/** 全体を止める理由（何も書かない）。exit は終了コード。 */
+/** 全体を止める理由（何も書かない）。終了コードは 2。 */
 export type StopRefusal = {
-  code:
-    | "caller_console_role"
-    | "caller_account_mismatch"
-    | "remove_not_allowed"
-    | StopSkip["code"]
-    | "unlisted_role";
-  role?: string;
-  exit: 1 | 2;
+  code: "caller_console_role" | "caller_account_mismatch" | "remove_not_allowed";
+  exit: 2;
 };
 
 export type StopWarning = { code: "stops_uppercase"; detail: string };
 
 export type StopPlan = {
-  direction: "stop" | "remove";
+  mode: "add" | "sync";
   steps: StopStep[];
   skipped: StopSkip[];
   refusals: StopRefusal[];
@@ -154,11 +159,10 @@ export function planStop(
   }
 
   // ロールごとの差分（値の集合で比べる）
-  type Eval = { step: StopStep; removes: boolean } | { skip: StopSkip };
-  const evals: { role: RoleSnapshot; source: RoleSource; e: Eval }[] = [];
+  const steps: StopStep[] = [];
+  const skipped: StopSkip[] = [];
   for (const { role: r, source } of stopTargets(snapshot, config, o.inventory)) {
-    const skip = (code: StopSkip["code"]) =>
-      evals.push({ role: r, source, e: { skip: { role: r.roleName, code } } });
+    const skip = (code: StopSkip["code"]) => skipped.push({ role: r.roleName, code });
     if (r.inlinePolicies === undefined) {
       skip("role_unreadable");
       continue;
@@ -169,57 +173,59 @@ export function planStop(
       skip("reserved_name_case");
       continue;
     }
-    const current = reserved[0];
-    const have = current === undefined ? [] : stopValues(current.document);
+    const have = reserved[0] === undefined ? [] : stopValues(reserved[0].document);
     if (have === undefined) {
       skip("stop_reserved_conflict");
       continue;
     }
-    const removes = have.some((v) => !desired.includes(v));
-    const same = !removes && desired.every((v) => have.includes(v));
-    const base = { role: r.roleName, source, before: have.length, after: desired.length };
-    if (desired.length === 0) {
-      evals.push({
-        role: r,
-        source,
-        e: { step: { ...base, action: current ? "delete" : "none" }, removes },
-      });
-      continue;
+    const add = desired.filter((v) => !have.includes(v));
+    const extra = have.filter((v) => !desired.includes(v));
+    const union = [...have, ...add];
+    const writes: StopWrite[] = [];
+    if (add.length > 0) {
+      const document = stopPolicyDocument(union);
+      const total = others.reduce((n, p) => n + policySize(p.document), 0) + policySize(document);
+      if (total > INLINE_POLICY_MAX_CHARS) {
+        skip("inline_capacity");
+        continue;
+      }
+      writes.push({ phase: "add", action: "put", values: union, document });
     }
-    if (same) {
-      evals.push({ role: r, source, e: { step: { ...base, action: "none" }, removes } });
-      continue;
-    }
-    const document = stopPolicyDocument(desired);
-    const total = others.reduce((n, p) => n + policySize(p.document), 0) + policySize(document);
-    if (total > INLINE_POLICY_MAX_CHARS) {
-      skip("inline_capacity");
-      continue;
-    }
-    evals.push({ role: r, source, e: { step: { ...base, action: "put", document }, removes } });
+    // 外す段階（mode: sync だけ）。書く文書は足す段階より小さいので、容量は超えない
+    if (o.allowRemove && extra.length > 0)
+      writes.push(
+        desired.length === 0
+          ? { phase: "remove", action: "delete", values: [] }
+          : {
+              phase: "remove",
+              action: "put",
+              values: desired,
+              document: stopPolicyDocument(desired),
+            },
+      );
+    steps.push({
+      role: r.roleName,
+      source,
+      before: have.length,
+      after: o.allowRemove ? desired.length : union.length,
+      added: add.length,
+      extra: extra.length,
+      writes,
+    });
   }
 
-  const direction = evals.some((x) => "step" in x.e && x.e.removes) ? "remove" : "stop";
-  const steps = evals.flatMap((x) => ("step" in x.e ? [x.e.step] : []));
-  let skipped = evals.flatMap((x) => ("skip" in x.e ? [x.e.skip] : []));
+  // 解除だけの実行（足す値が無く、余分だけがある）は --allow-remove が要る
+  if (!o.allowRemove && steps.every((x) => x.added === 0) && steps.some((x) => x.extra > 0))
+    refusals.push({ code: "remove_not_allowed", exit: 2 });
 
-  if (direction === "remove") {
-    // 解除は計画どおり: 許可が無い・書けないロールがある・設定に無いロールがあるなら、何も書かずに止める
-    if (!o.allowRemove) refusals.push({ code: "remove_not_allowed", exit: 2 });
-    for (const s of skipped) refusals.push({ code: s.code, role: s.role, exit: 2 });
-    for (const s of steps)
-      if (s.source === "unlisted") refusals.push({ code: "unlisted_role", role: s.role, exit: 1 });
-    skipped = [];
-  }
-
-  return { direction, steps, skipped, refusals, warnings };
+  return { mode: o.allowRemove ? "sync" : "add", steps, skipped, refusals, warnings };
 }
 
 /**
- * 計画の終了コード（書く前）: 拒否があれば 2（設定に無いロールだけなら 1）、書かずに報告するロールがあれば 1、ほかは 0。
+ * 計画の終了コード（書く前）: 拒否があれば 2、書かずに報告するロールがあれば 1、ほかは 0（余分があるだけなら 0）。
  * 書き込みの失敗は呼び出し側で 1 にする。
  */
 export function planExitCode(p: StopPlan): 0 | 1 | 2 {
-  if (p.refusals.length > 0) return p.refusals.some((r) => r.exit === 2) ? 2 : 1;
+  if (p.refusals.length > 0) return 2;
   return p.skipped.length > 0 ? 1 : 0;
 }

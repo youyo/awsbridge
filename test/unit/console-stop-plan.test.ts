@@ -1,8 +1,10 @@
 // 停止の道具の計画（src/console/stop-plan.ts の純粋な関数 planStop）。設計: docs/specs/console-login.md §6.3・§4.8。
-// 宣言的: 対象の全ロールの予約名の中身を、停止の一覧にそろえる。cto の決裁（2026-11-13）:
-// - 止める方向（値が増える・同じ）では全体を止めない。衝突・容量超えのロールは書かずに報告し（終了コード 1）、ほかのロールには書く
-// - パスの外でコンソールのプロバイダーを信頼するロール（設定に無いロール）も、止める方向では書く対象に含める
-// - 解除の方向（値が減る）は --allow-remove が要り、衝突・容量超え・設定に無いロールがあれば何も書かずに止める
+// cto の決裁（2026-11-13 の ★4・★5）と司令塔の判断（同日。値ごとに方向を分ける）:
+// - --allow-remove が無ければ「足すだけ」: 各ロールの予約名を (今の値 ∪ 一覧の値) にする。一覧に無い値は消さず、余分の件数を報告する
+// - --allow-remove があれば一覧にそろえる。足す書き込みを全ロールで先に行い、外す書き込みはそのあと（外す側の失敗で足す側が止まらない）
+// - どちらでも全体を止めない。衝突・容量超え・未読のロールは書かずに報告し（終了コード 1）、ほかのロールには書く
+// - パスの外でコンソールのプロバイダーを信頼するロール（設定に無いロール）も対象（足すときも外すときも）
+// - 足す値が 1 つも無く外す値だけがある実行（解除だけ）は、--allow-remove が無ければ拒否（終了コード 2）
 import { describe, expect, it } from "vitest";
 import type { AccountSnapshot, RoleSnapshot } from "../../src/console/inspect";
 import { STOP_USER_INLINE_POLICY_NAME } from "../../src/console/reserved";
@@ -48,6 +50,9 @@ const withStop = (s: AccountSnapshot, name: string, doc: unknown, policyName = R
   role(s, name).inlinePolicies?.push({ policyName, document: doc });
 
 const step = (p: StopPlan, name: string) => p.steps.find((x) => x.role === name);
+/** ロールの書き込みの要約（段階・種類・書いたあとの値）。 */
+const writesOf = (p: StopPlan, name: string) =>
+  step(p, name)?.writes.map((w) => [w.phase, w.action, w.values]);
 
 /** パスの外で、コンソールの Standard のプロバイダーを信頼する手作りのロール（設定に無い）。 */
 function handmade(name = "HandmadeConsoleRole"): RoleSnapshot {
@@ -70,17 +75,18 @@ function handmade(name = "HandmadeConsoleRole"): RoleSnapshot {
   };
 }
 
-describe("planStop: 対象のロールと差分", () => {
+describe("planStop: 足すだけ（--allow-remove なし）", () => {
   it("予約名の無いロールには一覧の文書を put する（設定の全ロール。関係の無いロールは対象にしない）", () => {
     const p = plan(goodSnapshot(), [A, B]);
-    expect(p.direction).toBe("stop");
+    expect(p.mode).toBe("add");
     expect(p.refusals).toEqual([]);
     expect(p.skipped).toEqual([]);
-    expect(p.steps.map((x) => [x.role, x.source, x.action, x.before, x.after])).toEqual([
-      ["FederatedAdministrator", "config", "put", 0, 2],
-      ["FederatedViewer", "config", "put", 0, 2],
+    expect(p.steps.map((x) => [x.role, x.source, x.before, x.after, x.added, x.extra])).toEqual([
+      ["FederatedAdministrator", "config", 0, 2, 2, 0],
+      ["FederatedViewer", "config", 0, 2, 2, 0],
     ]);
-    expect(stopValues(step(p, "FederatedViewer")?.document)).toEqual([A, B]);
+    expect(writesOf(p, "FederatedViewer")).toEqual([["add", "put", [A, B]]]);
+    expect(stopValues(step(p, "FederatedViewer")?.writes[0]?.document)).toEqual([A, B]);
     expect(planExitCode(p)).toBe(0);
   });
 
@@ -105,16 +111,37 @@ describe("planStop: 対象のロールと差分", () => {
       ],
     });
     const p = plan(s, [A, B]);
-    expect(p.steps.map((x) => x.action)).toEqual(["none", "none"]);
+    expect(p.steps.map((x) => x.writes)).toEqual([[], []]);
     expect(planExitCode(p)).toBe(0);
   });
 
-  it("値を足すのは止める方向（--allow-remove は要らない）", () => {
+  it("ロールに [A, old]・一覧 [A, B]: そのロールは [A, old, B]、ほかのロールにも B。余分 1 件を報告し、終了コード 0", () => {
     const s = goodSnapshot();
-    withStop(s, "FederatedViewer", stopPolicyDocument([A]));
+    withStop(s, "FederatedViewer", stopPolicyDocument([A, "old@example.com"]));
     const p = plan(s, [A, B]);
-    expect(p.direction).toBe("stop");
-    expect(step(p, "FederatedViewer")).toMatchObject({ action: "put", before: 1, after: 2 });
+    expect(p.refusals).toEqual([]);
+    expect(writesOf(p, "FederatedViewer")).toEqual([["add", "put", [A, "old@example.com", B]]]);
+    expect(step(p, "FederatedViewer")).toMatchObject({ before: 2, after: 3, added: 1, extra: 1 });
+    expect(writesOf(p, "FederatedAdministrator")).toEqual([["add", "put", [A, B]]]);
+    expect(planExitCode(p)).toBe(0);
+  });
+
+  it("足す値が 1 つも無く、外す値だけがある（解除だけ）なら拒否（終了コード 2）", () => {
+    const s = goodSnapshot();
+    withStop(s, "FederatedViewer", stopPolicyDocument([A, B]));
+    withStop(s, "FederatedAdministrator", stopPolicyDocument([A]));
+    const p = plan(s, [A]);
+    expect(p.refusals).toEqual([{ code: "remove_not_allowed", exit: 2 }]);
+    expect(planExitCode(p)).toBe(2);
+    const empty = plan(s, []);
+    expect(empty.refusals).toEqual([{ code: "remove_not_allowed", exit: 2 }]);
+  });
+
+  it("空の一覧で予約名の無いロールは何もしない", () => {
+    const p = plan(goodSnapshot(), []);
+    expect(p.refusals).toEqual([]);
+    expect(p.steps.map((x) => x.writes)).toEqual([[], []]);
+    expect(planExitCode(p)).toBe(0);
   });
 
   it("コンソール用のパスにある設定に無いロールも対象（source: path）", () => {
@@ -125,28 +152,31 @@ describe("planStop: 対象のロールと差分", () => {
       arn: `arn:aws:iam::${ACCOUNT}:role/awsbridge-console/std/ExtraPathRole`,
     });
     const p = plan(s, [A]);
-    expect(step(p, "ExtraPathRole")).toMatchObject({ source: "path", action: "put" });
+    expect(step(p, "ExtraPathRole")?.source).toBe("path");
+    expect(writesOf(p, "ExtraPathRole")).toEqual([["add", "put", [A]]]);
   });
 
   it("値は変えない（小文字にしない）。identity が email のとき大文字を含む値は件数だけ警告する", () => {
     const p = plan(goodSnapshot(), ["User1@Example.com", B]);
-    expect(stopValues(step(p, "FederatedViewer")?.document)).toEqual(["User1@Example.com", B]);
+    expect(writesOf(p, "FederatedViewer")).toEqual([["add", "put", ["User1@Example.com", B]]]);
     expect(p.warnings).toEqual([{ code: "stops_uppercase", detail: "1" }]);
     expect(JSON.stringify(p.warnings)).not.toContain("User1");
   });
 
-  it("往復の一致: 書く文書は stopValues で一覧と同じ値に戻る", () => {
+  it("往復の一致: 書く文書は stopValues で書いたあとの値に戻る", () => {
     const p = plan(goodSnapshot(), [A, B, A]);
-    for (const x of p.steps) expect(stopValues(x.document)).toEqual([A, B]);
+    for (const x of p.steps)
+      for (const w of x.writes) expect(stopValues(w.document)).toEqual(w.values);
   });
 });
 
-describe("planStop: 止める方向は全体を止めない（cto の決裁 ★4・★5）", () => {
+describe("planStop: 全体を止めない（cto の決裁 ★4・★5）", () => {
   it("パスの外でコンソールのプロバイダーを信頼するロールは「設定に無いロール」として書く対象に含める", () => {
     const s = goodSnapshot();
     s.roles.push(handmade());
     const p = plan(s, [A]);
-    expect(step(p, "HandmadeConsoleRole")).toMatchObject({ source: "unlisted", action: "put" });
+    expect(step(p, "HandmadeConsoleRole")?.source).toBe("unlisted");
+    expect(writesOf(p, "HandmadeConsoleRole")).toEqual([["add", "put", [A]]]);
     expect(p.refusals).toEqual([]);
     expect(planExitCode(p)).toBe(0);
   });
@@ -161,7 +191,7 @@ describe("planStop: 止める方向は全体を止めない（cto の決裁 ★4
     expect(p.refusals).toEqual([]);
     expect(p.skipped).toEqual([{ role: "FederatedViewer", code: "stop_reserved_conflict" }]);
     expect(step(p, "FederatedViewer")).toBeUndefined();
-    expect(step(p, "FederatedAdministrator")).toMatchObject({ action: "put" });
+    expect(writesOf(p, "FederatedAdministrator")).toEqual([["add", "put", [A]]]);
     expect(planExitCode(p)).toBe(1);
   });
 
@@ -170,7 +200,7 @@ describe("planStop: 止める方向は全体を止めない（cto の決裁 ★4
     withStop(s, "FederatedViewer", stopPolicyDocument([A]), RESERVED.toLowerCase());
     const p = plan(s, [A, B]);
     expect(p.skipped).toEqual([{ role: "FederatedViewer", code: "reserved_name_case" }]);
-    expect(step(p, "FederatedAdministrator")).toMatchObject({ action: "put" });
+    expect(writesOf(p, "FederatedAdministrator")).toEqual([["add", "put", [A, B]]]);
     expect(planExitCode(p)).toBe(1);
   });
 
@@ -185,7 +215,7 @@ describe("planStop: 止める方向は全体を止めない（cto の決裁 ★4
     role(s, "FederatedViewer").inlinePolicies?.push({ policyName: "Big", document: big });
     const p = plan(s, [A]);
     expect(p.skipped).toEqual([{ role: "FederatedViewer", code: "inline_capacity" }]);
-    expect(step(p, "FederatedAdministrator")).toMatchObject({ action: "put" });
+    expect(writesOf(p, "FederatedAdministrator")).toEqual([["add", "put", [A]]]);
     expect(planExitCode(p)).toBe(1);
   });
 
@@ -213,55 +243,59 @@ describe("planStop: 止める方向は全体を止めない（cto の決裁 ★4
   });
 });
 
-describe("planStop: 解除の方向（値が減る・空の一覧）", () => {
-  it("--allow-remove が無ければ拒否（終了コード 2）。何も書かない", () => {
+describe("planStop: 一覧にそろえる（--allow-remove あり）", () => {
+  it("ロールに [A, old]・一覧 [A, B]: 先に [A, old, B] を足し、そのあと [A, B] に外す", () => {
     const s = goodSnapshot();
-    withStop(s, "FederatedViewer", stopPolicyDocument([A, B]));
-    const p = plan(s, [A]);
-    expect(p.direction).toBe("remove");
-    expect(p.refusals).toEqual([{ code: "remove_not_allowed", exit: 2 }]);
-    expect(planExitCode(p)).toBe(2);
+    withStop(s, "FederatedViewer", stopPolicyDocument([A, "old@example.com"]));
+    const p = plan(s, [A, B], { allowRemove: true });
+    expect(p.mode).toBe("sync");
+    expect(p.refusals).toEqual([]);
+    expect(writesOf(p, "FederatedViewer")).toEqual([
+      ["add", "put", [A, "old@example.com", B]],
+      ["remove", "put", [A, B]],
+    ]);
+    expect(step(p, "FederatedViewer")).toMatchObject({ before: 2, after: 2, added: 1, extra: 1 });
+    expect(writesOf(p, "FederatedAdministrator")).toEqual([["add", "put", [A, B]]]);
+    expect(planExitCode(p)).toBe(0);
   });
 
-  it("--allow-remove があれば、減らすロールは put、空の一覧なら delete", () => {
+  it("外すだけのロールは remove の段階だけ。空の一覧なら delete", () => {
     const s = goodSnapshot();
     withStop(s, "FederatedViewer", stopPolicyDocument([A, B]));
     withStop(s, "FederatedAdministrator", stopPolicyDocument([A, B]));
     const p1 = plan(s, [A], { allowRemove: true });
-    expect(p1.refusals).toEqual([]);
-    expect(step(p1, "FederatedViewer")).toMatchObject({ action: "put", before: 2, after: 1 });
+    expect(writesOf(p1, "FederatedViewer")).toEqual([["remove", "put", [A]]]);
     const p2 = plan(s, [], { allowRemove: true });
-    expect(p2.steps.map((x) => [x.role, x.action, x.before, x.after])).toEqual([
-      ["FederatedAdministrator", "delete", 2, 0],
-      ["FederatedViewer", "delete", 2, 0],
+    expect(p2.steps.map((x) => [x.role, x.before, x.after])).toEqual([
+      ["FederatedAdministrator", 2, 0],
+      ["FederatedViewer", 2, 0],
     ]);
-    expect(p2.steps.every((x) => x.document === undefined)).toBe(true);
+    expect(writesOf(p2, "FederatedViewer")).toEqual([["remove", "delete", []]]);
+    expect(p2.steps.every((x) => x.writes.every((w) => w.document === undefined))).toBe(true);
     expect(planExitCode(p2)).toBe(0);
   });
 
-  it("空の一覧で予約名の無いロールは何もしない", () => {
-    const p = plan(goodSnapshot(), []);
-    expect(p.direction).toBe("stop");
-    expect(p.steps.map((x) => x.action)).toEqual(["none", "none"]);
+  it("設定に無いロール（パスの外で信頼）からも外す（source: unlisted）", () => {
+    const s = goodSnapshot();
+    withStop(s, "FederatedViewer", stopPolicyDocument([A, B]));
+    s.roles.push({
+      ...handmade(),
+      inlinePolicies: [{ policyName: RESERVED, document: stopPolicyDocument([A, B]) }],
+    });
+    const p = plan(s, [A], { allowRemove: true });
+    expect(p.refusals).toEqual([]);
+    expect(step(p, "HandmadeConsoleRole")?.source).toBe("unlisted");
+    expect(writesOf(p, "HandmadeConsoleRole")).toEqual([["remove", "put", [A]]]);
   });
 
-  it("解除の方向では、衝突のロールがあれば何も書かずに止める（終了コード 2）", () => {
+  it("衝突のロールは触らずに報告し、ほかのロールは外す（全体を止めない。終了コード 1）", () => {
     const s = goodSnapshot();
     withStop(s, "FederatedViewer", stopPolicyDocument([A, B]));
     withStop(s, "FederatedAdministrator", { Version: "2012-10-17", Statement: [] });
     const p = plan(s, [A], { allowRemove: true });
-    expect(p.refusals).toEqual([
-      { code: "stop_reserved_conflict", role: "FederatedAdministrator", exit: 2 },
-    ]);
-    expect(planExitCode(p)).toBe(2);
-  });
-
-  it("解除の方向では、設定に無いロールがあれば書かずに警告して止める（終了コード 1）", () => {
-    const s = goodSnapshot();
-    withStop(s, "FederatedViewer", stopPolicyDocument([A, B]));
-    s.roles.push(handmade());
-    const p = plan(s, [A], { allowRemove: true });
-    expect(p.refusals).toEqual([{ code: "unlisted_role", role: "HandmadeConsoleRole", exit: 1 }]);
+    expect(p.refusals).toEqual([]);
+    expect(p.skipped).toEqual([{ role: "FederatedAdministrator", code: "stop_reserved_conflict" }]);
+    expect(writesOf(p, "FederatedViewer")).toEqual([["remove", "put", [A]]]);
     expect(planExitCode(p)).toBe(1);
   });
 });

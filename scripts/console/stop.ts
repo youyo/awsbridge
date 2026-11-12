@@ -2,20 +2,23 @@
 //   pnpm tsx scripts/console/stop.ts show  --profile <p> [--stops <file>] [--account-id <id>]
 //   pnpm tsx scripts/console/stop.ts apply --profile <p> --stops <file> --reason <text> [--yes] [--allow-remove] [--account-id <id>]
 // mise タスク console:stop:show / console:stop:apply から呼ぶ。本体は stop-lib.ts、計画は src/console/stop-plan.ts。
-// 設計: docs/specs/console-login.md §6.3・§4.8。cto の決裁 2026-11-13（★4・★5）。
+// 設計: docs/specs/console-login.md §6.3・§4.8。cto の決裁 2026-11-13（★4・★5）と同日の司令塔の判断（値ごとに方向を分ける）。
 //
 // - show: 読み取りだけ。ロールごとに予約名の有無・止めている値の件数・衝突を出す（--stops で足りない・余分も）
-// - apply: 宣言的。対象の全ロールの予約名の中身を、--stops のファイルの一覧にそろえる。
+// - apply: 対象の全ロールの予約名の中身を、--stops のファイルの一覧に合わせる。
+//   --allow-remove なしは足すだけ（今の値 ∪ 一覧。一覧に無い値は消さず、余分として件数を出す）。
+//   --allow-remove ありは一覧にそろえる（全ロールに足し終えてから外す）。足す値が無く外す値だけの実行は --allow-remove が要る。
+//   どちらでも 1 つのロールのために全体を止めない（書けないロールは報告して終了コード 1）。
 //   --yes が無ければ計画の表示だけ（ただし今の状態との差を出すため IAM の読み取りと sts get-caller-identity は呼ぶ）。
-//   値が減る（停止の解除）ときは --allow-remove が要る。--reason は必須（記録の 1 行の JSON に入る）。
+//   --reason は必須（記録の 1 行の JSON に入る）。
 //   書き込みは iam put-role-policy・iam delete-role-policy の 2 種類だけ（--yes のときだけ許可リストに入れる）。
 //   呼び出し元がコンソール用のロールなら実行しない（守りの部品の Deny で途中から失敗するため）。
 // 停止の一覧（--stops のファイル）は email を含む。.secrets/ か下流のリポジトリに置き、公開リポジトリにコミットしない。
 // 終了コード:
-//   0 すべてそろった（または変更なし）
-//   1 書けなかったロールがある（止める方向の衝突・容量超え・書き込みの失敗。解除の方向の途中の失敗・設定に無いロール）、
+//   0 書き終えた（または変更なし。余分の値が残っているだけなら 0）
+//   1 書けなかったロールがある（予約名の衝突・名前の大文字小文字の違い・容量超え・未読・書き込みの失敗）、
 //     show で停止の誤り（stop_missing・stop_reserved_conflict）がある
-//   2 実行しなかった（入力の誤り・aws の読み取りの失敗・呼び出し元・--allow-remove が無い解除・解除の方向の衝突や容量超え）
+//   2 実行しなかった（入力の誤り・aws の読み取りの失敗・呼び出し元・--allow-remove が無い解除だけの実行）
 import { existsSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { ConsoleConfigError, formatIssue, parseConsoleConfig } from "../../src/console/config";

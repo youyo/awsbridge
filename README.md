@@ -335,10 +335,11 @@ To stop issuing, remove the kid from the JWKS and deploy, or set the var `LOGIN_
 To stop a single person, the person's SourceIdentity (email by default) is written as a Deny into the inline policy with the reserved name `AwsbridgeConsoleDenySourceIdentity` on the console login roles (a Deny of every action for sessions whose `aws:SourceIdentity` matches; design in `docs/specs/console-login.md` §6.3). The stop tool writes it.
 
 - The stop list is a file in the same form as the inspect tool's `--stops` (`{ "sourceIdentities": ["..."] }`), and it is the source of truth for who is stopped. **It contains email addresses, so keep it in `.secrets/` or in your downstream repository, and never commit it to the public repository.**
-- `console:stop:apply` is declarative: it makes the reserved policy on every target role match the list in the file. The targets are the configured roles that exist in the account, roles under the `/awsbridge-console/` path, and roles outside the path that are not in the config but trust a console provider (the plan marks them as roles not in the config, with the source `unlisted`).
+- `console:stop:apply` aligns the reserved policy on every target role with the list in the file. The targets are the configured roles that exist in the account, roles under the `/awsbridge-console/` path, and roles outside the path that are not in the config but trust a console provider (the plan marks them as roles not in the config, with the source `unlisted`).
 - Without `--yes` it only shows the plan. It still reads IAM and calls `sts get-caller-identity` to compute the difference from the current state (unlike the Admin key tool, where no API is called without `--yes`). The only writes are `iam put-role-policy` and `iam delete-role-policy`.
-- When stopping (values are added or unchanged), it does not halt the whole run. Roles whose reserved policy holds a document that is not a stop document, roles whose inline policies would exceed 10,240 characters in total, and roles where the write fails are reported and left unwritten; the other roles are still written, and the tool exits with 1.
-- Releasing (values are removed, or an empty list) requires `--allow-remove`. The tool prints the release conditions from §6.3 (do not remove before the role's `MaxSessionDuration` has passed, the cause is removed, old keys are gone, and new issuance is confirmed impossible). The tool cannot check them, so a person does. If any role cannot be written or a role is not in the config, nothing is written; if a write fails, it stops and prints the roles done and the roles remaining.
+- Without `--allow-remove` it only adds: each role's reserved policy becomes the union of its current values and the values in the file. Values on a role that are not in the file are kept, and only their count is shown as extra (`EXTRA`). Extra values alone leave the exit code at 0. A run that has nothing to add and only values to remove (a release only) writes nothing and exits with 2 unless `--allow-remove` is given.
+- With `--allow-remove` it makes every role match the file (releasing a stop). It finishes adding on every role before removing, so a failure on the removing side never blocks the adding side. The tool prints the release conditions from §6.3 (do not remove before the role's `MaxSessionDuration` has passed, the cause is removed, old keys are gone, and new issuance is confirmed impossible). The tool cannot check them, so a person does. It also removes values from roles that are not in the config.
+- In both cases it never halts the whole run for one role. Roles whose reserved policy holds a document that is not a stop document, roles whose inline policies would exceed 10,240 characters in total, and roles where the write fails are reported and left unwritten; the other roles are still written, and the tool exits with 1.
 - `--reason` is required. The result is printed to standard output as a one-line JSON record (time, last 4 digits of the account, roles, change in counts, reason; no values), which the operator keeps. The output never contains email values or full account IDs.
 - It refuses to run from a session of a console role (a configured role name or a role under `/awsbridge-console/`), because the guard policy denies the writes. Run it through another entry point such as IAM Identity Center.
 
@@ -346,10 +347,12 @@ To stop a single person, the person's SourceIdentity (email by default) is writt
 mise run console:stop:show -- --profile=<p> --stops=.secrets/console-stops.json      # read only: counts per role, missing and extra
 mise run console:stop:apply -- --profile=<p> --stops=.secrets/console-stops.json --reason="<reason>"         # show the plan
 mise run console:stop:apply -- --profile=<p> --stops=.secrets/console-stops.json --reason="<reason>" --yes   # write
-mise run console:inspect -- --profile=<p> --stops=.secrets/console-stops.json        # afterwards, check every role
+mise run console:inspect -- --profile=<p> --stops=.secrets/console-stops.json        # afterwards, check the configured roles
 ```
 
-Exit codes: 0 everything matches (or nothing to change) / 1 some roles were not written / 2 nothing was run (input error, read failure, the caller, or a release without `--allow-remove`).
+`console:inspect --stops` checks the configured roles. Roles not in the config and roles outside the path are checked by the stop tool's own read-back after writing (see the table in its output).
+
+Exit codes: 0 done (or nothing to change; extra values alone still give 0) / 1 some roles were not written / 2 nothing was run (input error, read failure, the caller, or a release-only run without `--allow-remove`).
 
 ## Setup skill (Claude Code)
 
