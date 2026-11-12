@@ -3,12 +3,13 @@
 - 作成日: 2026-11-11
 - 改訂: 2026-11-11 利用者の決定 3 点を反映（検索項目にアカウントの email を加える・チーム / ロール / 種類を設定ファイルで定義する・ポータルのホスト名は自社ドメイン）
 - 改訂: 2026-11-11 利用者の決定 2 点を反映（Q-P9 一覧の email は既定ですべて表示・Q-P10 会社用の下流リポジトリとレビュー担当）。§11 の設定ファイルの検証と生成を実装し、実装に合わせて §11 を直した
-- 状態: 設計案（段階 0 の詳細設計）。ポータル本体の実装はまだない。設定ファイルのスキーマ・検証・生成（§11）だけを実装した（`src/console/`・`scripts/console/config.ts`・mise タスク `console:config:check` / `console:config:generate`）。段階 1 のゲートは Sol のレビューのあと cto が条件付きで承認した（条件と段階 1a・1b は [console-login.md](console-login.md) §1・§7）
+- 状態: 設計案。ポータル本体の実装はまだない。設定ファイルのスキーマ・検証・生成（§11）だけを実装した（`src/console/`・`scripts/console/config.ts`・mise タスク `console:config:check` / `console:config:generate`）。段階導入は「① 完成 → ② 個人で導入・試験 → ③ 会社に導入」（cto の決裁 2026-11-12。ゲートは G1〜G5。[console-login.md](console-login.md) §7）。いまは ① の実装の前のゲート G1 の準備中。Admin のオリジンの発行（KMS の署名など）の設計は [console-login-admin.md](console-login-admin.md)。前の版の「段階 1 のゲート」の条件の行き先は console-login.md §7.7
 - 改訂: 2026-11-11 名前を「human」から「console」に改めた（audience `awsbridge-console`、ロールのパス `/awsbridge-console/<tier>/`、RoleSessionName `console-<email>`、ファイル・タスク・環境変数の名前）。段階 1 のゲートの決裁と Sol の指摘を反映した（監査ログの STS の応答の ID・Access を経由しない入口・名前の確定）。PoC（`scripts/poc/human/`）の名前は変えていない
 - 改訂: 2026-11-12 cto の決裁と利用者の判断を反映した（詳細は [console-login.md](console-login.md) の改訂と §9.1）。人のロールを Viewer（Standard）と Administrator（Admin）の 2 つにし（Developer は廃止）、例とワイヤーフレームを `FederatedAwsBridgeViewer` / `FederatedAwsBridgeAdministrator` に直した。`aws login --remote` は Standard で許し、Administrator は同じ端末だけにした（§6.5）。ロールは設定ファイルに任せ、ロールの CloudFormation は参考の形にした（§11.1・§11.4・§11.5）。発行記録に email・Access の `sub`・取れれば `oid` を残す（§10.3）
 - 改訂: 2026-11-12 同じ日の残りの cto の決裁を反映した。(1) **入口と一覧を Standard と Admin で共通にする**（P1'）。「2 つのポータル」「Standard の一覧に Admin の行を出さない」を取り下げた。署名の権限（Worker・issuer・鍵）と発行のオリジンは分けたまま（§8）。(2) **チームを選ばせず、所属する全チームの行を 1 つの一覧に出す**（U2）。表示のためだけに Access の身元の Entra グループを使い、発行は今までどおり行のチームのパスの S2 の POST で行う（§3・§4.1・§7）。(3) App Launcher は使わない（案内と N1 の確認項目を消した）。後の決裁で変わった点（Developer の廃止、Administrator の `--remote` の拒否、設定に任せる形）を優先した。生成器（`src/console/generate.ts`）は前の約束（Worker 用の生成物に Object ID と他の階層の行を入れない）のままで、表示用の対応表と Admin の表示用の行の生成はポータル本体と一緒に実装する
+- 改訂: 2026-11-12 SourceIdentity は会社の Entra でも email に決定した（§10.3）。段階導入を「① 完成 → ② 個人で導入・試験 → ③ 会社に導入」（ゲートは G1〜G5）に書き直し、この文書で「段階 1/2/3」「1a/1b」の名前で書いた時機を付け替えた（行き先は [console-login.md](console-login.md) §7.7）。Admin のオリジンの発行の設計を [console-login-admin.md](console-login-admin.md) に分けた
 - 対象: awsbridge 方式（自前の OIDC issuer → 各アカウントの IAM OIDC プロバイダー → `AssumeRoleWithWebIdentity`）による、コンソールログイン（人が使う AWS コンソールと `aws login`）の入口になる画面
-- 全体設計: [console-login.md](console-login.md)（ポータルの外側。issuer・鍵・変えにくい名前・テンプレート・脅威モデル・緊急停止・段階 1 の範囲と、cto の条件のギャップ分析）。この文書の G-5・G-8 の作成者の案は console-login.md §3 に移した
+- 全体設計: [console-login.md](console-login.md)（ポータルの外側。issuer・鍵・変えにくい名前・テンプレート・脅威モデル・緊急停止・段階導入と、cto の条件のギャップ分析）。Admin 側の発行: [console-login-admin.md](console-login-admin.md)。この文書の G-5・G-8 の作成者の案は console-login.md §3 に移した
 - 関連: [architecture.md](architecture.md)（MCP 用の構成。CSRF・エラー応答・email の正規化の書き方を踏襲する）、[scripts/poc/human/README.md](../../scripts/poc/human/README.md)（PoC の手順と結果）
 - 「設計上申」は cto への設計上申（コンソールログイン全体の設計案。D1〜D10 と PoC N1〜N12 を含む）を指す。上申と cto の決裁はこのリポジトリの外にあるので、この画面に効く決定は §0 にまとめた
 - 表記:
@@ -39,7 +40,7 @@
 
 ## 0. 前提（決定済みの事項）
 
-cto の決裁（条件つき承認。承認の範囲は、設計の方向と段階 0 の残りの PoC・詳細設計まで）[資料] のうち、この画面に効くものをまとめる。
+cto の決裁（条件つき承認。承認の範囲は、設計の方向と段階 0 の残りの PoC・詳細設計まで。その後のゲートは [console-login.md](console-login.md) §7）[資料] のうち、この画面に効くものをまとめる。
 
 | 項目 | 決定 |
 |---|---|
@@ -100,7 +101,7 @@ cto の決裁（条件つき承認。承認の範囲は、設計の方向と段�
 | 所属の判断を発行の認可に使うこと | 入口の一覧は Access の身元のグループで所属を表示用に判断するが、発行の可否はチームの Access アプリと AUD で決める（§7・§9.3） |
 | CLI の認証情報の直接発行（アクセスキーの表示・ダウンロード、`credential_process`） | 認証情報を Worker の外に出さない。CLI は `aws login` に任せる（利用者の回答: CLI は `aws login` で困っていない） |
 | ログイン URL の表示・コピー | URL はセッションそのもの。302（または POST）で渡すだけ（§9.8） |
-| JIT の申請・承認 | Entra の PIM に任せる（段階 3 で決める） |
+| JIT の申請・承認 | Entra の PIM に任せる（G3・G5 で扱う） |
 | 管理アカウントへのログイン | 管理アカウントにはコンソールログイン用ロールを置かない。既存の Identity Center か break-glass で入る |
 | サーバー側での個人の設定の保存 | 当面はブラウザの localStorage だけ（§12 の未決事項） |
 
@@ -127,7 +128,7 @@ cto の決裁（条件つき承認。承認の範囲は、設計の方向と段�
 |---|---|---|
 | 単一チーム | SolutionArchitect（Viewer だけ） | 顧客のアカウントを名前で探し、Viewer でコンソールに入る |
 | 複数チーム | インフラと開発の両方に所属 | チームを選ばず、1 つの一覧から行を選ぶ（行に小さくチームが出る）。CloudTrail には「どのチームの立場か」がタグで残る |
-| Admin を使う人 | インフラ | 同じ一覧に Administrator の行も出る。行を選ぶと Admin のオリジンの S2 に移り、そこで発行する。PIM などの昇格の運用は段階 3 で決める |
+| Admin を使う人 | インフラ | 同じ一覧に Administrator の行も出る。行を選ぶと Admin のオリジンの S2 に移り、そこで発行する。PIM などの昇格の運用は G3・G5 で扱う |
 | CLI 中心の人 | 開発 | ポータルでコンソールに入り、その画面の手順どおり `aws login` を実行する |
 
 ### 2.3 主なユースケース
@@ -169,7 +170,7 @@ M2 では、チームごとに Access アプリを分ける。分け方は 2 通
 | Access アプリ | Access アプリの対象（ドメインとパス）は、設定ファイルの `portal.*Origin` とチーム名から Terraform で作る（§9.1・§11.4） |
 | `Issuer`（フェデレーション） | S5 の URL（`<team-base>/expired`）。設定ファイルの `portal.standardOrigin` から作る（§6.3）。ホスト名を変えると、発行済みのコンソールのセッションが切れたときの戻り先が古いホストになる |
 | OIDC の issuer（STS が信頼する URL） | フェデレーションの `Issuer` とは**別物**。各アカウントの IAM OIDC プロバイダーの URL で、StackSets で全アカウントに配る。ホストとパスは N9 で決める（この文書の範囲外）。`workers.dev` に置かない方がよい（Cloudflare のアカウントのサブドメインに縛られ、変えると全アカウントのプロバイダーを作り直すことになる）[推測]。ポータルと同じホストのパス（Bypass の Access アプリ）にするか、別のホスト（例 `idp.<domain>`）にするかは未決（§12.2 の G-8） |
-| 変えにくさ | ポータルのホスト名は `Issuer`・ブックマーク・Access アプリ・CSRF の Origin の検査に入る。段階 1 の前に下流の設定で確定する |
+| 変えにくさ | ポータルのホスト名は `Issuer`・ブックマーク・Access アプリ・CSRF の Origin の検査に入る。最初に配る前に下流の設定で確定する（② は個人の下流、③ は会社の下流） |
 
 この文書では、チームの起点の URL を **`<team-base>`** と書く（R-P なら `https://portal.<domain>/t/<team>`、R-H なら `https://<team>.portal.<domain>`）。どちらの案でも次を守る。
 
@@ -266,8 +267,8 @@ ASCII の図は構成を示すもので、見た目の確定ではない。ア�
 
 - **一覧の作り方（U2）**: Worker は入口のアプリの Access の身元（get-identity など）から Entra グループの Object ID を**サーバー側で**取り、表示用の対応表（Object ID → チーム）と突き合わせて、所属するチームの行を合わせて出す。ブラウザが送るグループの値は使わない。行ごとに「どのチームの割り当てで入れるか」を出し、ロールのボタンはそのチームのパスの S2（`<team-base>/a/<account-id>?role=<role>`）へのリンク（GET）。**この照合は表示のためだけで、発行の認可には使わない**（§7・§9.3）
 - **「所属なし」と「分からない」を区別する**。所属なし（グループは取れたがどのチームにも当たらない）は、行を出さずに申請先を案内する。分からない（取れない・溢れた・壊れている）は、全チームの S1 へのリンクに落とす（上の図）
-- Administrator の行も同じ一覧に出す（P1'。§8）。ボタンは Admin のオリジンの S2 へのリンク。Standard の Worker は Admin の発行を代わりに行わない。Administrator の行の見た目の区別（`ADMIN` の印など）を残すかは人の確認待ち（§12.1）。PIM で昇格していない人への見せ方は段階 3 で決める
-- 操作は 2 回のまま（一覧でロールを選ぶ → S2 で「コンソールを開く」）。チームの選択だけがなくなる。一覧から 1 クリックで発行する形（pending intent）は段階 1 では入れない（§12.4）
+- Administrator の行も同じ一覧に出す（P1'。§8）。ボタンは Admin のオリジンの S2 へのリンク。Standard の Worker は Admin の発行を代わりに行わない。Administrator の行の見た目の区別（`ADMIN` の印など）を残すかは人の確認待ち（§12.1）。PIM で昇格していない人への見せ方は G3・G5 で扱う
+- 操作は 2 回のまま（一覧でロールを選ぶ → S2 で「コンソールを開く」）。チームの選択だけがなくなる。一覧から 1 クリックで発行する形（pending intent）は最初の形には入れない（§12.4）
 - チームが 1 つだけの設定（個人用など。§11.7）では、S0 はそのチームの S1 へ移すだけにする [推測: 実装の案]
 - 最近使ったもの（localStorage）にアカウントの email は入れない（§5.6）。行とチームを一緒に記録する
 - 最近使ったものは R-P なら全チーム分を出せる。R-H ではホストが違うので出せない（§3.1）
@@ -464,7 +465,7 @@ Access の「Custom block pages」で出す文面の案。描くのは Access �
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Admin の階層のチームのアプリでは、「PIM で昇格していない」場合もこの画面になりうる。文面に「昇格の手順」を足すか（と、昇格の運用そのもの）は段階 3 で決める
+- Admin の階層のチームのアプリでは、「PIM で昇格していない」場合もこの画面になりうる。文面に「昇格の手順」を足すか（と、昇格の運用そのもの）は G3・G5 で扱う
 - U2 では、入口の一覧が古い（グループから外れた直後など）と、一覧の行から来てもこの画面になる。一覧は表示だけで、ここ（チームのアプリ）が所属を確かめる
 
 ### 4.8 Admin のオリジンの S2（Administrator の行を選んだあと）
@@ -587,7 +588,7 @@ CI で検査すること（生成のたび）:
 | 表示されるのに拒否される | STS が `AccessDenied`（理由は返らない）→ S4 `sts_denied` | 権限を狭める変更の反映待ち・一覧の生成待ち・管理外の先方の未更新・ロールの削除 | 発行記録に `sts_denied` を残し、アカウントごとの件数を見張る。急に増えたら一覧と StackSets の差を調べる |
 | 入れるのに表示されない | ポータルからは入れない | 権限を広げる変更（StackSets の反映）のあと、一覧の生成がまだ | 一覧の再生成を待つ（または手で流す）。**ARN の自由入力は受け付けない**（§12.4） |
 
-ポータルの選択の検証に一覧を使う（一覧にないロールには発行しない）。これは「許可を広げない側」の絞り込みで、権威ではない。cto の制約（一覧は表示用。最終判断は信頼ポリシー）の範囲内と考える [推測: 段階 1 のゲートで確認を求める]。
+ポータルの選択の検証に一覧を使う（一覧にないロールには発行しない）。これは「許可を広げない側」の絞り込みで、権威ではない。cto の制約（一覧は表示用。最終判断は信頼ポリシー）の範囲内と考える [推測: 確認を求める時機は §12.2 の G-2]。
 
 ### 5.6 アカウントの email の扱い
 
@@ -657,7 +658,7 @@ AWS の文書は、ログイン URL を秘密として扱い、302 で渡すこ�
 | **T1 302**（第一案） | `Location` に `Action=login` の URL を入れる | AWS の推奨。PoC で URL を開いてコンソールに入れた [確認済み: A-2] | URL がブラウザの履歴に残る（15 分有効）。拡張機能や画面共有から見えうる |
 | T2 自動送信の POST | `Action=login`・`Issuer`・`Destination`・`SigninToken` を hidden に入れたフォームを返し、nonce つきのスクリプトで送信する（スクリプトがなければボタン） | トークンが URL・履歴・`Referer` に出ない | 応答の HTML にトークンが入る（`no-store` が要る）。**ポータルからの POST でログインできるかは未検証** |
 
-- 段階 1 は T1 で始め、T2 を PoC（P-4）で確かめてから切り替えを検討する
+- 最初は T1 で始め、T2 を PoC（P-4）で確かめてから切り替えを検討する
 - `SigninToken` が 1 回使うと無効になるかは、文書に記載がない [未検証]
 
 ### 6.3 `Issuer` と `Destination`
@@ -684,9 +685,9 @@ AWS の文書で分かること:
 
 ポータルはコンソールのセッションの状態を知ることができない（別のオリジン）。そのため、設計は次のようにする。
 
-| 段階 | 対応 |
+| 時機 | 対応 |
 |---|---|
-| 段階 1（今の知見） | S2 に「切り替わらないとき」の案内を常に出す（サインアウトしてからやり直す・マルチセッション・ブラウザのプロファイル）。新しいタブで開くので、ポータルは残る |
+| 最初（今の知見） | S2 に「切り替わらないとき」の案内を常に出す（サインアウトしてからやり直す・マルチセッション・ブラウザのプロファイル）。新しいタブで開くので、ポータルは残る |
 | P-1 の結果でマルチセッションの追加に使えると分かったら | 案内の 1 番目をマルチセッションにし、有効にする手順を S2 とヘルプに出す |
 | P-1 で公式のサインアウトの手順（URL かコンソールの操作）とその後の遷移が確かめられたら | 「サインアウトしてから開く」ボタンを足すか検討する |
 
@@ -697,12 +698,12 @@ AWS の文書で分かること:
 | 項目 | 内容 | 状態 |
 |---|---|---|
 | 必要な権限 | `signin:AuthorizeOAuth2Access` と `signin:CreateOAuth2Token`。対象のリソースは `arn:aws:signin:<region>:<account-id>:oauth2/public-client/localhost`（同じ端末の `aws login`）と `.../remote`（`aws login --remote`） | [確認済み: AWS の文書] |
-| `--remote` の扱い（cto の決裁 2026-11-12） | AWS 管理ポリシー `SignInLocalDevelopmentAccess` は `localhost` と `remote` の両方を許す。参考の形のロールは管理ポリシーを付けず、**Standard（Viewer）は `localhost` と `remote` の 2 つだけを許すポリシー**、**Admin（Administrator）は `localhost` だけ**を許すポリシーを付ける。Administrator の `remote` は Admin の階層の守りの部品の明示の Deny で拒否する（本人が外せるので、フィッシングへの守りで封じ込めではない）。SCP には頼らない（[console-login.md](console-login.md) §4.4） | 設計。Administrator で拒否されることは段階 3 の N2 |
-| 同じ端末の `aws login` と `--remote`（Viewer の形のロール） | **どちらも通る**（1a の前の条件 (1) の書き直し版。開発環境、2026-11-12）。`--remote` の確認画面にはアカウントの ID とロール名 / セッション名が出るが、要求元の端末は出ない。CloudTrail は `requestParameters.client_id`（`devtools/cross-device` / `devtools/same-device`）で区別できる [確認済み: `scripts/poc/human/README.md`] | 残り（1b の前）: 同じ端末の 15 分後の更新、セッションが 1 つのときの確認画面 |
+| `--remote` の扱い（cto の決裁 2026-11-12） | AWS 管理ポリシー `SignInLocalDevelopmentAccess` は `localhost` と `remote` の両方を許す。参考の形のロールは管理ポリシーを付けず、**Standard（Viewer）は `localhost` と `remote` の 2 つだけを許すポリシー**、**Admin（Administrator）は `localhost` だけ**を許すポリシーを付ける。Administrator の `remote` は Admin の階層の守りの部品の明示の Deny で拒否する（本人が外せるので、フィッシングへの守りで封じ込めではない）。SCP には頼らない（[console-login.md](console-login.md) §4.4） | 設計。Administrator で拒否されることは N2（① の PoC。G2） |
+| 同じ端末の `aws login` と `--remote`（Viewer の形のロール） | **どちらも通る**（1a の前の条件 (1) の書き直し版。開発環境、2026-11-12）。`--remote` の確認画面にはアカウントの ID とロール名 / セッション名が出るが、要求元の端末は出ない。CloudTrail は `requestParameters.client_id`（`devtools/cross-device` / `devtools/same-device`）で区別できる [確認済み: `scripts/poc/human/README.md`] | 残り（旧「1b の前」。② で確かめ G3）: 同じ端末の 15 分後の更新、セッションが 1 つのときの確認画面 |
 | ブラウザでのセッションの選択 | アクティブなセッションの一覧から選ぶ。マルチセッションが有効なら最大 5 つから選べる。コンソールにまだ入っていなければ、別のタブで入ってから「更新」を押す | [確認済み: AWS の文書（AWS Security Blog）] |
-| 長さ | 認証情報は 15 分ごとに更新され、ロールのセッションの長さ（最大 12 時間）まで使える。Admin はロールの MaxSessionDuration を短くするので、`aws login` も短くなる | [確認済み: AWS の文書と PoC（15 分の更新）]。長さの上限は段階 3 前の PoC（cto の N2）で確かめる |
+| 長さ | 認証情報は 15 分ごとに更新され、ロールのセッションの長さ（最大 12 時間）まで使える。Admin はロールの MaxSessionDuration を短くするので、`aws login` も短くなる | [確認済み: AWS の文書と PoC（15 分の更新）]。長さの上限は ① の PoC（cto の N2。G2）で確かめる |
 | 停止 | Revoke Sessions と `aws:SourceIdentity` の Deny で `aws login` の更新も止まった（`--remote` を含む）。外すと再ログインなしで戻るので、最長のセッションが切れるまで外さない（[console-login.md](console-login.md) §6.3） | [確認済み: PoC の P4(a)、2026-11-12 の再試験] |
-| 案内（S3） | 「自分で始めた URL だけ開く」「コードを人に渡さない」「一覧で選ぶセッションを確かめる」「共有の端末では `aws logout`」。`--remote` の発行は CloudTrail の `client_id = devtools/cross-device` で通知する（1b の前） | 設計 |
+| 案内（S3） | 「自分で始めた URL だけ開く」「コードを人に渡さない」「一覧で選ぶセッションを確かめる」「共有の端末では `aws logout`」。`--remote` の発行は CloudTrail の `client_id = devtools/cross-device` で通知する（② で組み G3 に持っていく） | 設計 |
 
 ---
 
@@ -730,8 +731,8 @@ U2 の条件（cto の決裁 2026-11-12）:
 - グループはサーバー側で取る（ブラウザの値は使わない）
 - 「所属なし」と「分からない」を区別し、分からなければ全チームへのリンクに落とす
 - 外れた直後の拒否の画面（S4）を設計に入れる
-- 会社の Entra での実証を 1a-1・1a-2 に足す（[console-login.md](console-login.md) §7.3）: 身元に入るのは Object ID か、直接・入れ子・ゲストの扱い、全部そろうか、溢れたことの見分け、反映の時間、チームのアプリの判定との一致。**成り立たなくても 1a は止めない**（その場合は全チームへのリンクに落とす形で運用する）
-- 一覧から 1 クリックで発行する形（pending intent）は段階 1 では入れない。2 回の操作が受け入れられないときは、決められた性質（CSRF を検証した POST からだけ作る、本人・チーム・行・リージョンに束縛、2 分以内、戻りの GET だけでは発行しない、9 段は不変、JWT を URL に載せない、二重発行の防止）を満たせば再上申なしで足せる。Sol のレビューと負の試験は要る
+- 会社の Entra での実証を 1a-1・1a-2 に足す（[console-login.md](console-login.md) §7.3。行き先は G4）: 身元に入るのは Object ID か、直接・入れ子・ゲストの扱い、全部そろうか、溢れたことの見分け、反映の時間、チームのアプリの判定との一致。**成り立たなくても止めない**（その場合は全チームへのリンクに落とす形で運用する）
+- 一覧から 1 クリックで発行する形（pending intent）は最初の形には入れない（前の版は「段階 1 では入れない」）。2 回の操作が受け入れられないときは、決められた性質（CSRF を検証した POST からだけ作る、本人・チーム・行・リージョンに束縛、2 分以内、戻りの GET だけでは発行しない、9 段は不変、JWT を URL に載せない、二重発行の防止）を満たせば再上申なしで足せる。Sol のレビューと負の試験は要る
 - 再審議の条件: 会社の Entra で所属が取れない・そろわないとき（落とし方のままか、Microsoft Graph で照会するか）、U1（身元のグループで発行まで判断する）を望むとき、表示用の対応表が発行の判断に使われる変更が入るとき
 
 App Launcher は使わない（入れるものは入口の一覧で分かる）。Access のアプリが App Launcher に既定でタイルを出す作り方なら、Terraform の設定で表示を切ってそろえる [推測: 設定の項目は Terraform を書くときに確かめる]。
@@ -747,8 +748,8 @@ App Launcher は使わない（入れるものは入口の一覧で分かる）�
 | 入口と一覧（S0） | **共通**: Standard のオリジン（`https://portal.<domain>/`）に 1 つ。Administrator の行も同じ一覧に出す（§4.1） | 入口と一覧は置かない。チームのパス以外を覆う Access アプリ（Access を経由しない入口を閉じるため）が要るかは未決（§12.2 の G-6） |
 | 確認と発行（S2 の POST） | Standard のオリジンの Worker（Standard のデプロイ） | **Admin のオリジン**（`https://admin-portal.<domain>/`）の Worker（Admin のデプロイ）だけ。同じホストのパス分けにはしない |
 | Worker | Standard のデプロイ | Admin のデプロイ（別の Worker。D3 は「Admin は別の Worker デプロイ」を保ち、画面の分離だけを緩めた） |
-| issuer と鍵 | Standard の鍵（段階 1・2 は Workers secret。境界ごと）。Standard の issuer の名前は変えない | Admin の鍵（KMS 必須。境界ごと）。issuer のホストは Standard と同じホストの `/admin` でもよい（`/admin` の経路が Admin の Worker に向くことが条件。確定は段階 3。[console-login.md](console-login.md) §3.1） |
-| Access アプリ | 入口 + 設定ファイルの `tier: "standard"` のチームごと（例 `infra` / `dev` / `sa`） | `tier: "admin"` のチームごと（例 `infra-elevated`）。Admin 用の別の Entra グループ（PIM など）は必須にしない（段階 3 で人が決める） |
+| issuer と鍵 | Standard の鍵（境界ごと）。Workers secret は会社で Administrator を配る前（G5 の前）まで。会社で最初から KMS にするかは G2（D4 の言い直し）。Standard の issuer の名前は変えない | Admin の鍵（KMS 必須。境界ごと。[console-login-admin.md](console-login-admin.md)）。issuer のホストは Standard と同じホストの `/admin` でもよい（`/admin` の経路が Admin の Worker に向くことが条件。形は G1 で審議。[console-login.md](console-login.md) §3.1） |
+| Access アプリ | 入口 + 設定ファイルの `tier: "standard"` のチームごと（例 `infra` / `dev` / `sa`） | `tier: "admin"` のチームごと（例 `infra-elevated`）。Admin 用の別の Entra グループ（PIM など）は必須にしない（人が決める。PIM は G3・G5） |
 | Access のセッション | 長め（値は未定） | 短く。ログインのたびに再認証を求める案を検討する |
 | Standard のバンドルに入る Admin の情報 | **表示用だけ**: Administrator の行（アカウント・ロール名・チームの表示名）と、Admin の階層のチームの Object ID（表示用の対応表。U2）。**Admin のチームの AUD・Access のポリシー ID・Admin の鍵の参照は入れない** | — |
 | 見た目 | 通常の配色 | 区別（警告色・`[ADMIN]`）を残すかは人の確認待ち（§12.1） |
@@ -759,15 +760,15 @@ P1' の条件:
 - Administrator の行は Admin のオリジンへ遷移し、Admin 側の確認画面（S2）で POST する。**Standard の Worker は Admin の発行を代わりに行わない**
 - Admin の発行は別のオリジン（同じホストのパス分けは不可）。理由: 発行のオリジンが同じだと、Standard の画面の欠陥で動くスクリプトが Admin の発行を呼べる（Cookie の Path は境界にならず、Origin の検査も通る）
 - Standard の issuer の名前は変えない
-- 自前の JWT に `azp` を出さないこと（`:aud` の条件キーの扱いが変わるため）を、単体テストと 1a の試験に入れる
-- 段階 3 の前に確かめる: パスで別の Worker に振り分ける形での、プロバイダーの登録・引き受けと、Access を迂回する入口の遮断
+- 自前の JWT に `azp` を出さないこと（`:aud` の条件キーの扱いが変わるため）を、単体テスト（G2）と ② の試験に入れる（前の版は「1a の試験」）
+- 確かめる（P-9。時機は G1 で決める）: パスで別の Worker に振り分ける形での、プロバイダーの登録・引き受けと、Access を迂回する入口の遮断
 
 決めていないこと・却下したこと:
 
-- P1（Standard と Admin を同じ Worker にする）・P2（issuer を 1 つにする）は今は決めない。段階 3 のゲートで、人の受容を付けて再上申できる（P1 は D3 の緩和、P2 は D3・D4 の変更）。順位は P1' > P1 > P2
+- P1（Standard と Admin を同じ Worker にする）・P2（issuer を 1 つにする）は決めていない。G1 で扱う（前の版は「段階 3 のゲートで再上申できる」）。採るには人の受容が要る（P1 は D3 の緩和、P2 は D3・D4 の変更）。評価は [console-login-admin.md](console-login-admin.md)。順位は P1' > P1 > P2
 - P3（MCP 用とコンソール用のプロバイダーを 1 つにする）は却下。MCP と Standard だけを共通にする形、稼働中の MCP の issuer を広げる形も却下（人が受容しても技術承認しない）
 - 結果として、Administrator を配るアカウントにはコンソール用のプロバイダーが 2 つ（Standard・Admin）並ぶ
-- Admin のオリジンは段階 3 まで存在しない。段階 1・2 では Standard だけを公開する
+- Admin のオリジンは ① で作り、② で個人の環境に公開する。会社では G5 のあとに公開する（それまで会社では Standard だけを公開する）
 - 2 つのオリジンでは、お気に入り・最近使ったもの（localStorage）は共有されない。一覧は Standard のオリジンにあるので、ふだんは困らない [推測]
 
 ---
@@ -913,7 +914,7 @@ cto の条件（MCP 用 Worker のバンドルにコンソールログイン用�
 | MCP 用のバンドル | コンソールログイン用の経路（`/t/`・`/login` など）とモジュールが含まれない |
 | Standard のバンドル | Admin の鍵の参照・Admin のチームの AUD・Access のポリシー ID が含まれない。Admin の行は表示用（P1'・U2）の形だけで、発行に使える形では含まれない（2026-11-12 に引き直した） |
 | 発行の経路 | 発行の経路のモジュールが、入口の表示用の照合のコードと対応表を import しない。表示では所属していることになっていても、チームのアプリで拒否される人は発行できない（U2 の条件） |
-| 自前の JWT | `azp` を出さない（P1' の条件。1a の試験にも入れる） |
+| 自前の JWT | `azp` を出さない（P1' の条件。② の試験にも入れる） |
 | Admin のバンドル | Standard の一覧の行が含まれない |
 | 設定の読み込み | Standard のデプロイに Admin の階層の行・チーム・issuer が渡されたら、起動時（初回の要求時）に `server_misconfigured` で止まる（生成の段階でも弾く。§11.6） |
 | 設定の分離 | Worker 用の生成物に、種類の定義（`kinds`）・Access のポリシー ID・他の階層の AUD が入っていない。Entra のグループの Object ID は表示用の対応表としてだけ入れてよい（U2。前の版は「入れない」だった。いまの生成器と `test/unit/console-generate.test.ts` は前の約束のまま） |
@@ -931,7 +932,7 @@ cto の条件（MCP 用 Worker のバンドルにコンソールログイン用�
 | 一覧の表示 | チームの行（最大 1,500 行、通常はその一部）を HTML に JSON として埋め込み、ブラウザ内で検索・絞り込み・ページ送りをする。最初の表示はお気に入り・最近使ったもの・先頭の 50 件 | 埋め込む JSON は圧縮後に数十 KB。表示まで 1 秒以内 |
 | JavaScript がないとき | `?q=` などのクエリでサーバー側で絞り込み、ページ送りする | — |
 | Worker の処理 | 一覧はバンドル済みのデータを読むだけ。要求ごとに AWS を呼ばない | CPU 時間は小さい |
-| ログイン | JWT の署名 + STS + `getSigninToken` の 2 往復。Admin は KMS の署名の分が増える | 302 まで 2〜3 秒以内（Admin は KMS の遅延を P-6 で測る） |
+| ログイン | JWT の署名 + STS + `getSigninToken` の 2 往復。Admin は KMS の署名の分が増える | 302 まで 2〜3 秒以内。Admin（KMS の署名）は N6 で測定済み（ログイン全体は中央値約 210 ms、開発環境。P-6） |
 
 ### 10.2 可用性
 
@@ -953,10 +954,10 @@ cto の条件（MCP 用 Worker のバンドルにコンソールログイン用�
 | 項目 | 内容 |
 |---|---|
 | 時刻・要求 ID（`Cf-Ray`） | |
-| 利用者 | email（小文字）、SourceIdentity に使った値（段階 1 は email）、Access JWT の `sub`、取れれば Entra の `oid`（cto の決裁 2026-11-12。email の変更・再利用のあとでも誰の発行かをたどるため。段階 2 で SourceIdentity を `oid` に移すときの対応表にもなる。console-login.md §3.4・§9.2 の U-3） |
+| 利用者 | email（小文字）、SourceIdentity に使った値（email。会社の Entra でも email に決定。[console-login.md](console-login.md) §3.4）、Access JWT の `sub`、取れれば Entra の `oid`（cto の決裁 2026-11-12。email の変更・再利用のあとでも誰の発行かをたどるため。人の特定は、この記録（時刻・email・`sub`）と Entra の記録を合わせて行う。console-login.md §5.6） |
 | 入口 | デプロイ（standard / admin）、AUD、チーム |
 | 対象 | アカウント ID、ロール（`roles[].name`）、ロール ARN、境界、issuer。**アカウントの email は残さない**（§5.6） |
-| JWT | `jti`・`iat`・`exp`（JWT 自体は残さない）。`jti` は CloudTrail に残らないので、突き合わせには使えない |
+| JWT | `jti`・`iat`・`exp`（JWT 自体は残さない）。`jti` は CloudTrail の `AssumeRoleWithWebIdentity` の `requestParameters.webIdentityTokenId` に入る（開発環境の N6 で 28/28。1 回の測定）ので、**突き合わせの主なキー**にする（Standard と Admin の両方。[console-login-admin.md](console-login-admin.md) §8） |
 | STS の応答 | `AssumeRoleWithWebIdentity` の応答の `AccessKeyId`・`AssumedRoleUser.AssumedRoleId`・要求 ID（`x-amzn-RequestId`）。秘密鍵とセッショントークンは残さない。CloudTrail との突き合わせはこの 3 つで行う（console-login.md §5.6） |
 | セッション | `SessionDuration`、リージョン |
 | 結果 | `ok` または §9.4 の `code` |
@@ -964,7 +965,7 @@ cto の条件（MCP 用 Worker のバンドルにコンソールログイン用�
 
 - 一覧の表示（GET）は、件数と要求 ID だけを残す（誰がどのアカウントを見たかは残さない。検索語も残さない）[推測: 要否は §12 の未決事項]
 - 見張るもの: `unknown_audience`・`team_mismatch`・`forbidden_origin`・`csrf_failed` の発生、`sts_denied` の急増、Admin のログイン（すべて通知）
-- 鍵の漏洩の検知（Worker の発行記録 / KMS の Sign の記録と、CloudTrail の引き受けイベントの突き合わせ）は、STS の応答の `AccessKeyId`・`AssumedRoleId`・要求 ID と、時刻・アカウント ID で行う（CloudTrail の `AssumeRoleWithWebIdentity` のイベントの `responseElements.credentials.accessKeyId`・`responseElements.assumedRoleUser.assumedRoleId`・`requestID` に当たる）。自前の JWT の `jti` は CloudTrail に引き継がれないので使えない [資料: Sol のレビュー（段階 1 のゲート）の指摘 9 と cto の決裁。CloudTrail のフィールド名は [推測]（段階 1a の突き合わせで確かめる）]
+- 鍵の漏洩の検知（Worker の発行記録 / KMS の Sign の記録と、CloudTrail の引き受けイベントの突き合わせ）は、**`jti`（CloudTrail の `AssumeRoleWithWebIdentity` の `requestParameters.webIdentityTokenId`）を主なキー**にし、STS の応答の `AccessKeyId`・`AssumedRoleId`・要求 ID と、時刻・アカウント ID も使う（CloudTrail の `responseElements.credentials.accessKeyId`・`responseElements.assumedRoleUser.assumedRoleId`・`requestID` に当たる）。前の版の「`jti` は CloudTrail に引き継がれないので使えない」は、開発環境の N6 の観察（28/28。1 回の測定）で訂正した。KMS の Sign の記録とは KMS の要求 ID で結ぶ（console-login-admin.md §8）[資料: Sol のレビュー（段階 1 のゲート）の指摘 9 と cto の決裁。CloudTrail のフィールド名は [推測]（突き合わせ（1a-4。最初は ②）で確かめる）]
 
 ---
 
@@ -1052,7 +1053,7 @@ cto の条件（MCP 用 Worker のバンドルにコンソールログイン用�
 
 #### 例（会社用。値はすべて伏せた形）
 
-設計上申 §4.6.1 の表（種類 A〜C）に、管理外の先方用の種類 P を足した例。チームの `-elevated` は Admin の階層のチームで、PIM の対象のグループに対応する（段階 3）。
+設計上申 §4.6.1 の表（種類 A〜C）に、管理外の先方用の種類 P を足した例。チームの `-elevated` は Admin の階層のチームで、PIM の対象のグループに対応する（PIM は G3・G5 で扱う）。
 
 上流の `config/console.company.example.json` は、この例の `<...>` をダミーの値（`example.com`・`111111111111` など）に置き換えたもの。
 
@@ -1110,7 +1111,7 @@ cto の条件（MCP 用 Worker のバンドルにコンソールログイン用�
 
 - この例では、インフラ（`infra`）を全種類の Viewer に入れている（旧 Q-P1 を「許す」とした場合）。許さないなら `viewer` から `infra` を外す。その場合、Standard のポータルでインフラの一覧は空になる（生成の警告。§11.6）
 - 管理外の先方の境界には Admin の issuer がないので、先方の種類 P に Admin のロールは割り当てられない（割り当てると生成のエラー）
-- 前の版の Developer（`PowerUserAccess`）は廃止した（cto の決裁 2026-11-12）。IAM が要る開発者は Administrator を持つ（例では種類 C の `dev-elevated`）。Administrator を配るのは段階 3 から
+- 前の版の Developer（`PowerUserAccess`）は廃止した（cto の決裁 2026-11-12）。IAM が要る開発者は Administrator を持つ（例では種類 C の `dev-elevated`）。Administrator を配るのは ② の個人の環境から（会社は G5 のあと）
 - Viewer のロールの秘密値の Deny・`aws login` の Allow・守りの部品は、参考の形のテンプレートとプロバイダーのスタックが付ける（設定の `permissions` には書かない。[console-login.md](console-login.md) §4.3・§4.7・§4.8）
 - AUD は書いていない。Terraform の出力から入る（§11.4）
 
@@ -1157,7 +1158,7 @@ cto の条件（MCP 用 Worker のバンドルにコンソールログイン用�
 | OU | `kindOus` の OU が入れ子になっていない。どの種類の OU にも属さない管理下のアカウントの件数（警告） | 定期（Organizations の読み取り） |
 | 分離 | Worker 用の生成物の分離（§9.10） | PR |
 | wrangler | Custom Domain のホストが `portal.*Origin` と一致する | PR |
-| ロール（検査の道具） | 信頼ポリシーの形（承認済みの厳格な形だけを許す許可リスト方式）・守りの部品の付与と現在の版・プロバイダーを信頼するロールの棚卸し・正常性（console-login.md §4.9） | 段階 1 は運用者が手で回す。段階 2 で CI の読み取りロールを決める |
+| ロール（検査の道具） | 信頼ポリシーの形（承認済みの厳格な形だけを許す許可リスト方式）・守りの部品の付与と現在の版・プロバイダーを信頼するロールの棚卸し・正常性（console-login.md §4.9） | ②（と ③ の最初）は運用者が手で回す。CI の読み取りロールは G3 で決める |
 
 cto の条件との整合:
 
@@ -1221,6 +1222,8 @@ cto の条件との整合:
 | 省略できる項目の既定値 | `tier` は `standard`、`displayName` は `name`、`routing` は `path`、`regions` なし、`inventory.accountEmail` は管理下・管理外とも `full` |
 | CI の検査 | スキーマと参照の検査（`mise run console:config:check`）だけで足りる。生成は `mise run console:config:generate`（手書きの AUD を使うので、Terraform の出力は要らない） |
 
+- ② の個人の環境（[console-login.md](console-login.md) §7.5）は Administrator も配るので、この最小構成ではない（Admin の階層・`adminOrigin`・Admin の階層のチーム・KMS の鍵を持つ）
+
 ### 11.8 下流の設定で決めること
 
 上流（この文書）では決めず、各下流が設定ファイルで決める事項。会社の下流で決めるときの作成者の案も書く。
@@ -1232,7 +1235,7 @@ cto の条件との整合:
 | 問い合わせ先（旧 Q-P6） | `portal.supportUrl` | 社内の窓口 |
 | チームとロールの一覧 | `teams`・`roles` | 3 チーム（と Admin の階層のチーム）・Viewer と Administrator の 2 ロール（Developer は廃止。cto の決裁 2026-11-12） |
 | どのグループにどのロールを渡すか | `kinds[].assign` | 上流は規則を持たない（console-login.md §4.8） |
-| ポータルのホスト名 | `portal.standardOrigin` / `adminOrigin` | `<domain>` の下で、段階 1 の前に確定する（§3.1） |
+| ポータルのホスト名 | `portal.standardOrigin` / `adminOrigin` | `<domain>` の下で、最初に配る前に確定する（§3.1） |
 | 一覧に出すアカウントの email | `inventory.accountEmail` | **決定**（Q-P9）: 既定のまま、管理下・管理外とも `full`（すべて表示） |
 
 ---
@@ -1247,7 +1250,7 @@ cto の条件との整合:
 | Q-P4 | 一覧に出す属性（email は決定済み） | 環境（本番・非本番）・担当・説明など | まず名前・ID・email・Organization・種類・管理下 / 外。環境はアカウントのタグか設定ファイルの登録から取れるなら足す |
 | Q-P5 | 所属しないチームの一覧の中身を見せるか | 見せない / 入口で全一覧を検索できる | 見せない（管理外の先方の名前を含むため）。入口の一覧（U2）は所属するチームの行だけ |
 | Q-P11 | 1 つの一覧（U2）の受け入れ（2026-11-12 の cto の決裁で人の確認とされたもの） | (a) 操作が 2 回（一覧でロールを選ぶ → S2 で開く）のままでよいか (b) 会社の Entra と Access で、グループを身元に載せる設定を変えてよいか (c) 所属が取れないときに全チームへのリンクに落ちる見え方でよいか | — |
-| Q-P12 | 入口の共通化（P1'）で何をやめたいか（2026-11-12 の cto の決裁で人の確認とされたもの） | やめてよい: 別のポータル（やめた）・Administrator の見た目の区別・Admin 用の別グループの必須。残す: 別 Worker・別 issuer と鍵・KMS・発行のオリジンの分離・短いセッション・段階 3 のゲート。利用者の意図が「プロバイダーを 1 つにしたい」なら P2 を段階 3 で審議 | 見た目の区別を残すかは未決（§4.1・§4.8） |
+| Q-P12 | 入口の共通化（P1'）で何をやめたいか（2026-11-12 の cto の決裁で人の確認とされたもの） | やめてよい: 別のポータル（やめた）・Administrator の見た目の区別・Admin 用の別グループの必須。残す: 別 Worker・別 issuer と鍵・KMS・発行のオリジンの分離・短いセッション・G5 のゲート（前の版は段階 3 のゲート）。利用者の意図が「プロバイダーを 1 つにしたい」なら P2 を G1 で審議 | 見た目の区別を残すかは未決（§4.1・§4.8） |
 | Q-P7 | 一覧の表示（GET）を誰が何を見たかまで記録するか | する / 件数だけ | 件数だけ（検索語も残さない） |
 
 前の版から移した事項:
@@ -1265,15 +1268,15 @@ cto の条件との整合:
 
 | # | 論点 | 作成者の案 | 決める時機 |
 |---|---|---|---|
-| G-1 | チームの分け方（R-P パス / R-H ホスト） | R-P。開発環境の PoC（M2・N9）で、パスごとの Access アプリで `aud` が分かれ、アプリを切り替えても再ログインが要らず、1 つのホストの `/std` と `/admin` を別の OIDC プロバイダーにできた。R-P を採れる見込み（会社環境の Entra で確かめる）。Cookie Path の確認は残る。自社ドメインにしたので R-H も取れる（証明書は Custom Domain で発行される）が、チームを足すたびに Custom Domain が要る（§3.1）。設定ファイルの `portal.routing` で選べる形にし、会社用の既定を決める | 段階 1 の前 |
-| G-2 | 一覧を「選択の検証」（一覧にないロールには発行しない）に使うことが、制約 3（Worker は対応表を権威にしない）の範囲内か | 範囲内。許可を広げない側の絞り込みで、最終判断は信頼ポリシー | 段階 1 の前 |
-| G-3 | ログイン URL の渡し方（T1 302 / T2 POST） | 段階 1 は T1。P-4 の結果で T2 を検討 | 段階 1 の前 |
-| G-4 | `--remote` の扱い | **決定**（cto の決裁 2026-11-12）: Standard（Viewer）は許す。Administrator は `localhost` だけで、`--remote` は Admin の階層の守りの部品の明示の Deny。SCP には頼らない（管理下のメンバーアカウントでの任意の層）。Viewer で両方が通ることは 1a の前の条件 (1)（書き直し版）で成立 | Administrator で拒否されることは段階 3 の N2 |
-| G-5 | 変えにくい名前: ポータルのパスの形（`/t/<team>/`）、`RoleSessionName` の形（`console-<email>`）、タグのキー `awsbridge_team`、ロールの識別子を `role`（設定の `roles[].name`。`entry` は `<account-id>:<role>`）と呼ぶこと、ロールのパス `/awsbridge-console/<tier>/` | ポータルのパスと `role` の呼び方はこの文書の形。issuer の URL・audience・ロールのパス（P-2 で確定）・タグ・SourceIdentity は [console-login.md](console-login.md) §3 | 段階 1 の前（cto の条件: 変えにくい名前を確定する） |
-| G-6 | Admin の階層（Admin のオリジンの S1〜S5、Admin の階層のチーム、PIM と昇格していない人への一覧の見せ方、Access のセッション、確認の文、Admin のオリジンでチームのパス以外を覆う Access アプリと `portal.entryAud.admin` の扱い、共通の入口のアプリに Admin の階層のチームのグループを含めるか） | 入口と一覧は共通（P1'。§8） | 段階 3 の前 |
-| G-7 | 停止スイッチ（Worker の変数）を緊急停止の手順に入れるか | 入れる | 段階 1 の前 |
-| G-8 | OIDC の issuer のホスト（N9）と、ポータルのホストとの関係。ポータルを自社ドメインにしたことを受けて | **cto の決裁**: Standard の issuer は `https://<issuer-host>/std`（ポータルと別の issuer 専用のホスト。`workers.dev` に置かない）で確定。Admin の issuer は方向 I-B で、確定は段階 3（2026-11-12 に「分けるのは発行のオリジン。issuer は Standard と同じホストの `/admin` でもよい」と具体化。[console-login.md](console-login.md) §3.1）。フェデレーションの `Issuer`（S5）とは別の URL として扱う（§3.1） | 段階 1 の前（Standard は決定済み）。Admin は段階 3 |
-| G-9 | 設定ファイルのスキーマ（§11.3）を上流と下流の契約として確定すること。含まれる判断: (a) 種類の StackSet のテンプレートを生成する（K1）か枠を固定する（K2）か、(b) Admin の階層のチームを明示する（`-elevated` を暗黙に付けない）こと、(c) 設定の誤りを生成の時点のエラーに寄せること（§11.6）、(d) 会社の下流で手書きの AUD を禁じること、(e) ロールの `tier` は自己申告なので、Standard のロールに付けてよい権限の上限を生成で検査するか（§11.5）、(f) 個人用の下流には「同じ元から生成」と Admin の分離の条件を課さないこと（§11.7） | K1・明示・生成の時点・禁じる・(e) は cto の決裁 2026-11-12 で「手作りロールの強さは下流の責任、検査の道具は既知の広い管理ポリシーの警告まで」になった・課さない。ロールのテンプレートは参考の形になった（(a) は参考の形の作り方の話） | 段階 1 の前（実装の前） |
+| G-1 | チームの分け方（R-P パス / R-H ホスト） | R-P。開発環境の PoC（M2・N9）で、パスごとの Access アプリで `aud` が分かれ、アプリを切り替えても再ログインが要らず、1 つのホストの `/std` と `/admin` を別の OIDC プロバイダーにできた。R-P を採れる見込み（会社環境の Entra で確かめる）。Cookie Path の確認は残る。自社ドメインにしたので R-H も取れる（証明書は Custom Domain で発行される）が、チームを足すたびに Custom Domain が要る（§3.1）。設定ファイルの `portal.routing` で選べる形にし、会社用の既定を決める | ① の実装の前（どのゲートで決めるかは G1 で確認する） |
+| G-2 | 一覧を「選択の検証」（一覧にないロールには発行しない）に使うことが、制約 3（Worker は対応表を権威にしない）の範囲内か | 範囲内。許可を広げない側の絞り込みで、最終判断は信頼ポリシー | ① の実装の前（どのゲートで決めるかは G1 で確認する） |
+| G-3 | ログイン URL の渡し方（T1 302 / T2 POST） | 最初は T1。P-4 の結果で T2 を検討 | ① の実装の前（どのゲートで決めるかは G1 で確認する） |
+| G-4 | `--remote` の扱い | **決定**（cto の決裁 2026-11-12）: Standard（Viewer）は許す。Administrator は `localhost` だけで、`--remote` は Admin の階層の守りの部品の明示の Deny。SCP には頼らない（管理下のメンバーアカウントでの任意の層）。Viewer で両方が通ることは 1a の前の条件 (1)（書き直し版）で成立 | Administrator で拒否されることは N2（① の PoC。G2） |
+| G-5 | 変えにくい名前: ポータルのパスの形（`/t/<team>/`）、`RoleSessionName` の形（`console-<email>`）、タグのキー `awsbridge_team`、ロールの識別子を `role`（設定の `roles[].name`。`entry` は `<account-id>:<role>`）と呼ぶこと、ロールのパス `/awsbridge-console/<tier>/` | ポータルのパスと `role` の呼び方はこの文書の形。issuer の URL・audience・ロールのパス（P-2 で確定）・タグ・SourceIdentity は [console-login.md](console-login.md) §3 | ① の実装の前（どのゲートで決めるかは G1 で確認する）（cto の条件: 変えにくい名前を確定する） |
+| G-6 | Admin の階層（Admin のオリジンの S1〜S5、Admin の階層のチーム、PIM と昇格していない人への一覧の見せ方、Access のセッション、確認の文、Admin のオリジンでチームのパス以外を覆う Access アプリと `portal.entryAud.admin` の扱い、共通の入口のアプリに Admin の階層のチームのグループを含めるか） | 入口と一覧は共通（P1'。§8） | Admin のオリジンの発行の形は G1（[console-login-admin.md](console-login-admin.md)）。PIM と昇格していない人への見せ方は G3・G5 |
+| G-7 | 停止スイッチ（Worker の変数）を緊急停止の手順に入れるか | 入れる | ① の実装の前（どのゲートで決めるかは G1 で確認する） |
+| G-8 | OIDC の issuer のホスト（N9）と、ポータルのホストとの関係。ポータルを自社ドメインにしたことを受けて | **cto の決裁**: Standard の issuer は `https://<issuer-host>/std`（ポータルと別の issuer 専用のホスト。`workers.dev` に置かない）で確定。Admin の issuer は方向 I-B で、形は G1 で審議する（前の版は「確定は段階 3」。2026-11-12 に「分けるのは発行のオリジン。issuer は Standard と同じホストの `/admin` でもよい」と具体化。[console-login.md](console-login.md) §3.1）。フェデレーションの `Issuer`（S5）とは別の URL として扱う（§3.1） | Standard は決定済み。Admin の形は G1 |
+| G-9 | 設定ファイルのスキーマ（§11.3）を上流と下流の契約として確定すること。含まれる判断: (a) 種類の StackSet のテンプレートを生成する（K1）か枠を固定する（K2）か、(b) Admin の階層のチームを明示する（`-elevated` を暗黙に付けない）こと、(c) 設定の誤りを生成の時点のエラーに寄せること（§11.6）、(d) 会社の下流で手書きの AUD を禁じること、(e) ロールの `tier` は自己申告なので、Standard のロールに付けてよい権限の上限を生成で検査するか（§11.5）、(f) 個人用の下流には「同じ元から生成」と Admin の分離の条件を課さないこと（§11.7）。ただし ② の個人の環境は Administrator も配るので、Admin の分離（別の Worker・別の issuer と鍵・KMS・発行のオリジン）は当てはまる（[console-login.md](console-login.md) §7.5） | K1・明示・生成の時点・禁じる・(e) は cto の決裁 2026-11-12 で「手作りロールの強さは下流の責任、検査の道具は既知の広い管理ポリシーの警告まで」になった・課さない。ロールのテンプレートは参考の形になった（(a) は参考の形の作り方の話） | ① の実装の前（どのゲートで決めるかは G1 で確認する） |
 
 ### 12.3 追加で要る PoC
 
@@ -1282,15 +1285,15 @@ cto の条件との整合:
 | # | 内容 | 決まること | 環境 |
 |---|---|---|---|
 | N1（既存） | 1 つのホストでパスごとに Access アプリを分けたとき、AUD が分かれるか。Cookie Path を有効にしたときの切り替えの見え方。アプリ間で SSO のセッションが共有されるか。チームのパスの下の静的なファイル（`/t/<team>/assets/*`）が、入口のアプリの Cookie なしで読めるか。Custom block pages をアプリごとに変えられるか | G-1、§7、§4.7 | 開発用 → 会社。開発用の M2 は確認済み（パスごとに `aud` が分かれる・再ログイン不要・`/t/infrastructure` は前方一致にならない・片方のアプリから外すと他方は通る）。会社の Entra のグループは残り。App Launcher は使わないので確認しない |
-| N1-U2（2026-11-12） | 入口のアプリの Access の身元（get-identity など）に、Entra のグループが入るか: Object ID か表示名か、直接・入れ子・ゲストの扱い、多数所属のときに全部そろうか、溢れたこと・取れなかったことを見分けられるか、外したときの反映の時間、チームのアプリの判定と一致するか | §4.1・§7（U2） | 会社（1a-1・1a-2 と一緒）。成り立たなくても 1a は止めない（全チームへのリンクに落とす） |
-| P-9（2026-11-12） | パスで別の Worker に振り分ける形（Admin の issuer を Standard と同じホストの `/admin` に置く）で、プロバイダーの登録・引き受けができ、Access を迂回する入口を塞げるか | §8、console-login.md §3.1 | 段階 3 の前 |
+| N1-U2（2026-11-12） | 入口のアプリの Access の身元（get-identity など）に、Entra のグループが入るか: Object ID か表示名か、直接・入れ子・ゲストの扱い、多数所属のときに全部そろうか、溢れたこと・取れなかったことを見分けられるか、外したときの反映の時間、チームのアプリの判定と一致するか | §4.1・§7（U2） | 会社（1a-1・1a-2 と一緒。G4）。成り立たなくても止めない（全チームへのリンクに落とす） |
+| P-9（2026-11-12） | パスで別の Worker に振り分ける形（Admin の issuer を Standard と同じホストの `/admin` に置く）で、プロバイダーの登録・引き受けができ、Access を迂回する入口を塞げるか | §8、console-login.md §3.1 | 時機は G1 で決める |
 | N10（既存） | Access + Worker の署名を通した通しの経路（コンソールと `aws login`） | §6 全体 | 開発用 → 会社。開発用のコンソールの通しと所属の反映は確認済み（§6.4・§7・§9.6。結果は `scripts/poc/human/portal/README.md`）。`aws login` は P-2 で確認済み（開発環境）。Entra のグループは残り |
 | P-1（N7 を具体化） | マルチセッションが有効なブラウザで、`getSigninToken` の URL が追加のセッションになるか。5 つを超えたときの挙動。マルチセッションが無効なときに切り替わらないこと（PoC の再現）。公式のサインアウトの手順と、その後にログイン URL を開いたときの挙動 | §6.4 の案内 | 開発用 |
-| P-2 | フェデレーションのセッションから、同じ端末の `aws login` と `--remote` が Viewer の形のロールで通るか（書き直し版） | §6.5、G-4 | 開発用。**成立**（2026-11-12）。残り: 同じ端末の 15 分後の更新、セッションが 1 つのときの確認画面（1b の前） |
+| P-2 | フェデレーションのセッションから、同じ端末の `aws login` と `--remote` が Viewer の形のロールで通るか（書き直し版） | §6.5、G-4 | 開発用。**成立**（2026-11-12）。残り: 同じ端末の 15 分後の更新、セッションが 1 つのときの確認画面（② で確かめ G3） |
 | P-3 | `Issuer` に渡した URL に、コンソールのセッション切れのあと実際に戻るか | S5 | 開発用（短い SessionDuration で） |
 | P-4 | `Action=login` をポータルからのフォームの POST（T2）で送ってログインできるか（`Origin: null` で受け付けられるか）。`SigninToken` が 1 回で無効になるか。`Referrer-Policy: same-origin` のとき、ポータル自身へのフォームの POST に `Origin` が付き、AWS への遷移に `Referer` が付かないこと（主要なブラウザで） | G-3、§9.6 | 開発用 |
 | P-5 | `Destination` にリージョンつきのコンソールの URL を渡したとき、マルチセッションのサブドメインの URL と食い違わないか | §6.3 | 開発用 |
-| P-6 | Admin（KMS の署名）でのログインの所要時間 | §10.1 | 開発用 + 署名用アカウント（cto の N6 と一緒に） |
+| P-6 | Admin（KMS の署名）でのログインの所要時間 | §10.1 | N6 で測定済み（中央値約 210 ms、開発環境。[console-login-admin.md](console-login-admin.md) §12） |
 | P-7 | Workers のログ（Workers Logs・Logpush の Workers Trace Events）に、要求の URL のクエリ（`?q=`）が残るか。残るなら、送る項目から外せるか | §5.6（JS なしの検索で email を対象にするか） | 開発用 |
 | P-8 | チームが 1 つの構成で、1 つの Access アプリでホスト全体を守り、入口のアプリを省けるか | §11.7 | 開発用（個人用の下流） |
 
@@ -1298,7 +1301,7 @@ cto の条件との整合:
 
 | 案 | 却下の理由 |
 |---|---|
-| 一覧から 1 クリックでログイン（POST）する | 段階 1 では入れない。誤操作と、1 回の操作で発行される面が広がる。S2 で 1 回押す形でも操作は 2 回で済む。2 回の操作が受け入れられないときは、決められた性質を満たす pending intent の形なら再上申なしで足せる（cto の決裁 2026-11-12。§7） |
+| 一覧から 1 クリックでログイン（POST）する | 最初の形には入れない（前の版は「段階 1 では入れない」）。誤操作と、1 回の操作で発行される面が広がる。S2 で 1 回押す形でも操作は 2 回で済む。2 回の操作が受け入れられないときは、決められた性質を満たす pending intent の形なら再上申なしで足せる（cto の決裁 2026-11-12。§7） |
 | ロール ARN を自由に入力してログインする | 利用者の入力をそのまま STS に渡す面が増える。一覧にないロールは一覧の再生成で解決する |
 | ログイン URL を表示・コピーする | URL はセッションそのもの。AWS も 302 で渡すことを勧めている |
 | ポータルが CLI の認証情報を発行する（表示・`credential_process`） | 認証情報を Worker の外に出さない。`aws login` で足りる（利用者の回答） |
