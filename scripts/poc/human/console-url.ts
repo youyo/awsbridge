@@ -9,9 +9,10 @@
 //   --duration-seconds <秒>       STS の DurationSeconds（省略時は送らない = STS の既定 3600 秒）
 //   --session-durations <一覧>    getSigninToken の SessionDuration（既定 none,43200,43199。none は付けない）
 //   --federation-method get|post  getSigninToken の HTTP メソッド（既定 get。AWS の文書は SessionDuration の説明を GET 前提で書いている）
-//   --role base|tagged|notag|localonly
+//   --role base|tagged|notag|localonly|viewer
 //                                 引き受けるロール（既定 base = AwsbridgeHumanPoc。tagged / notag は P2〜P4 用、
-//                                 localonly は aws login を localhost だけに絞ったロール。--role-arn があればそちら）
+//                                 localonly は aws login を localhost だけに絞ったロール、viewer はコンソールの Viewer と同じ形
+//                                 （aws login は localhost と remote。--source-identity が要る）。--role-arn があればそちら）
 //                                 base 以外はファイル名にロールを入れる（credentials-<role>.json、console-url-<role>-dur-…）
 //   --access-profile <値>         セッションタグ access_profile を JWT に入れる（例 poc-admin / poc-viewer）
 //   --tag-format nested|flat      セッションタグの書き方（既定 nested）

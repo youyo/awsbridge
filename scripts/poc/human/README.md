@@ -797,3 +797,85 @@ deny-si の完了 05:49:19Z、undeny-si の完了 06:10:44Z（Deny の期間 約
 
 - 判定: **成立**。aws:SourceIdentity の Deny で、1 人目の STS 認証情報・新しい引き受け・コンソール・aws login（更新を含む）が止まり、2 人目は止まらなかった。外すと戻った
 - 1 人目のコンソールの復帰: 利用者が再読み込みで一覧の表示を確認（leader の受信 06:17:46Z が上限。正確な時刻は未確認）
+
+---
+
+# 段階 1a の前の条件 (1) の書き直し: Viewer と同じ形のロールで `aws login`（同じ端末・`--remote`）
+
+cto の決裁（2026-11-12）で、コンソールの Viewer ロールは `aws login --remote` も許す方針になった。上の (1)（localhost だけ）に代えて、
+Viewer と同じ形のロールで次を確かめる。
+
+- **C1** 同じ端末の `aws login`（`--remote` なし）が通る
+- **C2** `aws login --remote` が通る
+- **C3** `--remote` の同意画面に何が出るか（アカウント ID・ロール名・開始した端末の情報・コードの扱い）
+- **C4** CloudTrail で remote と localhost の発行を区別できるか（どのフィールドで）
+- **C5** `--remote` で取ったセッションに、(a) ロールの Revoke Sessions（L3）と (b) `aws:SourceIdentity` の 1 人停止の Deny（L3-1）が効き、
+  `aws login` の更新（`CreateOAuth2Token`）も止まるか。止まるまでの時間。外したら戻るか
+
+## 追加したもの
+
+| 種類 | 名前 | 内容 |
+|---|---|---|
+| ロール | `AwsbridgeHumanPocViewer`（`ViewerRole`、Output `ViewerRoleArn`） | ReadOnlyAccess + インライン `DenySecretValueRead`（infra/aws/awsbridge.yaml の Viewer と同じ SSM パラメーター・Secrets Manager の値の取得の Deny）+ インライン `AwsLoginLocalAndRemote`（下記）。`SignInLocalDevelopmentAccess` は付けない |
+| 信頼ポリシー | 同上 | aud・sub（1 人）に `Null: {"sts:SourceIdentity": "false"}`（SourceIdentity 必須。1 人停止の Deny のため）。セッションタグは許すが求めない |
+| 選択肢 | `--role viewer`・`--assume viewer` | console-url / revoke / deny-si / stop-watch / inline-policies。`--assume viewer` は SourceIdentity（subject）を JWT に入れて引き受け直す |
+| タスク | `poc:human:trail-signin` | CloudTrail の aws login のイベント（`signin.amazonaws.com` の `*OAuth2*`）を「パス = 値」に平らにして新しい順に出す。トークン・認可コード・state・PKCE の値は `<redacted>`、email・アカウント ID・送信元 IP の下位は伏せる。既定は PoC のロールのセッション（と主体の無いイベント）だけ。`--all-principals` でほかの主体（利用者の SSO の aws login など）も出す |
+
+`AwsLoginLocalAndRemote`:
+
+```json
+{ "Sid": "AwsLoginSameAndCrossDevice", "Effect": "Allow",
+  "Action": ["signin:AuthorizeOAuth2Access", "signin:CreateOAuth2Token"],
+  "Resource": ["arn:${AWS::Partition}:signin:*:${AWS::AccountId}:oauth2/public-client/localhost",
+               "arn:${AWS::Partition}:signin:*:${AWS::AccountId}:oauth2/public-client/remote"] }
+```
+
+ロール名の接尾辞は `Viewer`（6 文字）。`RoleName` は 55 文字までで、接尾辞は 9 文字までに収める（`LocalRemote` は 11 文字で入らない）。
+
+## 手順
+
+```sh
+mise run poc:human:deploy-issuer && mise run poc:human:deploy-aws
+mise run poc:human:console-url -- --role viewer --source-identity --duration-seconds 43200 --session-durations 43200
+#   → credentials-viewer.json と console-url-viewer-dur-43200-sd-43200.txt。URL をブラウザで開く（右上が AwsbridgeHumanPocViewer/human-<email>）
+```
+
+`--remote` を自動で進める形（CLI を止めずに、認可コードを端末に貼らない）:
+
+```sh
+D=<試行ごとの新しいディレクトリ>; mkdir -p "$D"; mkfifo "$D/in"
+export AWS_CONFIG_FILE="$D/config" AWS_SHARED_CREDENTIALS_FILE="$D/credentials" AWS_LOGIN_CACHE_DIRECTORY="$D/login-cache"
+unset AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+exec 3<>"$D/in"                       # FIFO を読み書きで開いておく（EOF にしない）
+aws login --profile poc-c2 --region ap-northeast-1 --remote <&3 > "$D/out.log" 2>&1 &
+# out.log の authorize の URL をブラウザで開き、Viewer のセッションを選ぶ → 「Copy verification code」
+{ pbpaste; echo; } > "$D/in"          # コード（2,600 文字ほど）を FIFO で渡す。端末の 1 行の上限（1024 バイト）に当たらない
+printf '' | pbcopy                    # クリップボードを空にする
+```
+
+見張り（`AWS_CONFIG_FILE` を差し替えると管理者のプロファイル `awsbridge` が読めなくなるので、2 つに分ける）:
+
+```sh
+# 1. aws login のプロファイル（上の export のまま）
+mise run poc:human:stop-watch -- --profile poc-c2 --interval 8 --count 480
+# 2. STS の認証情報と新しい引き受け（別の端末。export しない）
+mise run poc:human:stop-watch -- --credentials .secrets/poc-human/credentials-viewer.json --assume viewer --interval 8 --count 480
+```
+
+C5 は (a) `mise run poc:human:revoke -- --role viewer` → 20 分以上（`aws login` のアクセストークンの期限 15 分を越え、更新を 1 回挟む）→
+`mise run poc:human:unrevoke -- --role viewer` → 戻るのを確かめる → (b) `mise run poc:human:deny-si -- --role viewer` → 20 分以上 →
+`mise run poc:human:undeny-si -- --role viewer`。更新が起きたかは `mise run poc:human:trail-signin` の `CreateOAuth2Token`（`grant_type = refresh_token`）で確かめる。
+
+## 実測の要約（2026-11-12、AWS CLI 2.39.6、ap-northeast-1、開発用の管理アカウント 1 つ。詳細は .claude/handover/poc-viewer-remote.md）
+
+| ID | 結果 |
+|---|---|
+| C1 | 通った（同じ端末。ブラウザでセッションを選ぶと 127.0.0.1 のコールバックに戻る。SSM / Secrets Manager の値の取得は explicit deny） |
+| C2 | 通った（`--remote`。認可コードは約 2,600 文字。更新の `CreateOAuth2Token` も通る） |
+| C3 | セッションの選択画面にアカウントのエイリアスと ID、ロール名/セッション名、ログインからの経過時間が出る。確認画面はコードを既定で隠し、「aws login を始めた所か信頼するアプリにだけ渡す」「AWS がメール・電話・チャットでコードを求めることは無い」と注意する。**開始した端末の情報（ホスト・IP・OS）・要求の時刻・コードの期限は出ない** |
+| C4 | 区別できる。`AuthorizeOAuth2Access`・`CreateOAuth2Token`（コードの交換・更新）のすべてに `requestParameters.client_id` があり、remote は `arn:aws:signin:::devtools/cross-device`、同じ端末は `.../devtools/same-device`。`AuthorizeOAuth2Access` には `requestParameters.redirect_uri` もある。`resources`（`oauth2/public-client/*` の ARN）は記録されない。更新は `additionalEventData.grant_type = refresh_token` |
+| C5 (a) | Revoke Sessions は `--remote` のセッションに約 8 秒で効き、更新（`CreateOAuth2Token`）も AccessDenied（"Token generation failed"）になって期限を過ぎても戻らなかった（約 21 分）。外すと約 20 秒で更新が通って戻った |
+| C5 (b) | `aws:SourceIdentity` の Deny も約 10 秒で効き、更新も拒否されたまま（約 18 分）。外すと約 13 秒で戻った |
+
+- 更新の `CreateOAuth2Token` の主体はコンソールのセッション（発行時刻・SourceIdentity もそのセッションのもの）なので、どちらの停止も更新に効く
+- 停止を外すと、CLI は同じリフレッシュトークンで再ログインなしに戻る（停止はリフレッシュトークンを無効にしない）

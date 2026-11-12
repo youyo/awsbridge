@@ -8,6 +8,8 @@ import { publicJwkOf, thumbprintOf } from "../../../src/keys";
 import { buildDiscovery } from "../../../src/oidc";
 
 // Worker でも使う純粋関数（claim・STS・Federation）は claims.ts に置き、ここから再エクスポートする
+import { sessionTagClaims, sourceIdentityClaim } from "./claims";
+
 export * from "./claims";
 
 export const HUMAN_POC_DEFAULTS = {
@@ -95,7 +97,7 @@ export function humanTokenClaims(p: HumanTokenParams) {
 
 // ---- ロールの選択（スタックの Output） ----
 
-export const ROLE_KEYS = ["base", "tagged", "notag", "localonly"] as const;
+export const ROLE_KEYS = ["base", "tagged", "notag", "localonly", "viewer"] as const;
 export type RoleKey = (typeof ROLE_KEYS)[number];
 
 export function isRoleKey(v: string): v is RoleKey {
@@ -104,7 +106,8 @@ export function isRoleKey(v: string): v is RoleKey {
 
 /**
  * base = 既存の AwsbridgeHumanPoc、tagged = AwsbridgeHumanPocTagged、notag = AwsbridgeHumanPocNoTag、
- * localonly = AwsbridgeHumanPocLocalOnly（aws login を localhost だけに絞ったロール）の Output 名。
+ * localonly = AwsbridgeHumanPocLocalOnly（aws login を localhost だけに絞ったロール）、
+ * viewer = AwsbridgeHumanPocViewer（コンソールの Viewer と同じ形。aws login は localhost と remote、SourceIdentity 必須）の Output 名。
  */
 export function roleOutputKey(role: RoleKey): string {
   return {
@@ -112,7 +115,26 @@ export function roleOutputKey(role: RoleKey): string {
     tagged: "TaggedRoleArn",
     notag: "NoTagRoleArn",
     localonly: "LocalOnlyRoleArn",
+    viewer: "ViewerRoleArn",
   }[role];
+}
+
+/**
+ * 引き受け直し（stop-watch の --assume）で JWT に足すクレーム。tagged はセッションタグ access_profile と SourceIdentity、
+ * viewer は SourceIdentity だけ（信頼ポリシーが求める）。ほかのロールは何も足さない。SourceIdentity の値は subject。
+ */
+export function assumeClaimsFor(
+  role: RoleKey,
+  subject: string,
+  accessProfile: string,
+): Record<string, unknown> {
+  if (role === "tagged")
+    return {
+      ...sessionTagClaims({ access_profile: accessProfile }, "nested"),
+      ...sourceIdentityClaim(subject),
+    };
+  if (role === "viewer") return sourceIdentityClaim(subject);
+  return {};
 }
 
 // ---- 利用者の選択（(4-b) 1 人だけ止める Deny の対照に 2 人目を使う） ----

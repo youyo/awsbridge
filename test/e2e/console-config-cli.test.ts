@@ -113,6 +113,53 @@ describe("console:config:check", () => {
   });
 });
 
+describe("設定の例（config/console*.example.json）を CLI に通す", () => {
+  it("個人用の例から、Standard の Worker 用の生成物に FederatedAwsBridgeViewer の行だけが出る", () => {
+    const d = tmp();
+    const out = join(d, "out");
+    const r = run("generate", {
+      AWSBRIDGE_CONSOLE_CONFIG: join(root, "config/console.example.json"),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).not.toContain("warning");
+    const standard = JSON.parse(readFileSync(join(out, "worker.standard.json"), "utf8"));
+    const arns = standard.accounts.flatMap((a: { roles: { roleArn: string }[] }) =>
+      a.roles.map((x) => x.roleArn),
+    );
+    expect(arns).toEqual([
+      "arn:aws:iam::111111111111:role/awsbridge-console/std/FederatedAwsBridgeViewer",
+    ]);
+    expect(existsSync(join(out, "worker.admin.json"))).toBe(false);
+  });
+
+  it("会社用の例を生成に通すと、ロールは Administrator（admin）と Viewer（std）だけ", () => {
+    const d = tmp();
+    const out = join(d, "out");
+    const r = run("generate", {
+      AWSBRIDGE_CONSOLE_CONFIG: join(root, "config/console.company.example.json"),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
+      AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", {
+        teams: Object.fromEntries(
+          ["infra", "dev", "sa", "infra-elevated", "dev-elevated"].map((t, i) => [
+            t,
+            String(i + 1).repeat(64),
+          ]),
+        ),
+        entry: { standard: "a".repeat(64), admin: "b".repeat(64) },
+      }),
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const stacksets = JSON.parse(readFileSync(join(out, "stacksets.json"), "utf8"));
+    expect(
+      stacksets.roles.map((x: { roleName: string; rolePath: string }) => [x.roleName, x.rolePath]),
+    ).toEqual([
+      ["FederatedAwsBridgeAdministrator", "/awsbridge-console/admin/"],
+      ["FederatedAwsBridgeViewer", "/awsbridge-console/std/"],
+    ]);
+  });
+});
+
 describe("console:config:generate", () => {
   it("会社用: 階層ごとの Worker 用・StackSets 用・Access の検査用を書く（他人に読めない権限で）", () => {
     const d = tmp();

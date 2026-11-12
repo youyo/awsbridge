@@ -8,6 +8,10 @@
 //   --regions <一覧>      引くリージョン（既定 AWS_REGION と us-east-1）
 //   --max-events <数>     出す AssumeRoleWithWebIdentity の数（既定 20、新しい順）
 //   --follow <数>         アクセスキーごとに出す API イベントの数（既定 10。セッション名ごとはその 5 倍。0 なら追わない）
+//   --signin              代わりに aws login のイベント（eventSource signin.amazonaws.com の *OAuth2*）を新しい順に出す。
+//                         項目を決め打ちせず「パス = 値」に平らにする（remote と localhost を見分けるフィールドを探すため）。
+//                         トークン・認可コード・state・PKCE の値は <redacted>、送信元 IP は下位を伏せる。
+//                         既定は PoC のロールのセッション（と主体の無いイベント）だけ。--all-principals でほかの主体も出す
 import { parseArgs } from "node:util";
 import { adminEnv, fail, runAws } from "./io";
 import { humanPocSettings } from "./lib";
@@ -19,7 +23,9 @@ import {
   assumeEventRow,
   formatApiRows,
   formatAssumeRows,
+  formatSigninEvents,
   isPocSessionEvent,
+  isPocSigninEvent,
   parseLookupEvents,
   shortKey,
 } from "./trail-lib";
@@ -32,6 +38,8 @@ function parse() {
       regions: { type: "string" },
       "max-events": { type: "string", default: "20" },
       follow: { type: "string", default: "10" },
+      signin: { type: "boolean", default: false },
+      "all-principals": { type: "boolean", default: false },
     },
   });
 }
@@ -103,6 +111,21 @@ async function lookup(region: string, key: string, value: string, maxItems: numb
 console.log(
   `CloudTrail: ${startTime} 以降、リージョン ${regions.join(", ")}（反映には数分〜15 分かかる）`,
 );
+
+if (values.signin) {
+  const events = (
+    await Promise.all(regions.map((r) => lookup(r, "EventSource", "signin.amazonaws.com", 200)))
+  )
+    .flat()
+    .filter((e) => /OAuth2/.test(String(e?.eventName ?? "")))
+    .filter((e) => values["all-principals"] || isPocSigninEvent(e))
+    .sort((a, b) => String(b?.eventTime ?? "").localeCompare(String(a?.eventTime ?? "")))
+    .slice(0, maxEvents);
+  console.log("");
+  console.log(`## aws login のイベント（signin.amazonaws.com、新しい順に ${events.length} 件）`);
+  console.log(events.length === 0 ? "（無い。反映を待つ）" : formatSigninEvents(events));
+  process.exit(0);
+}
 
 const assumes: AssumeRow[] = (
   await Promise.all(regions.map((r) => lookup(r, "EventName", "AssumeRoleWithWebIdentity", 200)))

@@ -6,7 +6,7 @@
 //   --credentials <file>   console-url が書いた認証情報ファイル（credentials*.json）。環境変数で aws に渡す（引数には載せない）
 //   --profile <name>       AWS プロファイル（aws login のプロファイルなど）。AWS_CONFIG_FILE / AWS_LOGIN_CACHE_DIRECTORY はそのまま引き継ぐ
 //   --assume <ロール>[:second]   毎回 JWT を署名して引き受け直し、新しい認証情報で呼ぶ（新しい引き受けが止まるかを見る）。
-//                          ロールは base / tagged / notag / localonly。:second を付けると 2 人目
+//                          ロールは base / tagged / notag / localonly / viewer。:second を付けると 2 人目
 //                          （AWSBRIDGE_HUMAN_POC_SECOND_SUBJECT）の subject・SourceIdentity で引き受ける（(4-b) の対照）
 //   複数の --credentials（例 credentials-tagged.json と credentials-tagged-second.json）を同時に見張れる
 // オプション:
@@ -32,10 +32,9 @@ import {
   writeSecret,
 } from "./io";
 import {
+  assumeClaimsFor,
   humanPocSettings,
   type RoleKey,
-  sessionTagClaims,
-  sourceIdentityClaim,
   subjectFor,
   type TemporaryCredentials,
 } from "./lib";
@@ -151,11 +150,7 @@ if (targets.some((t) => t.kind === "assume")) {
 }
 
 function assumeClaims(role: RoleKey, subject: string): Record<string, unknown> {
-  if (role !== "tagged") return {};
-  return {
-    ...sessionTagClaims({ access_profile: values["access-profile"] ?? "poc-admin" }, "nested"),
-    ...sourceIdentityClaim(subject),
-  };
+  return assumeClaimsFor(role, subject, values["access-profile"] ?? "poc-admin");
 }
 
 async function check(t: WatchTarget): Promise<Outcome> {

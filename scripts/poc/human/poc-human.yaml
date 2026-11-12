@@ -31,6 +31,10 @@ Description: >-
 #   (4)    Out-of-band inline policies (AWSRevokeOlderSessions, AwsbridgeDenySourceIdentity added by
 #          revoke.ts) survive a stack update (UpdateMarker changes TaggedRole's own inline policy), and
 #          a Deny on aws:SourceIdentity stops one user only (SecondSubject adds a second user to TaggedRole).
+#   (1')   Rewritten (1): ViewerRole is shaped like the console Viewer and allows `aws login` on both
+#          oauth2/public-client/localhost and oauth2/public-client/remote. Checks that both work, what the
+#          --remote consent page shows, whether CloudTrail tells them apart, and that Revoke Sessions and the
+#          aws:SourceIdentity Deny stop a --remote session including its refresh.
 #
 # Every trust policy allows exactly one user (sub) with the PoC audience (aud).
 # HumanRole allows sts:SetSourceIdentity and sts:TagSession without conditions (used for the tag size limits).
@@ -55,8 +59,8 @@ Parameters:
     Type: String
     Default: AwsbridgeHumanPoc
     Description: >-
-      Name of the PoC IAM role. The other roles are named <RoleName>Tagged, <RoleName>NoTag and
-      <RoleName>LocalOnly.
+      Name of the PoC IAM role. The other roles are named <RoleName>Tagged, <RoleName>NoTag,
+      <RoleName>LocalOnly and <RoleName>Viewer.
     AllowedPattern: '^[\w+=,.@-]{1,55}$'
     ConstraintDescription: 1-55 characters of alphanumerics and _+=,.@- (a suffix of up to 9 characters is added for the other roles)
   SecondSubject:
@@ -279,6 +283,79 @@ Resources:
         - Key: project
           Value: awsbridge-human-poc
 
+  # Condition (1) rewritten (cto decision 2026-11-12): the console Viewer may use `aws login --remote`.
+  # Same shape as the Viewer: ReadOnlyAccess, the same Deny on secret values as infra/aws/awsbridge.yaml
+  # (DenySecretValueRead), and `aws login` allowed only on the localhost and remote public clients
+  # (no SignInLocalDevelopmentAccess, no oauth2/public-client/*). The trust policy requires a SourceIdentity
+  # (for the one-user Deny on aws:SourceIdentity); session tags are allowed but not required.
+  ViewerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Fn::Sub: "${RoleName}Viewer"
+      MaxSessionDuration: 43200
+      ManagedPolicyArns:
+        - Fn::Sub: "arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess"
+      Policies:
+        - PolicyName: DenySecretValueRead
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: DenySsmParameterRead
+                Effect: Deny
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                  - ssm:GetParameterHistory
+                Resource: "*"
+              - Sid: DenySecretsManagerRead
+                Effect: Deny
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:BatchGetSecretValue
+                Resource: "*"
+        - PolicyName: AwsLoginLocalAndRemote
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: AwsLoginSameAndCrossDevice
+                Effect: Allow
+                Action:
+                  - signin:AuthorizeOAuth2Access
+                  - signin:CreateOAuth2Token
+                Resource:
+                  - Fn::Sub: "arn:${AWS::Partition}:signin:*:${AWS::AccountId}:oauth2/public-client/localhost"
+                  - Fn::Sub: "arn:${AWS::Partition}:signin:*:${AWS::AccountId}:oauth2/public-client/remote"
+      AssumeRolePolicyDocument:
+        Fn::Sub: |-
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": { "Federated": "${OidcProvider}" },
+                "Action": [
+                  "sts:AssumeRoleWithWebIdentity",
+                  "sts:SetSourceIdentity",
+                  "sts:TagSession"
+                ],
+                "Condition": {
+                  "StringEquals": {
+                    "${IssuerHost}:aud": "${Audience}",
+                    "${IssuerHost}:sub": "${Subject}"
+                  },
+                  "Null": {
+                    "sts:SourceIdentity": "false"
+                  }
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: project
+          Value: awsbridge-human-poc
+
 Outputs:
   RoleArn:
     Description: ARN of the PoC role (assumed with the locally signed JWT).
@@ -300,3 +377,7 @@ Outputs:
     Description: ARN of the (1) role whose `aws login` is limited to the localhost client (no --remote).
     Value:
       Fn::GetAtt: [LocalOnlyRole, Arn]
+  ViewerRoleArn:
+    Description: ARN of the role shaped like the console Viewer (aws login on localhost and remote, SourceIdentity required).
+    Value:
+      Fn::GetAtt: [ViewerRole, Arn]

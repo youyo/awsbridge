@@ -173,3 +173,68 @@ export function formatApiRows(rows: ApiRow[]): string {
     ),
   );
 }
+
+// ---- aws login（signin.amazonaws.com の AuthorizeOAuth2Access / CreateOAuth2Token） ----
+
+/** 値を出さないキー（トークン・認可コード・state・PKCE・鍵・秘密）。キー名の最後の要素で判定する。 */
+const SECRET_KEY =
+  /tokens?$|secret|password|assertion|verifier|dpop|privatekey|^code$|authorizationcode|^state$|challenge$/i;
+
+/** IPv4 は上位 2 オクテットだけ、IPv6 は先頭 2 グループだけ、それ以外（AWS 内部の名前など）はそのまま。 */
+function maskIp(ip: string): string {
+  const v4 = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(ip);
+  if (v4) return `${v4[1]}.${v4[2]}.x.x`;
+  if (ip.includes(":")) return `${ip.split(":").slice(0, 2).join(":")}:x`;
+  return ip;
+}
+
+/**
+ * aws login のイベントを「パス = 値」に平らにする（resources・additionalEventData も含む）。
+ * remote と localhost を見分けられるフィールドを探すため、項目を決め打ちしない。
+ * 秘密になりうる値は <redacted>、アカウント ID・email は伏せ、送信元 IP は下位を伏せる。
+ */
+export function signinEventFields(ev: Json): Record<string, string> {
+  const out: Record<string, string> = {};
+  // secret: 祖先のどれかが秘密名のキーなら、子（オブジェクト・配列の中身）もすべて伏せる
+  const walk = (v: Json, path: string, secret: boolean) => {
+    const last = path.split(".").pop() ?? "";
+    const hidden = secret || SECRET_KEY.test(last);
+    if (v !== null && typeof v === "object") {
+      for (const [k, c] of Object.entries(v)) walk(c, path === "" ? k : `${path}.${k}`, hidden);
+      return;
+    }
+    if (hidden) {
+      out[path] = "<redacted>";
+      return;
+    }
+    const s = String(v);
+    out[path] =
+      path === "sourceIPAddress" ? maskIp(s) : maskSensitive(s).replace(/\b\d{12}\b/g, "<account>");
+  };
+  walk(ev, "", false);
+  return out;
+}
+
+/** signin のイベントを新しい順に、1 件ごとに見出しと「パス = 値」の行で出す。 */
+export function formatSigninEvents(events: Json[]): string {
+  return events
+    .map((ev) => {
+      const f = signinEventFields(ev);
+      const head = `### ${f.eventTime ?? "-"} ${f.eventName ?? "-"} ${f.awsRegion ?? "-"} ${f.errorCode ? `エラー ${f.errorCode}` : "成功"}`;
+      const lines = Object.entries(f)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => `- ${k} = ${v}`);
+      return [head, ...lines].join("\n");
+    })
+    .join("\n\n");
+}
+
+/**
+ * trail --signin の既定の絞り込み: PoC のロール（sessionIssuer が AwsbridgeHumanPoc*）のセッションのイベントか、
+ * userIdentity が無い（主体が分からない）イベント。利用者のほかのセッション（SSO など）の aws login は除く。
+ */
+export function isPocSigninEvent(ev: Json): boolean {
+  if (ev?.userIdentity === undefined || ev?.userIdentity === null) return true;
+  const issuer = str(ev?.userIdentity?.sessionContext?.sessionIssuer?.arn).split("/").pop() ?? "";
+  return issuer.startsWith(POC_ROLE_PREFIX);
+}

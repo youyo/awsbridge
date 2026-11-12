@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assumeClaimsFor,
   consoleUrlFileName,
   credentialsFileName,
   humanPocSettings,
@@ -34,6 +35,26 @@ describe("(1) localhost だけのロール（localonly）", () => {
     expect(consoleUrlFileName(undefined, 43200, "localonly")).toBe(
       "console-url-localonly-dur-default-sd-43200.txt",
     );
+  });
+});
+
+describe("Viewer と同じ形のロール（viewer。aws login --remote を許す）", () => {
+  it("viewer はロールの選択肢で、Output は ViewerRoleArn", () => {
+    expect(isRoleKey("viewer")).toBe(true);
+    expect(roleOutputKey("viewer")).toBe("ViewerRoleArn");
+    expect(credentialsFileName("viewer")).toBe("credentials-viewer.json");
+  });
+  it("引き受け直しの JWT のクレーム: viewer は SourceIdentity だけ、tagged はタグと SourceIdentity、ほかは何も足さない", () => {
+    const si = "https://aws.amazon.com/source_identity";
+    const tags = "https://aws.amazon.com/tags";
+    expect(assumeClaimsFor("viewer", "user@example.com", "poc-admin")).toEqual({
+      [si]: "user@example.com",
+    });
+    const tagged = assumeClaimsFor("tagged", "user@example.com", "poc-admin");
+    expect(tagged[si]).toBe("user@example.com");
+    expect(tagged[tags]).toEqual({ principal_tags: { access_profile: ["poc-admin"] } });
+    for (const r of ["base", "notag", "localonly"] as const)
+      expect(assumeClaimsFor(r, "user@example.com", "poc-admin")).toEqual({});
   });
 });
 

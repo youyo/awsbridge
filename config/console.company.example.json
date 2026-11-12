@@ -38,43 +38,35 @@
   ],
   "roles": [
     {
-      "name": "admin",
-      "roleName": "FederatedAdministrator",
-      "displayName": "Admin",
+      "name": "administrator",
+      "roleName": "FederatedAwsBridgeAdministrator",
+      "displayName": "Administrator",
       "tier": "admin",
       "sessionSeconds": 3600,
       "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/AdministratorAccess"] }
     },
     {
-      "name": "developer",
-      "roleName": "FederatedDeveloper",
-      "displayName": "Developer",
-      "sessionSeconds": 28800,
-      "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/PowerUserAccess"] }
-    },
-    {
-      "name": "readonly",
-      "roleName": "FederatedViewer",
-      "displayName": "ReadOnly",
+      "name": "viewer",
+      "roleName": "FederatedAwsBridgeViewer",
+      "displayName": "Viewer",
       "sessionSeconds": 43200,
       "permissions": { "managedPolicyArns": ["arn:aws:iam::aws:policy/ReadOnlyAccess"] }
     }
   ],
   "kinds": [
-    { "name": "A", "assign": { "admin": ["infra-elevated"], "readonly": ["sa", "infra"] } },
+    { "name": "A", "assign": { "administrator": ["infra-elevated"], "viewer": ["sa", "infra"] } },
     {
       "name": "B",
-      "assign": { "admin": ["infra-elevated", "dev-elevated"], "readonly": ["sa", "infra"] }
+      "assign": { "administrator": ["infra-elevated", "dev-elevated"], "viewer": ["sa", "infra"] }
     },
     {
       "name": "C",
-      "assign": { "admin": ["infra-elevated"], "developer": ["dev"], "readonly": ["sa", "infra"] }
+      "assign": {
+        "administrator": ["infra-elevated", "dev-elevated"],
+        "viewer": ["sa", "infra", "dev"]
+      }
     },
-    {
-      "name": "P",
-      "displayName": "管理外の先方",
-      "assign": { "developer": ["dev"], "readonly": ["sa", "infra"] }
-    }
+    { "name": "P", "displayName": "管理外の先方", "assign": { "viewer": ["sa", "infra", "dev"] } }
   ],
   "boundaries": [
     {
