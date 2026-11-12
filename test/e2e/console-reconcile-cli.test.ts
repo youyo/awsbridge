@@ -667,6 +667,23 @@ describe("console:reconcile: 確認済みの区間（状態のファイル）", 
     noSecrets(r.out, []);
   });
 
+  it("未来の時刻（今 + 5 分より後）の状態は壊れた状態と同じ扱い（終了コード 2。CloudTrail を読まない。中身を出さない。ファイルは変えない）。許容の範囲内の未来は受け付ける", async () => {
+    const { env, records, state, log } = setup({});
+    const future = stateText(now() + DAY);
+    writeFileSync(state, future);
+    const r = await run([...prof, "--records", records], env);
+    expect(r.status, r.out).toBe(2);
+    expect(r.out).not.toContain(new Date(now() + DAY).toISOString().slice(0, 10));
+    expect(callsOf(log).map((c) => `${c[0]} ${c[1]}`)).toEqual(["sts get-caller-identity"]);
+    expect(readFileSync(state, "utf8")).toBe(future);
+    noSecrets(r.out, []);
+    const near = setup({});
+    writeFileSync(near.state, stateText(now() + 60_000));
+    const ok = await run([...prof, "--records", near.records], near.env);
+    expect(ok.status, ok.out).toBe(0);
+    expect(ok.out).toContain("coverage: continuous");
+  });
+
   it("--state を渡さなければ、作業ディレクトリの .secrets/console-reconcile-state.json に書く。.secrets/ は gitignore 済み", async () => {
     const { env, records, dir } = setup({});
     const cwd = join(dir, "work");

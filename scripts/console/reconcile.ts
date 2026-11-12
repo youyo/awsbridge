@@ -24,16 +24,8 @@
 // 終了コード: 0 誤りなし / 1 誤りあり、または検証できない引き受けが 1 件以上 / 2 実行できない（入力・aws・API の失敗）。
 // 限界: 突き合わせは検知の材料で、完全性の証明ではない。7 日以内に回さなかった発行は、あとから検証できない。
 import { execFile } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 import { gunzipSync } from "node:zlib";
 import { ConsoleConfigError, formatIssue, parseConsoleConfig } from "../../src/console/config";
@@ -71,6 +63,7 @@ import {
   readCallerAccount,
   readEnabledRegions,
 } from "./reconcile-read";
+import { writeStateFile } from "./reconcile-state-io";
 
 class InputError extends Error {}
 
@@ -134,21 +127,13 @@ function nonNegativeInt(v: string | undefined, label: string, def: number): numb
 }
 
 /** 状態のファイルを読む（無ければ空 = 初回。壊れていれば実行しない: 穴を見落とさないため）。 */
-function readState(path: string) {
+function readState(path: string, now: number) {
   try {
-    return parseReconcileState(existsSync(path) ? readFileSync(path, "utf8") : undefined);
+    return parseReconcileState(existsSync(path) ? readFileSync(path, "utf8") : undefined, now);
   } catch (e) {
     if (e instanceof ReconcileStateError) throw new InputError(`${e.message}: ${path}`);
     throw e;
   }
-}
-
-/** 状態のファイルを書く（同じ場所に一時ファイルを置いて置き換える。ディレクトリは 0700、ファイルは 0600）。 */
-function writeState(path: string, text: string): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, text, { mode: 0o600 });
-  renameSync(tmp, path);
 }
 
 /** 発行記録のファイル（ディレクトリなら中の通常のファイルをすべて。.gz は展開）を読む。 */
@@ -276,7 +261,7 @@ async function main(): Promise<number> {
   if (expectAccountId !== undefined && expectAccountId !== accountId)
     throw new InputError("the profile's account differs from --account-id");
   // 確認済みの区間（読めない状態のファイルは、CloudTrail を読む前に止める）
-  const state = readState(statePath);
+  const state = readState(statePath, now);
   const previousCoveredUntil = coveredUntilOf(state, accountId);
   const regions = await readEnabledRegions(run);
   const trail = await readAssumeEvents(run, regions, { since, until });
@@ -322,7 +307,10 @@ async function main(): Promise<number> {
     );
   else {
     try {
-      writeState(statePath, serializeReconcileState(withCoveredUntil(state, accountId, advanced)));
+      writeStateFile(
+        statePath,
+        serializeReconcileState(withCoveredUntil(state, accountId, advanced)),
+      );
     } catch {
       throw new Error(
         `could not write the reconcile state file: ${statePath} (the confirmed interval was not saved)`,

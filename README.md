@@ -465,6 +465,8 @@ mise run console:reconcile -- --profile <profile> --logs-api --since 2026-11-10T
 Operations:
 
 - **Primary: run it at a fixed interval (within 3 days, whether or not anything was issued). Secondary: also run it on the same day as any Administrator issuance** (to confirm legitimate issuances early). Issue records are kept for 7 days, so **an issuance not reconciled within 7 days cannot be verified later**. An interval nobody ran shows up as `coverage_gap` (error).
+- **A run with errors does not advance the interval.** Once you have investigated the errors and settled them, re-run with `--since` set at or before the previous end, which advances the interval. Anything past the 7-day record retention can no longer be verified. If you leave it, `coverage_gap` errors pile up from the next run on.
+- **Make `--since` at least 5 minutes longer than your run interval** (the confirmed interval ends at "this run's end minus the propagation lag, 300 s by default", so an exactly matching length leaves a gap). Example: if you run every 3 days, keep the default of 6 days.
 - Daily monitoring (scheduled runs and notifications) is outside awsbridge; the operator decides how to do it.
 - At the start of stage 2, check against real data: the shape of the Cloudflare API response (`events`, the `$metadata.id` cursor, what `count` means, whether the truncation flag is `$workers.truncated` or `$cloudflare.truncated`) and the CloudTrail `AssumeRoleWithWebIdentity` field names (`requestParameters.webIdentityTokenId`, `userIdentity.identityProvider`, and so on). If they differ, fix `scripts/console/reconcile-cf.ts`, `src/console/reconcile-input.ts`, and the fixtures.
 

@@ -5,6 +5,9 @@
 const ACCOUNT_RE = /^\d{12}$/;
 const TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 
+/** 状態の時刻が「今」より先でも許す幅（時計のずれ）。これより先は壊れた状態として扱う。 */
+export const FUTURE_TOLERANCE_MS = 5 * 60_000;
+
 export type ReconcileState = {
   version: 1;
   /** アカウント ID（12 桁）→ 確認済みの区間の終わり（epoch ミリ秒）。 */
@@ -17,8 +20,12 @@ export class ReconcileStateError extends Error {}
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 
-/** 状態のファイルの中身を読む。undefined（ファイルが無い）なら空の状態。壊れていれば ReconcileStateError。 */
-export function parseReconcileState(text: string | undefined): ReconcileState {
+/**
+ * 状態のファイルの中身を読む。undefined（ファイルが無い）なら空の状態。壊れていれば ReconcileStateError。
+ * now（epoch ミリ秒）を渡すと、now + FUTURE_TOLERANCE_MS より先の時刻も壊れた状態として拒否する
+ * （手で直したり時計がずれたりして未来の値が入ると、区間が進まず、穴も見つからなくなるため）。
+ */
+export function parseReconcileState(text: string | undefined, now?: number): ReconcileState {
   if (text === undefined) return { version: 1, accounts: {} };
   let v: unknown;
   try {
@@ -41,6 +48,8 @@ export function parseReconcileState(text: string | undefined): ReconcileState {
     const t = Date.parse(entry.coveredUntil);
     if (Number.isNaN(t))
       throw new ReconcileStateError("the reconcile state file has an unreadable time");
+    if (now !== undefined && t > now + FUTURE_TOLERANCE_MS)
+      throw new ReconcileStateError("the reconcile state file has a time in the future");
     accounts[id] = t;
   }
   return { version: 1, accounts };

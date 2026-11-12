@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
   coveredUntilOf,
+  FUTURE_TOLERANCE_MS,
   parseReconcileState,
   serializeReconcileState,
   withCoveredUntil,
@@ -62,5 +63,30 @@ describe("reconcile-state", () => {
       expect((e as Error).message).not.toContain("secret-value");
       expect((e as Error).message).not.toContain(ACCOUNT);
     }
+  });
+
+  it("未来の時刻（今 + 許容 5 分より後）は壊れた状態と同じ扱いで例外。許容の範囲内と今ちょうどは受け付ける。中身は文に入れない", () => {
+    expect(FUTURE_TOLERANCE_MS).toBe(5 * 60_000);
+    const text = (t: number) =>
+      serializeReconcileState(withCoveredUntil(parseReconcileState(undefined), ACCOUNT, t));
+    expect(() => parseReconcileState(text(T), T)).not.toThrow();
+    expect(() => parseReconcileState(text(T + FUTURE_TOLERANCE_MS), T)).not.toThrow();
+    expect(() => parseReconcileState(text(T + FUTURE_TOLERANCE_MS + 1000), T)).toThrow();
+    // ほかのアカウントの値が未来でも拒否する
+    const two = withCoveredUntil(
+      withCoveredUntil(parseReconcileState(undefined), "444444444444", T + 86_400_000),
+      ACCOUNT,
+      T,
+    );
+    expect(() => parseReconcileState(serializeReconcileState(two), T)).toThrow();
+    try {
+      parseReconcileState(text(T + 86_400_000), T);
+      expect.unreachable();
+    } catch (e) {
+      expect((e as Error).message).not.toContain("2026");
+      expect((e as Error).message).not.toContain(ACCOUNT);
+    }
+    // now を渡さなければ未来の検査はしない（純粋な読み取りだけ）
+    expect(() => parseReconcileState(text(T + 86_400_000))).not.toThrow();
   });
 });

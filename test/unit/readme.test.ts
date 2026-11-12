@@ -221,3 +221,30 @@ describe("突き合わせの運用と検査の文面（cto の決裁 G2 の途�
     expect(section).toContain("Workers Logs を読める必要がある");
   });
 });
+
+describe("突き合わせの運用: 誤りのあとの回し直しと --since の長さ", () => {
+  it("README_ja.md: 誤りが出た実行は区間を進めない・決着したら --since を前回の終わり以前に戻して回し直す・7 日を過ぎると検証できない・放置すると coverage_gap が重なる・--since は間隔より 5 分以上長く", () => {
+    const text = read("README_ja.md");
+    for (const s of [
+      "誤りが出た実行は区間を進めません",
+      "`--since` を前回の終わり以前に戻して回し直し、区間を進めます",
+      "記録の保持の 7 日を過ぎた分は検証できません",
+      "`coverage_gap` が重なって出ます",
+      "`--since` は回す間隔より 5 分以上長くします",
+      "3 日おきなら既定の 6 日のままにします",
+    ])
+      expect(text, s).toContain(s);
+  });
+  it("README.md: same points in English", () => {
+    const text = read("README.md");
+    for (const s of [
+      "A run with errors does not advance the interval.",
+      "re-run with `--since` set at or before the previous end",
+      "Anything past the 7-day record retention can no longer be verified",
+      "`coverage_gap` errors pile up",
+      "Make `--since` at least 5 minutes longer than your run interval",
+      "keep the default of 6 days",
+    ])
+      expect(text, s).toContain(s);
+  });
+});
