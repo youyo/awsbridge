@@ -488,6 +488,116 @@ describe("parseConsoleConfig: ポータルのオリジン", () => {
   });
 });
 
+// G-8: issuer のホスト（STS が信頼する公開文書。Access の Bypass）と、ポータル（とチーム）のホストは分ける。
+// 同じホスト・入れ子（どちらかがもう一方のサブドメイン）になると、Bypass の範囲・Cookie の範囲・ホスト方式のチームのホストが重なる。
+describe("parseConsoleConfig: issuer のホストとポータルのホストの重なり（G-8）", () => {
+  const overlap = (path: string) => issue(path, "issuer_host_overlaps_portal");
+
+  it("会社用の設定（issuer は id.*、ポータルは portal.*・admin-portal.*）は兄弟のホストなので受け付ける", () => {
+    expect(issuesOf(companyConfig())).toEqual([]);
+    expect(issuesOf(personalConfig())).toEqual([]);
+  });
+
+  it("Standard と Admin の issuer が同じホスト（パスだけ違う）なのは受け付ける（Admin の issuer は同じホストの /admin でもよい）", () => {
+    const c = companyConfig();
+    expect(c.boundaries[0].issuers.standard).toContain("id.example.com/standard");
+    expect(c.boundaries[0].issuers.admin).toContain("id.example.com/admin");
+    expect(issuesOf(c)).toEqual([]);
+  });
+
+  it.each([
+    [
+      "Standard の issuer が Standard のポータルと同じホスト",
+      "standard",
+      "https://portal.example.com/standard",
+    ],
+    [
+      "Standard の issuer が Admin のポータルと同じホスト",
+      "standard",
+      "https://admin-portal.example.com/standard",
+    ],
+    [
+      "Admin の issuer が Standard のポータルと同じホスト",
+      "admin",
+      "https://portal.example.com/admin",
+    ],
+    [
+      "Admin の issuer が Admin のポータルと同じホスト",
+      "admin",
+      "https://admin-portal.example.com/admin",
+    ],
+    ["ポートだけ違う同じホスト名", "standard", "https://portal.example.com:8443/standard"],
+    [
+      "issuer のホストがポータルのサブドメイン（ホスト方式のチームのホストと重なる）",
+      "standard",
+      "https://id.portal.example.com/standard",
+    ],
+    [
+      "issuer のホストがポータルの深いサブドメイン",
+      "admin",
+      "https://a.b.admin-portal.example.com/admin",
+    ],
+    ["ポータルのホストが issuer のサブドメイン", "standard", "https://example.com/standard"],
+  ])("%s は issuer_host_overlaps_portal", (_name, tier, url) => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[0].issuers[tier] = url;
+    });
+    expect(issuesOf(c)).toContainEqual(overlap(`boundaries[0].issuers.${tier}`));
+  });
+
+  it("ホスト方式（routing: host）でも、チームのホスト（<team>.<ポータル>）と重なる issuer を弾く", () => {
+    const c = withChange(companyConfig, (x) => {
+      x.portal.routing = "host";
+      x.boundaries[0].issuers.standard = "https://infra.portal.example.com/standard";
+    });
+    expect(issuesOf(c)).toContainEqual(overlap("boundaries[0].issuers.standard"));
+  });
+
+  it("管理外の先方の境界（2 つ目）の issuer も検査する。位置は境界の添字で示す", () => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[1].issuers.standard = "https://portal.example.com/partner-x";
+    });
+    expect(issuesOf(c)).toContainEqual(overlap("boundaries[1].issuers.standard"));
+  });
+
+  it("ホストの末尾のドット（FQDN の形）は同じホストとして扱う。issuer の形の検査（url）が先に弾く場合も、重なりは見逃さない", () => {
+    // ポータルのオリジンの末尾のドット（checkOrigin は許す）と同じホストの issuer
+    const c = withChange(companyConfig, (x) => {
+      x.portal.standardOrigin = "https://portal.example.com.";
+      x.boundaries[0].issuers.standard = "https://portal.example.com/standard";
+    });
+    expect(issuesOf(c)).toContainEqual(overlap("boundaries[0].issuers.standard"));
+  });
+
+  it("大文字小文字だけが違うホストは、重なりを検査する前に形の検査（origin・url）で弾かれ、すり抜けない", () => {
+    const upperOrigin = withChange(companyConfig, (x) => {
+      x.portal.standardOrigin = "https://Portal.Example.com";
+      x.boundaries[0].issuers.standard = "https://portal.example.com/standard";
+    });
+    expect(issuesOf(upperOrigin)).toContainEqual(issue("portal.standardOrigin", "origin"));
+    const upperIssuer = withChange(companyConfig, (x) => {
+      x.boundaries[0].issuers.standard = "https://PORTAL.example.com/standard";
+    });
+    expect(issuesOf(upperIssuer)).toContainEqual(issue("boundaries[0].issuers.standard", "url"));
+  });
+
+  it("名前だけが似ているホスト（portal.example.com と myportal.example.com）は重ならない", () => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[0].issuers.standard = "https://myportal.example.com/standard";
+    });
+    expect(issuesOf(c)).toEqual([]);
+  });
+
+  it("誤りの出力には URL の値を含めず、パスと種別だけを持つ", () => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[0].issuers.standard = "https://portal.example.com/standard";
+    });
+    const found = issuesOf(c).filter((i) => i.code === "issuer_host_overlaps_portal");
+    expect(found).toHaveLength(1);
+    expect(JSON.stringify(found)).not.toContain("portal.example.com");
+  });
+});
+
 describe("parseConsoleConfig: 参照と重複", () => {
   it("kinds[].assign の未知のロール・未知のチーム", () => {
     const c = withChange(companyConfig, (x) => {

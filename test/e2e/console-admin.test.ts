@@ -1,5 +1,6 @@
 // コンソールログインの Admin の Worker を wrangler dev で起動し、擬似の Access（certs）・STS・getSigninToken を相手に、
-// 画面（S2）→ POST /t/<team>/login → 503 signing_unavailable（STS を呼ばない）までと、負の試験の代表（PR10 で網羅する）を確かめる。
+// 画面（S2）→ POST /t/<team>/login → 503 signing_unavailable（STS を呼ばない）までを確かめる。
+// 負の試験（断るケース）は console-negative.test.ts に集めてある（重複を持たない）。
 // 設定はリポジトリの wrangler.console-admin.jsonc を読み、main を E2E 用のエントリ（外向きの通信だけを擬似に向ける）にし、
 // routes を外し（手元では Host ヘッダーで振り分ける）、alias を試験用の生成物に、vars に鍵と擬似の宛先を足した一時ファイルで起動する。
 // 実 AWS・Cloudflare は呼ばない。
@@ -22,14 +23,10 @@ import { readJsonc } from "./jsonc";
 
 const root = new URL("../../", import.meta.url).pathname;
 const TEAM_DOMAIN = "https://e2e-team.cloudflareaccess.com";
-const PORTAL = "https://portal.example.com";
-const ISSUER_HOST = "id.example.com";
-const PORTAL_HOST = "portal.example.com";
 const EMAIL = "user@example.com";
 const SUB = "e2e00000-0000-4000-8000-000000000002";
 const TEAM = "infra-elevated";
 const ADMIN_AUD = AUDS.teams[TEAM] as string;
-const INFRA = AUDS.teams.infra as string;
 const ENTRY = "333333333333:admin";
 // 鍵・トークンの形の文字列は実行時に組む（gitleaks の誤検知を避ける）
 const CSRF_SECRET = ["e2e", "csrf", "a".repeat(40)].join("-");
@@ -321,80 +318,5 @@ describe("Admin の Worker（wrangler dev）: 通しの経路", () => {
     expect(logs).toContain("signing_unavailable");
     for (const s of [SIGNIN_TOKEN, ACCESS_KEY_ID, EMAIL, CSRF_SECRET])
       expect(logs).not.toContain(s);
-  });
-});
-
-describe("Admin の Worker（wrangler dev）: 負の試験（代表。PR10 で網羅する）", () => {
-  it("Standard のチームの AUD は 403 unknown_audience", async () => {
-    const r = await postLogin({
-      jwt: await accessJwt(INFRA),
-      form: { entry: ENTRY, csrf: await csrfFrom(ADMIN_AUD) },
-    });
-    expect(r.status).toBe(403);
-    expect(r.body).toContain("unknown_audience");
-    noIssue();
-  });
-
-  it("入口の AUD（Admin・Standard）での POST は 403 unknown_audience", async () => {
-    for (const aud of [AUDS.entry.admin, AUDS.entry.standard]) {
-      const r = await postLogin({
-        jwt: await accessJwt(aud),
-        form: { entry: ENTRY, csrf: await csrfFrom(ADMIN_AUD) },
-      });
-      expect(r.status, aud).toBe(403);
-      expect(r.body).toContain("unknown_audience");
-    }
-    noIssue();
-  });
-
-  it("Origin が Standard のオリジンなら 403 forbidden_origin", async () => {
-    const r = await postLogin({
-      origin: PORTAL,
-      jwt: await accessJwt(ADMIN_AUD),
-      form: { entry: ENTRY, csrf: await csrfFrom(ADMIN_AUD) },
-    });
-    expect(r.status).toBe(403);
-    expect(r.body).toContain("forbidden_origin");
-    noIssue();
-  });
-
-  it("チームのパス以外・issuer のホスト・Standard のホストは 404（issuer の文書も出さない）", async () => {
-    for (const [host, path] of [
-      [ADMIN_HOST, "/"],
-      [ADMIN_HOST, "/x"],
-      [ADMIN_HOST, "/t/infra/"],
-      [ADMIN_HOST, "/admin/.well-known/jwks.json"],
-      [ADMIN_HOST, "/admin/.well-known/openid-configuration"],
-      [ISSUER_HOST, "/admin/.well-known/jwks.json"],
-      [ISSUER_HOST, "/admin/.well-known/openid-configuration"],
-      [ISSUER_HOST, "/standard/.well-known/jwks.json"],
-      [ISSUER_HOST, `/t/${TEAM}/`],
-      [PORTAL_HOST, `/t/${TEAM}/`],
-    ] as const) {
-      expect((await send(normal, { host, path })).status, `${host}${path}`).toBe(404);
-    }
-    const r = await postLogin({
-      host: ISSUER_HOST,
-      jwt: await accessJwt(ADMIN_AUD),
-      form: { entry: ENTRY, csrf: await csrfFrom(ADMIN_AUD) },
-    });
-    expect(r.status).toBe(404);
-    noIssue();
-  });
-
-  it("Access JWT が無いチームのパスは 401（POST も GET も）", async () => {
-    expect((await send(normal, { host: ADMIN_HOST, path: `/t/${TEAM}/` })).status).toBe(401);
-    const r = await send(normal, {
-      method: "POST",
-      host: ADMIN_HOST,
-      path: `/t/${TEAM}/login`,
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Origin: ADMIN_PORTAL,
-      },
-      body: new URLSearchParams({ entry: ENTRY }).toString(),
-    });
-    expect(r.status).toBe(401);
-    noIssue();
   });
 });

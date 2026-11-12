@@ -1,5 +1,6 @@
 // コンソールログインの Standard の Worker を wrangler dev で起動し、擬似の Access（certs）・STS・getSigninToken を相手に、
-// 入口の一覧（S0）→ S2 のリンク → POST /t/<team>/login → 302 までの通しと、S1・S3・静的なファイル、負の試験の代表（PR10 で網羅する）を確かめる。
+// 入口の一覧（S0）→ S2 のリンク → POST /t/<team>/login → 302 までの通しと、S1・S3・静的なファイルを確かめる。
+// 負の試験（断るケース）は console-negative.test.ts に集めてある（重複を持たない）。
 // 入口の身元のグループの取り方は未確定なので、本物のエントリ（normal）は全チームの S1 へのリンクに落ちる経路を通り、
 // 試験用のエントリの変数 E2E_IDENTITY_GROUPS を渡したもの（grouped）が所属するチームの行の経路を通る。
 // 設定はリポジトリの wrangler.console-standard.jsonc を読み、main を E2E 用のエントリ（外向きの通信だけを擬似に向ける）にし、
@@ -38,7 +39,6 @@ const SIGNIN_TOKEN = ["signin", "e".repeat(24)].join("-");
 
 type Instance = { proc: ChildProcess; base: string; logs: string[] };
 let normal: Instance;
-let stopped: Instance;
 let grouped: Instance;
 let fake: Server | undefined;
 let fakeBase = "";
@@ -243,9 +243,8 @@ beforeAll(async () => {
       },
     }),
   );
-  [normal, stopped, grouped] = await Promise.all([
+  [normal, grouped] = await Promise.all([
     start("normal", {}, wranglerConfig),
-    start("stopped", { LOGIN_DISABLED: "true" }, wranglerConfig),
     // infra（Standard）と infra-elevated（Admin）のグループ（試験の fixture の Object ID）
     start(
       "grouped",
@@ -257,7 +256,6 @@ beforeAll(async () => {
 
 afterAll(() => {
   stop(normal);
-  stop(stopped);
   stop(grouped);
   fake?.close();
   if (tmp) rmSync(tmp, { recursive: true, force: true });
@@ -362,27 +360,15 @@ describe("Standard の Worker（wrangler dev）: 通しの経路", () => {
     expect(payload.sub).toBe(EMAIL);
   });
 
-  it("issuer のホストは discovery と JWKS だけを返し、/t/*/login・画面には届かない（404）", async () => {
+  it("issuer のホストは discovery と JWKS を返す（ポータルの経路に届かないことは console-negative.test.ts）", async () => {
     const d = await send(normal, {
       host: ISSUER_HOST,
       path: "/standard/.well-known/openid-configuration",
     });
     expect(d.status).toBe(200);
     expect(JSON.parse(d.body).issuer).toBe(STD_ISSUER);
-    const csrf = await csrfFrom(normal, "infra", "333333333333", INFRA);
-    const r = await postLogin(normal, {
-      host: ISSUER_HOST,
-      jwt: await accessJwt(INFRA),
-      form: { entry: "333333333333:readonly", csrf },
-    });
-    expect(r.status).toBe(404);
-    for (const path of ["/t/infra/", "/t/infra/a/333333333333", "/"]) {
-      expect((await send(normal, { host: ISSUER_HOST, path })).status, path).toBe(404);
-    }
-    expect(
-      (await send(normal, { host: ISSUER_HOST, path: "/admin/.well-known/jwks.json" })).status,
-    ).toBe(404);
-    noIssue();
+    const j = await send(normal, { host: ISSUER_HOST, path: "/standard/.well-known/jwks.json" });
+    expect(j.status).toBe(200);
   });
 
   it("発行記録は構造化ログ（伏せ字）で、SigninToken・認証情報・email・CSRF の鍵を出さない", async () => {
@@ -396,92 +382,6 @@ describe("Standard の Worker（wrangler dev）: 通しの経路", () => {
     expect(logs).toContain('"console_issue"');
     for (const s of [SIGNIN_TOKEN, ACCESS_KEY_ID, EMAIL, CSRF_SECRET])
       expect(logs).not.toContain(s);
-  });
-});
-
-describe("Standard の Worker（wrangler dev）: 負の試験（代表。PR10 で網羅する）", () => {
-  it("aud が配列で 2 つなら 403 unknown_audience で、STS を呼ばない", async () => {
-    const csrf = await csrfFrom(normal, "infra", "333333333333", INFRA);
-    const r = await postLogin(normal, {
-      jwt: await accessJwt([INFRA, DEV]),
-      form: { entry: "333333333333:readonly", csrf },
-    });
-    expect(r.status).toBe(403);
-    expect(r.body).toContain("unknown_audience");
-    noIssue();
-  });
-
-  it("入口の AUD での POST は 403 unknown_audience", async () => {
-    const csrf = await csrfFrom(normal, "infra", "333333333333", INFRA);
-    const r = await postLogin(normal, {
-      jwt: await accessJwt(AUDS.entry.standard),
-      form: { entry: "333333333333:readonly", csrf },
-    });
-    expect(r.status).toBe(403);
-    expect(r.body).toContain("unknown_audience");
-    noIssue();
-  });
-
-  it("別のチーム（dev）のページの CSRF トークンは 403 csrf_failed", async () => {
-    const csrf = await csrfFrom(normal, "dev", "444444444444", DEV);
-    const r = await postLogin(normal, {
-      jwt: await accessJwt(INFRA),
-      form: { entry: "333333333333:readonly", csrf },
-    });
-    expect(r.status).toBe(403);
-    expect(r.body).toContain("csrf_failed");
-    noIssue();
-  });
-
-  it("Origin がなければ 403 forbidden_origin", async () => {
-    const csrf = await csrfFrom(normal, "infra", "333333333333", INFRA);
-    const r = await postLogin(normal, {
-      origin: null,
-      jwt: await accessJwt(INFRA),
-      form: { entry: "333333333333:readonly", csrf },
-    });
-    expect(r.status).toBe(403);
-    expect(r.body).toContain("forbidden_origin");
-    noIssue();
-  });
-
-  it("GET の /login は発行しない（案内だけ）", async () => {
-    const r = await send(normal, {
-      host: PORTAL_HOST,
-      path: "/t/infra/login",
-      headers: { "Cf-Access-Jwt-Assertion": await accessJwt(INFRA) },
-    });
-    expect(r.status).toBe(200);
-    expect(r.headers.location).toBeUndefined();
-    noIssue();
-  });
-
-  it("Admin の行の entry は 404 not_listed", async () => {
-    const csrf = await csrfFrom(normal, "infra", "333333333333", INFRA);
-    const r = await postLogin(normal, {
-      jwt: await accessJwt(INFRA),
-      form: { entry: "333333333333:admin", csrf },
-    });
-    expect(r.status).toBe(404);
-    expect(r.body).toContain("not_listed");
-    noIssue();
-  });
-
-  it("停止スイッチ（LOGIN_DISABLED=true）では 503 login_disabled で、S2 に停止中の案内を出す", async () => {
-    const csrf = await csrfFrom(stopped, "infra", "333333333333", INFRA);
-    const page = await send(stopped, {
-      host: PORTAL_HOST,
-      path: "/t/infra/a/333333333333",
-      headers: { "Cf-Access-Jwt-Assertion": await accessJwt(INFRA) },
-    });
-    expect(page.body).toContain("一時停止");
-    const r = await postLogin(stopped, {
-      jwt: await accessJwt(INFRA),
-      form: { entry: "333333333333:readonly", csrf },
-    });
-    expect(r.status).toBe(503);
-    expect(r.body).toContain("login_disabled");
-    noIssue();
   });
 });
 
@@ -558,11 +458,6 @@ describe("Standard の Worker（wrangler dev）: 入口の一覧（S0）から�
     expect(r.status).toBe(403);
     expect(r.body).toContain("unknown_audience");
     noIssue();
-  });
-
-  it("S0 は入口のアプリの JWT が無ければ 401、チームの AUD なら 403", async () => {
-    expect((await page(grouped, "/", null)).status).toBe(401);
-    expect((await page(grouped, "/", INFRA)).status).toBe(403);
   });
 });
 
