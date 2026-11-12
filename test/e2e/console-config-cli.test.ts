@@ -106,6 +106,25 @@ describe("console:config:check", () => {
     expect(existsSync(out)).toBe(false);
   });
 
+  it("Admin のロールの sessionSeconds が 3600 を超えれば終了コード 1（admin_session_seconds）。generate も何も書かない", () => {
+    const d = tmp();
+    const c = companyConfig();
+    c.roles[0].sessionSeconds = 7200; // roles[0] は Admin の階層
+    const file = write(d, "console.json", c);
+    const r = run("check", { AWSBRIDGE_CONSOLE_CONFIG: file });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("roles[0].sessionSeconds: admin_session_seconds");
+    const out = join(d, "out");
+    const g = run("generate", {
+      AWSBRIDGE_CONSOLE_CONFIG: file,
+      AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
+    });
+    expect(g.status).toBe(1);
+    expect(g.stderr).toContain("admin_session_seconds");
+    expect(existsSync(out)).toBe(false);
+  });
+
   it("AUD のファイルを渡すと、AUD の対応（欠落・食い違い）まで検査する", () => {
     const d = tmp();
     const auds = companyAuds();
@@ -359,6 +378,26 @@ describe("console:config:generate: ロールのテンプレート（種類の St
     const stacksets = JSON.parse(readFileSync(join(out, "stacksets.json"), "utf8"));
     const c = stacksets.assignments.find((a: { kind: string }) => a.kind === "C");
     for (const k of Object.keys(c.parameters)) expect(tpl.Parameters[k], k).toBeDefined();
+  });
+
+  it("Admin のロールの MaxSessionDuration は sessionSeconds（1800）によらず 3600。Worker の生成物の sessionSeconds は 1800 のまま", () => {
+    const d = tmp();
+    const out = join(d, "out");
+    const c = companyConfig();
+    c.roles[0].sessionSeconds = 1800; // roles[0] は Admin の階層（name: admin）
+    const r = run("generate", {
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", c),
+      AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const tpl = parse(readFileSync(join(out, "kind.C.yaml"), "utf8"), { customTags: [] });
+    expect(tpl.Resources.AdminRole.Properties.MaxSessionDuration).toBe(3600);
+    expect(tpl.Resources.ReadonlyRole.Properties.MaxSessionDuration).toBe(43200);
+    const worker = JSON.parse(readFileSync(join(out, "worker.admin.json"), "utf8"));
+    expect(worker.roles.find((x: { name: string }) => x.name === "admin").sessionSeconds).toBe(
+      1800,
+    );
   });
 
   it("前回の種類のテンプレートが残っていても、設定から消えた種類のものは消す", () => {

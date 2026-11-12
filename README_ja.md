@@ -373,15 +373,28 @@ mise run console:standard-key:retire -- --binding STANDARD_KEY_<旧い鍵> --yes
 - バインディングの名前は `ADMIN_KEY_<kid の先頭 8 バイトの 16 進>` で、kid から決まります。同じ名前に入れると今の鍵が即座に置き換わるので、道具は同じ名前への投入を断ります。差し替えは必ず別の名前で入れます。
 - Worker は vars の `ADMIN_CURRENT_KEY`（今の鍵の名前と kid）と `ADMIN_PUBLIC_JWKS`（公開鍵。新旧 2 つまで）を読みます。署名の前にバインディングを確かめ（`CryptoKey`・取り出せない・`sign` だけ・`exportKey` が失敗する）、署名した JWT を vars の公開鍵で確かめます。合わなければ発行せず `503 signing_unavailable` を返します。Admin の issuer の discovery と JWKS は、Admin の issuer のホスト（Standard の issuer・ポータルと別のホスト）の `/admin` で同じ Worker が出します。
 - トークン: `AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN` には Admin の Worker だけを書けるトークンを使い、Standard の Worker のデプロイや secret に使うトークンと分けます（無ければ `wrangler login` の OAuth をメモリの中だけで使います）。鍵を取り出せなくても、Worker のコードや secret を書き換えられる人は任意の JWT に署名できます。Cloudflare のアカウントの権限を絞り、Admin のデプロイは Standard と別のトークンで承認を付けて行います。
+- CSRF の鍵 `CONSOLE_CSRF_KEY` は `secret_text` です。`mise run console:secrets:admin -- --yes` が 32 バイトの乱数を手元で作り、Admin の Worker に入れます（ファイルに書かず、表示しません）。実行のたびに新しい値を作るので、Standard の Worker の CSRF の鍵とは別の値になります。トークン・アカウント ID・宛先は署名鍵の道具と同じ Admin 用の変数を使い、Standard 用の変数は読みません。作り直すと、開いている画面のフォームは開き直しが要ります。
 - 変数（`mise.local.toml`）: `AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID`（または wrangler の設定の `account_id`）、`AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN`（任意）、`AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG`（既定 `wrangler.console-admin.jsonc`）、`AWSBRIDGE_CONSOLE_ADMIN_ACCESS_TOKEN`（任意。`check` の key-check に使う Access のトークン）。
 
-初回の投入:
+初回のデプロイの順（**まだ実行していない例**で、② で確かめます）。決裁の順は「鍵 → Worker → プロバイダー」で、Admin の issuer（discovery と JWKS）を公開してから Admin のプロバイダーを配ります（`docs/specs/console-login-admin.md` §2.2）。
+
+1. 準備: 設定から生成物を作り（`mise run console:config:generate`。`worker.admin.json`）、Admin のポータルのホストに Access のアプリを作ります（入口とチーム。Cookie Path の節）。下流は自前の `wrangler.<name>-console-admin.jsonc` に routes と vars（`ACCESS_TEAM_DOMAIN`・`ACCESS_MAX_AGE_SECONDS` など）を書きます。署名鍵の vars（`ADMIN_CURRENT_KEY`・`ADMIN_PUBLIC_JWKS`）は空のままにします。
+2. Admin の Worker をデプロイします。CSRF の鍵がまだ無いので、チームのパスも issuer の文書もすべて `500 server_misconfigured` です（CSRF の鍵を入れたあとも、鍵の vars が空のあいだは発行が `503 signing_unavailable`、JWKS は 404）。鍵と secret を入れる先の Worker を先に作るためです。Worker が無い状態で鍵を入れられるかは確かめていません。
+3. CSRF の鍵と署名鍵を入れます（下のコマンド）。
+4. `put` が表示した `ADMIN_PUBLIC_JWKS` と `ADMIN_CURRENT_KEY` を wrangler の設定の vars に書いて、もう一度デプロイします。
+5. `mise run console:admin-key:check` で、バインディングの型、Admin の issuer の discovery と JWKS、key-check を確かめます。IAM はプロバイダーを作るときに discovery を読むので、Admin の issuer のホストに Access を掛けている環境では、discovery と JWKS の 2 つのパスを Access の Bypass にしておきます（`wrangler.console-admin.jsonc` の注記）。
+6. Admin の issuer が公開されたのを確かめてから、base のスタックに `AdminIssuerHost` を渡して Admin のプロバイダーを配り（base の節）、Administrator のロールを配ります。
 
 ```bash
-mise run console:admin-key:put              # 何をするかの表示だけ（API を呼ばない）
-mise run console:admin-key:put -- --yes     # 鍵を作って secret_key として入れる。名前・kid・公開鍵と、次に入れる vars を表示する
-# 表示された ADMIN_PUBLIC_JWKS と ADMIN_CURRENT_KEY を wrangler の設定の vars に書いてデプロイする
-mise run console:admin-key:check            # バインディングの型・discovery と JWKS・key-check（取り出せない・exportKey が失敗する・自己検証）
+# 2. デプロイは承認したあと手で行う（routes と vars を先に確かめる）
+#   例: AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-admin.jsonc AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy
+mise run console:secrets:admin              # 3. 何をするかの表示だけ（API を呼ばない）
+mise run console:secrets:admin -- --yes     #    CSRF の鍵（secret_text）を入れる
+mise run console:admin-key:put              #    何をするかの表示だけ（API を呼ばない）
+mise run console:admin-key:put -- --yes     #    鍵を作って secret_key として入れる。名前・kid・公開鍵と、次に入れる vars を表示する
+# 4. 表示された ADMIN_PUBLIC_JWKS と ADMIN_CURRENT_KEY を wrangler の設定の vars に書いてデプロイする
+mise run console:admin-key:check            # 5. バインディングの型・discovery と JWKS・key-check（取り出せない・exportKey が失敗する・自己検証）
+# 6. base のスタックに AdminIssuerHost を渡す（Administrator を配るアカウントだけ）→ Administrator のロールを配る
 ```
 
 差し替え（90 日以下を目安に。侵害の疑いがあれば必ず替え、旧い kid を外す）:
@@ -447,9 +460,53 @@ mise run console:reconcile -- --profile <プロファイル> --logs-api --since 
 
 運用:
 
-- **週 1 回は手で回します**。発行記録の保持は 7 日なので、**7 日以内に突き合わせなかった発行は、あとから検証できません**。
+- **Administrator の発行があった日は当日中に、それ以外も 3 日以内に手で回します**。発行記録の保持は 7 日なので、**7 日以内に突き合わせなかった発行は、あとから検証できません**。
 - 毎日の監視（定期の実行と通知）は awsbridge の外です。仕組みは利用者が決めます。
 - ② の最初に、実物で次を確かめます: Cloudflare の API の応答の形（`events`・`$metadata.id` のカーソル・`count` の意味・切られた印が `$workers.truncated` か `$cloudflare.truncated` か）、CloudTrail の `AssumeRoleWithWebIdentity` のフィールド名（`requestParameters.webIdentityTokenId`・`userIdentity.identityProvider` など）。違えば `scripts/console/reconcile-cf.ts`・`src/console/reconcile-input.ts` とフィクスチャを直します。
+
+## コンソールログインの Administrator の残った権限の棚卸し
+
+Administrator は対象のアカウントの全権なので、アクセスキー・ロール・プロバイダー・信頼ポリシーの変更などで、コンソールログインを止めたあとも使える入口を残せます。revoke（L3）や 1 人停止（L3-1）ではこれらは止まりません（`docs/specs/console-login-admin.md` §7）。止めたあと（または定期の確認で）、次の手順で棚卸しし、残ったものを個別に消します。**下のコマンドはまだ実行していない例**で、② の停止の訓練で確かめます。読み取りだけの例で、消す操作はここに書きません。コンソール用のロール以外の主体（IAM Identity Center など）のプロファイルで実行します。
+
+1. **コンソール用のロールそのもの**: `mise run console:inspect -- --profile=<p>` で、信頼ポリシー・管理ポリシー（守りの部品とその版を含む）・インラインポリシー・`MaxSessionDuration`・プロバイダーを、設定から作った期待の形と比べます。道具を使わずに見るときは次のとおりです。
+
+   ```sh
+   aws iam get-role --role-name FederatedAwsBridgeAdministrator --profile <p>                     # 信頼ポリシー（AssumeRolePolicyDocument）・パス・MaxSessionDuration
+   aws iam list-attached-role-policies --role-name FederatedAwsBridgeAdministrator --profile <p>  # 管理ポリシー（AdministratorAccess と Admin の守りの部品だけか）
+   aws iam list-role-policies --role-name FederatedAwsBridgeAdministrator --profile <p>           # インラインポリシーの名前（AwsLogin・予約名の停止など）
+   aws iam get-role-policy --role-name FederatedAwsBridgeAdministrator --policy-name <名前> --profile <p>
+   ```
+
+2. **プロバイダー**: OIDC プロバイダーの一覧が、MCP 用とコンソール用（Standard・Admin の issuer）だけかを見ます。URL・client ID・タグを、base のスタックが作るものと比べます。SAML プロバイダーも見ます。
+
+   ```sh
+   aws iam list-open-id-connect-providers --profile <p>
+   aws iam get-open-id-connect-provider --open-id-connect-provider-arn <ARN> --profile <p>
+   aws iam list-saml-providers --profile <p>
+   ```
+
+3. **その人のセッションが行った書き込み**: CloudTrail の管理イベントから、`userIdentity.sessionContext.sourceIdentity` がその人の SourceIdentity（既定は email）のものを拾います。`lookup-events` は過去 90 日・1 リージョンずつで、絞り込みの属性は 1 回に 1 つだけです。SourceIdentity では絞り込めないので、`EventSource` などで絞ってから、`CloudTrailEvent`（JSON の文字列）の中身で絞ります。IAM のイベントは基本的に us-east-1 に記録されます（CloudTrail の文書の「Global service events」。ほかのリージョンに記録されるグローバルサービスのイベントもあるとされる）。ほかのサービスも含め、有効なリージョンごとに見ます。**引き受けたあとの操作のイベントに `sourceIdentity` が残るか（N4）は、このリポジトリではまだ確かめていません**。② で確かめ、残らなければこの手順を直します（RoleSessionName の `console-<email>` で拾う形など）。
+
+   ```sh
+   aws cloudtrail lookup-events --region us-east-1 --profile <p> \
+     --lookup-attributes AttributeKey=EventSource,AttributeValue=iam.amazonaws.com \
+     --start-time 2026-11-01T00:00:00Z --output json \
+     | jq '.Events[].CloudTrailEvent | fromjson
+           | select(.userIdentity.sessionContext.sourceIdentity == "user@example.com")
+           | {eventTime, eventName, requestParameters}'
+   ```
+
+   見る操作の例: `CreateUser`・`CreateAccessKey`・`CreateLoginProfile`・`CreateRole`・`UpdateAssumeRolePolicy`・`PutRolePolicy`・`AttachRolePolicy`・`PutUserPolicy`・`AttachUserPolicy`・`CreatePolicyVersion`・`CreateOpenIDConnectProvider`・`AddClientIDToOpenIDConnectProvider`・`CreateSAMLProvider`。IAM の外でも、リソースポリシー（S3 のバケットポリシー・KMS のキーポリシー・Lambda の関数の権限や関数 URL など）を他の主体に開く変更を見ます。
+
+4. **CloudTrail に頼らない一覧**: CloudTrail を止められた・消された可能性もあるので、IAM の今の状態を一覧にして、前回の一覧（または期待する状態）と比べます。
+
+   ```sh
+   aws iam get-account-authorization-details --profile <p> > authz-<日付>.json   # ユーザー・ロール・グループ・ポリシーの全体（中身にアカウント ID を含むので公開リポジトリに置かない）
+   aws iam list-users --profile <p>
+   aws iam list-access-keys --user-name <ユーザー> --profile <p>
+   ```
+
+5. 見つけたものを、原因を確かめてから個別に消し、消したものと時刻を記録します。消し終えるまで、そのアカウントでの停止（L3・L3-1）は外しません（`docs/specs/console-login.md` §6.3 の解除の条件）。
 
 ## セットアップ用スキル（Claude Code）
 

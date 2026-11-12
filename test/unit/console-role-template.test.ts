@@ -363,6 +363,41 @@ describe("ロールの形", () => {
     expect(a.MaxSessionDuration).toBe(3600);
   });
 
+  it("Admin の階層のロールの MaxSessionDuration は sessionSeconds によらずちょうど 3600（AWS が強制できる最短。cto の決裁 G2 の論点 5）", () => {
+    for (const v of [900, 1800, 3600]) {
+      const c = viewerAdminConfig();
+      c.roles[0].sessionSeconds = v;
+      const a = props(buildKindTemplate(parsed(c), "C"), "AdministratorRole", ALL);
+      expect(a.MaxSessionDuration, String(v)).toBe(3600);
+    }
+  });
+
+  it("Standard の階層のロールの MaxSessionDuration は今までどおり sessionSeconds", () => {
+    const c = viewerAdminConfig();
+    c.roles[1].sessionSeconds = 7200;
+    const v = props(buildKindTemplate(parsed(c), "C"), "ViewerRole", ALL);
+    expect(v.MaxSessionDuration).toBe(7200);
+  });
+
+  it("解析を通さずに渡した設定でも、Admin の sessionSeconds が 3600 を超えれば admin_session_seconds で作らない", () => {
+    const config = parsed(viewerAdminConfig());
+    const bad = {
+      ...config,
+      roles: config.roles.map((r) => (r.tier === "admin" ? { ...r, sessionSeconds: 7200 } : r)),
+    };
+    let err: unknown;
+    try {
+      buildKindTemplate(bad, "C");
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ConsoleConfigError);
+    expect((err as ConsoleConfigError).issues).toContainEqual({
+      path: "roles[0].sessionSeconds",
+      code: "admin_session_seconds",
+    });
+  });
+
   it("管理ポリシーは設定の ARN と、その階層の守りの部品（必須のスタックの Export を ImportValue）", () => {
     const v = props(templateC(), "ViewerRole", ALL);
     expect(v.ManagedPolicyArns).toEqual([

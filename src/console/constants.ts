@@ -13,6 +13,11 @@ export const AUDIENCE = "awsbridge-console";
 export const ROLE_PATH_PREFIX = "/awsbridge-console/";
 export const SESSION_SECONDS_MIN = 900;
 export const SESSION_SECONDS_MAX = 43200;
+/**
+ * Admin の階層のロールの MaxSessionDuration（秒）。AWS が強制できる最短の 1 時間に固定する（G1 の決裁 A-8、G2 の決裁の論点 5）。
+ * Admin の sessionSeconds（Worker が求める長さ）はこれ以下。これより短くするのは Worker の振る舞いで、AWS の強制ではない。
+ */
+export const ADMIN_MAX_SESSION_SECONDS = 3600;
 
 export type Tier = "standard" | "admin";
 export const TIERS: readonly Tier[] = ["standard", "admin"];
@@ -20,6 +25,9 @@ export const TIERS: readonly Tier[] = ["standard", "admin"];
 const TIER_SEGMENT: Record<Tier, string> = { standard: "std", admin: "admin" };
 /** ロールの IAM パス（P-2: /awsbridge-console/<tier>/）。階層だけを止める SCP の条件に使える。 */
 export const rolePath = (tier: Tier): string => `${ROLE_PATH_PREFIX}${TIER_SEGMENT[tier]}/`;
+/** ロールの MaxSessionDuration。Admin は ADMIN_MAX_SESSION_SECONDS に固定、Standard は sessionSeconds（今まで通り）。 */
+export const roleMaxSessionDuration = (role: { tier: Tier; sessionSeconds: number }): number =>
+  role.tier === "admin" ? ADMIN_MAX_SESSION_SECONDS : role.sessionSeconds;
 
 export type Routing = "path" | "host";
 

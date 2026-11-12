@@ -374,15 +374,28 @@ The Admin Worker for console login (`wrangler.console-admin.jsonc`) signs the JW
 - The binding name is `ADMIN_KEY_<first 8 bytes of the kid in hex>`, derived from the kid. Uploading to an existing name replaces the current key at once, so the tool refuses an existing name. A new key always gets a different name.
 - The Worker reads the vars `ADMIN_CURRENT_KEY` (name and kid of the current key) and `ADMIN_PUBLIC_JWKS` (public keys, at most old and new). Before signing it checks the binding (a `CryptoKey`, non-extractable, `sign` only, `exportKey` fails), and it verifies each signed JWT with the public key in the vars. If anything does not match, it does not issue and returns `503 signing_unavailable`. The same Worker serves the Admin issuer's discovery document and JWKS under `/admin` on the Admin issuer host, which is separate from the Standard issuer host and the portal hosts.
 - Tokens: for `AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN`, use a token that can write only the Admin Worker, separate from the token used for the Standard Worker's deployments and secrets (without it, the `wrangler login` OAuth token is used, in memory only). Even though the key cannot be extracted, anyone who can change the Worker's code or secrets can sign any JWT. Keep the Cloudflare account permissions narrow, and deploy the Admin Worker with a separate token from Standard, with an approval step.
+- The CSRF key `CONSOLE_CSRF_KEY` is a `secret_text`. `mise run console:secrets:admin -- --yes` creates 32 random bytes locally and uploads them to the Admin Worker (it does not write them to a file or print them). Each run creates a new value, so it differs from the Standard Worker's CSRF key. It uses the same Admin variables (token, account ID, API base) as the signing key tool and does not read the Standard variables. Recreating it means open forms must be reopened.
 - Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID` (or `account_id` in the wrangler config), `AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN` (optional), `AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG` (default `wrangler.console-admin.jsonc`), `AWSBRIDGE_CONSOLE_ADMIN_ACCESS_TOKEN` (optional; the Access token used for the key-check in `check`).
 
-First upload:
+Order for the first deployment (**an example that has not been run yet**; to be confirmed in ②). The decided order is "key -> Worker -> provider": publish the Admin issuer (discovery and JWKS) before you deploy the Admin provider (`docs/specs/console-login-admin.md` §2.2).
+
+1. Prepare: generate the artifacts from the config (`mise run console:config:generate`; `worker.admin.json`) and create the Access applications on the Admin portal host (entry and teams; see the Cookie Path section). A downstream repository writes the routes and vars (`ACCESS_TEAM_DOMAIN`, `ACCESS_MAX_AGE_SECONDS`, and so on) in its own `wrangler.<name>-console-admin.jsonc`. Leave the signing key vars (`ADMIN_CURRENT_KEY`, `ADMIN_PUBLIC_JWKS`) empty.
+2. Deploy the Admin Worker. The CSRF key is not there yet, so the team paths and the issuer documents all return `500 server_misconfigured` (after the CSRF key is uploaded, while the key vars are still empty, issuing returns `503 signing_unavailable` and the JWKS returns 404). This creates the Worker that the key and the secret are uploaded to. Whether a key can be uploaded before the Worker exists has not been checked.
+3. Upload the CSRF key and the signing key (commands below).
+4. Put the `ADMIN_PUBLIC_JWKS` and `ADMIN_CURRENT_KEY` printed by `put` into the vars of the wrangler config and deploy again.
+5. Run `mise run console:admin-key:check` to check the binding type, the Admin issuer's discovery and JWKS, and the key-check. IAM reads the discovery document when it creates a provider, so if Access covers the Admin issuer host in your environment, put the two paths (discovery and JWKS) behind an Access Bypass (see the notes in `wrangler.console-admin.jsonc`).
+6. After you confirm the Admin issuer is published, pass `AdminIssuerHost` to the base stack to deploy the Admin provider (see the base section), then deploy the Administrator role.
 
 ```bash
-mise run console:admin-key:put              # only shows what it would do (no API calls)
-mise run console:admin-key:put -- --yes     # creates the key and uploads it as a secret_key; prints the name, kid, public key, and the vars to set next
-# put the printed ADMIN_PUBLIC_JWKS and ADMIN_CURRENT_KEY into the vars of the wrangler config and deploy
-mise run console:admin-key:check            # binding type, discovery and JWKS, key-check (non-extractable, exportKey fails, self-verification)
+# 2. deploy by hand after you approve it (check the routes and vars first)
+#   e.g. AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-admin.jsonc AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy
+mise run console:secrets:admin              # 3. only shows what it would do (no API calls)
+mise run console:secrets:admin -- --yes     #    uploads the CSRF key (secret_text)
+mise run console:admin-key:put              #    only shows what it would do (no API calls)
+mise run console:admin-key:put -- --yes     #    creates the key and uploads it as a secret_key; prints the name, kid, public key, and the vars to set next
+# 4. put the printed ADMIN_PUBLIC_JWKS and ADMIN_CURRENT_KEY into the vars of the wrangler config and deploy
+mise run console:admin-key:check            # 5. binding type, discovery and JWKS, key-check (non-extractable, exportKey fails, self-verification)
+# 6. pass AdminIssuerHost to the base stack (only in accounts that get Administrator), then deploy the Administrator role
 ```
 
 Rotation (every 90 days or less; always rotate and remove the old kid if a compromise is suspected):
@@ -448,9 +461,53 @@ mise run console:reconcile -- --profile <profile> --logs-api --since 2026-11-10T
 
 Operations:
 
-- **Run it by hand at least once a week.** Issue records are kept for 7 days, so **an issuance not reconciled within 7 days cannot be verified later**.
+- **Run it by hand on the same day as any Administrator issuance, and otherwise within 3 days.** Issue records are kept for 7 days, so **an issuance not reconciled within 7 days cannot be verified later**.
 - Daily monitoring (scheduled runs and notifications) is outside awsbridge; the operator decides how to do it.
 - At the start of stage 2, check against real data: the shape of the Cloudflare API response (`events`, the `$metadata.id` cursor, what `count` means, whether the truncation flag is `$workers.truncated` or `$cloudflare.truncated`) and the CloudTrail `AssumeRoleWithWebIdentity` field names (`requestParameters.webIdentityTokenId`, `userIdentity.identityProvider`, and so on). If they differ, fix `scripts/console/reconcile-cf.ts`, `src/console/reconcile-input.ts`, and the fixtures.
+
+## Inventory of what an Administrator left behind (console login)
+
+An Administrator has full rights in the target account, so it can leave entry points that keep working after console login is stopped: access keys, roles, providers, trust policy changes, and so on. Revoke (L3) and stopping one person (L3-1) do not stop these (`docs/specs/console-login-admin.md` §7). After stopping (or as a periodic check), take an inventory with the steps below and delete what was left, item by item. **The commands below are examples that have not been run yet**; they are to be confirmed in the stopping drill in ②. They only read; deleting is not written here. Run them with a profile for a principal other than the console roles (IAM Identity Center or similar).
+
+1. **The console role itself**: `mise run console:inspect -- --profile=<p>` compares the trust policy, managed policies (including the guard policy and its version), inline policies, `MaxSessionDuration`, and providers with the shape expected from the config. To look without the tool:
+
+   ```sh
+   aws iam get-role --role-name FederatedAwsBridgeAdministrator --profile <p>                     # trust policy (AssumeRolePolicyDocument), path, MaxSessionDuration
+   aws iam list-attached-role-policies --role-name FederatedAwsBridgeAdministrator --profile <p>  # managed policies (only AdministratorAccess and the Admin guard policy?)
+   aws iam list-role-policies --role-name FederatedAwsBridgeAdministrator --profile <p>           # inline policy names (AwsLogin, the reserved stop name, ...)
+   aws iam get-role-policy --role-name FederatedAwsBridgeAdministrator --policy-name <name> --profile <p>
+   ```
+
+2. **Providers**: check that the OIDC providers are only the MCP one and the console ones (the Standard and Admin issuers). Compare the URL, client IDs, and tags with what the base stack creates. Check SAML providers too.
+
+   ```sh
+   aws iam list-open-id-connect-providers --profile <p>
+   aws iam get-open-id-connect-provider --open-id-connect-provider-arn <ARN> --profile <p>
+   aws iam list-saml-providers --profile <p>
+   ```
+
+3. **Writes made by that person's sessions**: from CloudTrail management events, pick those whose `userIdentity.sessionContext.sourceIdentity` is the person's SourceIdentity (email by default). `lookup-events` covers the last 90 days, one region at a time, and takes only one lookup attribute per call. It cannot filter by SourceIdentity, so narrow by `EventSource` or similar first, then filter on the contents of `CloudTrailEvent` (a JSON string). IAM events are mostly recorded in us-east-1 ("Global service events" in the CloudTrail documentation, which notes that some global service events are logged in other regions). Check each enabled region, including for other services. **Whether `sourceIdentity` stays on the events of operations after the assumption (N4) has not been checked in this repository yet.** It is to be checked in ②; if it does not, this procedure will be changed (for example, to pick events by the RoleSessionName `console-<email>`).
+
+   ```sh
+   aws cloudtrail lookup-events --region us-east-1 --profile <p> \
+     --lookup-attributes AttributeKey=EventSource,AttributeValue=iam.amazonaws.com \
+     --start-time 2026-11-01T00:00:00Z --output json \
+     | jq '.Events[].CloudTrailEvent | fromjson
+           | select(.userIdentity.sessionContext.sourceIdentity == "user@example.com")
+           | {eventTime, eventName, requestParameters}'
+   ```
+
+   Operations to look for, for example: `CreateUser`, `CreateAccessKey`, `CreateLoginProfile`, `CreateRole`, `UpdateAssumeRolePolicy`, `PutRolePolicy`, `AttachRolePolicy`, `PutUserPolicy`, `AttachUserPolicy`, `CreatePolicyVersion`, `CreateOpenIDConnectProvider`, `AddClientIDToOpenIDConnectProvider`, `CreateSAMLProvider`. Outside IAM, also look for changes that open resource policies to other principals (S3 bucket policies, KMS key policies, Lambda function permissions and function URLs, and so on).
+
+4. **A listing that does not rely on CloudTrail**: CloudTrail may have been stopped or deleted, so list the current IAM state and compare it with the previous listing (or the expected state).
+
+   ```sh
+   aws iam get-account-authorization-details --profile <p> > authz-<date>.json   # all users, roles, groups, and policies (contains account IDs; do not put it in a public repository)
+   aws iam list-users --profile <p>
+   aws iam list-access-keys --user-name <user> --profile <p>
+   ```
+
+5. Delete what you found item by item after checking the cause, and record what you deleted and when. Do not lift the stop (L3, L3-1) in that account until the deletion is done (the lifting conditions in `docs/specs/console-login.md` §6.3).
 
 ## Setup skill (Claude Code)
 

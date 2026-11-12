@@ -18,8 +18,9 @@
   //   wrangler には secret_key を入れるコマンドが無いので、手元で mise run console:admin-key:put を人が実行して Cloudflare API で入れる
   //   （鍵はメモリの中で作り、ファイル・CI・ログを通さない。README の「コンソールログインの Admin の署名鍵」）。
   //   バインディングは wrangler deploy のあとも残る（API 側が保つ）。鍵が無い・使えない・公開鍵と合わないときは 503 signing_unavailable（STS を呼ばない）。
-  // secret（wrangler secret put。値はここに書かない）:
-  //   CONSOLE_CSRF_KEY      CSRF トークンの HMAC の鍵（32 バイト以上のランダムな文字列。Standard の Worker と別の値にする）
+  // secret（secret_text。値はここに書かない）:
+  //   CONSOLE_CSRF_KEY      CSRF トークンの HMAC の鍵（32 バイト以上のランダムな文字列。Standard の Worker と別の値にする）。
+  //                         手元で mise run console:secrets:admin -- --yes を人が実行して入れる（32 バイトの乱数を作り、ファイルに書かない・表示しない）
   // vars:
   //   ACCESS_TEAM_DOMAIN    Access のチームドメイン（https://<team>.cloudflareaccess.com）
   //   LOGIN_DISABLED        停止スイッチ。"false" 以外（"true" など）にすると発行を止める（503 login_disabled）

@@ -82,6 +82,22 @@ describe("README のコンソールログインの Admin の署名鍵（X1 の�
   }
 });
 
+describe("README のコンソールログインの Admin の CSRF の鍵と初回のデプロイの順（cto の決裁 G2 の論点 5）", () => {
+  for (const f of ["README.md", "README_ja.md"]) {
+    it(`${f}: console:secrets:admin（--yes）と、Admin の初回のデプロイの順を載せる`, () => {
+      const text = read(f);
+      for (const s of [
+        "mise run console:secrets:admin -- --yes",
+        "mise run console:admin-key:put -- --yes",
+        "mise run console:admin-key:check",
+        "AdminIssuerHost",
+        "wrangler.console-admin.jsonc",
+      ])
+        expect(text, s).toContain(s);
+    });
+  }
+});
+
 describe("README のコンソールログインの Standard の署名鍵（cto の決裁「Standard も secret_key に揃える」）", () => {
   for (const f of ["README.md", "README_ja.md"]) {
     it(`${f}: 境界ごとの put（--boundary --yes）・check・retire、CSRF の鍵、secret_key、更新の経路（PoC X1-(h)）を載せ、「KMS 相当」と書かない`, () => {
@@ -108,4 +124,41 @@ describe("README のコンソールログインの Standard の署名鍵（cto �
       expect(text).not.toMatch(/KMS 相当|equivalent to KMS|KMS-equivalent/i);
     });
   }
+});
+
+describe("README の Administrator の残った権限の棚卸し（cto の決裁 G2 の論点 5）", () => {
+  for (const f of ["README.md", "README_ja.md"]) {
+    it(`${f}: ロールの管理ポリシー・インラインポリシー・信頼ポリシー、プロバイダー、CloudTrail を SourceIdentity で拾う例を載せる`, () => {
+      const text = read(f);
+      for (const s of [
+        "aws iam get-role",
+        "aws iam list-attached-role-policies",
+        "aws iam list-role-policies",
+        "aws iam get-role-policy",
+        "aws iam list-open-id-connect-providers",
+        "aws iam get-open-id-connect-provider",
+        "aws cloudtrail lookup-events",
+        "sourceIdentity",
+        "mise run console:inspect",
+      ])
+        expect(text, s).toContain(s);
+    });
+  }
+});
+
+describe("README の突き合わせの間隔（cto の決裁 G2 の前回の訂正）", () => {
+  it("README_ja.md: Administrator の発行があった日は当日中、それ以外も 3 日以内。7 日の文は残し、週 1 回とは書かない", () => {
+    const text = read("README_ja.md");
+    expect(text).toContain("Administrator の発行があった日は当日中");
+    expect(text).toContain("3 日以内");
+    expect(text).toContain("7 日以内に突き合わせなかった発行は、あとから検証できません");
+    expect(text).not.toContain("週 1 回");
+  });
+  it("README.md: same day after an Administrator issuance, otherwise within 3 days. Keeps the 7-day sentence, no weekly", () => {
+    const text = read("README.md");
+    expect(text).toContain("on the same day");
+    expect(text).toContain("within 3 days");
+    expect(text).toContain("an issuance not reconciled within 7 days cannot be verified later");
+    expect(text).not.toMatch(/once a week/i);
+  });
 });

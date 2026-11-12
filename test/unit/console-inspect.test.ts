@@ -679,6 +679,25 @@ describe("正常性", () => {
     ]);
   });
 
+  it("Admin のロールの MaxSessionDuration は 3600 を期待する（sessionSeconds が 3600 より短くても警告にしない）", () => {
+    const raw = companyConfig();
+    raw.signing = { accountIds: [SIGNING_ACCOUNT] };
+    raw.roles[0].sessionSeconds = 1800;
+    const config = parseConsoleConfig(raw).config;
+    const check = (s: AccountSnapshot) =>
+      inspectAccount({ config, snapshot: s, inventory: inventory() }).findings.filter(
+        (x) => x.code === "session_mismatch",
+      );
+    // 生成器の出力そのまま（Admin は MaxSessionDuration 3600）は警告なし
+    expect(check(goodSnapshot())).toEqual([]);
+    // Admin のロールの MaxSessionDuration が 3600 でなければ警告（sessionSeconds と同じ 1800 でも）
+    const s = goodSnapshot();
+    role(s, "FederatedAdministrator").maxSessionDuration = 1800;
+    expect(check(s)).toEqual([
+      expect.objectContaining({ severity: "warning", role: "FederatedAdministrator" }),
+    ]);
+  });
+
   it("MaxSessionDuration が設定と違えば警告", () => {
     const s = goodSnapshot();
     role(s, "FederatedViewer").maxSessionDuration = 3600;

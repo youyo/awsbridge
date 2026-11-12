@@ -9,7 +9,8 @@
 - 改訂: 2026-11-12 後半の cto の決裁と利用者の判断、実装を反映した。(1) **Administrator の発行を Cloudflare で完結させる**（X1）。Admin の署名鍵は Workers の `secret_key`（取り出せない `CryptoKey`）で、別の Worker・別の issuer・別の鍵・別のホスト（D3 は保つ）。D4（Admin は KMS 必須）は外れ、② は利用者の受容、③ は G5 で会社のセキュリティの承認に置き換わった。AWS 側の署名役（C-4）・AWS 側の issuer（I-C）・KMS は退避先として [console-login-admin.md](console-login-admin.md) の付録 A に残した（§2.2・§3.1・§5・§6・§7）。(2) Admin の issuer は Cloudflare の別ホストの `/admin`（I-B）で確定し、「Standard と同じホストの `/admin` でもよい」は取り下げた（§3.1）。(3) Standard も `secret_key` に揃える（公開鍵は vars。決裁済み・未実装。§2.2）。(4) すべてのチームの Access アプリで Cookie Path を有効にする（R-P の要件。§5.4）。(5) 守りの部品は最初の配布から、中身は固定の Deny だけ。1 人停止の Deny は CloudFormation の外のロールのインライン（予約名）にした（U-15 を閉じた。§4.8）。(6) 実装の状態（PR #16〜#27。すべて未マージ）を §7.4.1 にまとめた。検査の道具（§4.9）、運用の道具、生成器の誤りの種別を足した
 - 改訂: 2026-11-13 MCP 用ロールを人のロールと共有しないことにし、既定名を `FederatedAwsBridgeMcp*` にした（§2.3）。「コンソール」と「ポータル」の使い分けを用語に足した
 - 改訂: 2026-11-13 cto の決裁（P-A）を反映した。Admin のプロバイダーを基盤のスタックに条件付きで置き（`AdminIssuerHost`・`AdminPath`、`EnableAdminTier` は廃止、`Rules` で D3）、両方の守りの部品のプロバイダーの Deny に Admin のホストを足した。ロールのテンプレートは `AdminProviderArn` をやめた。L2 はスタックの外で行う（§4.2・§4.3・§4.8。U-27 を閉じた）
-- 状態: 設計案。段階導入は「① 完成 → ② 個人で導入・試験 → ③ 会社に導入」（cto の決裁 2026-11-12。§7）。G1 の審議は済み、Admin 側の発行は X1 の設計で定まった（[console-login-admin.md](console-login-admin.md)。X1 は ① の実装と ② の個人の環境まで条件付き承認。③ の会社の Administrator は G5）。実装は PR #16〜#35 と本 PR（マージ済み。#22 は閉じた）にあり、何が入っているかは §7.4.1。Standard の `secret_key`（PR #29）と Admin のプロバイダーのスタック（base.yaml の AdminIssuerHost）は実装済み。突き合わせの道具は作業中。前の版の「段階 1 のゲート（1a・1b）」の承認と条件は §1・§7.2・§7.3 に残した（行き先は §7.7）
+- 改訂: 2026-11-13 cto の決裁 G2 の論点 5（G2 の前に埋める 5 件）と、突き合わせの間隔の訂正（「週 1 回」→「Administrator の発行があった日は当日中、それ以外も 3 日以内」）を反映した。実装の状態は PR #37 までのマージを前提に書き直し、「実装済み（設定がある）」と「実物で確かめた」を分けた
+- 状態: 設計案。段階導入は「① 完成 → ② 個人で導入・試験 → ③ 会社に導入」（cto の決裁 2026-11-12。§7）。G1 の審議は済み、Admin 側の発行は X1 の設計で定まった（[console-login-admin.md](console-login-admin.md)。X1 は ① の実装と ② の個人の環境まで条件付き承認。③ の会社の Administrator は G5）。実装は PR #16〜#35 と本 PR（マージ済み。#22 は閉じた）にあり、何が入っているかは §7.4.1。PR #16〜#37 はマージ済み（#22 は閉じた）。Standard の `secret_key`（PR #29）、Admin のプロバイダーのスタック（base.yaml の AdminIssuerHost。PR #36）、停止の道具（PR #33・#34）、Cookie Path の検査（PR #35）、突き合わせの道具（PR #37）は実装済み。G2 の前の残り（Admin の CSRF の鍵の道具・Admin の `MaxSessionDuration` の強制・Access JWT の大きさの上限・棚卸しの手順）も入れた。「実装済み」はコードと試験があること（設定がある）を指し、本物の Cloudflare・AWS での確認（実物の確認）は ② の最初に行う（未実施）。前の版の「段階 1 のゲート（1a・1b）」の承認と条件は §1・§7.2・§7.3 に残した（行き先は §7.7）
 - 対象: awsbridge 方式（自前の OIDC issuer → 各アカウントの IAM OIDC プロバイダー → `AssumeRoleWithWebIdentity`）による、人が使う AWS コンソールと `aws login` へのログイン（この仕組みを「コンソールログイン」と呼ぶ）
 - 関連:
   - [console-login-portal.md](console-login-portal.md): ポータル（画面・エンドポイント・CSRF・設定ファイル）の詳細設計。この文書は、ポータルの外側（issuer・鍵・テンプレート・脅威モデル・停止・段階）を受け持つ
@@ -102,7 +103,7 @@ issuer の公開文書（discovery と JWKS）: https://<issuer-host>/std/...（
 | Worker | コンソールログイン用は MCP 用と別の Worker。awsbridge リポジトリ内の別エントリ。MCP 用のバンドルにコンソールログイン用の経路が入らないことをテストで確かめる（実装済み: `test/e2e/console-isolation.test.ts`・`test/unit/console-layout.test.ts`。MCP・Standard・Admin の 3 方向の分離の試験は `test/e2e/console-isolation.test.ts` に集約した。PR #26） | [資料: cto の決裁 D2] |
 | Standard と Admin | 別の Worker デプロイ（D3 のこの部分は保つ）。**入口と一覧は共通**（P1'。2026-11-12）で、Administrator の行も Standard の一覧に表示用だけで出す。Admin の発行は Admin のオリジンの Worker だけが行い、Standard の Worker は代わりに行わない。Standard のバンドルに Admin の鍵の参照・Admin のチームの AUD・Access のポリシー ID を入れない（portal §8・§9.10） | [資料: cto の決裁 D3、2026-11-12 の P1'] |
 | 鍵 | 「階層（Standard / Admin）× 境界（管理下 / 管理外の先方ごと）」で分ける。issuer も同じ単位で分け、1 つの issuer に 1 つの鍵 | [資料: cto の決裁 D3]。設定の検査（issuer の URL の重複を誤りにする）は実装済み（`src/console/config.ts`） |
-| 鍵の保管 | **Standard も Admin も、Workers の `secret_key`（取り出せない `CryptoKey`）に揃える**。公開鍵は vars。Admin は X1 で `secret_key`（実装は PR #27）。Standard の移行は決裁済み・未実装で、別 PR（G2 までに。条件は [console-login-admin.md](console-login-admin.md) §4.5）。D4 の「Admin は KMS 必須」は X1 の決裁で外れ（人の受容。② は利用者本人、③ は G5 で会社のセキュリティの承認）、「Standard の Workers secret は会社で Administrator を配る前まで」という期限も無くなった。**`secret_key` は KMS の代わりになるものではない**（署名を頼める主体を絞れず、外部の記録と外部からの停止が無い）。Worker のコードを変えられる者は、鍵を持ち出せなくても任意の JWT に署名できる（admin §4.4・§5）。KMS と AWS 側の署名役は退避先（admin の付録 A） | [資料: cto の決裁 X1・「Standard も secret_key に揃える」、2026-11-12] |
+| 鍵の保管 | **Standard も Admin も、Workers の `secret_key`（取り出せない `CryptoKey`）に揃える**。公開鍵は vars。Admin は X1 で `secret_key`（実装は PR #27）。Standard の移行は PR #29 で実装した（条件は [console-login-admin.md](console-login-admin.md) §4.5。本物のバインディングでの確認は ②）。D4 の「Admin は KMS 必須」は X1 の決裁で外れ（人の受容。② は利用者本人、③ は G5 で会社のセキュリティの承認）、「Standard の Workers secret は会社で Administrator を配る前まで」という期限も無くなった。**`secret_key` は KMS の代わりになるものではない**（署名を頼める主体を絞れず、外部の記録と外部からの停止が無い）。Worker のコードを変えられる者は、鍵を持ち出せなくても任意の JWT に署名できる（admin §4.4・§5）。KMS と AWS 側の署名役は退避先（admin の付録 A） | [資料: cto の決裁 X1・「Standard も secret_key に揃える」、2026-11-12] |
 | Cloudflare アカウント | 既存の Cloudflare アカウントを使う。コンソールログイン用に分けるか（U-7）は G5 の前に決める（前の版は「段階 2 のゲート」）。X1 の決裁で、② では求めず、③ の Administrator では必須 | [資料: cto の決裁（G-13）・2026-11-12 の行き先] |
 | 作るものと配るもの | ① で Standard と Admin の両方（Worker・issuer・鍵・プロバイダーのスタック）を作る。② で個人の Organization のメンバーアカウントに両方を配る。③ は Viewer（Standard）を先に配り（G3）、Admin は G5 のあと。境界は管理下だけ（顧客のアカウントは「完了」の外） | §7 |
 
@@ -302,7 +303,7 @@ Standard と Admin の 2 つの Worker への振り分け（N9 は 1 つの Work
 | 項目 | 内容 | 生成物の出どころ |
 |---|---|---|
 | `RoleName` / `Path` | `roleName` / `/awsbridge-console/<tier>/`（§3.3 の P-2） | `roles[].roleName`・`roles[].rolePath` |
-| `MaxSessionDuration` | `sessionSeconds`（900〜43200） | `roles[].sessionSeconds` |
+| `MaxSessionDuration` | Standard は `sessionSeconds`（900〜43200）。Admin はちょうど 3600 で、`sessionSeconds` は 900〜3600（超えれば誤り `admin_session_seconds`。G2 の決裁の論点 5） | `roles[].sessionSeconds`・`roles[].tier` |
 | `ManagedPolicyArns` | 設定の AWS 管理ポリシー | `roles[].managedPolicyArns` |
 | インラインポリシー | (1) `aws login` の Allow（§4.4。Standard は `localhost` と `remote`、Admin は `localhost` だけ）、(2) 下流のポリシー文書（`inlinePolicyFiles`） | `roles[].inlinePolicyFiles`、上流の固定の文書 |
 | 守りの部品 | 参考の形では、その階層の守りの部品（§4.2・§4.8。自分自身の保護・**ロールチェーンの禁止**・1 人停止の Deny の置き場所、Admin は `--remote` の Deny も）を付ける。前の版はこれらをロールのインラインポリシーに置いていた。部品は最初の配布から配る。中身は固定の Deny だけで、1 人停止の Deny は CloudFormation の外のロールのインライン（予約名）に置く（U-15 を閉じた。§4.8）。Admin のロールは部品を自分で外せる（部品は事故防止で、強制の境界ではない。§4.8） | 基盤のスタックの出力（部品のポリシーの ARN） |
@@ -358,7 +359,7 @@ Standard と Admin の 2 つの Worker への振り分け（N9 は 1 つの Work
 | (1) Standard のロールのポリシー | 参考の形の Viewer（Standard の階層） | 管理ポリシー `SignInLocalDevelopmentAccess` は付けず、`signin:AuthorizeOAuth2Access`・`signin:CreateOAuth2Token` を `arn:${AWS::Partition}:signin:*:${AWS::AccountId}:oauth2/public-client/localhost` と `.../oauth2/public-client/remote` の 2 つのリソースだけに Allow する。同じ端末と `--remote` の両方を許す |
 | (2) Admin のロールのポリシー | 参考の形の Administrator（Admin の階層） | 同じ 2 つのアクションを `.../localhost` だけに Allow する。`AdministratorAccess`（`Action: *`）は `signin:*` を含み `--remote` も許してしまうので、(3) の Deny で塞ぐ |
 | (3) Admin の階層の守りの部品 | Admin の階層のロール（手作りのロールも、部品を付けていれば） | `.../oauth2/public-client/remote` への 2 つのアクションを明示の Deny。**本人（Administrator）が部品を外せるので、これはフィッシングへの守りであって封じ込めではない**。Deny が効くのは部品が付いている間だけ。Standard の部品には入れない |
-| (4) 生成の検査 | 設定 | Admin の階層のロールの `roles[].permissions.managedPolicyArns` に `SignInLocalDevelopmentAccess` があれば誤りにする（`--remote` を許すため）。Standard の階層での扱いは未決（参考の形は付けない）。未実装 |
+| (4) 生成の検査 | 設定 | Admin の階層のロールの `roles[].permissions.managedPolicyArns` に `SignInLocalDevelopmentAccess` があれば誤りにする（`--remote` を許すため）。Standard の階層では警告（`signin_access_standard`。参考の形は付けない）。実装（PR #16。誤り `signin_access_admin`） |
 | (5) SCP（管理下のメンバーアカウントだけの任意の層） | 停止用とは別の常設の SCP | Admin の階層のロール（`/awsbridge-console/admin/*`）について `.../oauth2/public-client/remote` を Deny する。基準の守りにはしない（SCP は管理外・単独のアカウントに掛けられない。§6.5） |
 
 確かめたこと・残り:
@@ -464,7 +465,7 @@ Standard の階層の参考の形は Viewer ロール（`FederatedAwsBridgeViewe
 
 ### 4.9 検査の道具
 
-上流が持つ検査の道具の項目（`console:inspect` を PR #24〈未マージ〉で実装した。②（と ③ の最初）は運用者が手で回す。CI の読み取りロールは G3 で決める）[資料: cto の決裁 2026-11-12、Sol のレビュー 2026-11-12 の B]:
+上流が持つ検査の道具の項目（`console:inspect` を PR #24 で実装した。②（と ③ の最初）は運用者が手で回す。CI の読み取りロールは G3 で決める）[資料: cto の決裁 2026-11-12、Sol のレビュー 2026-11-12 の B]:
 
 | 項目 | 内容 |
 |---|---|
@@ -477,7 +478,7 @@ Standard の階層の参考の形は Viewer ロール（`FederatedAwsBridgeViewe
 | 強さ | 既知の広い管理ポリシー（`AdministratorAccess`・`PowerUserAccess`・`IAMFullAccess` など）が Standard の階層のロールに付いていれば警告する。強さの判定はここまで（手作りのロールの強さは下流の責任） |
 | 限界 | 手で回す検査は、検査のあとの改変を防がない。定期に回し、CloudTrail の変更の通知と組み合わせる |
 
-**実装**（PR #24。未マージ。`src/console/inspect.ts` と `src/console/guard.ts`。Worker からは import しない）:
+**実装**（PR #24。`src/console/inspect.ts` と `src/console/guard.ts`。Worker からは import しない）:
 
 - 実行: `mise run console:inspect -- --profile=<p> [--stops=<file>] [--account-id=<id>]`。AWS の読み取りの 8 種類の API だけを呼ぶ（書き込みなし）。設定に無いアカウントは誤り（終了コード 1）。出力はアカウント ID の末尾 4 桁と伏せ字
 - 信頼ポリシーは承認済みの厳格な形だけを許す許可リスト方式: `Principal` はその階層のプロバイダー 1 つ、Allow の文は 1 つ、Action は 3 つ、演算子は `StringEquals`・`ForAllValues:StringEquals`・`Null` だけで、aud・チーム・タグキー・SourceIdentity の値を照合する。条件のない Deny は誤り、条件つきの Deny は警告
@@ -494,7 +495,7 @@ Standard の階層の参考の形は Viewer ロール（`FederatedAwsBridgeViewe
 
 | # | 資産 | 置き場所 | 失われたときに起きること |
 |---|---|---|---|
-| A1 | issuer の署名鍵（階層 × 境界ごと） | Standard: Workers secret（`secret_key` への移行は決裁済み・未実装。§2.2）。Admin: Workers の `secret_key`（取り出せない `CryptoKey`。X1） | その issuer を信頼する全アカウントで、信頼ポリシーが許す範囲のタグと SourceIdentity を**偽造して**引き受けられる |
+| A1 | issuer の署名鍵（階層 × 境界ごと） | Standard: Workers の `secret_key`（境界ごと。PR #29。§2.2）。Admin: Workers の `secret_key`（取り出せない `CryptoKey`。X1） | その issuer を信頼する全アカウントで、信頼ポリシーが許す範囲のタグと SourceIdentity を**偽造して**引き受けられる |
 | A2 | Worker のコード・依存パッケージ・ビルド成果物と、デプロイ権限（デプロイ用の API トークン） | リポジトリ・パッケージのレジストリ・CI・Cloudflare アカウント | A1 と同じ（任意のトークンを出させられる）。Standard の今の secret（JSON の鍵）は読み出せる。Admin の `secret_key` は鍵を持ち出せないだけで、**Worker のコードを変えられる者は任意の Admin の JWT に署名できる**（X1 の受容の 1 点目。admin §5.1）[資料: Sol のレビューの指摘 3、PoC X1 の K2] |
 | A3 | Access アプリ・ポリシー・IdP の連携 | Cloudflare アカウント | 所属の判定を緩められる |
 | A4 | Entra のグループ（と PIM。G3・G5 で扱う） | Entra ID | 所属の権威そのもの |
@@ -630,7 +631,7 @@ Standard の階層の参考の形は Viewer ロール（`FederatedAwsBridgeViewe
 - 照合: CloudTrail の `AssumeRoleWithWebIdentity` のイベントの `requestParameters.webIdentityTokenId` を発行記録の `jti` で引く（主）。あわせて `requestID`・`responseElements.credentials.accessKeyId`・`responseElements.assumedRoleUser.assumedRoleId` を発行記録の 3 つの値で引く。**発行記録にない引き受け**は、鍵の漏洩か Worker の外からの発行を疑う。その後の API のイベントは `accessKeyId` と SourceIdentity でたどる [推測: CloudTrail のフィールド名は突き合わせ（1a-4。最初は ②）で確かめる]
 - STS の endpoint を地域で選べる設定にすると、CloudTrail の記録先のリージョンが変わる。突き合わせの手順に、そのリージョンを書く [資料: cto の回答 2026-11-12]
 - **道具**（`mise run console:reconcile`。手順は README の「コンソールログインの突き合わせ」）: 1 回で 1 アカウント。CloudTrail の `AssumeRoleWithWebIdentity` を有効な全リージョンで読み（読めなかったリージョンは誤り）、発行記録と `jti` で突き合わせる。呼ぶ aws は照会の 4 種類（`sts get-caller-identity`・`account list-regions`・`ec2 describe-regions`・`cloudtrail lookup-events`）、Cloudflare は Workers Logs の照会の API（`telemetry/query`）だけ。判定は `src/console/reconcile.ts`（純粋な関数）。コンソールの引き受け（ロールのパス `/awsbridge-console/`、または設定の issuer のホストのプロバイダー）だけを見て、MCP の引き受けは除く。誤り: 記録に無い引き受け・設定に無いプロバイダーでの引き受け・階層やロールの食い違い・読めなかったリージョン・切られた行と読めない行。警告: `jti` の重複・引き受けの無い記録・補助のキーの食い違い・検証できない引き受け。出力は伏せ字（`jti` は先頭 8 文字、email は出さない）。終了コードは 0（誤りなし）/ 1（誤りあり、または検証できない引き受けが 1 件以上。検証できない引き受けは所見では警告だが、誤り 0 として終わらせない）/ 2（実行できない）[資料: cto の決裁 2026-11-13「G2 の前に残る実装 4 件の形」「② の発行記録を Workers Logs のままにする」]
-- **② の発行記録の置き場所は Workers Logs**（保持 7 日。cto の決裁 2026-11-13。③ では不可で G5 の条件）。記録は Worker の構造化ログ `console_issue` で、`jti`・`kid`・アカウント ID・ロール ARN・Worker の版 ID（`CF_VERSION_METADATA`）を全桁で、email は伏せて残す（`issueLogRecord`）。コンソールの 2 つの Worker は `head_sampling_rate: 1`（間引かない。wrangler の設定の試験で守る）。道具の入力は、Workers Logs の API とファイル（NDJSON。生の行・Trace Events の包み・Workers Logs のイベント）の両方。既定のさかのぼりは 6 日で、記録の保持より古く記録の無い引き受けは「検証できない」として別に数える。切られた行（`$cloudflare.truncated` など）は誤り。**7 日以内に突き合わせなかった発行は、あとから検証できない**ので、週 1 回は手で回す（定期の実行と通知は awsbridge の外）。API の応答の形と CloudTrail のフィールド名は ② の最初に実物で確かめ、フィクスチャを取り直す [推測: 形は Cloudflare の API の仕様と AWS の文書の例から作った]
+- **② の発行記録の置き場所は Workers Logs**（保持 7 日。cto の決裁 2026-11-13。③ では不可で G5 の条件）。記録は Worker の構造化ログ `console_issue` で、`jti`・`kid`・アカウント ID・ロール ARN・Worker の版 ID（`CF_VERSION_METADATA`）を全桁で、email は伏せて残す（`issueLogRecord`）。コンソールの 2 つの Worker は `head_sampling_rate: 1`（間引かない。wrangler の設定の試験で守る）。道具の入力は、Workers Logs の API とファイル（NDJSON。生の行・Trace Events の包み・Workers Logs のイベント）の両方。既定のさかのぼりは 6 日で、記録の保持より古く記録の無い引き受けは「検証できない」として別に数える。切られた行（`$cloudflare.truncated` など）は誤り。**7 日以内に突き合わせなかった発行は、あとから検証できない**ので、Administrator の発行があった日は当日中、それ以外も 3 日以内に手で回す（cto の決裁 G2 で「週 1 回」を訂正した。定期の実行と通知は awsbridge の外）。API の応答の形と CloudTrail のフィールド名は ② の最初に実物で確かめ、フィクスチャを取り直す [推測: 形は Cloudflare の API の仕様と AWS の文書の例から作った]
 - 発行記録と CloudTrail の突き合わせ（1a-4）は、② と会社の G4・G5 の条件にする（§7.3）。Admin の発行も同じ突き合わせ（`jti` = `webIdentityTokenId`）で見る。X1 には署名の独立の記録（KMS の Sign の CloudTrail）が無く、検知の主な手がかりは「引き受けの記録に発行記録が無いもの」になる。③ は Administrator の引き受けの全件を人に通知する（G5 の条件。[console-login-admin.md](console-login-admin.md) §8）
 
 ---
@@ -809,6 +810,8 @@ cto の決裁（2026-11-12。D8 の段階導入の書き直しを条件付きで
 | 開発環境の PoC | N2（Administrator で `--remote` が拒否されること、セッションの長さ）・N5（JWKS のキャッシュ）・N6（KMS の署名。成立。退避先の根拠）・PoC G1-b・PoC X1（`secret_key`。成立）は済み、守りの部品の版の更新の反映（§4.8） |
 | 文書 | 設計書 §7 の書き直しと、§9.2 の付け替え（この改訂） |
 
+- 注（2026-11-13、G2 の決裁）: 上の表の「開発環境の PoC」の N2・N5 は「済み」と読めるが、結果の記録は見つかっておらず、G2 の決裁では未測定として ② の最初（②-0）で測る。守りの部品の版の更新の反映も同じ（G2 の上申資料 §2.2）
+
 | ゲート | 時機 | 扱うこと |
 |---|---|---|
 | G1 | ① の実装の前（**済み**）| Admin 側の発行の設計（[console-login-admin.md](console-login-admin.md)）は X1 に決まった。N6・G1-b・X1 の PoC は成立。P1' のまま（§3.1）。D2 は ① は同じリポジトリの別エントリ。G1-b に Sol のレビューを取った |
@@ -819,11 +822,11 @@ cto の決裁（2026-11-12。D8 の段階導入の書き直しを条件付きで
 
 ### 7.4.1 実装の状態
 
-[PR #16〜#27 はすべて OPEN（未マージ）で、この文書のブランチには入っていない。PR の本文の記録による。各 PR は `mise run test`・`mise run lint` が通ったと記録している。先端の #27 は unit 1625 件・e2e 378 件]
+[PR #16〜#37 はマージ済み（#22 は閉じ、中身は #29 で置き換えた）。表の「実装」はコードと試験があること（設定がある）を指す。本物の Cloudflare・AWS で確かめたもの（実物の確認）は書き分け、書いていないものは実物で未確認。main（a6d7bab）で unit 2177 件・e2e 470 件が通った（G2 の上申資料の記録）]
 
 | 範囲 | PR | 状態 |
 |---|---|---|
-| 生成物を発行用（`worker.<tier>.json`）と表示用（`display.standard.json`）に分割。`identity.sourceIdentity`。Admin の階層のロールの `SignInLocalDevelopmentAccess` は誤り（`signin_access_admin`）、Standard は警告（`signin_access_standard`）。`portal.entryAud.admin` を要求しない | #16 | 実装（未マージ）|
+| 生成物を発行用（`worker.<tier>.json`）と表示用（`display.standard.json`）に分割。`identity.sourceIdentity`。Admin の階層のロールの `SignInLocalDevelopmentAccess` は誤り（`signin_access_admin`）、Standard は警告（`signin_access_standard`）。`portal.entryAud.admin` を要求しない | #16 | 実装 |
 | プロバイダーのスタック `infra/aws/console/base.yaml`（Standard の OIDC プロバイダー、守りの部品、予約名）| #17 | 実装。Admin のプロバイダー（`AdminIssuerHost` を渡したときだけ）と、部品の Deny の Admin のホストは P-A（cto の決裁 2026-11-13）で足した |
 | Access JWT の検証（aud ちょうど 1 つ、サービストークンを断る、alg 固定）・CSRF・要求の検査・応答ヘッダー | #18 | 実装 |
 | 発行の部品（claim・署名の差し込み口 `TokenSigner`・Standard の署名・STS・フェデレーション・発行記録・エラー表）| #19 | 実装 |
@@ -835,10 +838,23 @@ cto の決裁（2026-11-12。D8 の段階導入の書き直しを条件付きで
 | ポータルの画面（入口 S0 の 1 つの一覧、S1、S3）| #25 | 実装 |
 | 負の試験の E2E と、3 方向のバンドルの分離の試験。生成器の誤り `issuer_host_overlaps_portal`（G-8）| #26 | 実装 |
 | Admin の `secret_key` の署名・Admin の issuer の文書・Access JWT の鮮度の検査・`key-check`。生成器の誤り `admin_issuer_path`・`admin_issuer_multiple`・`admin_issuer_host_shared`。運用の道具 `console:admin-key:put` / `retire` / `check`、`secrets:scan`（gitleaks）| #27 | 実装。本物の `secret_key` での確認は未実施 |
+| 設計書の X1 の反映と実装の記録 | #28 | 文書 |
+| Standard も `secret_key` に揃える（境界ごとの `STANDARD_KEY_<…>`、vars `STANDARD_CURRENT_KEYS`・`STANDARD_PUBLIC_JWKS`、`console:standard-key:*`。`console:keygen` と secret の JSON はやめた）| #29 | 実装。更新の経路 (h) は開発環境で測った。本物のバインディングでの Worker の確認は未実施 |
+| MCP 用ロールの既定名 `FederatedAwsBridgeMcpViewer` / `FederatedAwsBridgeMcpDebugger` | #30 | 実装 |
+| 用語（コンソールとポータル）| #31 | 文書 |
+| issuer に独自ドメインを当てる例と手順 | #32 | 文書 |
+| 1 人停止の道具 `console:stop:show` / `apply`（★4・★5）| #33・#34 | 実装。実物では未確認（② の停止の訓練）|
+| Cookie Path の検査 `console:access:inspect` と Terraform の例 `infra/cloudflare/console/` | #35 | 実装。本物のアプリでは未確認 |
+| Admin のプロバイダーを base に条件付きで置く（P-A。`AdminIssuerHost`・`AdminPath`）。両方の部品の Deny に Admin のホスト | #36 | 実装。Administrator のセッションから削除・作成が AccessDenied になるかは実物で未確認 |
+| 突き合わせの道具 `console:reconcile`（★1・Workers Logs・保持の窓・検証できない別数え・切り捨ては誤り）。`head_sampling_rate: 1` | #37 | 実装。実物の Cloudflare の API と CloudTrail では未確認 |
+| G2 の前の残り（cto の決裁 G2 の論点 5）: Admin の CSRF の鍵 `console:secrets:admin` と初回のデプロイの順、Admin の `MaxSessionDuration` をちょうど 3600・`sessionSeconds` 3600 以下（誤り `admin_session_seconds`）、Access JWT の大きさの上限（16 KiB）、Administrator の残った権限の棚卸しの手順（README）、設計書の状態の記述 | 本ブランチ | 実装。実物では未確認 |
 
 - PR の積み方: #19 は #16 の上、#22・#23 は #21 の上、#24 は #20 の上、#25 は #23 の上、#26 は #25 の上、#27 は #26 の上。#20 は #16・#17 を、#21 は #18・#19 をマージした上に積んでいる
-- **生成器の誤りの種別**（`src/console/config.ts` と `template.ts`。`ConsoleConfigIssueCode`）に足したもの: `issuer_host_overlaps_portal`・`admin_issuer_path`・`admin_issuer_multiple`・`admin_issuer_host_shared`（いずれも誤り）、`signing_account`（誤り。署名を置くアカウントにコンソールのロールを配る設定。X1 で署名用アカウントが無くなったので、残すかは未決）、`signin_access_admin`（誤り）・`signin_access_standard`（警告）
-- **未実装・未実施**: Standard の `secret_key` への移行（実装計画の PR14。決裁済み。ブランチだけがあり、コミットは無い）。Admin のプロバイダーのスタック。C-4 の署名役（実装計画の PR12 は止めたまま。X1 で退避先）。検知の道具（引き受けと発行記録の突き合わせ）は `mise run console:reconcile` として実装済み（§5.6）で、実物での確認は未実施（Cloudflare の API の応答の形と CloudTrail のフィールド名は ② の最初に実物で確かめる）。Admin の `MaxSessionDuration` の下限の強制。本物の `secret_key` での Worker の確認。実装の段の順は portal §9.3 の番号の順と同じではない（停止スイッチと要求の検査が先、回数の制限が身元の後。どの段も失敗で止まる点は同じ。PR #21）
+- **生成器の誤りの種別**（`src/console/config.ts` と `template.ts`。`ConsoleConfigIssueCode`）に足したもの: `issuer_host_overlaps_portal`・`admin_issuer_path`・`admin_issuer_multiple`・`admin_issuer_host_shared`（いずれも誤り）、`signing_account`（誤り。署名を置くアカウントにコンソールのロールを配る設定。X1 で署名用アカウントが無くなったので、残すかは未決）、`signin_access_admin`（誤り）・`signin_access_standard`（警告）、`admin_session_seconds`（誤り。Admin の階層のロールの `sessionSeconds` が 3600 を超える。G2 の決裁の論点 5）
+- **実装済み（コードと試験）**: Standard の `secret_key`（PR #29）、Admin のプロバイダーのスタック（PR #36）、検知の道具 `console:reconcile`（PR #37。§5.6）、停止の道具（PR #33・#34）、Cookie Path の検査（PR #35）、Admin の `MaxSessionDuration` の強制・Admin の CSRF の鍵の道具・Access JWT の大きさの上限（G2 の前の残り）
+- **実物で未確認（② の最初に行う）**: 本物の `secret_key` での Worker の確認（`console:*-key:check`）、Cloudflare の API の応答の形と CloudTrail のフィールド名（`console:reconcile`）、Administrator のセッションからのプロバイダーの書き込みの拒否、停止の道具と棚卸しの訓練、Admin の 1 時間のセッション、Admin の初回のデプロイの順（Worker が無い状態で鍵を入れられるか）、実物の Access JWT の長さ（大きさの上限 16 KiB との余裕）、引き受けたあとの操作のイベントに SourceIdentity が残るか（N4。棚卸しの手順の前提）
+- **未実装**: C-4 の署名役（実装計画の PR12 は止めたまま。X1 で退避先）。守りの部品の監査の Deny（A-12。② では足さない。G5 で決め直す）。CODEOWNERS（D2 の条件 (3)。G5 の前）
+- 実装の段の順は portal §9.3 の番号の順と同じではない（停止スイッチと要求の検査が先、回数の制限が身元の後。どの段も失敗で止まる点は同じ。PR #21）
 
 ### 7.5 ② 個人で導入・試験
 
@@ -1044,7 +1060,7 @@ Sol のレビューの指摘の反映（決裁ではない。採ったものだ�
 | U-11 | API トークンでの L0（wrangler）が Entra を通るか | 利用者。確かめられる時機に | **未確認**。Entra を通らない可能性がある。確かめれば、E0 の実際の欠落が「L0 も不可」か「L2・L3 だけ不可」かが分かる（§6.6） |
 | U-12 | Cloudflare のダッシュボードの Entra 以外のログイン（ID/パスワード/パスキー。利用者が今後設定する予定）の設定前の確認 | 利用者。設定の前 | 設定するなら §5.4 の条件を満たす。SSO を強制しているドメインで別のログインがどう扱われるかを、Cloudflare の文書で確かめてから設定する 利用者は §5.4 の 3 条件に同意し、セキュリティ例外には当たらないと判断した（2026-11-11） |
 | U-13 | 段階の定義の書き直し | **閉じた（置き換え）**: cto の決裁 2026-11-12 の「① 完成 → ② 個人で導入・試験 → ③ 会社に導入」で置き換えた | §7。前の案（1a-個人 → 1a-会社 → 1b）のうち、個人でも構造の要件は同じ・E0 は会社の話・MCP のスタックに触らない・同じ名前のロールが無いことを確かめる、は ② の構成（§7.5）に移した |
-| U-14 | SourceIdentity の値の出どころを設定で切り替える形（既定 email）の、設定のスキーマ | ポータル本体の実装のとき | **実装した**（PR #16。未マージ）: `identity.sourceIdentity`（既定 `email`、`custom.<name>`。`sub` は受け付けない）。長さの制約（64 文字）と `identity_unsupported` は PR #19 |
+| U-14 | SourceIdentity の値の出どころを設定で切り替える形（既定 email）の、設定のスキーマ | ポータル本体の実装のとき | **実装した**（PR #16）: `identity.sourceIdentity`（既定 `email`、`custom.<name>`。`sub` は受け付けない）。長さの制約（64 文字）と `identity_unsupported` は PR #19 |
 | U-15 | 守りの部品を最初の配布から配るか。Viewer のロールチェーンの禁止・自分自身の保護・1 人停止の Deny を、ロールのインラインポリシーに置くか部品に置くか | **閉じた**（cto の回答 2026-11-12）| 部品は最初の配布から配る。中身は固定の Deny だけ。1 人停止の Deny は CloudFormation の外のロールのインライン（予約名）。詳細は §4.8。部品の版で配る形は ② の測定のあと。実装は PR #17 |
 | U-16 | 生成の検査（§4.4 の (4)）: Standard の階層のロールに `SignInLocalDevelopmentAccess` を付けたときの扱い | 実装のとき（司令塔の決定） | **決めた**（PR #16）: Admin の階層は誤り（`signin_access_admin`）、Standard は警告（`signin_access_standard`）。参考の形は付けない |
 | U-17 | 1 つの一覧（U2）の受け入れ: 操作が 2 回のままでよいか、会社の Entra と Access でグループを身元に載せる設定の変更、所属が取れないときに全チームへのリンクに落ちる見え方 | 利用者 | 人の確認待ち（portal §12.1 の Q-P11） |
@@ -1058,7 +1074,7 @@ Sol のレビューの指摘の反映（決裁ではない。採ったものだ�
 | U-25 | X1 の受容の文面と補う手段への Sol のレビュー | G2 に付ける。G5 の前は必須 | **未実施**（admin §5.4）|
 | U-26 | `signing.accountIds` と誤り `signing_account`（署名を置くアカウントにコンソールのロールを配らない。PR #20）を、X1 で署名用アカウントが無くなったあと残すか | cto / 実装のとき | 未決。G1 の再上申の条件 (b) のために作られた（admin §13.2）|
 | U-27 | Admin のプロバイダーのスタックの形（別ホストのパラメーター、`AdminProviderArn` にアカウント ID が入る点）| 実装のとき | **閉じた**（cto の決裁 2026-11-13 の P-A。§4.2・§4.3）|
-| U-28 | 実装計画の「後続の作業」（司令塔の引き継ぎ）| 実装のとき | 未決: Standard の全ロールに秘密値の Deny を付けている（Viewer の目印が設定に無い）。`stacksets.json` に `IssuerHost` / `StandardPath` の値が無い（運用者が渡す。§4.5 の「分解は生成で」に合わせるか）。Admin の `MaxSessionDuration` の下限（3600）を生成器で強制していない。署名アカウントの検査は inventory を渡したときだけ OU の配る先を見る。大文字小文字だけが違う種類名でファイル名が衝突しうる。古い kind ファイルの掃除が OUT_DIR を `infra/aws/console` にすると `kind.example.yaml` を消す。`managedPolicyArns` の個数の上限（ロール 1 つに 10）を検査していない。バンドル試験の Admin の固有値に陽性の対照を足す。`LOGIN_DISABLED` 未設定は動かす側（現仕様で許容）|
+| U-28 | 実装計画の「後続の作業」（司令塔の引き継ぎ）| 実装のとき | 未決: Standard の全ロールに秘密値の Deny を付けている（Viewer の目印が設定に無い）。`stacksets.json` に `IssuerHost` / `StandardPath` の値が無い（運用者が渡す。§4.5 の「分解は生成で」に合わせるか）。（閉じた）Admin の `MaxSessionDuration` は生成器で 3600 に固定し、`sessionSeconds` の 3600 超えを `admin_session_seconds` にした（G2 の決裁の論点 5）。署名アカウントの検査は inventory を渡したときだけ OU の配る先を見る。大文字小文字だけが違う種類名でファイル名が衝突しうる。古い kind ファイルの掃除が OUT_DIR を `infra/aws/console` にすると `kind.example.yaml` を消す。`managedPolicyArns` の個数の上限（ロール 1 つに 10）を検査していない。バンドル試験の Admin の固有値に陽性の対照を足す。`LOGIN_DISABLED` 未設定は動かす側（現仕様で許容）|
 
 ## 参考
 

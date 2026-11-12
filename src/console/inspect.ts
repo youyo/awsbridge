@@ -12,7 +12,15 @@
 // アカウント ID は出力のときに伏せる（formatReport）。
 
 import type { ConsoleConfig, ConsoleRole } from "./config";
-import { AUDIENCE, ROLE_PATH_PREFIX, rolePath, TEAM_TAG_KEY, TIERS, type Tier } from "./constants";
+import {
+  AUDIENCE,
+  ROLE_PATH_PREFIX,
+  roleMaxSessionDuration,
+  rolePath,
+  TEAM_TAG_KEY,
+  TIERS,
+  type Tier,
+} from "./constants";
 import { generateConsoleArtifacts } from "./generate";
 import { guardPolicyDocument } from "./guard";
 import { GUARD_POLICY_NAME, GUARD_POLICY_PATH, STOP_USER_INLINE_POLICY_NAME } from "./reserved";
@@ -550,7 +558,10 @@ export function inspectAccount(input: InspectInput): InspectResult {
       if (extra > 0) add("warning", "stop_extra", name, String(extra));
     } else if (stopped !== undefined) add("note", "stop_present", name, String(stopped.length));
 
-    if (r.maxSessionDuration !== undefined && r.maxSessionDuration !== exp.role.sessionSeconds)
+    if (
+      r.maxSessionDuration !== undefined &&
+      r.maxSessionDuration !== roleMaxSessionDuration(exp.role)
+    )
       add("warning", "session_mismatch", name, String(r.maxSessionDuration));
   }
 
