@@ -117,13 +117,13 @@ awsbridge は利用者の認証を Cloudflare Access に任せ、Access が発�
 
 | ロール（既定名） | 目的 | 権限 | 利用者 |
 |---|---|---|---|
-| `FederatedMcpViewer` | 普段の調査・参照 | AWS 管理ポリシー `ReadOnlyAccess` + インラインの明示 Deny（`DenySsmParameterRead`: `ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`、`DenySecretsManagerRead`: `secretsmanager:GetSecretValue` / `BatchGetSecretValue`。Resource `*`、条件なし） | `AllowedSubjects` |
-| `FederatedMcpDebugger` | 障害調査（運用操作・実行を伴う） | `ReadOnlyAccess` + インラインポリシー + 任意の追加管理ポリシー（`DebugAdditionalPolicyArns`） | `DebugAllowedSubjects` |
+| `FederatedAwsBridgeMcpViewer` | 普段の調査・参照 | AWS 管理ポリシー `ReadOnlyAccess` + インラインの明示 Deny（`DenySsmParameterRead`: `ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`、`DenySecretsManagerRead`: `secretsmanager:GetSecretValue` / `BatchGetSecretValue`。Resource `*`、条件なし） | `AllowedSubjects` |
+| `FederatedAwsBridgeMcpDebugger` | 障害調査（運用操作・実行を伴う） | `ReadOnlyAccess` + インラインポリシー + 任意の追加管理ポリシー（`DebugAdditionalPolicyArns`） | `DebugAllowedSubjects` |
 
-- 既定名は 2026-11 に `FederatedMcpReadOnly` / `FederatedMcpDebug` から変えた。パラメーター名・出力名・環境変数名・論理 ID は変えていない（移行は README「移行（既定のロール名の変更とデバッグロールの縮小）」）。
+- 既定名は 2026-11 に `FederatedMcpReadOnly` / `FederatedMcpDebug` から変えた（途中で `FederatedMcpViewer` / `FederatedMcpDebugger` だった期間がある。2026-11-13 に今の名前へ）。パラメーター名・出力名・環境変数名・論理 ID は変えていない（移行は README「移行（既定のロール名の変更とデバッグロールの縮小）」）。
 - **MCP 用ロールは、人のコンソールログインのロール（Viewer / Administrator、[console-login.md](console-login.md) §2.3）と独立している。** 今は共有せず（console-login.md §2.3）、人にコンソールのロールを与えても MCP 側の権限には効かない。MCP 用ロールを誰に渡すかは下流が決める（上流は割り当ての規則を持たない。cto の決裁 2026-11-12）:
-  - MCP の Viewer（`FederatedMcpViewer`）は全員が使える。
-  - MCP の Debugger（`FederatedMcpDebugger`）を渡す相手は、設定（`DebugAllowedSubjects`）で下流が決める。渡すときの注意: Debugger はリモートシェルなどで実行先（インスタンス・タスク）のロールの権限を得られ、その権限には MCP 経由の条件が付かない。
+  - MCP の Viewer（`FederatedAwsBridgeMcpViewer`）は全員が使える。
+  - MCP の Debugger（`FederatedAwsBridgeMcpDebugger`）を渡す相手は、設定（`DebugAllowedSubjects`）で下流が決める。渡すときの注意: Debugger はリモートシェルなどで実行先（インスタンス・タスク）のロールの権限を得られ、その権限には MCP 経由の条件が付かない。
   - 運用: Debugger を渡す人を変えたとき（チームのメンバーの変更など）は `DebugAllowedSubjects` も直す。外し忘れは気付きにくいので、所属変更の手順に入れる。許可リストはアカウントごとの設定なので、合わせる単位は「そのアカウント」。
   - 将来: MCP 側の認可をチーム（Access アプリ → セッションタグ。M2-MCP）に寄せる設計は別に扱う。設定ファイルでロールを管理する方向（console-login-portal.md §11）は、M2-MCP の着手の承認ではない（それまでは email の許可リスト）。
 - インラインポリシーは Statement をグループ（Sid）に分けて持つ。Allow はすべて `StringEquals aws:CalledViaAWSMCP = aws-mcp.amazonaws.com`、Resource は `*`。削除系・IAM 変更・組織変更は含めない。Action はワイルドカードを使わず個別に並べる。
@@ -166,10 +166,10 @@ awsbridge は利用者の認証を Cloudflare Access に任せ、Access が発�
 {
   "default": "dev-readonly",
   "profiles": [
-    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpViewer", "description": "任意" },
-    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebugger" },
-    { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpViewer" },
-    { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebugger" }
+    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedAwsBridgeMcpViewer", "description": "任意" },
+    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedAwsBridgeMcpDebugger" },
+    { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedAwsBridgeMcpViewer" },
+    { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedAwsBridgeMcpDebugger" }
   ]
 }
 ```

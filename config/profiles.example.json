@@ -3,21 +3,21 @@
   "profiles": [
     {
       "name": "dev-readonly",
-      "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpViewer",
+      "roleArn": "arn:aws:iam::111111111111:role/FederatedAwsBridgeMcpViewer",
       "description": "development (read-only)"
     },
     {
       "name": "dev-debug",
-      "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebugger",
+      "roleArn": "arn:aws:iam::111111111111:role/FederatedAwsBridgeMcpDebugger",
       "description": "development (debug)"
     },
     {
       "name": "prod-readonly",
-      "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpViewer"
+      "roleArn": "arn:aws:iam::222222222222:role/FederatedAwsBridgeMcpViewer"
     },
     {
       "name": "prod-debug",
-      "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebugger"
+      "roleArn": "arn:aws:iam::222222222222:role/FederatedAwsBridgeMcpDebugger"
     }
   ]
 }

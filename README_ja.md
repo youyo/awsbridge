@@ -32,7 +32,7 @@ Worker の URL が OIDC issuer になるため、次の順で進めます。
 
 ### AWS 側（対象アカウントごと）
 
-[infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml) を流すだけです。Worker の URL を issuer とする IAM OIDC プロバイダーと、Worker 発行の JWT で引き受ける 2 つのロール（読み取り専用 `FederatedMcpViewer`、デバッグ `FederatedMcpDebugger`）を作ります。この MCP 用ロールは、人のコンソールログインのロール（Viewer / Administrator）とは独立した別のロールで、人にコンソールのロールを与えても MCP 用ロールの権限は変わりません。Viewer（`FederatedMcpViewer`）は全員が使えます。Debugger（`FederatedMcpDebugger`）を誰に渡すかは、下流の設定（`DebugAllowedSubjects`）で決めます（上流は規則を持ちません）。渡すときの注意: Debugger はリモートシェルなどで実行先のロールの権限を得られ、その権限には MCP 経由の条件が付きません。
+[infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml) を流すだけです。Worker の URL を issuer とする IAM OIDC プロバイダーと、Worker 発行の JWT で引き受ける 2 つのロール（読み取り専用 `FederatedAwsBridgeMcpViewer`、デバッグ `FederatedAwsBridgeMcpDebugger`）を作ります。この MCP 用ロールは、人のコンソールログインのロール（Viewer / Administrator）とは独立した別のロールで、人にコンソールのロールを与えても MCP 用ロールの権限は変わりません。Viewer（`FederatedAwsBridgeMcpViewer`）は全員が使えます。Debugger（`FederatedAwsBridgeMcpDebugger`）を誰に渡すかは、下流の設定（`DebugAllowedSubjects`）で決めます（上流は規則を持ちません）。渡すときの注意: Debugger はリモートシェルなどで実行先のロールの権限を得られ、その権限には MCP 経由の条件が付きません。
 
 ```
 AWS_PROFILE=<対象> mise run deploy:aws    # CloudFormation をデプロイ（何度でも別アカウントに流せる）
@@ -53,8 +53,8 @@ mise exec -- env AWS_PROFILE=<対象> AWSBRIDGE_ALLOWED_SUBJECTS="user@example.c
 | `Audience` | JWT の audience（既定 `awsbridge`。Worker の `STS_AUDIENCE` と一致させる） |
 | `AllowedSubjects` | 読み取り専用ロールを引き受けられる利用者（カンマ区切り。下記の書式。小文字で指定） |
 | `DebugAllowedSubjects` | デバッグロールを引き受けられる利用者（同じ書式。読み取り専用より絞ることを勧めます） |
-| `ReadOnlyRoleName` | 読み取り専用ロール名（既定 `FederatedMcpViewer`） |
-| `DebugRoleName` | デバッグロール名（既定 `FederatedMcpDebugger`） |
+| `ReadOnlyRoleName` | 読み取り専用ロール名（既定 `FederatedAwsBridgeMcpViewer`） |
+| `DebugRoleName` | デバッグロール名（既定 `FederatedAwsBridgeMcpDebugger`） |
 | `DebugAdditionalPolicyArns` | 任意。デバッグロールに追加で付ける管理ポリシー（カンマ区切り。空なら付けない） |
 | `DebugPassableEcsTaskRoleArns` | 任意。`ecs:RunTask` でタスクに渡してよい IAM ロール ARN（カンマ区切り。ワイルドカード不可）。空なら `iam:PassRole` を付けない |
 
@@ -64,8 +64,8 @@ mise exec -- env AWS_PROFILE=<対象> AWSBRIDGE_ALLOWED_SUBJECTS="user@example.c
 
 | ロール | 権限 |
 |---|---|
-| `FederatedMcpViewer` | AWS 管理ポリシー `ReadOnlyAccess` + SSM パラメーターの取得（`ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`）と Secrets Manager の値の取得（`secretsmanager:GetSecretValue` / `BatchGetSecretValue`）の明示 Deny（条件なし） |
-| `FederatedMcpDebugger` | `ReadOnlyAccess` + インラインポリシー（調査の読み取り強化・軽い運用操作・費用のかかる操作・接続と実行。Allow はすべて `aws:CalledViaAWSMCP = aws-mcp.amazonaws.com` の条件付き。読み取り専用ロールと同じ、SSM パラメーターと Secrets Manager の値の取得の無条件の Deny を含む）+ 任意の `DebugAdditionalPolicyArns` |
+| `FederatedAwsBridgeMcpViewer` | AWS 管理ポリシー `ReadOnlyAccess` + SSM パラメーターの取得（`ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`）と Secrets Manager の値の取得（`secretsmanager:GetSecretValue` / `BatchGetSecretValue`）の明示 Deny（条件なし） |
+| `FederatedAwsBridgeMcpDebugger` | `ReadOnlyAccess` + インラインポリシー（調査の読み取り強化・軽い運用操作・費用のかかる操作・接続と実行。Allow はすべて `aws:CalledViaAWSMCP = aws-mcp.amazonaws.com` の条件付き。読み取り専用ロールと同じ、SSM パラメーターと Secrets Manager の値の取得の無条件の Deny を含む）+ 任意の `DebugAdditionalPolicyArns` |
 
 デバッグロールのインラインポリシーは、次のグループに分かれています（Allow はすべて `aws:CalledViaAWSMCP = aws-mcp.amazonaws.com` の条件付き、Resource は `*`）。削除系の操作・IAM 変更・組織変更は含みません（ただし Knowledge Bases の同期は、結果として索引の文書を消すことがあります。`Operations` を参照）。
 
@@ -115,8 +115,8 @@ mise run deploy:worker   # wrangler deploy → secrets を順に実行（AWS は
 AWSBRIDGE_ISSUER = "https://awsbridge.example.workers.dev"   # Worker の URL（OIDC issuer）
 AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org" # 読み取り専用ロールを引き受けられる利用者（カンマ区切り）
 AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS = "admin@example.com"       # デバッグロールを引き受けられる利用者（カンマ区切り）
-# AWSBRIDGE_READONLY_ROLE_NAME = "FederatedMcpViewer"        # 任意。ロール名（既定値）
-# AWSBRIDGE_DEBUG_ROLE_NAME = "FederatedMcpDebugger"          # 任意。ロール名（既定値）
+# AWSBRIDGE_READONLY_ROLE_NAME = "FederatedAwsBridgeMcpViewer"        # 任意。ロール名（既定値）
+# AWSBRIDGE_DEBUG_ROLE_NAME = "FederatedAwsBridgeMcpDebugger"          # 任意。ロール名（既定値）
 # AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS = "arn:aws:iam::<アカウントID>:policy/<名前>" # 任意。デバッグロールに追加する管理ポリシー（カンマ区切り）
 AWSBRIDGE_POC_SUBJECT = "user@example.com"                   # poc:sts の正常ケースで使う利用者
 AWSBRIDGE_ACCESS_TEAM_DOMAIN = "https://team.example.cloudflareaccess.com" # Access のチームドメイン
@@ -171,10 +171,10 @@ mise run secrets        #    古い公開鍵を JWKS から外す
 {
   "default": "dev-readonly",
   "profiles": [
-    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpViewer", "description": "開発（読み取り専用）" },
-    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebugger", "description": "開発（デバッグ）" },
-    { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpViewer" },
-    { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebugger" }
+    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedAwsBridgeMcpViewer", "description": "開発（読み取り専用）" },
+    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedAwsBridgeMcpDebugger", "description": "開発（デバッグ）" },
+    { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedAwsBridgeMcpViewer" },
+    { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedAwsBridgeMcpDebugger" }
   ]
 }
 ```
@@ -209,7 +209,7 @@ bash scripts/wrangler.sh secret delete AWS_PROFILES
 
 ### 移行（既定のロール名の変更とデバッグロールの縮小）
 
-既定のロール名を `FederatedMcpReadOnly` → `FederatedMcpViewer`、`FederatedMcpDebug` → `FederatedMcpDebugger` に変えました（パラメーター名 `ReadOnlyRoleName` / `DebugRoleName`、出力 `ReadOnlyRoleArn` / `DebugRoleArn`、環境変数 `AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME` は変わりません）。
+既定のロール名を `FederatedMcpReadOnly` → `FederatedAwsBridgeMcpViewer`、`FederatedMcpDebug` → `FederatedAwsBridgeMcpDebugger` に変えました。短い期間だけ既定が `FederatedMcpViewer` / `FederatedMcpDebugger` だったことがあり、そのスタックでも同じ移行になります（パラメーター名 `ReadOnlyRoleName` / `DebugRoleName`、出力 `ReadOnlyRoleArn` / `DebugRoleArn`、環境変数 `AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME` は変わりません）。
 
 - **旧名が保たれるのは、既存スタックを `scripts/deploy-aws.sh` で更新し、名前を指定しない場合だけです。** `scripts/deploy-aws.sh`（`mise run deploy:aws`）は `aws cloudformation deploy` を使い、ロール名は環境変数を設定したときだけ渡します。既存スタックでは、渡さないパラメーターにスタックの既存の値が使われます。次の場合はロールが置き換えられ、`roleArn` と一意 ID が変わります: (1) `AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME` で新しい名前を指定した（新しい名前に移るときはこれ）。(2) `deploy:aws` 以外で流した（マネジメントコンソール、`UsePreviousValue` を付けない `create-change-set` / `update-stack`、StackSets など。指定しないパラメーターにテンプレートの既定値、つまり新しい名前が使われることがあります）。(3) スタックを削除して作り直した。
 - **移行の前に、変更を下見してください。** `scripts/deploy-aws.sh` と同じ引数に `--no-execute-changeset` を付けて `aws cloudformation deploy` を実行し、`aws cloudformation describe-change-set --stack-name <スタック> --change-set-name <名前> --query 'Changes[].ResourceChange.[LogicalResourceId,Action,Replacement]'` で、`ReadOnlyRole` / `DebugRole` に `Replacement: True` が出ないか確かめます。変更セットは実行しなければ何も変わりません。確かめたら `aws cloudformation delete-change-set` で削除してください。
@@ -220,7 +220,7 @@ bash scripts/wrangler.sh secret delete AWS_PROFILES
 
 #### 同じスタックで改名する（切り替えの間 MCP は失敗する）
 
-1. 新しい名前でスタックを更新する: `AWSBRIDGE_READONLY_ROLE_NAME=FederatedMcpViewer AWSBRIDGE_DEBUG_ROLE_NAME=FederatedMcpDebugger AWS_PROFILE=<対象> mise run deploy:aws`。新しい出力 `ReadOnlyRoleArn` / `DebugRoleArn` を控える
+1. 新しい名前でスタックを更新する: `AWSBRIDGE_READONLY_ROLE_NAME=FederatedAwsBridgeMcpViewer AWSBRIDGE_DEBUG_ROLE_NAME=FederatedAwsBridgeMcpDebugger AWS_PROFILE=<対象> mise run deploy:aws`。新しい出力 `ReadOnlyRoleArn` / `DebugRoleArn` を控える
 2. プロファイル一覧（`config/profiles.json`、下流なら `deploy/profiles.json`）の `roleArn` を更新する
 3. Worker をデプロイする: `mise run deploy:worker`
 4. 両ロールで確かめる（読み取り専用とデバッグのプロファイルでそれぞれツールを呼ぶ）

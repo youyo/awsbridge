@@ -679,7 +679,9 @@ describe("棚卸し（設定に無いのにコンソール用のプロバイダ�
 
   it("MCP 用のプロバイダーを信頼するロールは対象外", () => {
     const s = goodSnapshot();
-    s.roles.push(extraRole("FederatedMcpViewer", "/", consoleTrust({ Federated: MCP_PROVIDER })));
+    s.roles.push(
+      extraRole("FederatedAwsBridgeMcpViewer", "/", consoleTrust({ Federated: MCP_PROVIDER })),
+    );
     expect(errors(run(s))).toEqual([]);
   });
 });

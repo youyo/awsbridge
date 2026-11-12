@@ -204,7 +204,7 @@ describe("上書き可能な既定値（mise.toml ではなくスクリプト側
   it("deploy-aws.sh: 未設定なら awsbridge の既定値を使う", () => {
     const r = run("scripts/deploy-aws.sh", full);
     expect(r.args).toContain("Audience=awsbridge");
-    // ロール名は渡さない（テンプレートの既定 FederatedMcpViewer / FederatedMcpDebugger を使う）
+    // ロール名は渡さない（テンプレートの既定 FederatedAwsBridgeMcpViewer / FederatedAwsBridgeMcpDebugger を使う）
     expect(r.args.some((a) => a.startsWith("ReadOnlyRoleName="))).toBe(false);
     expect(r.args.some((a) => a.startsWith("DebugRoleName="))).toBe(false);
     expect(r.args).toContain("awsbridge"); // --stack-name の値

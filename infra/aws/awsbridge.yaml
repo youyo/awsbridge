@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   awsbridge - IAM OIDC provider (issuer = awsbridge Worker) and two roles that
   the Worker-issued JWT can assume with sts:AssumeRoleWithWebIdentity:
-  a read-only role (FederatedMcpViewer) and a debug role (FederatedMcpDebugger).
+  a read-only role (FederatedAwsBridgeMcpViewer) and a debug role (FederatedAwsBridgeMcpDebugger).
 
 # Role layout (see docs/specs/architecture.md "ロール構成"):
 #
@@ -80,13 +80,13 @@ Parameters:
     ConstraintDescription: Each entry must look like user@example.com or *@example.com. A bare * or a wildcard in the domain is not allowed.
   ReadOnlyRoleName:
     Type: String
-    Default: FederatedMcpViewer
+    Default: FederatedAwsBridgeMcpViewer
     Description: Name of the read-only IAM role.
     AllowedPattern: '^[\w+=,.@-]{1,64}$'
     ConstraintDescription: 1-64 characters of alphanumerics and _+=,.@-
   DebugRoleName:
     Type: String
-    Default: FederatedMcpDebugger
+    Default: FederatedAwsBridgeMcpDebugger
     Description: Name of the debug IAM role.
     AllowedPattern: '^[\w+=,.@-]{1,64}$'
     ConstraintDescription: 1-64 characters of alphanumerics and _+=,.@-
