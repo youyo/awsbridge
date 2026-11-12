@@ -1,6 +1,7 @@
 // 検査の道具の判定（src/console/inspect.ts）。設計: docs/specs/console-login.md §4.8・§4.9・§6.3。
 // 信頼ポリシーは承認済みの厳格な形だけを許す許可リスト方式。回避の形を集めた材料がすべて違反になり、生成器の出力は通ることを確かめる。
 import { describe, expect, it } from "vitest";
+import { parseConsoleConfig } from "../../src/console/config";
 import { guardPolicyDocument } from "../../src/console/guard";
 import {
   type AccountSnapshot,
@@ -10,6 +11,7 @@ import {
 } from "../../src/console/inspect";
 import { STOP_USER_INLINE_POLICY_NAME } from "../../src/console/reserved";
 import type { Json } from "./cfn";
+import { companyConfig } from "./console-fixtures";
 import {
   ACCOUNT,
   ADMIN_GUARD,
@@ -339,6 +341,13 @@ describe("信頼ポリシー（許可リスト方式）", () => {
     expect(run(s).filter((x) => x.severity !== "note")).toEqual([]);
   });
 
+  it("Admin のロール: 設定の Admin の issuer 以外のプロバイダー（別のホスト）を信頼していれば違反", () => {
+    const s = goodSnapshot();
+    const st = (role(s, "FederatedAdministrator").trustPolicy as Json).Statement[0];
+    st.Principal.Federated = `arn:aws:iam::${ACCOUNT}:oidc-provider/other-admin.example.com/admin`;
+    expect(codesOf(run(s), "FederatedAdministrator")).toContain("trust_principal");
+  });
+
   it("Admin のロール: Standard のプロバイダーを信頼していれば違反", () => {
     const s = goodSnapshot();
     const st = (role(s, "FederatedAdministrator").trustPolicy as Json).Statement[0];
@@ -360,16 +369,57 @@ describe("パス", () => {
 });
 
 describe("守りの部品", () => {
-  it("部品の守りの文書（src/console/guard.ts）は base.yaml の部品と同じ", () => {
-    for (const [tier, id] of [
-      ["standard", "StandardGuardPolicy"],
-      ["admin", "AdminGuardPolicy"],
+  it("部品の守りの文書（src/console/guard.ts）は base.yaml の部品と同じ（Admin の階層の有り無しの両方）", () => {
+    // Admin の部品は Admin の階層があるときだけ作られる
+    for (const [tier, id, admin] of [
+      ["standard", "StandardGuardPolicy", true],
+      ["standard", "StandardGuardPolicy", false],
+      ["admin", "AdminGuardPolicy", true],
     ] as const) {
+      const issuerHosts = admin ? [HOST, ADMIN_HOST] : [HOST];
       expect(
-        guardPolicyDocument(tier, { partition: "aws", accountId: ACCOUNT, issuerHost: HOST }),
-        tier,
-      ).toEqual(guardDocument(id));
+        guardPolicyDocument(tier, { partition: "aws", accountId: ACCOUNT, issuerHosts }),
+        `${tier} admin=${admin}`,
+      ).toEqual(guardDocument(id, admin));
     }
+  });
+
+  it("穴の回帰: Admin のホストの Deny が無い古い部品は、Admin の階層のアカウントで違反（両方の部品）", () => {
+    const s = goodSnapshot();
+    // 前の版の部品: プロバイダーの Deny が Standard のホストだけ
+    const old = `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/*`;
+    for (const p of s.managedPolicies) {
+      const st = (p.document as Json).Statement.find(
+        (x: Json) => x.Sid === "DenyConsoleProviderWrites",
+      );
+      st.Resource = old;
+    }
+    const f = run(s);
+    expect(codesOf(f, "FederatedViewer")).toEqual(["guard_version_mismatch"]);
+    expect(codesOf(f, "FederatedAdministrator")).toEqual(["guard_version_mismatch"]);
+  });
+
+  it("Admin の階層のアカウントで、プロバイダーの Deny が Admin のホストだけ（Standard のホストが無い）でも違反", () => {
+    const s = goodSnapshot();
+    const p = s.managedPolicies.find((x) => x.arn === STD_GUARD);
+    const st = (p?.document as Json).Statement.find(
+      (x: Json) => x.Sid === "DenyConsoleProviderWrites",
+    );
+    st.Resource = [`arn:aws:iam::${ACCOUNT}:oidc-provider/${ADMIN_HOST}/*`];
+    expect(codesOf(run(s), "FederatedViewer")).toEqual(["guard_version_mismatch"]);
+  });
+
+  it("Admin の部品のプロバイダーの Deny が Standard のホストだけなら、設定に無いアカウントでも違反", () => {
+    const s = goodSnapshot();
+    const p = s.managedPolicies.find((x) => x.arn === ADMIN_GUARD);
+    const st = (p?.document as Json).Statement.find(
+      (x: Json) => x.Sid === "DenyConsoleProviderWrites",
+    );
+    st.Resource = [`arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/*`];
+    const moved = JSON.parse(
+      JSON.stringify(s).replaceAll(ACCOUNT, "777777777777"),
+    ) as AccountSnapshot;
+    expect(codesOf(run(moved))).toEqual(["account_not_in_config", "guard_version_mismatch"]);
   });
 
   it("部品の欠落は違反", () => {
@@ -437,6 +487,43 @@ describe("守りの部品", () => {
     expect(errors(f)).toEqual([]);
     expect(f.filter((x) => x.severity === "warning").map((x) => x.code)).toEqual([
       "guard_other_tier",
+    ]);
+  });
+});
+
+describe("守りの部品: Admin の階層の無いアカウント", () => {
+  // 種類 A から Admin の割り当てを外した設定（境界 managed には Admin の issuer があるが、このアカウントには Admin を配らない。
+  // base には AdminIssuerHost を渡さない）
+  const noAdminConfig = () => {
+    const raw = companyConfig();
+    raw.signing = { accountIds: [SIGNING_ACCOUNT] };
+    delete raw.kinds[0].assign.admin;
+    return parseConsoleConfig(raw).config;
+  };
+  const noAdminSnapshot = (admin: boolean): AccountSnapshot => {
+    const s = goodSnapshot();
+    s.roles = s.roles.filter((r) => r.roleName !== "FederatedAdministrator");
+    s.providers = s.providers.filter((p) => p !== ADMIN_PROVIDER);
+    s.managedPolicies = [
+      {
+        arn: STD_GUARD,
+        defaultVersionId: "v1",
+        document: guardDocument("StandardGuardPolicy", admin),
+      },
+    ];
+    return s;
+  };
+  const runNoAdmin = (s: AccountSnapshot) =>
+    inspectAccount({ config: noAdminConfig(), snapshot: s, inventory: inventory() }).findings;
+
+  it("Standard のホストだけの部品なら誤りも警告もない", () => {
+    const f = runNoAdmin(noAdminSnapshot(false));
+    expect(f.filter((x) => x.severity !== "note")).toEqual([]);
+  });
+
+  it("Admin のホストも入った部品（AdminIssuerHost を配る先を誤った）は違反", () => {
+    expect(codesOf(runNoAdmin(noAdminSnapshot(true)), "FederatedViewer")).toEqual([
+      "guard_version_mismatch",
     ]);
   });
 });
@@ -761,6 +848,16 @@ describe("警告と限界", () => {
     const f = run(moved);
     expect(codesOf(f)).toEqual(["account_not_in_config"]);
     expect(f.filter((x) => x.severity === "warning")).toEqual([]);
+  });
+
+  it("設定に無いアカウントは、Standard の部品の Admin の有り無しのどちらの形も受ける（誤りは account_not_in_config だけ）", () => {
+    const s = goodSnapshot();
+    const p = s.managedPolicies.find((x) => x.arn === STD_GUARD);
+    if (!p) throw new Error("no guard");
+    p.document = guardDocument("StandardGuardPolicy", false);
+    const other = "777777777777";
+    const moved = JSON.parse(JSON.stringify(s).replaceAll(ACCOUNT, other)) as AccountSnapshot;
+    expect(codesOf(run(moved))).toEqual(["account_not_in_config"]);
   });
 
   it("顧客管理ポリシーの中身は評価しない、と限界に書く", () => {

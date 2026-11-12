@@ -14,12 +14,18 @@ Parameters:
     Description: Path of the Standard tier issuer. Same value as the base stack.
     AllowedPattern: ^[a-z0-9-]+(/[a-z0-9-]+)*$
     MaxLength: 64
-  AdminProviderArn:
+  AdminIssuerHost:
     Type: String
     Default: ""
-    Description: "ARN of the Admin tier OIDC provider in this account. Empty: the Admin tier roles are not created."
-    AllowedPattern: ^$|^arn:aws(-[a-z]+)*:iam::\d{12}:oidc-provider/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(/[a-z0-9-]+)+$
-    MaxLength: 320
+    Description: "Host of the Admin tier issuer (separate from IssuerHost). Same value as the base stack. Empty: the Admin tier roles are not created."
+    AllowedPattern: ^$|^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
+    MaxLength: 180
+  AdminPath:
+    Type: String
+    Default: admin
+    Description: Path of the Admin tier issuer. Same value as the base stack.
+    AllowedPattern: ^[a-z0-9-]+(/[a-z0-9-]+)*$
+    MaxLength: 64
   AdministratorTeams:
     Type: String
     Default: ""
@@ -34,7 +40,7 @@ Conditions:
   HasAdminProvider:
     Fn::Not:
       - Fn::Equals:
-          - Ref: AdminProviderArn
+          - Ref: AdminIssuerHost
           - ""
   CreateAdministratorRole:
     Fn::And:
@@ -107,13 +113,9 @@ Resources:
               ]
             }
           - Issuer:
-              Fn::Select:
-                - 1
-                - Fn::Split:
-                    - :oidc-provider/
-                    - Fn::Sub: ${AdminProviderArn}:oidc-provider/-
+              Fn::Sub: ${AdminIssuerHost}/${AdminPath}
             Principal:
-              Ref: AdminProviderArn
+              Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/${AdminIssuerHost}/${AdminPath}
             Teams:
               Fn::Join:
                 - '","'

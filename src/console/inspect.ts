@@ -410,7 +410,18 @@ export function inspectAccount(input: InspectInput): InspectResult {
   if (!known) add("error", "account_not_in_config");
   const boundaryName = rows[0]?.boundary;
   const boundaries = config.boundaries.filter((b) => !known || b.name === boundaryName);
-  const guardHosts = [...new Set(boundaries.map((b) => hostOf(issuerOf(b.issuers.standard))))];
+  // 守りの部品のプロバイダーの Deny が守るホストの組（候補）。Admin の階層のあるアカウント（Admin の行があり、境界に
+  // Admin の issuer がある）では [Standard, Admin] の 2 つ、無ければ Standard だけ（base に AdminIssuerHost を渡すのは
+  // Admin を配るアカウントだけ）。設定に無いアカウントは、どの境界のどちらの形も受ける。
+  // Admin の部品は Admin の階層があるときだけ作られるので、いつも Admin のホストを含む形で照合する
+  const hasAdminRow = art.worker.admin?.accounts.some((a) => a.accountId === s.accountId) ?? false;
+  const guardHostSets = boundaries.flatMap((b) => {
+    const std = hostOf(issuerOf(b.issuers.standard));
+    const admin = b.issuers.admin !== undefined ? hostOf(issuerOf(b.issuers.admin)) : undefined;
+    if (admin === undefined) return [[std]];
+    if (!known) return [[std], [std, admin]];
+    return hasAdminRow ? [[std, admin]] : [[std]];
+  });
 
   // このアカウントで期待するロール（種類が分からなければ、設定のすべてのロールを候補にする）
   const expected = new Map<string, Expected>();
@@ -483,16 +494,18 @@ export function inspectAccount(input: InspectInput): InspectResult {
         const mp = s.managedPolicies.find((p) => p.arn === want);
         if (!mp) add("error", "guard_unreadable", name, GUARD_POLICY_NAME[tier]);
         else if (
-          !guardHosts.some((h) =>
-            samePolicy(
-              mp.document,
-              guardPolicyDocument(tier, {
-                partition: s.partition,
-                accountId: s.accountId,
-                issuerHost: h,
-              }),
-            ),
-          )
+          !guardHostSets
+            .filter((hosts) => tier !== "admin" || hosts.length > 1)
+            .some((issuerHosts) =>
+              samePolicy(
+                mp.document,
+                guardPolicyDocument(tier, {
+                  partition: s.partition,
+                  accountId: s.accountId,
+                  issuerHosts,
+                }),
+              ),
+            )
         )
           add(
             "error",

@@ -10,8 +10,9 @@
 //     組み合わせだけを受け付ける（割り当てのないロールは空だけ）。信頼ポリシーの JSON に差し込む値の形も、これで絞る
 //   - Standard の階層: Principal は https://<IssuerHost>/<StandardPath> のプロバイダー（必須のスタックと同じパラメーター。
 //     base.yaml はプロバイダーの ARN を Export しない）
-//   - Admin の階層: Admin のプロバイダーの形は G1-b まで未確定なので、ARN をパラメーター AdminProviderArn で受ける。
-//     空なら Admin の階層のロールは作らない
+//   - Admin の階層: Principal は https://<AdminIssuerHost>/<AdminPath> のプロバイダー（必須のスタックと同じパラメーター。
+//     ARN はアカウント ID を AWS::AccountId から組むので、StackSet で 1 つの値にできる）。AdminIssuerHost が空なら
+//     Admin の階層のロールは作らない（cto の決裁 2026-11-13 の P-A）
 //   - 権限: 設定の AWS 管理ポリシー、その階層の守りの部品（必須のスタックの Export を ImportValue）、aws login の Allow
 //     （Standard は localhost と remote、Admin は localhost だけ）、Standard の階層は秘密値の読み取りの Deny（§4.7）、
 //     下流のポリシー文書（permissions.inlinePolicyFiles。中身は呼び出し側が読んで渡す）
@@ -45,9 +46,8 @@ const roleKey = (role: ConsoleRole) => teamsParameterName(role.name).replace(/Te
 
 const ISSUER_HOST_PATTERN = "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$";
 const ISSUER_PATH_PATTERN = "^[a-z0-9-]+(/[a-z0-9-]+)*$";
-const ADMIN_PROVIDER_ARN_PATTERN =
-  "^$|^arn:aws(-[a-z]+)*:iam::\\d{12}:oidc-provider/" +
-  "[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(/[a-z0-9-]+)+$";
+/** Admin の issuer のホスト。空（Admin の階層なし）か、IssuerHost と同じ規則のホスト名。 */
+const ADMIN_ISSUER_HOST_PATTERN = `^$|${ISSUER_HOST_PATTERN}`;
 
 const HAS_ADMIN_PROVIDER = "HasAdminProvider";
 /** Fn::Sub の変数の参照（${Name}）。 */
@@ -126,30 +126,20 @@ function trustPolicy(teamsParam: string, issuer: unknown, principal: unknown) {
   };
 }
 
+/** 階層ごとの issuer のホストとパスのパラメーター（必須のスタック base.yaml と同じ名前）。 */
+const ISSUER_PARAMS: Record<Tier, { host: string; path: string }> = {
+  standard: { host: "IssuerHost", path: "StandardPath" },
+  admin: { host: "AdminIssuerHost", path: "AdminPath" },
+};
+
 /** 階層ごとの Principal（プロバイダーの ARN）と、条件キーの issuer（<host>/<path>）。 */
 function provider(tier: Tier): { issuer: unknown; principal: unknown } {
-  if (tier === "standard")
-    return {
-      issuer: { "Fn::Sub": `${v("IssuerHost")}/${v("StandardPath")}` },
-      principal: {
-        "Fn::Sub": `arn:${v("AWS::Partition")}:iam::${v("AWS::AccountId")}:oidc-provider/${v("IssuerHost")}/${v("StandardPath")}`,
-      },
-    };
-  // ARN の oidc-provider/ より後ろが issuer（<host>/<path>）。ロールは AdminProviderArn が空でないときだけ作るが、
-  // 空（既定）でも Fn::Select が範囲外にならないよう、末尾に区切りを足してから分割する（空なら "-" になる）
+  const { host, path } = ISSUER_PARAMS[tier];
   return {
-    issuer: {
-      "Fn::Select": [
-        1,
-        {
-          "Fn::Split": [
-            ":oidc-provider/",
-            { "Fn::Sub": `${v("AdminProviderArn")}:oidc-provider/-` },
-          ],
-        },
-      ],
+    issuer: { "Fn::Sub": `${v(host)}/${v(path)}` },
+    principal: {
+      "Fn::Sub": `arn:${v("AWS::Partition")}:iam::${v("AWS::AccountId")}:oidc-provider/${v(host)}/${v(path)}`,
     },
-    principal: { Ref: "AdminProviderArn" },
   };
 }
 
@@ -204,16 +194,23 @@ function build(config: ConsoleConfig, kind: string, inline: Map<number, unknown[
     };
   }
   if (tiers.has("admin")) {
-    parameters.AdminProviderArn = {
+    parameters.AdminIssuerHost = {
       Type: "String",
       Default: "",
       Description:
-        "ARN of the Admin tier OIDC provider in this account. Empty: the Admin tier roles are not created.",
-      AllowedPattern: ADMIN_PROVIDER_ARN_PATTERN,
-      MaxLength: 320,
+        "Host of the Admin tier issuer (separate from IssuerHost). Same value as the base stack. Empty: the Admin tier roles are not created.",
+      AllowedPattern: ADMIN_ISSUER_HOST_PATTERN,
+      MaxLength: 180,
+    };
+    parameters.AdminPath = {
+      Type: "String",
+      Default: "admin",
+      Description: "Path of the Admin tier issuer. Same value as the base stack.",
+      AllowedPattern: ISSUER_PATH_PATTERN,
+      MaxLength: 64,
     };
     conditions[HAS_ADMIN_PROVIDER] = {
-      "Fn::Not": [{ "Fn::Equals": [{ Ref: "AdminProviderArn" }, ""] }],
+      "Fn::Not": [{ "Fn::Equals": [{ Ref: "AdminIssuerHost" }, ""] }],
     };
   }
 
@@ -271,7 +268,7 @@ function build(config: ConsoleConfig, kind: string, inline: Map<number, unknown[
         Path: rolePath(role.tier),
         MaxSessionDuration: role.sessionSeconds,
         // 守りの部品は、その種類で割り当てのあるロールにだけ付ける。割り当てのないロールは AllowedPattern で作られず、
-        // ImportValue を置くと Admin の Export の無い基盤（EnableAdminTier=false）で解決に失敗しうるため出さない
+        // ImportValue を置くと Admin の Export の無い基盤（AdminIssuerHost が空）で解決に失敗しうるため出さない
         ManagedPolicyArns: [
           ...role.managedPolicyArns,
           ...(teams.length > 0 ? [{ "Fn::ImportValue": GUARD_EXPORT[role.tier] }] : []),

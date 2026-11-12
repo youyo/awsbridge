@@ -1,18 +1,25 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   awsbridge console login - required provider stack (StackSet awsbridge-console-base):
-  the Standard tier IAM OIDC provider and the per-tier guard policies (customer managed,
-  explicit Denies only). Roles are not created here (see the role templates).
+  the IAM OIDC providers (Standard, and Admin when AdminIssuerHost is set) and the per-tier
+  guard policies (customer managed, explicit Denies only). Roles are not created here (see the role templates).
 
 # コンソールログインの必須のスタック（設計: docs/specs/console-login.md §4.1・§4.2・§4.8）。
 #
 # 作るもの:
 #   StandardProvider     Standard の階層の OIDC プロバイダー（https://<IssuerHost>/<StandardPath>、client ID = audience）
 #   StandardGuardPolicy  Standard の階層の守りの部品（顧客管理ポリシー。固定の Deny だけ）
-#   AdminGuardPolicy     Admin の階層の守りの部品（同じ中身 + aws login --remote の明示の Deny）。EnableAdminTier=true のときだけ
+#   AdminProvider        Admin の階層の OIDC プロバイダー（https://<AdminIssuerHost>/<AdminPath>）。AdminIssuerHost が空でないときだけ
+#   AdminGuardPolicy     Admin の階層の守りの部品（同じ中身 + aws login --remote の明示の Deny）。AdminIssuerHost が空でないときだけ
+#
+# Admin の階層（cto の決裁 2026-11-13 の P-A）: AdminIssuerHost は Administrator を配るアカウントにだけ渡す
+# （StackSets のパラメーターの上書き）。それ以外のアカウントは空（既定）のまま。Admin の issuer は Standard と別のホスト
+# （I-B）。同じホストは Rules で断る（D3。生成器の admin_issuer_host_shared と同じ規則をスタック側でも守る）。
+# 配る順: Admin の issuer（discovery と JWKS）を先に公開してから、AdminIssuerHost を渡す（console-login-admin.md §2.2）。
+# Admin をやめるとき: Admin の部品の Export を import しているロールのスタック（Admin のロール）を先に消してから空に戻す
+# （import されている Export は消せないので、このスタックの更新が失敗する）。
 #
 # 作らないもの:
-#   - Admin の階層の OIDC プロバイダー（とそのパラメーター）。issuer の形は G1 で審議し、G1-b で足す（司令塔の決定）
 #   - ロール。ロールのテンプレート（参考の形。§4.3）が、このスタックの Export から部品の ARN を読んで付ける
 #
 # 守りの部品（§4.8）は事故防止のためのもので、強制の境界ではない（Administrator は版の作り直し・別の主体などで外せる）。
@@ -20,9 +27,11 @@ Description: >-
 #   DenyRoleChaining           ロールチェーンの禁止（§4.7）: sts:AssumeRole と sts:AssumeRoot を Resource "*" で Deny
 #   DenyConsoleRoleWrites      自分自身の保護: /awsbridge-console/* のロールの信頼ポリシー・ポリシー（インライン・管理）・
 #                              パス（IAM ではパスを変えられないので、削除と作成）・削除・タグ・権限境界・設定の変更を Deny
-#   DenyConsoleProviderWrites  コンソール用のプロバイダー（<IssuerHost> の下のすべてのパス）の作成・削除・変更・タグを Deny。
+#   DenyConsoleProviderWrites  コンソール用のプロバイダー（<IssuerHost> の下のすべてのパスと、Admin の階層があれば
+#                              <AdminIssuerHost> の下のすべてのパス）の作成・削除・変更・タグを Deny。
 #                              作成も塞ぐのは、停止（L2 = プロバイダーの削除）のあとに作り直されないようにするため。
-#                              Admin のプロバイダーが別のホストになるなら、G1-b でそのホストを足す
+#                              Admin のホストは Standard の部品にも入れる（手作りの強い Standard のロールが Admin のプロバイダーを
+#                              消せないように）
 #   DenyGuardPolicyWrites      部品のポリシー自体（policy/awsbridge-console/*）の作成・版の追加・既定の版の変更・削除・タグを Deny
 #                              （計画の既定の案。G2 で cto が確認する）
 # Admin の部品だけ:
@@ -43,7 +52,10 @@ Description: >-
 #
 # 部品の ManagedPolicyName・Path・Description は配ったあとに変えない（どれも置換になり、名前が固定なので置換は失敗する）。
 #
-# 管理ポリシーの上限（6,144 文字）に収まることは test/unit/console-base-template.test.ts で確かめる。
+# L2（Admin のプロバイダーだけを消す停止）はこのスタックの外で行う（cto の決裁 2026-11-13）。消している間はドリフトになるので、
+# 作り直して戻すまでこのスタックを更新しない（更新するとプロバイダーが作り直される）。手順は README の「コンソールログインの必須のスタック」。
+#
+# 管理ポリシーの上限（6,144 文字）に収まることは test/unit/console-base-template.test.ts で確かめる（ホストが 2 つの最悪の長さ）。
 # 名前と Export 名は src/console/reserved.ts の定数と一致させる（同じ試験で確かめる）。
 
 Parameters:
@@ -73,21 +85,46 @@ Parameters:
     AllowedValues:
       - awsbridge-console
     Description: Audience (aud) of the console login JWT. Also the OIDC client ID. Fixed upstream.
-  EnableAdminTier:
+  AdminIssuerHost:
     Type: String
-    Default: "false"
-    AllowedValues:
-      - "true"
-      - "false"
+    Default: ""
     Description: >-
-      true creates the Admin tier guard policy (for accounts that get Administrator).
-      The Admin tier OIDC provider is not created by this version.
+      Host of the Admin tier issuer, without scheme, path or trailing slash (e.g. awsbridge-oidc-admin-console.example.com).
+      Must differ from IssuerHost. Set it only for accounts that get Administrator (StackSets parameter override).
+      Empty: the Admin tier provider and guard policy are not created.
+    # 空か、IssuerHost と同じ規則のホスト名
+    AllowedPattern: "^$|^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$"
+    MaxLength: 180
+    ConstraintDescription: >-
+      Empty, or a lowercase host name only (labels of a-z, 0-9 and '-' joined by single dots).
+      Do not include https://, a path or a trailing slash.
+  AdminPath:
+    Type: String
+    Default: admin
+    Description: >-
+      Path of the Admin tier issuer (e.g. admin, admin-2). Issuer URL = https://<AdminIssuerHost>/<AdminPath>.
+    # 世代つきのパス（admin-2）に移れるよう固定にしない。生成器は今は /admin に限る（admin_issuer_path）
+    AllowedPattern: "^[a-z0-9-]+(/[a-z0-9-]+)*$"
+    MaxLength: 64
+    ConstraintDescription: Lowercase letters, digits and '-' separated by single '/'. No leading or trailing slash.
+
+Rules:
+  # D3: Admin の issuer は Standard と別のホスト（空 = Admin の階層なし は通る）
+  AdminIssuerHostDiffersFromIssuerHost:
+    Assertions:
+      - Assert:
+          Fn::Not:
+            - Fn::Equals:
+                - Ref: AdminIssuerHost
+                - Ref: IssuerHost
+        AssertDescription: AdminIssuerHost must differ from IssuerHost (the Admin tier issuer is on a separate host).
 
 Conditions:
   AdminTierEnabled:
-    Fn::Equals:
-      - Ref: EnableAdminTier
-      - "true"
+    Fn::Not:
+      - Fn::Equals:
+          - Ref: AdminIssuerHost
+          - ""
 
 Resources:
   StandardProvider:
@@ -147,7 +184,11 @@ Resources:
               - iam:TagOpenIDConnectProvider
               - iam:UntagOpenIDConnectProvider
             Resource:
-              Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/${IssuerHost}/*"
+              - Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/${IssuerHost}/*"
+              - Fn::If:
+                  - AdminTierEnabled
+                  - Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/${AdminIssuerHost}/*"
+                  - Ref: AWS::NoValue
           - Sid: DenyGuardPolicyWrites
             Effect: Deny
             Action:
@@ -160,6 +201,20 @@ Resources:
               - iam:UntagPolicy
             Resource:
               Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/awsbridge-console/*"
+
+  AdminProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: AdminTierEnabled
+    Properties:
+      Url:
+        Fn::Sub: "https://${AdminIssuerHost}/${AdminPath}"
+      ClientIdList:
+        - Ref: Audience
+      Tags:
+        - Key: project
+          Value: awsbridge
+        - Key: awsbridge-console-tier
+          Value: admin
 
   # Standard の部品と同じ文（YAML のアンカーは使わず、両方に書く。同じであることは試験で確かめる）+ DenyAwsLoginRemote。
   AdminGuardPolicy:
@@ -207,8 +262,10 @@ Resources:
               - iam:RemoveClientIDFromOpenIDConnectProvider
               - iam:TagOpenIDConnectProvider
               - iam:UntagOpenIDConnectProvider
+            # この部品は Admin の階層があるときだけ作るので、Admin のホストを条件なしで入れる（Fn::If は要らない）
             Resource:
-              Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/${IssuerHost}/*"
+              - Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/${IssuerHost}/*"
+              - Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/${AdminIssuerHost}/*"
           - Sid: DenyGuardPolicyWrites
             Effect: Deny
             Action:
@@ -237,6 +294,13 @@ Outputs:
     Description: ARN of the Standard tier OIDC provider.
     Value:
       Ref: StandardProvider
+  AdminProviderArn:
+    # Export しない（StandardProviderArn と同じ理由。世代つきのパス（AdminPath）で ARN が変わる）。
+    # ロールのテンプレートは AdminIssuerHost・AdminPath から ARN を組み立てる。
+    Condition: AdminTierEnabled
+    Description: ARN of the Admin tier OIDC provider.
+    Value:
+      Ref: AdminProvider
   StandardGuardPolicyArn:
     Description: ARN of the Standard tier guard policy. Imported by the role templates.
     Value:
