@@ -1,6 +1,7 @@
 // 突き合わせの道具の CLI: 発行記録 × CloudTrail の AssumeRoleWithWebIdentity（mise タスク console:reconcile）。
 //   pnpm tsx scripts/console/reconcile.ts --profile <AWS のプロファイル> (--records <file|dir> | --logs-api)
 //     [--since <ISO 8601 | <n>d | <n>h>] [--until <ISO 8601>] [--account-id <12 桁>] [--retention-days <n>] [--lag-seconds <n>]
+//     [--clock-skew-seconds <n>] [--state <file>]
 // 1 回で 1 アカウント（プロファイルのアカウント）。CloudTrail は有効な全リージョンを読む（cto の決裁 ★1）。
 // 呼ぶ aws は照会の 4 種類だけ（reconcile-read.ts の RECONCILE_READ_COMMANDS）、Cloudflare は照会の API だけ（reconcile-cf.ts）。
 // 判定の本体は src/console/reconcile.ts（純粋な関数）。設計: docs/specs/console-login.md §5.6。
@@ -14,6 +15,11 @@
 //     AWSBRIDGE_CONSOLE_LOGS_WORKERS      Worker の名前（カンマ区切り。既定 awsbridge-console-standard,awsbridge-console-admin）
 //     AWSBRIDGE_CONSOLE_LOGS_API_BASE     試験用（http://127.0.0.1:<port> だけ）
 // 既定のさかのぼりは 6 日（記録の保持 7 日より短く。決裁 (a)）。
+// 時間の検査: 対になった引き受けの時刻が、発行の時刻から「JWT の寿命 300 秒＋時計ずれ（既定 60 秒。--clock-skew-seconds）」を超えて後ろ、
+// または時計ずれを超えて前なら警告（assume_time_gap。終了コードは変えない。しきい値は ② の実測のあとで決め直し、誤りに上げる予定）。
+// 確認済みの区間: アカウントごとに「確認済みの区間の終わり」を状態のファイル（--state。既定 .secrets/console-reconcile-state.json。
+// .secrets/ は gitignore）に残す。今回の読み始めが前回の終わりより後なら coverage_gap（誤り）。ファイルが無い初回は穴なし。
+// 区間を進めるのは終了コード 0 の実行だけ（誤り・検証できない引き受けのある実行は進めない）。ファイルにはアカウント ID と時刻だけを書く。
 // 出力は伏せ字（jti は先頭 8 文字、email は出さない、アカウント ID は末尾 4 桁）。
 // 終了コード: 0 誤りなし / 1 誤りあり、または検証できない引き受けが 1 件以上 / 2 実行できない（入力・aws・API の失敗）。
 // 限界: 突き合わせは検知の材料で、完全性の証明ではない。7 日以内に回さなかった発行は、あとから検証できない。
@@ -25,10 +31,12 @@ import { gunzipSync } from "node:zlib";
 import { ConsoleConfigError, formatIssue, parseConsoleConfig } from "../../src/console/config";
 import { TIERS, type Tier } from "../../src/console/constants";
 import {
+  DEFAULT_CLOCK_SKEW_SECONDS,
   DEFAULT_LAG_SECONDS,
   DEFAULT_LOOKBACK_DAYS,
   DEFAULT_RETENTION_DAYS,
   formatReconcileReport,
+  nextCoveredUntil,
   reconcile,
   reconcileExitCode,
   redactReconcile,
@@ -39,6 +47,13 @@ import {
   readRecordLines,
   recordsFromLogEvents,
 } from "../../src/console/reconcile-input";
+import {
+  coveredUntilOf,
+  parseReconcileState,
+  ReconcileStateError,
+  serializeReconcileState,
+  withCoveredUntil,
+} from "../../src/console/reconcile-state";
 import { apiBaseFromVar, ACCOUNT_RE as CF_ACCOUNT_RE } from "./key-tool-common";
 import { queryIssueLogs } from "./reconcile-cf";
 import {
@@ -48,6 +63,7 @@ import {
   readCallerAccount,
   readEnabledRegions,
 } from "./reconcile-read";
+import { writeStateFile } from "./reconcile-state-io";
 
 class InputError extends Error {}
 
@@ -55,6 +71,8 @@ class InputError extends Error {}
 const PROFILE_RE = /^[\w.+@][\w.+@-]{0,63}$/;
 const ACCOUNT_RE = /^\d{12}$/;
 const WORKER_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+/** 確認済みの区間の状態ファイルの既定（.secrets/ は gitignore）。 */
+const DEFAULT_STATE_FILE = ".secrets/console-reconcile-state.json";
 const DEFAULT_WORKERS = ["awsbridge-console-standard", "awsbridge-console-admin"];
 /** 記録は CloudTrail の期間より少し広く読む（期間の端の発行と引き受けを取りこぼさない）。 */
 const RECORD_MARGIN_MS = 15 * 60_000;
@@ -102,6 +120,22 @@ function positiveInt(v: string | undefined, label: string, def: number): number 
   return Number(v);
 }
 
+function nonNegativeInt(v: string | undefined, label: string, def: number): number {
+  if (v === undefined) return def;
+  if (!/^\d{1,6}$/.test(v)) throw new InputError(`${label} は 0 以上の整数`);
+  return Number(v);
+}
+
+/** 状態のファイルを読む（無ければ空 = 初回。壊れていれば実行しない: 穴を見落とさないため）。 */
+function readState(path: string, now: number) {
+  try {
+    return parseReconcileState(existsSync(path) ? readFileSync(path, "utf8") : undefined, now);
+  } catch (e) {
+    if (e instanceof ReconcileStateError) throw new InputError(`${e.message}: ${path}`);
+    throw e;
+  }
+}
+
 /** 発行記録のファイル（ディレクトリなら中の通常のファイルをすべて。.gz は展開）を読む。 */
 function readRecordFiles(path: string, workers: readonly string[]): RecordRead {
   if (!existsSync(path)) throw new InputError(`記録のファイルがありません: ${path}`);
@@ -144,13 +178,15 @@ async function main(): Promise<number> {
         "account-id": { type: "string" },
         "retention-days": { type: "string" },
         "lag-seconds": { type: "string" },
+        "clock-skew-seconds": { type: "string" },
+        state: { type: "string" },
       },
     }).values;
   } catch (e) {
     throw new InputError((e as Error).message);
   }
   const usage =
-    "使い方: reconcile.ts --profile <AWS のプロファイル> (--records <file|dir> | --logs-api) [--since <ISO|<n>d>] [--until <ISO>] [--account-id <12 桁>] [--retention-days <n>] [--lag-seconds <n>]";
+    "使い方: reconcile.ts --profile <AWS のプロファイル> (--records <file|dir> | --logs-api) [--since <ISO|<n>d>] [--until <ISO>] [--account-id <12 桁>] [--retention-days <n>] [--lag-seconds <n>] [--clock-skew-seconds <n>] [--state <file>]";
   const profile = typeof values.profile === "string" ? values.profile : undefined;
   if (!profile || !PROFILE_RE.test(profile)) throw new InputError(usage);
   const recordsPath = typeof values.records === "string" ? values.records : undefined;
@@ -171,6 +207,13 @@ async function main(): Promise<number> {
     "--lag-seconds",
     DEFAULT_LAG_SECONDS,
   );
+  const clockSkewSeconds = nonNegativeInt(
+    values["clock-skew-seconds"] as string | undefined,
+    "--clock-skew-seconds",
+    DEFAULT_CLOCK_SKEW_SECONDS,
+  );
+  const statePath = typeof values.state === "string" ? values.state : DEFAULT_STATE_FILE;
+  if (statePath.trim() === "") throw new InputError("--state はファイルのパス");
   const now = Date.now();
   const since =
     typeof values.since === "string"
@@ -217,6 +260,9 @@ async function main(): Promise<number> {
   const accountId = await readCallerAccount(run);
   if (expectAccountId !== undefined && expectAccountId !== accountId)
     throw new InputError("the profile's account differs from --account-id");
+  // 確認済みの区間（読めない状態のファイルは、CloudTrail を読む前に止める）
+  const state = readState(statePath, now);
+  const previousCoveredUntil = coveredUntilOf(state, accountId);
   const regions = await readEnabledRegions(run);
   const trail = await readAssumeEvents(run, regions, { since, until });
 
@@ -249,9 +295,30 @@ async function main(): Promise<number> {
     source: api ? "api" : "file",
     lagSeconds,
     retentionDays,
+    clockSkewSeconds,
+    ...(previousCoveredUntil !== undefined ? { previousCoveredUntil } : {}),
   });
+  const code = reconcileExitCode(result);
+  const advanced = nextCoveredUntil(result, previousCoveredUntil);
   console.log(formatReconcileReport(result, { label: `profile ${profile}`, apiCount }));
-  return reconcileExitCode(result);
+  if (advanced === undefined)
+    console.log(
+      `state: not advanced (exit code ${code}; the confirmed interval moves only on a run with exit code 0)`,
+    );
+  else {
+    try {
+      writeStateFile(
+        statePath,
+        serializeReconcileState(withCoveredUntil(state, accountId, advanced)),
+      );
+    } catch {
+      throw new Error(
+        `could not write the reconcile state file: ${statePath} (the confirmed interval was not saved)`,
+      );
+    }
+    console.log(`state: confirmed until ${new Date(advanced).toISOString()} (${statePath})`);
+  }
+  return code;
 }
 
 function stop(message: string): never {

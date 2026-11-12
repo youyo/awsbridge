@@ -146,19 +146,131 @@ describe("README の Administrator の残った権限の棚卸し（cto の決�
   }
 });
 
-describe("README の突き合わせの間隔（cto の決裁 G2 の前回の訂正）", () => {
-  it("README_ja.md: Administrator の発行があった日は当日中、それ以外も 3 日以内。7 日の文は残し、週 1 回とは書かない", () => {
+describe("README の突き合わせの間隔（毎日回す。利用者の判断 2026-11-13）", () => {
+  it("README_ja.md: 毎日回す・発行の有無に関係なく・6 日以内なら穴はできない・7 日の文は残す・外で行う。3 日以内・当日中・週 1 回とは書かない", () => {
     const text = read("README_ja.md");
-    expect(text).toContain("Administrator の発行があった日は当日中");
-    expect(text).toContain("3 日以内");
-    expect(text).toContain("7 日以内に突き合わせなかった発行は、あとから検証できません");
+    for (const s of [
+      "突き合わせは毎日回します。Administrator の発行の有無に関係なく回します",
+      "回せない日があっても、6 日以内に回せば検証の穴はできません",
+      "7 日以内に突き合わせなかった発行は、あとから検証できません",
+      "`coverage_gap`（誤り。終了コード 1）",
+      "毎日の実行は awsbridge の外（MCP 経由のエージェントなど）で行います",
+      "awsbridge には定期の実行の仕組みを入れません",
+    ])
+      expect(text, s).toContain(s);
+    expect(text).not.toContain("3 日以内");
+    expect(text).not.toContain("当日中");
     expect(text).not.toContain("週 1 回");
   });
-  it("README.md: same day after an Administrator issuance, otherwise within 3 days. Keeps the 7-day sentence, no weekly", () => {
+  it("README.md: run it every day regardless of issuance, no gap within 6 days, keeps the 7-day sentence, done outside awsbridge. No 3 days, same day, or weekly", () => {
     const text = read("README.md");
-    expect(text).toContain("on the same day");
-    expect(text).toContain("within 3 days");
-    expect(text).toContain("an issuance not reconciled within 7 days cannot be verified later");
+    for (const s of [
+      "Run the reconciliation every day, whether or not an Administrator issued anything",
+      "if you cannot run it on some day, no verification gap opens as long as you run it within 6 days",
+      "an issuance not reconciled within 7 days cannot be verified later",
+      "`coverage_gap` (error, exit code 1)",
+      "outside awsbridge (for example an agent over MCP)",
+      "awsbridge has no scheduler",
+    ])
+      expect(text, s).toContain(s);
+    expect(text).not.toContain("within 3 days");
+    expect(text).not.toContain("on the same day");
     expect(text).not.toMatch(/once a week/i);
+  });
+  it("mise.toml: console:reconcile の説明と注記は毎日回すと書き、3 日以内・当日中とは書かない", () => {
+    const text = read("mise.toml");
+    const i = text.indexOf('[tasks."console:reconcile"]');
+    expect(i).toBeGreaterThan(0);
+    const from = text.lastIndexOf(
+      "# ---- コンソールログイン: 発行記録と CloudTrail の突き合わせ",
+      i,
+    );
+    const section = text.slice(from, i + 1200);
+    expect(section).toContain("毎日回す");
+    expect(section).toContain("6 日以内");
+    expect(section).toContain("7 日以内に回さなかった発行はあとから検証できない");
+    expect(section).not.toContain("3 日以内");
+    expect(section).not.toContain("当日中");
+  });
+});
+
+describe("突き合わせの運用と検査の文面（cto の決裁 G2 の途中経過 2026-11-13）", () => {
+  it("README_ja.md: 時間・利用者・確認済みの区間の検査と仮のしきい値を書く", () => {
+    const text = read("README_ja.md");
+    for (const s of [
+      "assume_time_gap",
+      "--clock-skew-seconds",
+      "しきい値は仮です",
+      "identity_mismatch",
+      "identity_not_compared",
+      "coverage_gap",
+      "--state",
+      ".secrets/console-reconcile-state.json",
+      "区間を進めるのは終了コード 0 の実行だけ",
+    ])
+      expect(text, s).toContain(s);
+  });
+  it("README.md: time, identity and confirmed-interval checks with provisional thresholds", () => {
+    const text = read("README.md");
+    for (const s of [
+      "assume_time_gap",
+      "--clock-skew-seconds",
+      "The thresholds are provisional",
+      "identity_mismatch",
+      "identity_not_compared",
+      "coverage_gap",
+      "--state",
+      ".secrets/console-reconcile-state.json",
+      "Only a run with exit code 0 advances the interval",
+    ])
+      expect(text, s).toContain(s);
+  });
+  for (const f of ["docs/specs/console-login.md", "docs/specs/console-login-admin.md"]) {
+    it(`${f}: 「Cloudflare に頼らない停止は L2 だけ」とは書かず、発行の停止は L2 と信頼ポリシーの拒否、revoke は発行の停止に数えない`, () => {
+      const text = read(f);
+      expect(text).not.toMatch(/Cloudflare に頼らない停止は、(全アカウントの L2 だけ|これだけ)/);
+      expect(text).toMatch(/Cloudflare に頼らない発行の停止は、.*L2.*信頼ポリシー/);
+      expect(text).toContain("revoke は");
+      expect(text).toContain("突き合わせは毎日回す");
+      expect(text).not.toContain("3 日以内");
+      expect(text).not.toContain("当日中");
+      expect(text).not.toContain("主は固定の間隔");
+    });
+  }
+  it("docs/specs/console-login.md: 記録で捕まらないものに、発行から 5 分以内に使う同じ jti の作り直し（Workers Logs を読める必要）を挙げる", () => {
+    const text = read("docs/specs/console-login.md");
+    const i = text.indexOf("記録で捕まるもの・捕まらないもの");
+    expect(i).toBeGreaterThan(0);
+    const section = text.slice(i, i + 1500);
+    expect(section).toContain("捕まらない");
+    expect(section).toContain("発行から 5 分以内に使う、同じ `jti` の作り直し");
+    expect(section).toContain("Workers Logs を読める必要がある");
+  });
+});
+
+describe("突き合わせの運用: 誤りのあとの回し直しと --since の長さ", () => {
+  it("README_ja.md: 誤りが出た実行は区間を進めない・決着したら --since を前回の終わり以前に戻して回し直す・7 日を過ぎると検証できない・放置すると coverage_gap が重なる・--since は間隔より 5 分以上長く", () => {
+    const text = read("README_ja.md");
+    for (const s of [
+      "誤りが出た実行は区間を進めません",
+      "`--since` を前回の終わり以前に戻して回し直し、区間を進めます",
+      "記録の保持の 7 日を過ぎた分は検証できません",
+      "`coverage_gap` が重なって出ます",
+      "`--since` は回す間隔より 5 分以上長くします",
+      "毎日回すなら既定の 6 日のままにします",
+    ])
+      expect(text, s).toContain(s);
+  });
+  it("README.md: same points in English", () => {
+    const text = read("README.md");
+    for (const s of [
+      "A run with errors does not advance the interval.",
+      "re-run with `--since` set at or before the previous end",
+      "Anything past the 7-day record retention can no longer be verified",
+      "`coverage_gap` errors pile up",
+      "Make `--since` at least 5 minutes longer than your run interval",
+      "if you run it every day, keep the default of 6 days",
+    ])
+      expect(text, s).toContain(s);
   });
 });

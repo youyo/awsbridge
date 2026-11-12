@@ -3,7 +3,15 @@
 // 擬似サーバー（AWSBRIDGE_CONSOLE_LOGS_API_BASE は 127.0.0.1 だけ受け付ける）。実際の AWS・Cloudflare には接続しない。
 // 確かめること: 呼ぶのは許可した aws のコマンドと照会の API だけ、出力に email・全桁の jti・12 桁のアカウント ID が無い、終了コード。
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -87,7 +95,13 @@ let seq = 0;
 const newJti = () => `${(++seq).toString(16).padStart(8, "0")}-1f4e-4c55-9d2a-7f3c1a2b3c4d`;
 
 /** Worker の発行記録（issueLogRecord の形）。 */
-function issue(o: { jti: string; at: number; tier?: "standard" | "admin"; region?: string }) {
+function issue(o: {
+  jti: string;
+  at: number;
+  tier?: "standard" | "admin";
+  region?: string;
+  user?: Record<string, string>;
+}) {
   const tier = o.tier ?? "standard";
   return {
     event: "console_issue",
@@ -95,7 +109,7 @@ function issue(o: { jti: string; at: number; tier?: "standard" | "admin"; region
     at: new Date(o.at).toISOString(),
     tier,
     team: tier === "admin" ? "infra-elevated" : "infra",
-    user: { email: "a***@***.com", sourceIdentity: "a***@***.com", accessSub: "1111…" },
+    user: o.user ?? { email: "a***@***.com", sourceIdentity: "a***@***.com", accessSub: "1111…" },
     target: {
       accountId: ACCOUNT,
       role: tier === "admin" ? "administrator" : "viewer",
@@ -121,7 +135,10 @@ function issue(o: { jti: string; at: number; tier?: "standard" | "admin"; region
 }
 
 /** 記録に対になる CloudTrail の AssumeRoleWithWebIdentity（CloudTrailEvent の JSON の文字列）。 */
-function trail(r: ReturnType<typeof issue>) {
+function trail(
+  r: ReturnType<typeof issue>,
+  o: { afterIssueSeconds?: number; sourceIdentity?: string | null } = {},
+) {
   const admin = r.tier === "admin";
   return {
     EventId: `ev-${r.jwt.jti}`,
@@ -133,7 +150,9 @@ function trail(r: ReturnType<typeof issue>) {
         userName: EMAIL,
         identityProvider: `arn:aws:iam::${ACCOUNT}:oidc-provider/${admin ? ADMIN_ISSUER_ID : STD_ISSUER_ID}`,
       },
-      eventTime: new Date(Date.parse(r.at) + 2_000).toISOString().replace(/\.\d{3}Z$/, "Z"),
+      eventTime: new Date(r.jwt.iat * 1000 + (o.afterIssueSeconds ?? 2) * 1000)
+        .toISOString()
+        .replace(/\.\d{3}Z$/, "Z"),
       eventSource: "sts.amazonaws.com",
       eventName: "AssumeRoleWithWebIdentity",
       awsRegion: r.sts.region,
@@ -143,7 +162,7 @@ function trail(r: ReturnType<typeof issue>) {
       requestParameters: {
         roleArn: r.target.roleArn,
         roleSessionName: `console-${EMAIL}`,
-        sourceIdentity: EMAIL,
+        ...(o.sourceIdentity === null ? {} : { sourceIdentity: o.sourceIdentity ?? EMAIL }),
         webIdentityTokenId: r.jwt.jti,
       },
       responseElements: {
@@ -217,19 +236,25 @@ function setup(s: Setup) {
     AWSBRIDGE_CONSOLE_CONFIG: join(d, "console.json"),
     ...(s.failOn ? { AWS_STUB_FAIL_ON: s.failOn } : {}),
   };
-  return { env, records, log };
+  return { env, records, log, dir: d, state: join(d, "state.json") };
 }
 
 /** 実プロセスで動かす（同じプロセスの擬似サーバーが応答できるよう、spawnSync ではなく非同期で待つ）。 */
 function run(
   args: string[],
   env: Record<string, string>,
+  o: { cwd?: string; defaultState?: boolean } = {},
 ): Promise<{ status: number | null; out: string }> {
+  // 確認済みの区間の状態は、指定が無ければ試験ごとの一時ディレクトリに置く（リポジトリの .secrets/ を触らない）
+  const withState =
+    o.defaultState === false || args.includes("--state")
+      ? args
+      : [...args, "--state", join(env.HOME ?? "", "state.json")];
   return new Promise((resolve) => {
     const p = spawn(
       join(root, "node_modules/.bin/tsx"),
-      [join(root, "scripts/console/reconcile.ts"), ...args],
-      { cwd: root, env },
+      [join(root, "scripts/console/reconcile.ts"), ...withState],
+      { cwd: o.cwd ?? root, env },
     );
     let out = "";
     p.stdout.on("data", (c) => {
@@ -472,5 +497,219 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
     const r = await run(["--profile", "reconcile-test", "--records", failing.records], failing.env);
     expect(r.status, r.out).toBe(2);
     noSecrets(r.out, []);
+  });
+});
+
+describe("console:reconcile: 時間の検査と SourceIdentity の一致（警告。終了コードは変えない）", () => {
+  const prof = ["--profile", "reconcile-test"];
+
+  it("引き受けが発行から 300 秒＋時計ずれ（既定 60 秒）を超えて後なら assume_time_gap の警告。終了コードは 0。--clock-skew-seconds で許容を広げられる", async () => {
+    const a = issue({ jti: newJti(), at: now() - 60 * MIN });
+    const { env, records } = setup({
+      records: [a],
+      trails: [{ region: "us-east-1", events: [trail(a, { afterIssueSeconds: 400 })] }],
+    });
+    let r = await run([...prof, "--records", records], env);
+    expect(r.out).toContain("assume_time_gap");
+    expect(r.out).toContain("+400s");
+    expect(r.out).toMatch(/errors: 0, warnings: 1/);
+    expect(r.status, r.out).toBe(0);
+    noSecrets(r.out, [a.jwt.jti]);
+    r = await run([...prof, "--records", records, "--clock-skew-seconds", "120"], env);
+    expect(r.out).not.toContain("assume_time_gap");
+    expect(r.out).toContain("clock skew 120s");
+    expect(r.status, r.out).toBe(0);
+  });
+
+  it("引き受けが発行より時計ずれを超えて前でも同じ所見（向きは -NNNs）", async () => {
+    const a = issue({ jti: newJti(), at: now() - 60 * MIN });
+    const { env, records } = setup({
+      records: [a],
+      trails: [{ region: "us-east-1", events: [trail(a, { afterIssueSeconds: -120 })] }],
+    });
+    const r = await run([...prof, "--records", records], env);
+    expect(r.out).toContain("assume_time_gap");
+    expect(r.out).toContain("-120s");
+    expect(r.status, r.out).toBe(0);
+  });
+
+  it("--clock-skew-seconds が整数でなければ実行できない（終了コード 2）", async () => {
+    const { env, records } = setup({});
+    for (const v of ["-1", "abc", "1.5"])
+      expect(
+        (await run([...prof, "--records", records, "--clock-skew-seconds", v], env)).status,
+      ).toBe(2);
+  });
+
+  it("記録の利用者と CloudTrail の SourceIdentity（どちらも伏せ字にして比べる）が違えば identity_mismatch の警告。値は出さない。終了コードは 0", async () => {
+    const a = issue({ jti: newJti(), at: now() - 60 * MIN });
+    const { env, records } = setup({
+      records: [a],
+      trails: [{ region: "us-east-1", events: [trail(a, { sourceIdentity: "bob@example.org" })] }],
+    });
+    const r = await run([...prof, "--records", records], env);
+    expect(r.out).toContain("identity_mismatch");
+    expect(r.out).toContain("identity: compared 1, not compared 0");
+    expect(r.status, r.out).toBe(0);
+    noSecrets(r.out, [a.jwt.jti]);
+    expect(r.out).not.toContain("bob");
+  });
+
+  it("両方あって一致すれば所見なし。どちらかが無ければ比べず、比べられなかった件数を出す", async () => {
+    const a = issue({ jti: newJti(), at: now() - 60 * MIN });
+    const ok = setup({ records: [a], trails: [{ region: "us-east-1", events: [trail(a)] }] });
+    let r = await run([...prof, "--records", ok.records], ok.env);
+    expect(r.out).toContain("identity: compared 1, not compared 0");
+    expect(r.out).not.toContain("identity_mismatch");
+    expect(r.status, r.out).toBe(0);
+
+    const b = issue({ jti: newJti(), at: now() - 60 * MIN });
+    const noEvent = setup({
+      records: [b],
+      trails: [{ region: "us-east-1", events: [trail(b, { sourceIdentity: null })] }],
+    });
+    r = await run([...prof, "--records", noEvent.records], noEvent.env);
+    expect(r.out).toContain("identity: compared 0, not compared 1");
+    expect(r.out).toContain("identity_not_compared");
+    expect(r.status, r.out).toBe(0);
+
+    const c = issue({ jti: newJti(), at: now() - 60 * MIN, user: { accessSub: "1111…" } });
+    const noRecord = setup({ records: [c], trails: [{ region: "us-east-1", events: [trail(c)] }] });
+    r = await run([...prof, "--records", noRecord.records], noRecord.env);
+    expect(r.out).toContain("identity: compared 0, not compared 1");
+    expect(r.status, r.out).toBe(0);
+  });
+});
+
+describe("console:reconcile: 確認済みの区間（状態のファイル）", () => {
+  const prof = ["--profile", "reconcile-test"];
+  const DAY = 86_400_000;
+  const stateText = (coveredUntil: number) =>
+    JSON.stringify({
+      version: 1,
+      accounts: { [ACCOUNT]: { coveredUntil: new Date(coveredUntil).toISOString() } },
+    });
+
+  it("状態が無い初回は穴なし（そのことを出力する）。成功したら状態にアカウント ID と時刻だけを書く（今回の終わり − lag）。2 回目は continuous", async () => {
+    const a = issue({ jti: newJti(), at: now() - 60 * MIN });
+    const { env, records, state } = setup({
+      records: [a],
+      trails: [{ region: "us-east-1", events: [trail(a)] }],
+    });
+    const t0 = now();
+    let r = await run([...prof, "--records", records], env);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain("coverage: first run");
+    expect(r.out).toContain("state: confirmed until");
+    const body = JSON.parse(readFileSync(state, "utf8"));
+    expect(Object.keys(body).sort()).toEqual(["accounts", "version"]);
+    expect(Object.keys(body.accounts)).toEqual([ACCOUNT]);
+    expect(Object.keys(body.accounts[ACCOUNT])).toEqual(["coveredUntil"]);
+    const first = Date.parse(body.accounts[ACCOUNT].coveredUntil);
+    expect(first).toBeGreaterThanOrEqual(t0 - 300_000 - 1000);
+    expect(first).toBeLessThanOrEqual(now() - 300_000 + 1000);
+    const text = readFileSync(state, "utf8");
+    expect(text).not.toContain(a.jwt.jti);
+    expect(text).not.toContain(TOKEN);
+    expect(text).not.toContain("@");
+
+    r = await run([...prof, "--records", records], env);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain("coverage: continuous");
+    expect(
+      Date.parse(JSON.parse(readFileSync(state, "utf8")).accounts[ACCOUNT].coveredUntil),
+    ).toBeGreaterThanOrEqual(first);
+  });
+
+  it("前回の終わりより今回の読み始めが後（既定のさかのぼり 6 日より前に終わっている）なら coverage_gap（誤り）で終了コード 1。状態は進めない", async () => {
+    const { env, records, state } = setup({});
+    const old = now() - 8 * DAY;
+    writeFileSync(state, stateText(old));
+    const r = await run([...prof, "--records", records], env);
+    expect(r.out).toContain("coverage_gap");
+    expect(r.out).toContain("coverage: GAP");
+    expect(r.out).toContain("state: not advanced");
+    expect(r.status, r.out).toBe(1);
+    expect(readFileSync(state, "utf8")).toBe(stateText(old));
+    noSecrets(r.out, []);
+    // さかのぼりを前回の終わり以前まで戻せば（--since 9d）穴は無い
+    const again = await run([...prof, "--records", records, "--since", "9d"], env);
+    expect(again.out).toContain("coverage: continuous");
+    expect(again.out).not.toContain("coverage_gap");
+  });
+
+  it("誤りのある実行（assume_without_record）は状態を進めない。初回で誤りなら状態のファイルを作らない", async () => {
+    const a = issue({ jti: newJti(), at: now() - 60 * MIN });
+    const { env, records, state } = setup({
+      trails: [{ region: "us-east-1", events: [trail(a)] }],
+    });
+    const r = await run([...prof, "--records", records], env);
+    expect(r.status, r.out).toBe(1);
+    expect(r.out).toContain("state: not advanced");
+    expect(existsSync(state)).toBe(false);
+    const prev = now() - 2 * DAY;
+    writeFileSync(state, stateText(prev));
+    const r2 = await run([...prof, "--records", records], env);
+    expect(r2.status, r2.out).toBe(1);
+    expect(readFileSync(state, "utf8")).toBe(stateText(prev));
+  });
+
+  it("読めない状態のファイルは実行しない（終了コード 2。CloudTrail を読まない。初回として扱わない）。出力に中身を出さない", async () => {
+    const { env, records, state, log } = setup({});
+    writeFileSync(
+      state,
+      '{"version":1,"accounts":{"333333333333":{"coveredUntil":"secret-nope"}}}',
+    );
+    const r = await run([...prof, "--records", records], env);
+    expect(r.status, r.out).toBe(2);
+    expect(r.out).not.toContain("secret-nope");
+    expect(callsOf(log).map((c) => `${c[0]} ${c[1]}`)).toEqual(["sts get-caller-identity"]);
+    noSecrets(r.out, []);
+  });
+
+  it("未来の時刻（今 + 5 分より後）の状態は壊れた状態と同じ扱い（終了コード 2。CloudTrail を読まない。中身を出さない。ファイルは変えない）。許容の範囲内の未来は受け付ける", async () => {
+    const { env, records, state, log } = setup({});
+    const future = stateText(now() + DAY);
+    writeFileSync(state, future);
+    const r = await run([...prof, "--records", records], env);
+    expect(r.status, r.out).toBe(2);
+    expect(r.out).not.toContain(new Date(now() + DAY).toISOString().slice(0, 10));
+    expect(callsOf(log).map((c) => `${c[0]} ${c[1]}`)).toEqual(["sts get-caller-identity"]);
+    expect(readFileSync(state, "utf8")).toBe(future);
+    noSecrets(r.out, []);
+    const near = setup({});
+    writeFileSync(near.state, stateText(now() + 60_000));
+    const ok = await run([...prof, "--records", near.records], near.env);
+    expect(ok.status, ok.out).toBe(0);
+    expect(ok.out).toContain("coverage: continuous");
+  });
+
+  it("--state を渡さなければ、作業ディレクトリの .secrets/console-reconcile-state.json に書く。.secrets/ は gitignore 済み", async () => {
+    const { env, records, dir } = setup({});
+    const cwd = join(dir, "work");
+    mkdirSync(cwd);
+    const r = await run([...prof, "--records", records], env, { cwd, defaultState: false });
+    expect(r.status, r.out).toBe(0);
+    expect(existsSync(join(cwd, ".secrets/console-reconcile-state.json"))).toBe(true);
+    expect(r.out).toContain(".secrets/console-reconcile-state.json");
+    expect(readFileSync(join(root, ".gitignore"), "utf8").split("\n")).toContain(".secrets/");
+  });
+
+  it("状態はアカウントごと。別のアカウントの値は残す", async () => {
+    const { env, records, state } = setup({});
+    const other = "444444444444";
+    writeFileSync(
+      state,
+      JSON.stringify({
+        version: 1,
+        accounts: { [other]: { coveredUntil: "2026-01-01T00:00:00.000Z" } },
+      }),
+    );
+    const r = await run([...prof, "--records", records], env);
+    expect(r.out).toContain("coverage: first run");
+    expect(r.status, r.out).toBe(0);
+    const body = JSON.parse(readFileSync(state, "utf8"));
+    expect(Object.keys(body.accounts).sort()).toEqual([ACCOUNT, other]);
+    expect(body.accounts[other].coveredUntil).toBe("2026-01-01T00:00:00.000Z");
   });
 });

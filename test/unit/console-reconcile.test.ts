@@ -3,7 +3,10 @@
 // 設定に無いプロバイダーでの引き受けは誤り。
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_CLOCK_SKEW_SECONDS,
   formatReconcileReport,
+  JWT_LIFETIME_SECONDS,
+  nextCoveredUntil,
   type ReconcileInput,
   reconcile,
   reconcileExitCode,
@@ -37,6 +40,7 @@ const rec = (over: Partial<ReconRecord> = {}): ReconRecord => ({
   roleArn: STD_ROLE,
   stsRegion: "us-east-1",
   jti: jti(),
+  identity: "a***@***.com",
   accessKeyId: "ASIA…QQQQ",
   assumedRoleId: "AROA…",
   requestId: "5e1b7c2a…",
@@ -52,6 +56,7 @@ const evFor = (r: ReconRecord, over: Partial<AssumeEvent> = {}): AssumeEvent => 
   roleArn: r.roleArn ?? STD_ROLE,
   provider: providerArn(r.tier === "admin" ? ADMIN_ISSUER : STD_ISSUER),
   ...(r.jti !== undefined ? { tokenId: r.jti } : {}),
+  sourceIdentity: "a***@***.com",
   accessKeyId: "ASIA…QQQQ",
   assumedRoleId: "AROA…",
   requestId: "5e1b7c2a…",
@@ -385,5 +390,211 @@ describe("reconcileExitCode（終了コード。司令塔の判断 2026-11-13: �
 
   it("警告だけ（検証できない引き受けは無い）なら 0", () => {
     expect(reconcileExitCode(reconcile(input({ records: [rec()] })))).toBe(0);
+  });
+});
+
+// ---- 時間の検査（cto の決裁 G2 の途中経過。まず警告。(ii) で正規の時間差を見てから誤りに上げる予定） ----
+describe("reconcile: 時間の検査（引き受けの時刻 − 発行の時刻 が 300 秒＋時計ずれを超えたら assume_time_gap の警告）", () => {
+  const SEC = 1000;
+  const iatOf = (r: ReconRecord) => Math.floor(r.at / 1000);
+
+  it("既定: JWT の寿命は 300 秒、時計ずれは 60 秒", () => {
+    expect(JWT_LIFETIME_SECONDS).toBe(300);
+    expect(DEFAULT_CLOCK_SKEW_SECONDS).toBe(60);
+  });
+
+  it("発行（jwt.iat）から 360 秒ちょうどまでは所見なし。361 秒で assume_time_gap（警告）", () => {
+    const a = rec({ iat: Math.floor((NOW - 60 * MIN) / 1000) });
+    const issued = (a.iat ?? 0) * SEC;
+    expect(
+      codes(reconcile(input({ records: [a], events: [evFor(a, { time: issued + 360 * SEC })] }))),
+    ).toEqual([]);
+    const late = reconcile(
+      input({ records: [a], events: [evFor(a, { time: issued + 361 * SEC })] }),
+    );
+    expect(codes(late)).toEqual(["warning:assume_time_gap"]);
+    expect(late.findings[0]?.detail).toContain("+361s");
+    expect(late.findings[0]?.jti).toBe(`${a.jti?.slice(0, 8)}…`);
+  });
+
+  it("発行の時刻は iat を使う。iat が無い記録は記録の時刻（at）を使う", () => {
+    const withIat = rec({ at: NOW - 30 * MIN, iat: Math.floor((NOW - 60 * MIN) / 1000) });
+    // at から見れば 2 秒後だが、iat から見れば 30 分後
+    expect(
+      codes(
+        reconcile(
+          input({ records: [withIat], events: [evFor(withIat, { time: withIat.at + 2 * SEC })] }),
+        ),
+      ),
+    ).toEqual(["warning:assume_time_gap"]);
+    const noIat = rec({ at: NOW - 60 * MIN });
+    expect(
+      codes(
+        reconcile(
+          input({ records: [noIat], events: [evFor(noIat, { time: noIat.at + 400 * SEC })] }),
+        ),
+      ),
+    ).toEqual(["warning:assume_time_gap"]);
+    expect(
+      codes(
+        reconcile(
+          input({ records: [noIat], events: [evFor(noIat, { time: noIat.at + 300 * SEC })] }),
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it("引き受けが発行より前（負の差）で、時計ずれより大きければ同じ所見（向きは detail に出る）。ずれの範囲内なら所見なし", () => {
+    const a = rec({ iat: Math.floor((NOW - 60 * MIN) / 1000) });
+    const issued = (a.iat ?? 0) * SEC;
+    expect(
+      codes(reconcile(input({ records: [a], events: [evFor(a, { time: issued - 60 * SEC })] }))),
+    ).toEqual([]);
+    const early = reconcile(
+      input({ records: [a], events: [evFor(a, { time: issued - 61 * SEC })] }),
+    );
+    expect(codes(early)).toEqual(["warning:assume_time_gap"]);
+    expect(early.findings[0]?.detail).toContain("-61s");
+  });
+
+  it("時計ずれは clockSkewSeconds で変えられる", () => {
+    const a = rec({ iat: iatOf(rec({ at: NOW - 60 * MIN })) });
+    const issued = (a.iat ?? 0) * SEC;
+    const e = evFor(a, { time: issued + 400 * SEC });
+    expect(codes(reconcile(input({ records: [a], events: [e], clockSkewSeconds: 120 })))).toEqual(
+      [],
+    );
+    expect(codes(reconcile(input({ records: [a], events: [e], clockSkewSeconds: 30 })))).toEqual([
+      "warning:assume_time_gap",
+    ]);
+    expect(
+      reconcile(input({ records: [a], events: [e], clockSkewSeconds: 30 })).summary
+        .clockSkewSeconds,
+    ).toBe(30);
+  });
+
+  it("警告なので終了コードは 0 のまま。対にならない引き受け・失敗した引き受けには検査しない", () => {
+    const a = rec({ iat: Math.floor((NOW - 60 * MIN) / 1000) });
+    const issued = (a.iat ?? 0) * SEC;
+    const r = reconcile(input({ records: [a], events: [evFor(a, { time: issued + 900 * SEC })] }));
+    expect(reconcileExitCode(r)).toBe(0);
+    const failed = reconcile(
+      input({
+        records: [a],
+        events: [evFor(a, { time: issued + 900 * SEC, errorCode: "AccessDenied" })],
+      }),
+    );
+    expect(codes(failed)).not.toContain("warning:assume_time_gap");
+  });
+});
+
+// ---- email（SourceIdentity）の一致 ----
+describe("reconcile: 発行記録の利用者と CloudTrail の SourceIdentity の一致（伏せ字どうしで比べる）", () => {
+  it("両方あって同じ伏せ字なら所見なし。比べた件数を数える", () => {
+    const a = rec({ identity: "a***@***.com" });
+    const r = reconcile(
+      input({ records: [a], events: [evFor(a, { sourceIdentity: "a***@***.com" })] }),
+    );
+    expect(codes(r)).toEqual([]);
+    expect(r.summary.identityCompared).toBe(1);
+    expect(r.summary.identityNotCompared).toBe(0);
+  });
+
+  it("伏せ字が違えば identity_mismatch（警告）。値は所見に出さない。終了コードは 0", () => {
+    const a = rec({ identity: "a***@***.com" });
+    const r = reconcile(
+      input({ records: [a], events: [evFor(a, { sourceIdentity: "b***@***.org" })] }),
+    );
+    expect(codes(r)).toEqual(["warning:identity_mismatch"]);
+    expect(JSON.stringify(r.findings)).not.toMatch(/a\*\*\*|b\*\*\*|@/);
+    expect(reconcileExitCode(r)).toBe(0);
+  });
+
+  it("どちらかが無ければ比べない。黙って飛ばさず、比べなかった件数を identity_not_compared（注記）と要約に出す", () => {
+    const noRecordIdentity = (() => {
+      const { identity: _i, ...r } = rec();
+      return r;
+    })();
+    const noEventIdentity = rec();
+    const neither = (() => {
+      const { identity: _i, ...r } = rec();
+      return r;
+    })();
+    const strip = (e: AssumeEvent): AssumeEvent => {
+      const { sourceIdentity: _s, ...rest } = e;
+      return rest;
+    };
+    const r = reconcile(
+      input({
+        records: [noRecordIdentity, noEventIdentity, neither],
+        events: [evFor(noRecordIdentity), strip(evFor(noEventIdentity)), strip(evFor(neither))],
+      }),
+    );
+    expect(codes(r)).toEqual(["note:identity_not_compared"]);
+    expect(r.findings[0]?.detail).toContain("3 ");
+    expect(r.summary.identityCompared).toBe(0);
+    expect(r.summary.identityNotCompared).toBe(3);
+    expect(formatReconcileReport(r)).toContain("identity: compared 0, not compared 3");
+  });
+});
+
+// ---- 確認済みの区間（穴の検査） ----
+describe("reconcile: 確認済みの区間（前回の終わりより今回の読み始めが後なら coverage_gap の誤り）", () => {
+  const since = NOW - 6 * DAY;
+
+  it("状態が無い初回は穴なし。そのことを要約と出力に出す", () => {
+    const r = reconcile(input());
+    expect(codes(r)).toEqual([]);
+    expect(r.summary.coverage).toEqual({ status: "first_run" });
+    expect(formatReconcileReport(r)).toContain("coverage: first run");
+  });
+
+  it("前回の終わりが今回の読み始め以後なら穴なし（continuous）", () => {
+    for (const prev of [since, since + 1, NOW - 3 * DAY]) {
+      const r = reconcile(input({ previousCoveredUntil: prev }));
+      expect(codes(r)).toEqual([]);
+      expect(r.summary.coverage).toEqual({ status: "continuous", previous: prev });
+    }
+    expect(
+      formatReconcileReport(reconcile(input({ previousCoveredUntil: NOW - 3 * DAY }))),
+    ).toContain("coverage: continuous");
+  });
+
+  it("前回の終わりより今回の読み始めが後なら coverage_gap（誤り）。終了コード 1", () => {
+    const r = reconcile(input({ previousCoveredUntil: since - 1 }));
+    expect(codes(r)).toEqual(["error:coverage_gap"]);
+    expect(r.summary.coverage).toEqual({ status: "gap", previous: since - 1 });
+    expect(r.findings[0]?.detail).toContain(new Date(since - 1).toISOString());
+    expect(reconcileExitCode(r)).toBe(1);
+    expect(formatReconcileReport(r)).toContain("coverage: GAP");
+  });
+});
+
+describe("nextCoveredUntil（成功した実行（終了コード 0）だけが区間を進める）", () => {
+  const settled = NOW - 300 * 1000; // until − lag（既定 300 秒）
+
+  it("終了コード 0 なら、今回の終わり − 反映の遅れ（lag）まで進める。前回が先なら戻さない", () => {
+    const r = reconcile(input());
+    expect(nextCoveredUntil(r, undefined)).toBe(settled);
+    expect(nextCoveredUntil(r, NOW - 10 * 60_000)).toBe(settled);
+    expect(nextCoveredUntil(r, NOW)).toBe(NOW);
+  });
+
+  it("警告だけ（終了コード 0）でも進める", () => {
+    const r = reconcile(input({ records: [rec()] }));
+    expect(r.findings.some((f) => f.severity === "warning")).toBe(true);
+    expect(nextCoveredUntil(r, undefined)).toBe(settled);
+  });
+
+  it("誤りがある実行・検証できない引き受けのある実行（終了コード 1）は進めない（誤りを埋もれさせない）", () => {
+    expect(nextCoveredUntil(reconcile(input({ events: [evFor(rec())] })), 123)).toBeUndefined();
+    const old = rec({ at: NOW - 8 * DAY });
+    const un = reconcile(
+      input({ window: { since: NOW - 10 * DAY, until: NOW }, events: [evFor(old)] }),
+    );
+    expect(nextCoveredUntil(un, 123)).toBeUndefined();
+    expect(
+      nextCoveredUntil(reconcile(input({ previousCoveredUntil: NOW - 6 * DAY - 1 })), 123),
+    ).toBeUndefined();
   });
 });

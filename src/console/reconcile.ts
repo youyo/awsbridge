@@ -16,15 +16,24 @@
 //   error   region_unread             読めなかったリージョン（★1）
 //   error   record_line_truncated     切られた記録の行（決裁 (c)）
 //   error   record_line_unreadable    読めない記録の行
+//   error   coverage_gap              前回の確認済みの区間の終わりより、今回の読み始めが後（間に読んでいない区間がある）
 //   warning jti_reused                同じ jti で 2 回以上引き受けた
 //   warning record_without_assume     引き受けがあるはずの記録に、引き受けが無い
 //   warning aux_mismatch              補助のキー（AccessKeyId・RequestId・AssumedRoleId の伏せ字）が食い違う
+//   warning assume_time_gap           対になった引き受けの時刻が、発行の時刻から「JWT の寿命＋時計ずれ」を超えて後、または時計ずれを超えて前
+//   warning identity_mismatch         発行記録の利用者と、CloudTrail の SourceIdentity の伏せ字が食い違う
 //   warning unverifiable              記録の保持より古く、記録の無い引き受け（件数。決裁 (a)。1 件以上なら終了コードは 1）
 //   warning window_exceeds_retention  さかのぼりが記録の保持より長い
 //   note    pending                   反映の遅れ（lagSeconds）より新しく、まだ引き受けが見えない記録
 //   note    record_sts_failed_no_event STS が失敗した記録で、引き受けのイベントが無い（失敗はイベント履歴に出ないことがある）
 //   note    assume_failed             失敗した引き受け（errorCode）の件数
+//   note    identity_not_compared     記録か引き受けのどちらかに利用者が無く、SourceIdentity を比べられなかった対の件数
+//
+// 時間の検査と利用者の検査は、まず警告（終了コードは変えない）。しきい値は ② の (ii) で正規の時間差・SourceIdentity の出方を
+// 実測してから決め、誤りに上げる予定（cto の決裁 G2 の途中経過）。
+
 import { ROLE_PATH_PREFIX, rolePath, TIERS, type Tier } from "./constants";
+import { TOKEN_TTL_SECONDS } from "./issue/claims";
 import type { AssumeEvent, ReconRecord } from "./reconcile-input";
 
 export type Severity = "error" | "warning" | "note";
@@ -40,6 +49,13 @@ export type ReconFinding = {
 };
 
 export const DEFAULT_LAG_SECONDS = 300;
+/** JWT の寿命（秒）。発行から引き受けまでの正規の最長（iat + 300 = exp）。 */
+export const JWT_LIFETIME_SECONDS = TOKEN_TTL_SECONDS;
+/**
+ * 時計ずれの許容（秒）。Worker の時計と CloudTrail の時計の差。既定 60 秒は仮の値（CloudTrail の eventTime は秒単位、
+ * Worker の iat は秒に切り捨て）で、② の (ii) で実測してから決め直す。CLI の --clock-skew-seconds で変えられる。
+ */
+export const DEFAULT_CLOCK_SKEW_SECONDS = 60;
 /** Workers Logs の保持（Workers Paid）。② の発行記録の置き場所（cto の決裁）。 */
 export const DEFAULT_RETENTION_DAYS = 7;
 /** 既定のさかのぼり（保持より短く。決裁 (a)）。 */
@@ -63,7 +79,17 @@ export type ReconcileInput = {
   source: "api" | "file";
   lagSeconds?: number;
   retentionDays?: number;
+  /** 時計ずれの許容（秒。既定 DEFAULT_CLOCK_SKEW_SECONDS）。 */
+  clockSkewSeconds?: number;
+  /** 前回の成功した実行の「確認済みの区間の終わり」（epoch ミリ秒）。状態が無い（初回）なら undefined。 */
+  previousCoveredUntil?: number;
 };
+
+/** 確認済みの区間との関係。first_run は状態が無い初回（穴なしとして扱う）。 */
+export type Coverage =
+  | { status: "first_run" }
+  | { status: "continuous"; previous: number }
+  | { status: "gap"; previous: number };
 
 export type ReconcileSummary = {
   source: "api" | "file";
@@ -71,6 +97,11 @@ export type ReconcileSummary = {
   window: { since: number; until: number };
   retentionDays: number;
   lagSeconds: number;
+  clockSkewSeconds: number;
+  coverage: Coverage;
+  /** SourceIdentity を比べた対の数と、比べられなかった対の数。 */
+  identityCompared: number;
+  identityNotCompared: number;
   regionsRead: number;
   regionsTotal: number;
   lines: number;
@@ -124,6 +155,7 @@ const expectsAssume = (r: ReconRecord) => r.result === "ok" || r.accessKeyId !==
 export function reconcile(i: ReconcileInput): ReconcileResult {
   const lagSeconds = i.lagSeconds ?? DEFAULT_LAG_SECONDS;
   const retentionDays = i.retentionDays ?? DEFAULT_RETENTION_DAYS;
+  const clockSkewSeconds = i.clockSkewSeconds ?? DEFAULT_CLOCK_SKEW_SECONDS;
   const retentionCutoff = i.now - retentionDays * 86_400_000;
   const findings: ReconFinding[] = [];
   const add = (f: ReconFinding) => findings.push(f);
@@ -150,6 +182,8 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
   let matched = 0;
   let unverifiable = 0;
   let failedAssumes = 0;
+  let identityCompared = 0;
+  let identityNotCompared = 0;
   const when = (t: number) => new Date(t).toISOString();
 
   // ---- 引き受けの側 ----
@@ -214,6 +248,29 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
         ...base,
         detail: `${at} record role=${roleParts(r.roleArn)?.name ?? "-"} (${r.pos})`,
       });
+    // 時間: 引き受けの時刻 − 発行の時刻（iat。無い記録は記録の時刻 at。at は STS の応答のあとに書くので、前向きの差は少し小さく出る）。
+    // 後ろに寿命＋ずれを超える（JWT の寿命の外での引き受け、同じ jti の使い回し）か、前にずれを超える（発行の前の引き受け。
+    // 時計の異常か、作られた JWT に記録を合わせた形）なら、向きを detail に出す同じ所見にする。どちらも今は警告。
+    const issuedAt = r.iat !== undefined ? r.iat * 1000 : r.at;
+    const deltaSeconds = Math.round((e.time - issuedAt) / 1000);
+    if (deltaSeconds > JWT_LIFETIME_SECONDS + clockSkewSeconds || deltaSeconds < -clockSkewSeconds)
+      add({
+        severity: "warning",
+        code: "assume_time_gap",
+        ...base,
+        detail: `${at} ${deltaSeconds > 0 ? "+" : ""}${deltaSeconds}s from issue (allowed -${clockSkewSeconds}s..+${JWT_LIFETIME_SECONDS + clockSkewSeconds}s) (${r.pos})`,
+      });
+    // 利用者: 記録の伏せ字と CloudTrail の SourceIdentity の伏せ字。両方あるときだけ比べる（弱い一致: 先頭 1 文字と末尾のドメイン）
+    if (r.identity !== undefined && e.sourceIdentity !== undefined) {
+      identityCompared++;
+      if (r.identity !== e.sourceIdentity)
+        add({
+          severity: "warning",
+          code: "identity_mismatch",
+          ...base,
+          detail: `${at} the record's user and the event's SourceIdentity differ (masked) (${r.pos})`,
+        });
+    } else identityNotCompared++;
     const aux = [
       auxDiffers(r.accessKeyId, e.accessKeyId) ? "accessKeyId" : undefined,
       auxDiffers(r.requestId, e.requestId) ? "requestId" : undefined,
@@ -237,6 +294,12 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
         detail: `${ok.length} assumes (${ok.map((e) => e.region).join(",")})`,
       });
   }
+  if (identityNotCompared > 0)
+    add({
+      severity: "note",
+      code: "identity_not_compared",
+      detail: `${identityNotCompared} matched pairs without the user on the record or the SourceIdentity on the event`,
+    });
   if (unverifiable > 0)
     add({
       severity: "warning",
@@ -271,6 +334,19 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
     add({ severity: "error", code: "record_line_truncated", detail: pos });
   for (const pos of i.lines.unreadable)
     add({ severity: "error", code: "record_line_unreadable", detail: pos });
+  // 確認済みの区間: 前回の終わりより今回の読み始めが後なら、間の区間はどの実行も確かめていない（誤り）。状態が無い初回は穴なし
+  const coverage: Coverage =
+    i.previousCoveredUntil === undefined
+      ? { status: "first_run" }
+      : i.window.since > i.previousCoveredUntil
+        ? { status: "gap", previous: i.previousCoveredUntil }
+        : { status: "continuous", previous: i.previousCoveredUntil };
+  if (coverage.status === "gap")
+    add({
+      severity: "error",
+      code: "coverage_gap",
+      detail: `the previous confirmed interval ends ${when(coverage.previous)} but this run starts ${when(i.window.since)} (${Math.round((i.window.since - coverage.previous) / 3_600_000)}h not read)`,
+    });
   if (i.window.since < retentionCutoff)
     add({
       severity: "warning",
@@ -286,6 +362,10 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
       window: i.window,
       retentionDays,
       lagSeconds,
+      clockSkewSeconds,
+      coverage,
+      identityCompared,
+      identityNotCompared,
       regionsRead: i.regions.read.length,
       regionsTotal: i.regions.read.length + i.regions.unread.length,
       lines: i.lines.total,
@@ -310,6 +390,21 @@ export function reconcileExitCode(r: ReconcileResult): 0 | 1 {
   return r.findings.some((f) => f.severity === "error") || r.summary.unverifiable > 0 ? 1 : 0;
 }
 
+/**
+ * 成功した実行（終了コード 0）が進める「確認済みの区間の終わり」。成功でなければ undefined（進めない）。
+ * 終わりは「今回の終わり − 反映の遅れ（lag）」: 最後の lag の間は CloudTrail の反映が間に合わず、まだ判定していない（pending）。
+ * 前回が先なら戻さない。誤りがある実行や検証できない引き受けがある実行で進めると、誤りが次の実行の区間の外に出て埋もれるので進めない
+ * （穴の誤りが出た実行も、誤りなので進めない。直すには、読み始めを前回の終わり以前に戻して回す）。
+ */
+export function nextCoveredUntil(
+  r: ReconcileResult,
+  previous: number | undefined,
+): number | undefined {
+  if (reconcileExitCode(r) !== 0) return undefined;
+  const settled = r.summary.window.until - r.summary.lagSeconds * 1000;
+  return previous === undefined ? settled : Math.max(previous, settled);
+}
+
 // ---- 出力 ----
 
 /** アカウント ID（12 桁）と email を伏せる（jti は所見の時点で先頭 8 文字だけ）。 */
@@ -320,6 +415,15 @@ export function redactReconcile(text: string): string {
 }
 
 const LABEL: Record<Severity, string> = { error: "ERROR", warning: "WARN ", note: "NOTE " };
+
+function coverageLine(c: Coverage): string {
+  const iso = (t: number) => new Date(t).toISOString();
+  if (c.status === "first_run")
+    return "coverage: first run (no confirmed interval on record; treated as no gap)";
+  if (c.status === "continuous")
+    return `coverage: continuous (the previous confirmed interval ends ${iso(c.previous)})`;
+  return `coverage: GAP (the previous confirmed interval ends ${iso(c.previous)}; this run starts later)`;
+}
 
 /** 結果を 1 行ずつの文字列にする（伏せ字済み）。最後に件数の行。 */
 export function formatReconcileReport(
@@ -335,6 +439,9 @@ export function formatReconcileReport(
     `regions: read ${s.regionsRead}/${s.regionsTotal}`,
     `records: ${s.records} (this account ${s.recordsThisAccount}, lines ${s.lines}), console assumes: ${s.consoleAssumes} (failed ${s.failedAssumes}), matched: ${s.matched}`,
     `unverifiable: ${s.unverifiable}, truncated lines: ${s.truncatedLines}, unreadable lines: ${s.unreadableLines}, pending: ${s.pending}`,
+    `time check: lifetime ${JWT_LIFETIME_SECONDS}s + clock skew ${s.clockSkewSeconds}s (warning only)`,
+    `identity: compared ${s.identityCompared}, not compared ${s.identityNotCompared}`,
+    coverageLine(s.coverage),
   ];
   const order: Severity[] = ["error", "warning", "note"];
   for (const sev of order)
