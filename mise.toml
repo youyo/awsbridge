@@ -128,6 +128,10 @@ run = "pnpm tsx scripts/console/config.ts generate"
 description = "参考のロールのテンプレート infra/aws/console/kind.example.yaml を、会社用の設定の例（config/console.company.example.json）の種類 C から書き直す（生成器を変えたら回す）"
 run = "pnpm tsx scripts/console/kind-example.ts"
 
+[tasks."console:inspect"]
+description = "コンソールログインの検査の道具: プロファイルのアカウントの IAM を読み（書き込まない）、信頼ポリシー（許可リスト方式）・パス・守りの部品の今の版・予約名の衝突・棚卸し・署名アカウントを確かめる（--profile <名前> が要る。--stops <file> で停止中の確認。出力は伏せ字）"
+run = "pnpm tsx scripts/console/inspect.ts"
+
 # ---- コンソールログイン: Admin の署名鍵（Workers の secret_key 型。X1 の決裁）。手順は README の「コンソールログインの Admin の署名鍵」----
 # 人が手元で実行する（CI から実行しない）。put と retire は -- --yes を付けたときだけ Cloudflare API を書き換える（既定は表示だけ）。
 # 変数（[env] に置かず mise.local.toml に置く）: AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID、AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN（任意。無ければ wrangler の OAuth）、
