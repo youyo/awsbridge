@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "identity": { "sourceIdentity": "email" },
   "portal": {
     "standardOrigin": "https://portal.example.com",
     "adminOrigin": "https://admin-portal.example.com",

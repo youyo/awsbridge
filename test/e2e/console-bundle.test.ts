@@ -5,7 +5,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { AUDIENCE, ROLE_PATH_PREFIX, TEAM_TAG_KEY } from "../../src/console/config";
+import { AUDIENCE, ROLE_PATH_PREFIX, TEAM_TAG_KEY } from "../../src/console/constants";
 
 const root = new URL("../../", import.meta.url).pathname;
 let out = "";

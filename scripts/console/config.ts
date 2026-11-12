@@ -62,6 +62,7 @@ function main(cmd: string): void {
   mkdirSync(outDir, { recursive: true, mode: 0o700 });
   const files: [string, unknown][] = [
     ["worker.standard.json", artifacts.worker.standard],
+    ["display.standard.json", artifacts.display],
     ["stacksets.json", artifacts.stacksets],
     ["access.json", artifacts.access],
   ];

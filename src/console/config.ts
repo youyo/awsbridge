@@ -5,24 +5,24 @@
 // エラーは「キーのパス」と「種別」だけで表し、設定の値（AUD・email・アカウント ID など）を文面に出さない。
 // パスに入る、利用者が書いたキー（未知のキー・assign などのマップのキー）は、名前の形でなければ <redacted> にする（safeKey）。
 
-export const CONSOLE_SCHEMA_VERSION = 1;
-/** セッションタグのキー（チーム）。cto の D9 で名前空間つきに決めた。 */
-export const TEAM_TAG_KEY = "awsbridge_team";
-/** OIDC の audience（全階層・全境界で 1 つ。MCP 用の awsbridge と重ならない）。 */
-export const AUDIENCE = "awsbridge-console";
-/** コンソールログイン用のロールの IAM パスの接頭辞（SCP・aws:PrincipalArn で「すべて」を止めるときに使う）。 */
-export const ROLE_PATH_PREFIX = "/awsbridge-console/";
-export const SESSION_SECONDS_MIN = 900;
-export const SESSION_SECONDS_MAX = 43200;
+import {
+  ACCOUNT_ID_RE,
+  AUD_RE,
+  CONSOLE_SCHEMA_VERSION,
+  DEFAULT_SOURCE_IDENTITY,
+  isEmail,
+  isSourceIdentitySource,
+  NAME_RE,
+  type Routing,
+  SESSION_SECONDS_MAX,
+  SESSION_SECONDS_MIN,
+  type SourceIdentitySource,
+  TIERS,
+  type Tier,
+  UUID_RE,
+} from "./constants";
 
-export type Tier = "standard" | "admin";
-export const TIERS: readonly Tier[] = ["standard", "admin"];
-/** 階層をパスに書くときの名前（issuer のパス /std・/admin と同じ）。 */
-const TIER_SEGMENT: Record<Tier, string> = { standard: "std", admin: "admin" };
-/** ロールの IAM パス（P-2: /awsbridge-console/<tier>/）。階層だけを止める SCP の条件に使える。 */
-export const rolePath = (tier: Tier): string => `${ROLE_PATH_PREFIX}${TIER_SEGMENT[tier]}/`;
 export type EmailMode = "full" | "masked" | "hidden";
-export type Routing = "path" | "host";
 
 export type TeamAccess = { groupObjectIds: string[] } | { policyIds: string[] } | { aud: string };
 
@@ -73,6 +73,8 @@ export type ConsolePortal = {
 
 export type ConsoleConfig = {
   schemaVersion: 1;
+  /** SourceIdentity の値の出どころ（省略すると email）。 */
+  identity: { sourceIdentity: SourceIdentitySource };
   portal: ConsolePortal;
   teams: ConsoleTeam[];
   roles: ConsoleRole[];
@@ -113,7 +115,9 @@ export type ConsoleConfigIssueCode =
   | "aud_mismatch"
   | "entry_aud_missing"
   | "ou_nested"
+  | "signin_access_admin"
   // 以下は警告
+  | "signin_access_standard"
   | "unassigned_team"
   | "unassigned_role"
   | "unassigned_accounts"
@@ -137,22 +141,19 @@ export class ConsoleConfigError extends Error {
 
 // ---- 値の形 ----
 
-const NAME_RE = /^[a-z][a-z0-9-]{0,31}$/; // チーム・ロール・Organization（タグの値・URL のパス・Access アプリの名前に使う）
 const KIND_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
 const BOUNDARY_RE = /^(managed|partner:[a-z][a-z0-9-]{0,31})$/;
 const IAM_ROLE_NAME_RE = /^[\w+=,.@-]{1,64}$/;
 const AWS_MANAGED_POLICY_RE = /^arn:aws(-[a-z]+)*:iam::aws:policy\/[\w+=,.@/-]{1,512}$/;
 const ROLE_ARN_RE = /^arn:aws(-[a-z]+)*:iam::\d{12}:role\/[\w+=,.@/-]{1,512}$/;
 const OU_RE = /^ou-[0-9a-z]{4,32}-[a-z0-9]{8,32}$/;
-export const ACCOUNT_ID_RE = /^\d{12}$/;
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export const AUD_RE = /^[A-Za-z0-9]{16,128}$/;
 const REGION_RE = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/;
 const ACCOUNT_NAME_MAX = 50;
 const DISPLAY_NAME_MAX = 100;
 
-export const isEmail = (s: string) => s.length >= 6 && s.length <= 64 && EMAIL_RE.test(s);
+/** 管理ポリシー SignInLocalDevelopmentAccess の ARN か（パーティション・大文字小文字を問わない。名前の完全一致）。 */
+const isSignInLocalDevelopmentAccess = (arn: string) =>
+  /:policy\/(.+\/)?signinlocaldevelopmentaccess$/i.test(arn);
 
 /** ロールの name から StackSets のパラメーター名を作る（read-only → ReadOnlyTeams）。 */
 export function teamsParameterName(roleName: string): string {
@@ -596,6 +597,18 @@ function parseOrganization(
   return { ...common, placement, accounts };
 }
 
+function parseIdentity(raw: unknown, out: IssueList): ConsoleConfig["identity"] {
+  const identity: ConsoleConfig["identity"] = { sourceIdentity: DEFAULT_SOURCE_IDENTITY };
+  if (raw === undefined) return identity;
+  const o = readObj(raw, "identity", ["sourceIdentity"], out);
+  if (o?.sourceIdentity === undefined) return identity;
+  // email（既定）か custom.<名前>。sub は受け付けない（発行記録に残す値で、SourceIdentity には使わない）
+  if (typeof o.sourceIdentity !== "string") out.add("identity.sourceIdentity", "type");
+  else if (!isSourceIdentitySource(o.sourceIdentity)) out.add("identity.sourceIdentity", "pattern");
+  else identity.sourceIdentity = o.sourceIdentity;
+  return identity;
+}
+
 function parseInventory(raw: unknown, out: IssueList): ConsoleConfig["inventory"] {
   // 既定はすべて表示（Q-P9 の決定: 社員だけが使う前提で、管理外の先方の email も出す）
   const accountEmail: ConsoleConfig["inventory"]["accountEmail"] = {
@@ -629,6 +642,7 @@ function collect<T>(
 const TOP_KEYS = [
   "$schema",
   "schemaVersion",
+  "identity",
   "portal",
   "teams",
   "roles",
@@ -661,6 +675,7 @@ export function parseConsoleConfig(input: unknown): {
   else if (o.schemaVersion !== CONSOLE_SCHEMA_VERSION) out.add("schemaVersion", "schema_version");
   if (o.$schema !== undefined && typeof o.$schema !== "string") out.add("$schema", "type");
 
+  const identity = parseIdentity(o.identity, out);
   const portal = parsePortal(o.portal, out);
   const teams = collect(o, "teams", out, parseTeam).items;
   const roles = collect(o, "roles", out, parseRole).items;
@@ -675,6 +690,7 @@ export function parseConsoleConfig(input: unknown): {
   if (out.items.length > 0 || !portal) throw new ConsoleConfigError(out.items);
   const config: ConsoleConfig = {
     schemaVersion: 1,
+    identity,
     portal,
     teams: teams as ConsoleTeam[],
     roles: roles as ConsoleRole[],
@@ -711,6 +727,17 @@ function crossCheck(c: ParsedParts, out: IssueList, warnings: IssueList): void {
   const roleNames = new Names();
   c.roles.forEach((r, i) => {
     if (r) roleNames.check(r.roleName, `roles[${i}].roleName`, out);
+  });
+  // aws login を localhost と remote に分けて許すため、両方を許す管理ポリシー SignInLocalDevelopmentAccess は付けない
+  // （console-login.md §4.4 (4)）。Admin の階層は --remote を許さないので誤り、Standard は警告（参考の形は自前のポリシーで 2 つのリソースだけに許す）
+  c.roles.forEach((r, i) => {
+    if (!r) return;
+    r.managedPolicyArns.forEach((arn, j) => {
+      if (!isSignInLocalDevelopmentAccess(arn)) return;
+      const p = `roles[${i}].permissions.managedPolicyArns[${j}]`;
+      if (r.tier === "admin") out.add(p, "signin_access_admin");
+      else warnings.add(p, "signin_access_standard");
+    });
   });
   // StackSets のパラメーター名の衝突（名前そのものの重複は上で duplicate にする）
   const params = new Map<string, string>();

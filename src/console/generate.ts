@@ -2,34 +2,46 @@
 // 設計: docs/specs/console-login-portal.md §5.2（一覧の形）・§9.10（分離）・§11.4（生成するもの）・§11.5（検査の順）・§11.6（誤りの扱い）。
 // 副作用のない純粋関数だけを置く（ファイルの読み書きは scripts/console/config.ts）。MCP 用 Worker からは import しない。
 //
-// 分離の約束（§9.10・§11.2）: Worker 用の生成物には、その階層のチーム・ロール・境界の issuer・一覧の行だけを入れる。
+// 分離の約束（§9.10・§11.2）: 発行用（worker.<tier>.json）には、その階層のチーム・ロール・境界の issuer・一覧の行だけを入れる。
 // 種類の定義（kinds）・Entra のグループの Object ID・Access のポリシー ID・権限ポリシー・OU・他の階層の AUD は入れない。
-// 2026-11-12 の決裁（P1'・U2）で、Standard の生成物に表示用の Admin の行と、表示用の対応表（Object ID → チーム）を
-// 入れてよいことになった（Admin の AUD・ポリシー ID は入れない）。いまの実装は前の約束のまま（ポータル本体と一緒に足す。§5.2）。
+// 2026-11-12 の決裁（P1'・U2）で、Standard のデプロイにだけ渡す表示用の生成物（display.standard.json）を別に作る。
+// 表示用は、入口の一覧のための Administrator の行（表示用だけ。email なし）と Entra グループの Object ID → チームの対応表を持つ。
+// AUD・Access のポリシー ID・issuer・roleArn は持たない（発行には使えない）。型は types.ts（契約）。
 
 import {
-  ACCOUNT_ID_RE,
-  AUD_RE,
-  AUDIENCE,
   type ConsoleConfig,
   ConsoleConfigError,
   type ConsoleConfigIssue,
   type ConsoleRole,
   type EmailMode,
   IssueList,
-  isEmail,
   join,
-  ROLE_PATH_PREFIX,
-  type Routing,
   readMap,
   readObj,
   readStr,
+  teamsParameterName,
+} from "./config";
+import {
+  ACCOUNT_ID_RE,
+  AUD_RE,
+  AUDIENCE,
+  isEmail,
+  ROLE_PATH_PREFIX,
+  type Routing,
   rolePath,
   TEAM_TAG_KEY,
   TIERS,
   type Tier,
-  teamsParameterName,
-} from "./config";
+} from "./constants";
+import type {
+  DisplayAccount,
+  DisplayConfig,
+  DisplayGroup,
+  Meta,
+  WorkerAccount,
+  WorkerAccountRole,
+  WorkerConfig,
+} from "./types";
 
 export type GenerateMode = "check" | "deploy";
 
@@ -42,49 +54,6 @@ export type GenerateOptions = {
   auds?: unknown;
   /** placement: ou の Organization のアカウント: { <Organization>: [{ accountId, name, email?, ouPath, status? }] }。 */
   inventory?: unknown;
-};
-
-type Meta = { schemaVersion: 1; generatedAt: string; sourceRevision?: string };
-
-export type WorkerTeam = { name: string; displayName: string; aud?: string };
-export type WorkerRole = {
-  name: string;
-  roleName: string;
-  displayName: string;
-  sessionSeconds: number;
-};
-export type WorkerAccountRole = {
-  role: string;
-  roleArn: string;
-  teams: string[];
-  sessionSeconds: number;
-};
-export type WorkerAccount = {
-  accountId: string;
-  name: string;
-  email?: string;
-  orgLabel: string;
-  boundary: string;
-  kind: string;
-  roles: WorkerAccountRole[];
-};
-export type WorkerConfig = Meta & {
-  tier: Tier;
-  tagKey: string;
-  portal: {
-    origin: string;
-    /** もう一方の階層のオリジン（Standard では Administrator の行の遷移先、Admin では一覧への戻り先。§8）。 */
-    peerOrigin?: string;
-    routing: Routing;
-    regions?: { allowed: string[]; default: string };
-    supportUrl?: string;
-    entryAud?: string;
-  };
-  teams: WorkerTeam[];
-  roles: WorkerRole[];
-  boundaries: { name: string; issuer: string }[];
-  organizations: { name: string; displayName: string }[];
-  accounts: WorkerAccount[];
 };
 
 export type StackSetsRole = {
@@ -139,6 +108,8 @@ export type AccessSummary = Meta & {
 
 export type ConsoleArtifacts = {
   worker: { standard: WorkerConfig; admin?: WorkerConfig };
+  /** 表示用（Standard のデプロイにだけ渡す。display.standard.json）。 */
+  display: DisplayConfig;
   stacksets: StackSetsParams;
   access: AccessSummary;
   warnings: ConsoleConfigIssue[];
@@ -212,8 +183,10 @@ function resolveAuds(
     const aud = fromTf ?? manual;
     const teamCount = config.teams.filter((t) => t.tier === tier).length;
     if (aud === undefined) {
-      // 入口のアプリはチームが 2 つ以上のときだけ要る（1 つならそのチームのアプリで守る。§11.7）
-      if (requireAud && teamCount >= 2) out.add(`portal.entryAud.${tier}`, "entry_aud_missing");
+      // 入口のアプリは Standard のチームが 2 つ以上のときだけ要る（1 つならそのチームのアプリで守る。§11.7）。
+      // Admin の入口の AUD は要求しない（入口は共通で Standard に置く。Admin の入口のアプリの扱いは G-6 が決まるまで未決）。
+      if (requireAud && tier === "standard" && teamCount >= 2)
+        out.add(`portal.entryAud.${tier}`, "entry_aud_missing");
       continue;
     }
     use(aud, fromTf !== undefined ? `auds.entry.${tier}` : `portal.entryAud.${tier}`);
@@ -342,16 +315,8 @@ const roleArn = (accountId: string, role: ConsoleRole) =>
 
 // ---- 生成 ----
 
-function buildWorker(
-  config: ConsoleConfig,
-  tier: Tier,
-  auds: ResolvedAuds,
-  listed: Listed[],
-  meta: Meta,
-): WorkerConfig {
-  const { portal } = config;
-  const origin = tier === "standard" ? portal.standardOrigin : (portal.adminOrigin as string);
-  const peer = tier === "standard" ? portal.adminOrigin : portal.standardOrigin;
+/** その階層のロールだけで、一覧の行（アカウント × ロール）を展開する。ロールが 1 つもないアカウントは入れない。 */
+function buildAccounts(config: ConsoleConfig, tier: Tier, listed: Listed[]): WorkerAccount[] {
   const roles = config.roles.filter((r) => r.tier === tier);
   const kinds = new Map(config.kinds.map((k) => [k.name, k]));
   const accounts: WorkerAccount[] = [];
@@ -383,12 +348,34 @@ function buildWorker(
       roles: rowRoles,
     });
   }
-  const shownOrgs = new Set(accounts.map((a) => a.orgLabel));
+  return accounts;
+}
+
+const shownOrganizations = (config: ConsoleConfig, accounts: { orgLabel: string }[]) => {
+  const shown = new Set(accounts.map((a) => a.orgLabel));
+  return config.organizations
+    .filter((o) => shown.has(o.name))
+    .map((o) => ({ name: o.name, displayName: o.displayName }));
+};
+
+function buildWorker(
+  config: ConsoleConfig,
+  tier: Tier,
+  auds: ResolvedAuds,
+  listed: Listed[],
+  meta: Meta,
+): WorkerConfig {
+  const { portal } = config;
+  const origin = tier === "standard" ? portal.standardOrigin : (portal.adminOrigin as string);
+  const peer = tier === "standard" ? portal.adminOrigin : portal.standardOrigin;
+  const accounts = buildAccounts(config, tier, listed);
   const entryAud = auds.entry[tier];
   return {
     ...meta,
+    purpose: "issue",
     tier,
     tagKey: TEAM_TAG_KEY,
+    identity: { sourceIdentity: config.identity.sourceIdentity },
     portal: {
       origin,
       ...(peer !== undefined ? { peerOrigin: peer } : {}),
@@ -405,19 +392,75 @@ function buildWorker(
         const aud = auds.teams.get(t.name);
         return { name: t.name, displayName: t.displayName, ...(aud !== undefined ? { aud } : {}) };
       }),
-    roles: roles.map((r) => ({
-      name: r.name,
-      roleName: r.roleName,
-      displayName: r.displayName,
-      sessionSeconds: r.sessionSeconds,
-    })),
+    roles: config.roles
+      .filter((r) => r.tier === tier)
+      .map((r) => ({
+        name: r.name,
+        roleName: r.roleName,
+        displayName: r.displayName,
+        sessionSeconds: r.sessionSeconds,
+      })),
     boundaries: config.boundaries.flatMap((b) => {
       const issuer = b.issuers[tier];
       return issuer !== undefined ? [{ name: b.name, issuer }] : [];
     }),
-    organizations: config.organizations
-      .filter((o) => shownOrgs.has(o.name))
-      .map((o) => ({ name: o.name, displayName: o.displayName })),
+    organizations: shownOrganizations(config, accounts),
+    accounts,
+  };
+}
+
+/**
+ * 表示用の生成物（Standard のデプロイにだけ渡す）。入口の一覧（U2）の表示だけに使い、発行には使えない形にする:
+ * AUD・Access のポリシー ID・issuer・タグのキー・roleArn を持たず、Administrator の行（表示用だけ）には email も入れない。
+ */
+function buildDisplay(config: ConsoleConfig, listed: Listed[], meta: Meta): DisplayConfig {
+  const { portal } = config;
+  const accounts: DisplayAccount[] = [];
+  for (const tier of TIERS) {
+    for (const a of buildAccounts(config, tier, listed)) {
+      accounts.push({
+        tier,
+        accountId: a.accountId,
+        name: a.name,
+        // Administrator の行に email を入れない（司令塔の決定）。Standard の行は Worker 用と同じ規則
+        ...(tier === "standard" && a.email !== undefined ? { email: a.email } : {}),
+        orgLabel: a.orgLabel,
+        boundary: a.boundary,
+        kind: a.kind,
+        roles: a.roles.map(({ role, teams, sessionSeconds }) => ({ role, teams, sessionSeconds })),
+      });
+    }
+  }
+  // Entra グループの Object ID（小文字にそろえる）→ チーム。同じグループを持つチームはまとめる
+  const groups = new Map<string, DisplayGroup>();
+  for (const t of config.teams) {
+    if (!("groupObjectIds" in t.access)) continue;
+    for (const id of t.access.groupObjectIds) {
+      const key = id.toLowerCase();
+      const g = groups.get(key) ?? { objectId: key, teams: [] };
+      if (!g.teams.includes(t.name)) g.teams.push(t.name);
+      groups.set(key, g);
+    }
+  }
+  return {
+    ...meta,
+    purpose: "display",
+    tier: "standard",
+    portal: {
+      origin: portal.standardOrigin,
+      ...(portal.adminOrigin !== undefined ? { adminOrigin: portal.adminOrigin } : {}),
+      routing: portal.routing,
+      ...(portal.supportUrl !== undefined ? { supportUrl: portal.supportUrl } : {}),
+    },
+    teams: config.teams.map((t) => ({ name: t.name, displayName: t.displayName, tier: t.tier })),
+    roles: config.roles.map((r) => ({
+      name: r.name,
+      displayName: r.displayName,
+      tier: r.tier,
+      sessionSeconds: r.sessionSeconds,
+    })),
+    groups: [...groups.values()],
+    organizations: shownOrganizations(config, accounts),
     accounts,
   };
 }
@@ -524,6 +567,7 @@ export function generateConsoleArtifacts(
   if (out.items.length > 0) throw new ConsoleConfigError(out.items);
   const hasAdmin = config.teams.some((t) => t.tier === "admin");
   return {
+    display: buildDisplay(config, listed, meta),
     worker: {
       standard: buildWorker(config, "standard", auds, listed, meta),
       ...(hasAdmin ? { admin: buildWorker(config, "admin", auds, listed, meta) } : {}),
