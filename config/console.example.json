@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "portal": { "standardOrigin": "https://aws.example.com" },
+  "portal": { "standardOrigin": "https://awsbridge-console.example.com" },
   "teams": [
     {
       "name": "me",
@@ -19,7 +19,10 @@
   ],
   "kinds": [{ "name": "default", "assign": { "viewer": ["me"] } }],
   "boundaries": [
-    { "name": "managed", "issuers": { "standard": "https://id.example.com/standard" } }
+    {
+      "name": "managed",
+      "issuers": { "standard": "https://awsbridge-oidc-console.example.com/std" }
+    }
   ],
   "organizations": [
     {

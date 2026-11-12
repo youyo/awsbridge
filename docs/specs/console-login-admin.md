@@ -54,9 +54,9 @@
 
 ```
 利用者のブラウザ
-  │ ① 共通の入口（Standard のオリジン https://portal.<domain>/）の一覧で Administrator の行を選ぶ（GET のリンク）
+  │ ① 共通の入口（Standard のオリジン https://awsbridge-console.<domain>/）の一覧で Administrator の行を選ぶ（GET のリンク）
   ▼
-Cloudflare Access（Admin の階層のチームのアプリ: https://admin-portal.<domain>/t/<team>/）
+Cloudflare Access（Admin の階層のチームのアプリ: https://awsbridge-admin-console.<domain>/t/<team>/）
   ▼
 Admin の Worker（Admin のデプロイ。Admin のオリジンと Admin の issuer のホストだけ）
   │ ② S2（確認）→ ③ POST /t/<team>/login → 検査の 9 段（portal §9.3）と Access JWT の追加の検査（§3.1）
@@ -73,13 +73,13 @@ issuer の公開文書（discovery と JWKS）: Admin の Worker が <admin-issu
 | 部品 | 内容 | 置き場所 |
 |---|---|---|
 | Admin の Worker | Admin のオリジンの S1〜S5 と発行（POST）、`key-check`、Admin の issuer の discovery と JWKS。Standard の一覧の行・Standard の鍵・Standard のチームの AUD・入口の AUD を持たない | 別の Worker デプロイ（`wrangler.console-admin.jsonc`）。`workers_dev: false`・`preview_urls: false`。互換フラグ（`nodejs_compat`・`webcrypto_modern_algorithms`）は使わない |
-| 発行のオリジン | `https://admin-portal.<domain>`（設定の `portal.adminOrigin`）。Standard のオリジン（`portal.standardOrigin`）と別のホスト | Custom Domain |
-| Admin の issuer のホスト | `https://<admin-issuer-host>`（設定の `boundaries[].issuers.admin` は `https://<admin-issuer-host>/admin`）。Standard の issuer のホストとも、ポータルのホストとも別。Access アプリは置かない | Custom Domain |
+| 発行のオリジン | `https://awsbridge-admin-console.<domain>`（設定の `portal.adminOrigin`）。Standard のオリジン（`portal.standardOrigin`）と別のホスト | Custom Domain |
+| Admin の issuer のホスト | `https://<admin-issuer-host>`（例 `awsbridge-oidc-admin-console.<domain>`。設定の `boundaries[].issuers.admin` は `https://<admin-issuer-host>/admin`）。Standard の issuer のホストとも、ポータルのホストとも別。Access アプリは置かない。このドメインを奪われると Admin の issuer を奪われるので、自動更新・レジストラのロック・ゾーンの権限を絞る（[console-login.md](console-login.md) §3.1） | Custom Domain |
 | 署名鍵 | 管理下の Admin の鍵 1 つ（差し替えの間だけ 2 つ。§6）。Worker の `secret_key` バインディング。公開鍵は vars | Cloudflare（§4） |
 | Admin のプロバイダー | 基盤のスタックの Admin のプロバイダー。**まだ実装していない**（§12.3） | Administrator を配る各アカウント |
 | Administrator のロール | `/awsbridge-console/admin/` の下。信頼ポリシーの `Principal` は Admin のプロバイダー 1 つだけ。`MaxSessionDuration` は 1 時間（§9） | 同じ |
 | Admin の守りの部品 | 顧客管理ポリシー（console-login.md §4.8 の Admin の列） | 基盤のスタック |
-| Access アプリ | Admin の階層のチームごと（`admin-portal.<domain>/t/<team>/`）。**すべてのチームのアプリで Cookie Path を有効にする**（§3.1）。Admin の Worker の設定にだけ AUD を入れる | Cloudflare |
+| Access アプリ | Admin の階層のチームごと（`awsbridge-admin-console.<domain>/t/<team>/`）。**すべてのチームのアプリで Cookie Path を有効にする**（§3.1）。Admin の Worker の設定にだけ AUD を入れる | Cloudflare |
 
 ### 2.1 Admin の issuer の形（I-B で確定）
 

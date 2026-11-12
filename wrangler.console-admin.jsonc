@@ -2,6 +2,7 @@
   // コンソールログインの Admin の Worker（docs/specs/console-login-portal.md §3・§8・§9、X1 の決裁）。MCP 用の wrangler.jsonc・Standard の wrangler.console-standard.jsonc とは別の Worker。
   // これは上流の「例」。下流は自前の wrangler.<name>-console-admin.jsonc を書き、routes・vars を自分の値にする（このファイルは編集しない）。
   // 入口は自社ドメインの Custom Domain だけ。workers_dev と Preview URL は無効（Access を経由しない入口を閉じる。console-login.md §5 の T11）。
+  //   例のホスト: ポータル = awsbridge-admin-console.example.com、issuer = awsbridge-oidc-admin-console.example.com（issuer の URL は https://awsbridge-oidc-admin-console.example.com/admin）。
   //   1. Admin のポータルのホスト（設定の portal.adminOrigin。ホスト方式ならチームごとの <team>.<host> も）。Access で守る
   //   2. Admin の issuer のホスト（設定の boundaries[].issuers.admin のホスト。パスは /admin）。discovery と JWKS の 2 つのパスだけを返す（A-3 = I-B）。
   //      Standard の issuer のホスト・ポータルのホストと別のホストにする（設定の検査 admin_issuer_host_shared・issuer_host_overlaps_portal）。
@@ -35,8 +36,8 @@
   "preview_urls": false,
   "observability": { "enabled": true },
   "routes": [
-    { "pattern": "admin-portal.example.com", "custom_domain": true },
-    { "pattern": "admin-id.example.com", "custom_domain": true }
+    { "pattern": "awsbridge-admin-console.example.com", "custom_domain": true },
+    { "pattern": "awsbridge-oidc-admin-console.example.com", "custom_domain": true }
   ],
   "alias": { "awsbridge:console-worker-admin": "./.generated/console/worker.admin.json" },
   "vars": {

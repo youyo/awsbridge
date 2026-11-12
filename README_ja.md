@@ -4,7 +4,7 @@
 
 Bridge AI agents to AWS.
 
-Cloudflare Access で認証された利用者の身元を、利用者ごとの AWS 一時認証情報（STS）に変換し、SigV4 署名して AWS MCP Server へ中継する Cloudflare Worker です。Cloudflare MCP Server Portal の背後に置くことを前提としています。
+Cloudflare Access で認証された利用者の身元を、利用者ごとの AWS 一時認証情報（STS）に変換し、SigV4 署名して AWS MCP Server へ中継する Cloudflare Worker です。Cloudflare MCP Portal の背後に置くことを前提としています。
 
 > 開発初期段階です。設計は [docs/specs/architecture.md](docs/specs/architecture.md) を参照してください。
 
@@ -20,19 +20,34 @@ Cloudflare 側（Worker）と AWS 側（CloudFormation）は完全に分かれ�
 - Cloudflare 側: `wrangler login` 済みのアカウント
 - AWS 側: IAM と CloudFormation を操作できる権限を持つ AWS プロファイル
 
+### ホストを決める（独自ドメインが基本）
+
+Worker の issuer の URL は IAM の OIDC プロバイダーの URL になるので、先にホストを決めます。基本の形は、自分のドメインのホストを、issuer と MCP の接続先に分けて使います（下の `example.com` はプレースホルダーです）。1 つの MCP Worker に Custom Domain を 2 つ付けます。
+
+| 役割 | 例 | 備考 |
+|---|---|---|
+| OIDC issuer | `https://awsbridge-oidc-mcp.example.com`（パスなし） | `AWSBRIDGE_ISSUER`。STS がここの `/.well-known/*` を読むので公開にする（ホストを覆う広い Access のアプリがあるなら bypass にする）。`/mcp` を含むほかのパスは、Worker が Access JWT を検証し、このホストに来た要求には付いていないので 401 になる。接頭辞 `awsbridge-oidc-` は、issuer だけのホストの目印。issuer にも `awsbridge` を付けるのは、同じドメインで別の仕組みの OIDC を立てたときに、持ち主が分かるようにするため |
+| MCP の接続先 | `https://awsbridge-mcp.example.com/mcp` | MCP クライアントが接続するホスト。Access のアプリはこのホストを守り、その AUD が Worker の `ACCESS_AUD` になる |
+
+- Worker の設定は `wrangler.jsonc` の `env.prod` です（`routes` に `custom_domain` が 2 つ。`workers_dev` と `preview_urls` は `false` で、Access を経由しない入口を閉じます）。`AWSBRIDGE_WRANGLER_ENV=prod` で選びます。下流リポジトリは、これを自前の `wrangler.<name>.jsonc` に写し、ホストを自分の値にします。
+- ドメインは Cloudflare のアカウントにあるゾーンにします。Custom Domain の DNS レコードと証明書は Cloudflare が作ります。
+- **issuer のホストは、IAM の OIDC プロバイダーが信頼する相手です。** これを乗っ取った者は、AWS が受け付けるトークンを発行できます。ドメインの自動更新を有効にし、レジストラでドメインをロックし、ゾーン（DNS・Routes・Custom Domain）の編集と Worker のデプロイができる人を絞ってください。
+- 手軽に試すだけなら workers.dev も使えます。既定の `AWSBRIDGE_WRANGLER_ENV=dev` は `awsbridge-dev` を `https://<worker>.<subdomain>.workers.dev` にデプロイし、この 1 つのホストが issuer と接続先を兼ねます。実際の運用は独自ドメインにしてください。
+
 ### 初回の順序
 
-Worker の URL が OIDC issuer になるため、次の順で進めます。
+issuer の URL が OIDC issuer になるため、次の順で進めます。
 
-1. Cloudflare 側: `mise run keygen` → `mise.local.toml` に `AWSBRIDGE_ISSUER` などを設定 → `cp config/profiles.example.json config/profiles.json`（ビルドに必須。中身はこの時点ではダミーのままでよい）→ `mise run deploy:worker`（Worker の URL を確定させる。この時点ではダミーのロール ARN なので `/mcp` は使えない）
+1. Cloudflare 側: `mise run keygen` → `mise.local.toml` に `AWSBRIDGE_ISSUER`（`https://awsbridge-oidc-mcp.example.com`）・`AWSBRIDGE_WRANGLER_ENV`（`prod`）などを設定 → `cp config/profiles.example.json config/profiles.json`（ビルドに必須。中身はこの時点ではダミーのままでよい）→ `mise run deploy:worker`（issuer の URL を確定させる。この時点ではダミーのロール ARN なので `/mcp` は使えない）
 2. AWS 側: `AWS_PROFILE=<対象> mise run deploy:aws`（出力 `ReadOnlyRoleArn` / `DebugRoleArn` を控える）
 3. プロファイル一覧を登録する。`config/profiles.json` に出力のロール ARN を書き（下の「マルチアカウント」）、`mise run deploy:worker` で反映する。一覧は環境変数ではなく Worker にバンドルされる JSON なので、`config/profiles.json` が無いとビルドが失敗する（未設定はエラー）
+4. 接続先のホストを Cloudflare Access で守る（`infra/cloudflare` を参照）。アプリは `awsbridge-mcp.example.com` だけに置き、`awsbridge-oidc-mcp.example.com` の `/.well-known/openid-configuration` と `/.well-known/jwks.json` は公開のままにする。アプリの AUD を `AWSBRIDGE_ACCESS_AUD` に入れて `mise run secrets` を実行する。そのあと、`awsbridge-oidc-mcp.example.com` の `/mcp` が 401 になること、workers.dev と Preview URL が応答しないことを確かめる
 
 2 回目以降は、変更した側だけを流します。
 
 ### AWS 側（対象アカウントごと）
 
-[infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml) を流すだけです。Worker の URL を issuer とする IAM OIDC プロバイダーと、Worker 発行の JWT で引き受ける 2 つのロール（読み取り専用 `FederatedAwsBridgeMcpViewer`、デバッグ `FederatedAwsBridgeMcpDebugger`）を作ります。この MCP 用ロールは、人のコンソールログインのロール（Viewer / Administrator）とは独立した別のロールで、人にコンソールのロールを与えても MCP 用ロールの権限は変わりません。Viewer（`FederatedAwsBridgeMcpViewer`）は全員が使えます。Debugger（`FederatedAwsBridgeMcpDebugger`）を誰に渡すかは、下流の設定（`DebugAllowedSubjects`）で決めます（上流は規則を持ちません）。渡すときの注意: Debugger はリモートシェルなどで実行先のロールの権限を得られ、その権限には MCP 経由の条件が付きません。
+[infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml) を流すだけです。Worker の issuer の URL を issuer とする IAM OIDC プロバイダーと、Worker 発行の JWT で引き受ける 2 つのロール（読み取り専用 `FederatedAwsBridgeMcpViewer`、デバッグ `FederatedAwsBridgeMcpDebugger`）を作ります。この MCP 用ロールは、人のコンソールログインのロール（Viewer / Administrator）とは独立した別のロールで、人にコンソールのロールを与えても MCP 用ロールの権限は変わりません。Viewer（`FederatedAwsBridgeMcpViewer`）は全員が使えます。Debugger（`FederatedAwsBridgeMcpDebugger`）を誰に渡すかは、下流の設定（`DebugAllowedSubjects`）で決めます（上流は規則を持ちません）。渡すときの注意: Debugger はリモートシェルなどで実行先のロールの権限を得られ、その権限には MCP 経由の条件が付きません。
 
 ```
 AWS_PROFILE=<対象> mise run deploy:aws    # CloudFormation をデプロイ（何度でも別アカウントに流せる）
@@ -49,7 +64,7 @@ mise exec -- env AWS_PROFILE=<対象> AWSBRIDGE_ALLOWED_SUBJECTS="user@example.c
 
 | パラメーター | 説明 |
 |---|---|
-| `IssuerHost` | Worker のホスト名（`https://` と末尾 `/` なし。例: `awsbridge.example.workers.dev`） |
+| `IssuerHost` | OIDC issuer のホスト、つまり `AWSBRIDGE_ISSUER` のホスト（`https://` と末尾 `/` なし。例: `awsbridge-oidc-mcp.example.com`。workers.dev の試用なら `awsbridge-dev.example.workers.dev`） |
 | `Audience` | JWT の audience（既定 `awsbridge`。Worker の `STS_AUDIENCE` と一致させる） |
 | `AllowedSubjects` | 読み取り専用ロールを引き受けられる利用者（カンマ区切り。下記の書式。小文字で指定） |
 | `DebugAllowedSubjects` | デバッグロールを引き受けられる利用者（同じ書式。読み取り専用より絞ることを勧めます） |
@@ -112,7 +127,8 @@ mise run deploy:worker   # wrangler deploy → secrets を順に実行（AWS は
 
 ```toml
 [env]
-AWSBRIDGE_ISSUER = "https://awsbridge.example.workers.dev"   # Worker の URL（OIDC issuer）
+AWSBRIDGE_ISSUER = "https://awsbridge-oidc-mcp.example.com"             # OIDC issuer（自分のドメインの専用ホスト。パスなし）。MCP の接続先 awsbridge-mcp.example.com とは別
+AWSBRIDGE_WRANGLER_ENV = "prod"                               # wrangler.jsonc の env.prod（Custom Domain）。既定は dev（workers.dev。試用向け）
 AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org" # 読み取り専用ロールを引き受けられる利用者（カンマ区切り）
 AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS = "admin@example.com"       # デバッグロールを引き受けられる利用者（カンマ区切り）
 # AWSBRIDGE_READONLY_ROLE_NAME = "FederatedAwsBridgeMcpViewer"        # 任意。ロール名（既定値）
@@ -184,7 +200,7 @@ mise run secrets        #    古い公開鍵を JWKS から外す
 - プロファイル名: 英数字・`_`・`-` の 1〜32 文字（超えると 500 `server_misconfigured`）。数字だけの名前はオブジェクトの規則で数値順に先に並ぶので、順を意図するなら避けてください。
 - `default`: 必須。`aws_profile` を省略したとき、および `tools/list` など `tools/call` 以外で使うプロファイル。
 - `tools`: 任意。`aws_profile` の対象ツール（省略時は全ツール。通常は省略でよい）。名前は AWS MCP Server が返す実際のツール名（例: `aws___run_script`。`tools/list` で確認できる）で、存在しない名前を書くと `aws_profile` が効きません。対象外ツールに付いた `aws_profile` は無視して取り除きます。
-- `tools/list` の応答には、対象ツールの `inputSchema.properties.aws_profile`（`{type: "string", description}`。`enum` は持たず、`description` にも既定値やプロファイル名は入れません）を注入し、あわせて `list_aws_profiles` ツールを追加します（`tools/list` のページングで 2 ページ目以降には追加しません）。クライアント（Claude など）は `list_aws_profiles` を呼んで、使えるプロファイルを実行時に取得します。このツールは認証後に Worker が自分で応答し、`{default, profiles: [{name, description?}]}` を返します（`roleArn` は含めません）。注入するスキーマはプロファイル一覧に依存しないので、プロファイルを追加するだけなら MCP Server Portal の再同期も claude.ai の再接続も要りません。再同期・再接続が要るのは、上流のツール構成が変わったとき、または awsbridge の更新で注入するスキーマが変わったときです（`enum` を外して `list_aws_profiles` を追加した更新を取り込む初回を含みます）。上流が既に `aws_profile` を持つツールは注入しません。応答を加工できないときは原文のまま返します。
+- `tools/list` の応答には、対象ツールの `inputSchema.properties.aws_profile`（`{type: "string", description}`。`enum` は持たず、`description` にも既定値やプロファイル名は入れません）を注入し、あわせて `list_aws_profiles` ツールを追加します（`tools/list` のページングで 2 ページ目以降には追加しません）。クライアント（Claude など）は `list_aws_profiles` を呼んで、使えるプロファイルを実行時に取得します。このツールは認証後に Worker が自分で応答し、`{default, profiles: [{name, description?}]}` を返します（`roleArn` は含めません）。注入するスキーマはプロファイル一覧に依存しないので、プロファイルを追加するだけなら MCP Portal の再同期も claude.ai の再接続も要りません。再同期・再接続が要るのは、上流のツール構成が変わったとき、または awsbridge の更新で注入するスキーマが変わったときです（`enum` を外して `list_aws_profiles` を追加した更新を取り込む初回を含みます）。上流が既に `aws_profile` を持つツールは注入しません。応答を加工できないときは原文のまま返します。
 - `aws_profile` は上流へ送る前に取り除きます。単一の `tools/call` では、一覧にない名前（`unknown_aws_profile`）も文字列以外（`invalid_aws_profile`）も、HTTP 200 の JSON-RPC 結果 `isError: true` で返します。本文にエラーコード・使えるプロファイル名・既定のプロファイルを含むので、クライアントは 1 回で直せます。JSON-RPC バッチのときは 400 `{"error": "<code>"}` です。
 - JSON-RPC バッチは、対象ツールの `aws_profile` がすべて同じ（省略は `default`）ならそのロールで中継し、異なれば 400 `batch_not_supported`。
 - 一覧が不正（形式エラー・重複・空など）なら 500 `server_misconfigured`（ログには `config: invalid profiles: <種別>` だけを出し、設定値は出しません）。未設定はビルドの失敗になります。
@@ -229,13 +245,13 @@ bash scripts/wrangler.sh secret delete AWS_PROFILES
 
 #### 別スタックで並行稼働する（issuer の URL も変える場合）
 
-issuer の URL（Worker の公開 URL）も変えるなら、新しいスタックを旧スタックと並べて動かし、停止時間をほぼ無くして切り替えられます。issuer の URL（`AWSBRIDGE_ISSUER`）・スタック名（`AWSBRIDGE_STACK_NAME`）・ロール名（`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME`）の 3 つをすべて旧と違う値にしてください。IAM の OIDC プロバイダーは URL ごとに 1 つで、ロール名はアカウント内で一意なので、どれかが同じだと並行できません。上流のコードの変更は要りません（どれもパラメーター化済みです）。
+issuer の URL（issuer のホスト）も変えるなら、新しいスタックを旧スタックと並べて動かし、停止時間をほぼ無くして切り替えられます。issuer の URL（`AWSBRIDGE_ISSUER`）・スタック名（`AWSBRIDGE_STACK_NAME`）・ロール名（`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME`）の 3 つをすべて旧と違う値にしてください。IAM の OIDC プロバイダーは URL ごとに 1 つで、ロール名はアカウント内で一意なので、どれかが同じだと並行できません。上流のコードの変更は要りません（どれもパラメーター化済みです）。
 
 始める前に決めること:
 
 - **旧スタックの削除は移行の一部です。期限を決めてください。** 旧スタックを削除するまで旧デバッグロールは `SecretRead` を持ったまま残るので、それまでは「秘密値を API で直接読めなくする」が効いていません。
 - **署名鍵を新旧で同じにするか分けるか。** 同じにすると、鍵が漏れたとき旧スタックを削除するまで旧ロール（秘密値を読める旧デバッグロールを含む）にも届くので、上の期限が特に重要です。分けるなら、`AWSBRIDGE_KEY_FILE` を新しいファイルに向けて `mise run keygen` で新しい鍵を作ります。鍵を更新する機会になります（既存の手順は「署名鍵のローテーション」を参照）。
-- **URL が変わると、Cloudflare Access のアプリ（AUD）と MCP クライアントの接続先も変わります。** 新しいホストも Access のアプリと `/.well-known/*` の bypass で保護し（`infra/cloudflare` を参照）、新しい Worker の `ACCESS_AUD`（`AWSBRIDGE_ACCESS_AUD`）を新しいアプリの AUD にしてください。Worker は `ACCESS_AUD` で Access の JWT を自分でも検証するので、Access を通らずに届いた要求（別のホスト・Preview URL）は 401 になります。新しいホストでもこれを確かめてください（例: Access を通さない `/mcp` が 401 になる）。新しい URL がカスタムドメインなら、workers.dev の URL と Preview URL を閉じることも検討してください。
+- **URL が変わると、Cloudflare Access のアプリ（AUD）と MCP クライアントの接続先も変わります。** 新しい接続先のホストを Access のアプリで守り、新しい issuer のホストでは `/.well-known/*` を公開のままにし（「ホストを決める」と `infra/cloudflare` を参照）、新しい Worker の `ACCESS_AUD`（`AWSBRIDGE_ACCESS_AUD`）を新しいアプリの AUD にしてください。Worker は `ACCESS_AUD` で Access の JWT を自分でも検証するので、Access を通らずに届いた要求（issuer のホスト・別のホスト・Preview URL）は 401 になります。新しいホストでもこれを確かめてください（例: issuer のホストの `/mcp` が 401 になる）。workers.dev の URL と Preview URL は閉じたままにします（独自ドメインの形と同じく `workers_dev` と `preview_urls` を `false` にする）。
 
 手順（Worker が先です。初回と同じく、IAM は OIDC プロバイダーを作るときに issuer の `/.well-known/openid-configuration` を読みます）:
 
@@ -243,10 +259,10 @@ issuer の URL（Worker の公開 URL）も変えるなら、新しいスタッ�
 2. 新しい `AWSBRIDGE_ISSUER`・`AWSBRIDGE_STACK_NAME`・ロール名を設定して、`mise run deploy:aws` で新しいスタックを作る。対象のアカウントすべてで行う
 3. 新しい Worker のプロファイル一覧に新しい `roleArn` を書き、もう一度デプロイする
 4. クライアントを切り替える前に、新しいロールを 1 回引き受けられることを確かめる: `AWSBRIDGE_ISSUER=<新しい URL> AWSBRIDGE_STACK_NAME=<新スタック> AWS_PROFILE=<対象> mise run poc:sts`（`AWSBRIDGE_KEY_FILE` の鍵で JWT に署名する。新しい URL の Worker と同じ鍵にする。デバッグロールは `--role-arn <DebugRoleArn>` を渡す）
-5. MCP クライアントの接続先を新しい URL に変える。Worker の URL は MCP の接続先でもあるので、クライアント側の再設定と再認可が要ります
+5. MCP クライアントの接続先を新しい接続先の URL（`https://<接続先のホスト>/mcp`。「ホストを決める」のようにホストを分けると、issuer の URL とは別）に変える。接続先の URL と Access のアプリが新しくなるので、クライアント側の再設定と再認可が要ります
 6. 両ロールで確かめる
 7. 期限までに、すべてのアカウントで旧スタックを削除する（`AWSBRIDGE_STACK_NAME=<旧スタック> AWS_PROFILE=<対象> mise run destroy:aws`）。旧の OIDC プロバイダーとロールが消えます。すべてのアカウントで、IAM 上で消えたことを確かめる
-8. すべてのアカウントで旧の OIDC プロバイダーが消えてから、旧 Worker を片付け、旧ホスト名を手放す。逆の順にすると、手放したホスト名（特に workers.dev のサブドメイン）を第三者が取ったとき、残ったプロバイダーがそれを発行者として信頼してしまいます
+8. すべてのアカウントで旧の OIDC プロバイダーが消えてから、旧 Worker を片付け、旧の issuer のホスト名（ドメイン、または workers.dev のサブドメイン）を手放す。逆の順にすると、手放したホスト名を第三者が取ったとき、残ったプロバイダーがそれを発行者として信頼してしまいます
 
 この方法なら、切り替える前に旧と新を並べて確かめられます。別名の Worker を使わない場合は並行稼働になりません。Worker の `ISSUER` を新しい URL に移してからでないと新しいスタックを作れず、その後、新しいスタックと新しい `roleArn` をデプロイし終えるまで MCP の呼び出しは失敗します（旧ロールは Worker の JWT を受け付けなくなるため）。その方法を取るなら、切り戻しの手順（旧の `ISSUER` と旧の `roleArn` で Worker を再デプロイする。新しい側が動くまで旧スタックは残す）を先に用意してください。
 
@@ -353,7 +369,7 @@ git remote rename origin upstream
 git remote add origin <private リポジトリの URL>   # 下流の push 先
 ```
 
-2. `wrangler.<name>.jsonc` を足す（コミットする。ロール ARN は秘密ではない）。`main` などは上流の `wrangler.jsonc` と同じ値にし、`name` / `workers_dev` / `alias` だけ自分用にします。`alias` で、プロファイル一覧の JSON（手順 2 の次に作る `deploy/profiles.json`）をモジュール `awsbridge:profiles` として差し替えます。env セクションは使いません（値はダミーです）。
+2. `wrangler.<name>.jsonc` を足す（コミットする。ロール ARN は秘密ではない）。`main` などは上流の `wrangler.jsonc` と同じ値にし、`name` / `workers_dev` / `preview_urls` / `routes` / `alias` だけ自分用にします。`alias` で、プロファイル一覧の JSON（手順 2 の次に作る `deploy/profiles.json`）をモジュール `awsbridge:profiles` として差し替えます。env セクションは使いません（値はダミーです）。
 
 ```jsonc
 {
@@ -363,10 +379,17 @@ git remote add origin <private リポジトリの URL>   # 下流の push 先
   "compatibility_date": "2026-07-21",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
-  "workers_dev": true,
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "awsbridge-mcp.example.com", "custom_domain": true },
+    { "pattern": "awsbridge-oidc-mcp.example.com", "custom_domain": true }
+  ],
   "alias": { "awsbridge:profiles": "./deploy/profiles.json" }
 }
 ```
+
+   `awsbridge-mcp.example.com` が MCP の接続先、`awsbridge-oidc-mcp.example.com` が issuer のホスト（`AWSBRIDGE_ISSUER=https://awsbridge-oidc-mcp.example.com`）です。どちらも自分のドメインに置き換えます。workers.dev で試すだけなら、`workers_dev` を `true` にし、`preview_urls` と `routes` を外します。
 
    `deploy/profiles.json` の形式は上の「マルチアカウント」の JSON と同じです（コミットする。ロール ARN は秘密ではない）。上流の `config/profiles.example.json` をコピーして書き換えると早いです。
 
@@ -388,7 +411,7 @@ AWSBRIDGE_KEY_FILE = ".secrets/awsbridge-mcp-signing-key.json"   # 環境ごと�
 env = ["awsbridge-mcp"]
 ```
 
-4. 秘密値と環境固有値を `mise.local.toml`（gitignore。コミットしない）に書く。`AWSBRIDGE_ISSUER`（Worker の URL）、`AWSBRIDGE_ALLOWED_SUBJECTS`、`AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS`、`AWSBRIDGE_ACCESS_TEAM_DOMAIN`、`AWSBRIDGE_ACCESS_AUD` など（上の「`mise.local.toml` の変数」を参照）。プロファイル一覧は `mise.local.toml` ではなく `deploy/profiles.json` に置きます。
+4. 秘密値と環境固有値を `mise.local.toml`（gitignore。コミットしない）に書く。`AWSBRIDGE_ISSUER`（issuer の URL。例 `https://awsbridge-oidc-mcp.example.com`）、`AWSBRIDGE_ALLOWED_SUBJECTS`、`AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS`、`AWSBRIDGE_ACCESS_TEAM_DOMAIN`、`AWSBRIDGE_ACCESS_AUD` など（上の「`mise.local.toml` の変数」を参照）。プロファイル一覧は `mise.local.toml` ではなく `deploy/profiles.json` に置きます。
 
 5. デプロイする（初回）。
 
@@ -407,6 +430,6 @@ git pull --no-rebase upstream main
 注意:
 
 - **署名鍵は環境ごとに分ける。** 上流の開発用デプロイと同じ鍵・同じ issuer を使い回さないでください（`AWSBRIDGE_KEY_FILE` を別パスにする）。鍵の入れ替えは「署名鍵のローテーション」の手順（`mise run key:prepare` → `secrets` → 待つ → `key:activate` → `secrets` → 待つ → `key:retire` → `secrets`）で止めずに行えます。
-- **issuer（Worker の URL）が環境ごとに変わる**ので、IAM OIDC プロバイダーとロールを作る CloudFormation スタックも環境ごとに別です（`AWSBRIDGE_STACK_NAME` を分ける）。同じアカウントに複数の環境を置くときはロール名も分ける（`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME`）。
+- **issuer（issuer の URL）が環境ごとに変わる**ので、IAM OIDC プロバイダーとロールを作る CloudFormation スタックも環境ごとに別です（`AWSBRIDGE_STACK_NAME` を分ける）。同じアカウントに複数の環境を置くときはロール名も分ける（`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME`）。
 - mise は `mise.<name>.toml` を `mise.toml` より、`mise.local.toml` を `mise.<name>.toml` より優先します。`.config/mise/conf.d/*.toml` は `mise.toml` に負けるので使えません。
 - 上流の `wrangler.jsonc`（`name: awsbridge` / `env.dev`）は上流の開発用です。下流では使いません。

@@ -4,8 +4,24 @@ variable "account_id" {
 }
 
 variable "worker_host" {
-  description = "awsbridge Worker のホスト名（スキーム・パスなし）。例: awsbridge.example.workers.dev"
+  description = "MCP クライアントの接続先のホスト名（/mcp。Access で守る。スキーム・パスなし）。基本は独自ドメインのホスト。例: awsbridge-mcp.example.com（試用なら awsbridge.example.workers.dev）"
   type        = string
+
+  validation {
+    condition     = !can(regex("[/:]", var.worker_host))
+    error_message = "worker_host にはスキームやパスを含めず、ホスト名だけを指定する。"
+  }
+}
+
+variable "issuer_host" {
+  description = "OIDC issuer（IAM の OIDC プロバイダーの URL）のホスト名（スキーム・パスなし）。接続先のホストとは別のホストにする。例: awsbridge-oidc-mcp.example.com。未指定（null）なら worker_host と同じホストで /.well-known/* だけを bypass する"
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.issuer_host == null || !can(regex("[/:]", var.issuer_host))
+    error_message = "issuer_host にはスキームやパスを含めず、ホスト名だけを指定する。"
+  }
 }
 
 variable "name" {
@@ -31,13 +47,13 @@ variable "session_duration" {
 }
 
 variable "create_portal" {
-  description = "true のとき MCP Server Portal も作る。既存の portal を使うなら false のまま、出力の mcp_server_id を portal 側へ足す"
+  description = "true のとき MCP Portal も作る。既存の portal を使うなら false のまま、出力の mcp_server_id を portal 側へ足す"
   type        = bool
   default     = false
 }
 
 variable "portal_hostname" {
-  description = "ポータルのホスト名（スキーム・パスなし）。create_portal = true のとき必須。既存のポータルを使う場合も指定すると、Worker 用アプリがそのポータルからの OAuth 接続（servers-callback）を許可する"
+  description = "MCP Portal のホスト名（スキーム・パスなし）。create_portal = true のとき必須。既存の MCP Portal を使う場合も指定すると、Worker 用アプリがその MCP Portal からの OAuth 接続（servers-callback）を許可する"
   type        = string
   default     = null
 
@@ -48,13 +64,13 @@ variable "portal_hostname" {
 }
 
 variable "portal_oauth_allowed_uris" {
-  description = "ポータルの動的クライアント登録（DCR）で許可するリダイレクト URI。例: Claude の https://claude.ai/api/mcp/auth_callback"
+  description = "MCP Portal の動的クライアント登録（DCR）で許可するリダイレクト URI。例: Claude の https://claude.ai/api/mcp/auth_callback"
   type        = list(string)
   default     = []
 }
 
 variable "portal_session_duration" {
-  description = "ポータルのセッション期間"
+  description = "MCP Portal のセッション期間"
   type        = string
   default     = "24h"
 }

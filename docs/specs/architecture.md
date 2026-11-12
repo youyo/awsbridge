@@ -11,7 +11,7 @@
 AI エージェント（MCP クライアント）から AWS MCP Server へ、**利用者本人の AWS 一時認証情報**で接続するためのブリッジを、Cloudflare Workers 上で動かす。
 
 - aws-mcp-gateway の `IAM_MODE=federated` 相当の機能に絞る（shared モードは持たない）
-- Cloudflare **MCP Server Portal** の背後に置く前提
+- Cloudflare **MCP Portal** の背後に置く前提
 - 認証（ログイン）は **Cloudflare Access に完全に委ねる**。awsbridge 自身は OAuth AS もログイン UI も持たない
 
 ## 全体構成（構成 A'）
@@ -20,7 +20,7 @@ AI エージェント（MCP クライアント）から AWS MCP Server へ、**�
 MCP クライアント
    │
    ▼
-Cloudflare MCP Server Portal（Access アプリ, Managed OAuth）
+Cloudflare MCP Portal（Access アプリ, Managed OAuth）
    │  Access が利用者を認証（IdP は Access に設定したもの。例 Google・Entra ID）
    ▼
 awsbridge Worker（self-hosted Access アプリ / Managed OAuth 有効）
@@ -73,12 +73,13 @@ Access JWT の実物（開発環境）で確認した claim:
 | IAM モード | federated のみ（`IAM_MODE` 変数は持たない） |
 | 認証 | Cloudflare Access に委譲（awsbridge は OAuth/ログインを実装しない） |
 | AWS が信頼する IdP | awsbridge Worker 自身（自前の OIDC issuer） |
+| issuer と接続先のホスト | 基本は独自ドメインで、2 つのホストに分ける（下の `example.com` はプレースホルダー）。issuer は `https://awsbridge-oidc-mcp.example.com`（パスなし。IAM の OIDC プロバイダーの URL。STS が読む `/.well-known/*` だけを公開する）、接続先は `awsbridge-mcp.example.com`（`/mcp`。Access で守る）。1 つの MCP Worker に Custom Domain を 2 つ付ける。issuer のホストに来た `/mcp` は Access を通らず、Worker の Access JWT の検証で 401 になる。workers.dev と Preview URL は閉じる。issuer のホストは IAM が信頼する相手なので、そのドメインを奪われると issuer を奪われる。ドメインの自動更新・レジストラのロック・ゾーンの権限を絞る |
 | 利用者識別子 | 既定 `email`。設定で `sub` / `custom.<claim>`（例: Entra の `oid`）に切替可能 |
 | 環境 | デプロイ先ごとに Zero Trust と IdP が違ってよい（例 個人の Zero Trust は Google、会社の Zero Trust は Entra ID）。awsbridge は IdP を直接扱わず、Access の JWT だけを見る。差分は wrangler の環境設定のみ |
 | 署名鍵 | 環境ごとに別鍵（開発鍵で本番 AWS に入れないこと）。Worker secret / Secrets Store に保管 |
 | SigV4 | `aws4fetch`。aws-sdk-js-v3 は使わない |
 | STS | `fetch` + XML パース。`AssumeRoleWithWebIdentity` は署名不要 |
-| デプロイ先 | `*.workers.dev`（開発） |
+| デプロイ先 | 独自ドメインの Custom Domain（基本。`wrangler.jsonc` の `env.prod`）。手軽な試用は `*.workers.dev`（`env.dev`。1 つのホストが issuer と接続先を兼ねる） |
 
 ### IdP について
 
@@ -227,11 +228,11 @@ awsbridge は利用者の認証を Cloudflare Access に任せ、Access が発�
 実運用は private の下流リポジトリで行う。awsbridge を git の upstream として登録し、更新を pull し続ける。下流固有の設定は上流と衝突しにくい場所に置く。
 
 1. `git remote add upstream <awsbridge の URL>` → `git pull --no-rebase upstream main` で追従する。**上流のファイルは編集せず、ファイルを足すだけ**にして衝突を避ける。
-2. `wrangler.<name>.jsonc`（例 `wrangler.awsbridge-mcp.jsonc`）を足す。`name` / `workers_dev` / `alias`（自前のプロファイル一覧 JSON を `awsbridge:profiles` に差し替える）を持ち、env セクションは使わない（ロール ARN は秘密ではないのでコミットしてよい）。
+2. `wrangler.<name>.jsonc`（例 `wrangler.awsbridge-mcp.jsonc`）を足す。`name` / `workers_dev` / `preview_urls` / `routes`（issuer のホストと接続先のホストの Custom Domain）/ `alias`（自前のプロファイル一覧 JSON を `awsbridge:profiles` に差し替える）を持ち、env セクションは使わない（ロール ARN は秘密ではないのでコミットしてよい）。
 3. 下流用の mise 設定として `mise.<name>.toml` と `.miserc.toml`（`env = ["<name>"]`）を足し、`AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV`（空 = `--env` を付けない）/ `AWSBRIDGE_STACK_NAME` / `AWSBRIDGE_KEY_FILE` などを与える。秘密値は `mise.local.toml`（gitignore）に置く。
 4. 上書きできる既定値は `mise.toml` の `[env]` ではなくスクリプト側（`scripts/*.sh`、`scripts/poc/`）の `${VAR:-default}` で補う。理由: mise は `mise.<env>.toml` を `mise.toml` より優先するが `.config/mise/conf.d/*.toml` は `mise.toml` に負けるうえ、`[env]` に既定値があると呼び出し側の環境変数や下流ファイルでの上書きが難しくなるため（実験で確認）。優先順位は `mise.local.toml` > `mise.<name>.toml` > `mise.toml`。
 5. wrangler は `scripts/wrangler.sh` 経由で呼び、`--config "${AWSBRIDGE_WRANGLER_CONFIG:-wrangler.jsonc}"` を付ける。`AWSBRIDGE_WRANGLER_ENV` は未設定なら `dev`、**空文字なら `--env` を付けない**（`${VAR-dev}` で未設定と空を区別）。
-6. 署名鍵は環境ごとに分ける。issuer（Worker の URL）が環境ごとに変わるため、IAM OIDC プロバイダーとロールの CloudFormation スタックも環境ごとに別になる。
+6. 署名鍵は環境ごとに分ける。issuer（issuer の URL）が環境ごとに変わるため、IAM OIDC プロバイダーとロールの CloudFormation スタックも環境ごとに別になる。
 7. 各アカウントに `AWS_PROFILE=<対象> mise run deploy:aws` で CloudFormation を流し、出力 `ReadOnlyRoleArn` / `DebugRoleArn` を、1 アカウントにつき `<env>-readonly` と `<env>-debug` の 2 プロファイルとして自前のプロファイル一覧 JSON に追記する（default は readonly 側）。
 8. 上流自身の開発用デプロイは、`config/profiles.example.json` を `config/profiles.json` にコピーして書き換える（gitignore。`mise run secrets` はプロファイル一覧を扱わない）。`AWS_PROFILES` を使っていた既存のデプロイは、一覧を JSON に移して再デプロイし、不要になった Worker secret を `wrangler secret delete AWS_PROFILES` で消す（README_ja.md「既存デプロイからの移行」）。
 
@@ -266,7 +267,7 @@ Worker は secret `SIGNING_JWK`（RSA 秘密鍵 JWK）で STS 向け JWT に署�
 - 手順の途中で中止したいとき: 段階 1 の途中なら NEXT を手で削除して `mise run secrets`（追加鍵が `[]` になる）。段階 2 のあとに問題が出たら、`mise run secrets` で PREVIOUS の公開鍵が JWKS に残っているうちは、現行と PREVIOUS のファイルを手で入れ替えて `mise run secrets` すれば署名を戻せる。
 - 環境ごとに鍵ファイルのパスが違う場合（下流リポジトリ）は、`mise.<name>.toml` の `AWSBRIDGE_KEY_FILE` に従って NEXT / PREVIOUS も同じ場所に作られる。
 
-## MCP Server Portal 背後に置くことの制約
+## MCP Portal 背後に置くことの制約
 
 1. ポータル側の **Require user auth は Enabled 必須**（Terraform では portal の `servers[].on_behalf = true`。Disabled だと管理者資格を全員で共用し、全員が管理者の身元で AWS のロールを引き受ける。2026-11-05 に実環境で `false` のまま登録してしまい、利用者ごとの Sign Out が出ないことで気づいた）
 2. awsbridge 自体を self-hosted Access アプリにする（直 URL アクセスを Access で塞ぐ）。既存の `x-reader-mcp` / `seekio-mcp` と同じ構成

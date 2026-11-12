@@ -4,6 +4,8 @@
   // 入口は自社ドメインの Custom Domain だけ。workers.dev と Preview URL は無効（Access を経由しない入口を閉じる。console-login.md §5 の T11）。
   //   ポータルのホスト（設定の portal.standardOrigin。ホスト方式ならチームごとの <team>.<host> も）と、issuer のホスト（境界の issuer の URL）。
   //   issuer のホストでは /<path>/.well-known/openid-configuration と jwks.json だけを返し、それ以外（/t/*/login を含む）は 404。
+  //   例のホスト: ポータル = awsbridge-console.example.com、issuer = awsbridge-oidc-console.example.com（issuer の URL は https://awsbridge-oidc-console.example.com/std）。
+  //   issuer のホストは接頭辞 awsbridge-oidc- を付けた専用のホストにする（同じドメインで別の仕組みの OIDC を立てたときに持ち主が分かるように）。このホストの名前は IAM の OIDC プロバイダーの URL になるので、ドメインの更新切れ・レジストラのロック・ゾーンの権限は issuer の乗っ取りに直結する。
   // 生成物: mise run console:config:generate が書く .generated/console/ の 2 つ（gitignore）を alias で読む。
   //   worker.standard.json   発行用（チームの AUD・ロールの ARN・issuer）
   //   display.standard.json  表示用（入口の一覧 S0 だけが読む。Administrator の行は表示用だけで email・AUD・ARN を持たない）
@@ -36,8 +38,8 @@
   "preview_urls": false,
   "observability": { "enabled": true },
   "routes": [
-    { "pattern": "portal.example.com", "custom_domain": true },
-    { "pattern": "id.example.com", "custom_domain": true }
+    { "pattern": "awsbridge-console.example.com", "custom_domain": true },
+    { "pattern": "awsbridge-oidc-console.example.com", "custom_domain": true }
   ],
   "alias": {
     "awsbridge:console-worker": "./.generated/console/worker.standard.json",

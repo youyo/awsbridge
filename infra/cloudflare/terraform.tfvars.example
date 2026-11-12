@@ -1,12 +1,13 @@
 # コピーして terraform.tfvars にして使う（terraform.tfvars は gitignore 済み）。値はすべてダミー。
 account_id        = "00000000000000000000000000000000"
-worker_host       = "awsbridge.example.workers.dev"
+worker_host       = "awsbridge-mcp.example.com"          # MCP クライアントの接続先（Access で守る）
+issuer_host       = "awsbridge-oidc-mcp.example.com"     # OIDC issuer のホスト（接続先と別。/.well-known/* だけを bypass）
 allowed_idp_ids   = ["00000000-0000-0000-0000-000000000000"]
 access_policy_ids = ["00000000-0000-0000-0000-000000000000"]
 
 # session_duration = "24h"
 
-# ポータルも作る場合
+# MCP Portal も作る場合
 # create_portal             = true
-# portal_hostname           = "mcp.example.com"
+# portal_hostname           = "mcp-portal.example.com"
 # portal_oauth_allowed_uris = ["https://claude.ai/api/mcp/auth_callback"]

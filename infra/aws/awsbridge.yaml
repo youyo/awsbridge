@@ -56,7 +56,7 @@ Description: >-
 Parameters:
   IssuerHost:
     Type: String
-    Description: Worker host name without scheme or trailing slash (e.g. awsbridge.example.workers.dev).
+    Description: OIDC issuer host name without scheme or trailing slash (e.g. awsbridge-oidc-mcp.example.com; awsbridge-dev.example.workers.dev for a workers.dev trial).
     AllowedPattern: "^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$"
     ConstraintDescription: Host name only. Do not include https:// or a trailing slash.
   Audience:

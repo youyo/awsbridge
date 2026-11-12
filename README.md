@@ -4,7 +4,7 @@ English | [日本語](README_ja.md)
 
 Bridge AI agents to AWS.
 
-A Cloudflare Worker that converts the identity of a user authenticated by Cloudflare Access into per-user temporary AWS credentials (STS), signs requests with SigV4, and relays them to the AWS MCP Server. It is designed to sit behind a Cloudflare MCP Server Portal.
+A Cloudflare Worker that converts the identity of a user authenticated by Cloudflare Access into per-user temporary AWS credentials (STS), signs requests with SigV4, and relays them to the AWS MCP Server. It is designed to sit behind a Cloudflare MCP Portal.
 
 > Early development stage. For the design, see [docs/specs/architecture.md](docs/specs/architecture.md) (written in Japanese).
 
@@ -20,19 +20,34 @@ The Cloudflare side (Worker) and the AWS side (CloudFormation) are completely se
 - Cloudflare side: an account where you have run `wrangler login`
 - AWS side: an AWS profile with permission to operate IAM and CloudFormation
 
+### Decide the hosts (a custom domain is the basic form)
+
+The Worker's issuer URL becomes the URL of the IAM OIDC provider, so decide the hosts first. The basic form puts the issuer and the MCP connection on separate hosts of your own domain (`example.com` below is a placeholder). One MCP Worker serves both, with two Custom Domains.
+
+| Role | Example | Notes |
+|---|---|---|
+| OIDC issuer | `https://awsbridge-oidc-mcp.example.com` (no path) | `AWSBRIDGE_ISSUER`. STS reads `/.well-known/*` here, so it is public (an Access bypass if a wider Access application covers the host). Any other path, including `/mcp`, returns 401 here, because the Worker checks the Access JWT and requests to this host carry none. The `awsbridge-oidc-` prefix marks a host that is only an issuer and says whose it is: `awsbridge` is on the issuer too, so that when another OIDC mechanism is later set up on the same domain, the owner of each issuer is clear |
+| MCP connection | `https://awsbridge-mcp.example.com/mcp` | Where MCP clients connect. The Access application protects this host, and its AUD is the Worker's `ACCESS_AUD` |
+
+- The Worker's configuration is `env.prod` in `wrangler.jsonc` (`routes` has the two `custom_domain` entries; `workers_dev` and `preview_urls` are `false`, which closes the entrances that skip Access). Select it with `AWSBRIDGE_WRANGLER_ENV=prod`. A downstream repository copies it into its own `wrangler.<name>.jsonc` and replaces the hosts.
+- The domain must be a zone on your Cloudflare account. Cloudflare creates the DNS records and certificates for the Custom Domains.
+- **The issuer host is what the IAM OIDC provider trusts.** Whoever takes it over can issue tokens that AWS accepts. Keep the domain's auto-renewal on, lock the domain at the registrar, and limit who can edit the zone (DNS, Routes, Custom Domains) and deploy the Worker.
+- For a quick trial you can use workers.dev: the default `AWSBRIDGE_WRANGLER_ENV=dev` deploys `awsbridge-dev` to `https://<worker>.<subdomain>.workers.dev`, and that one host is both the issuer and the connection. Use a custom domain for real use.
+
 ### Order for the first deployment
 
-The Worker's URL becomes the OIDC issuer, so proceed in this order.
+The issuer URL becomes the OIDC issuer, so proceed in this order.
 
-1. Cloudflare side: `mise run keygen` → set `AWSBRIDGE_ISSUER` and the other variables in `mise.local.toml` → `cp config/profiles.example.json config/profiles.json` (required for the build. The contents can stay as dummies for now) → `mise run deploy:worker` (this fixes the Worker's URL. At this point the role ARNs are dummies, so `/mcp` is not usable)
+1. Cloudflare side: `mise run keygen` → set `AWSBRIDGE_ISSUER` (`https://awsbridge-oidc-mcp.example.com`), `AWSBRIDGE_WRANGLER_ENV` (`prod`) and the other variables in `mise.local.toml` → `cp config/profiles.example.json config/profiles.json` (required for the build. The contents can stay as dummies for now) → `mise run deploy:worker` (this fixes the issuer URL. At this point the role ARNs are dummies, so `/mcp` is not usable)
 2. AWS side: `AWS_PROFILE=<target> mise run deploy:aws` (note the outputs `ReadOnlyRoleArn` / `DebugRoleArn`)
 3. Register the profile list. Write the role ARNs from the outputs into `config/profiles.json` (see "Multi-account" below) and run `mise run deploy:worker`. The list is a JSON file bundled into the Worker, not an environment variable, so the build fails without `config/profiles.json` (unset is an error)
+4. Protect the connection host with Cloudflare Access (see `infra/cloudflare`): the application goes on `awsbridge-mcp.example.com` only, and `/.well-known/openid-configuration` and `/.well-known/jwks.json` on `awsbridge-oidc-mcp.example.com` stay public. Put the application's AUD in `AWSBRIDGE_ACCESS_AUD` and run `mise run secrets`. Then check that `/mcp` on `awsbridge-oidc-mcp.example.com` returns 401 and that workers.dev and Preview URLs do not answer.
 
 From the second time on, deploy only the side you changed.
 
 ### AWS side (per target account)
 
-Just deploy [infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml). It creates an IAM OIDC provider whose issuer is the Worker's URL, and two roles that are assumed with the JWT issued by the Worker (read-only `FederatedAwsBridgeMcpViewer` and debug `FederatedAwsBridgeMcpDebugger`). These MCP roles are separate from the human console roles (Viewer / Administrator); granting a person a console role does not change what the MCP roles can do. Everyone can use the Viewer (`FederatedAwsBridgeMcpViewer`). Who gets the Debugger (`FederatedAwsBridgeMcpDebugger`) is decided by the downstream configuration (`DebugAllowedSubjects`); there is no upstream rule. Note when granting it: through remote shells and similar actions, the Debugger gets the permissions of the target's role, which carry no MCP-only condition.
+Just deploy [infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml). It creates an IAM OIDC provider whose issuer is the Worker's issuer URL, and two roles that are assumed with the JWT issued by the Worker (read-only `FederatedAwsBridgeMcpViewer` and debug `FederatedAwsBridgeMcpDebugger`). These MCP roles are separate from the human console roles (Viewer / Administrator); granting a person a console role does not change what the MCP roles can do. Everyone can use the Viewer (`FederatedAwsBridgeMcpViewer`). Who gets the Debugger (`FederatedAwsBridgeMcpDebugger`) is decided by the downstream configuration (`DebugAllowedSubjects`); there is no upstream rule. Note when granting it: through remote shells and similar actions, the Debugger gets the permissions of the target's role, which carry no MCP-only condition.
 
 ```
 AWS_PROFILE=<target> mise run deploy:aws    # Deploy CloudFormation (can be deployed to any number of accounts)
@@ -49,7 +64,7 @@ You can also deploy the template directly from the management console or with St
 
 | Parameter | Description |
 |---|---|
-| `IssuerHost` | The Worker's host name (without `https://` and without a trailing `/`. Example: `awsbridge.example.workers.dev`) |
+| `IssuerHost` | The host of the OIDC issuer, that is, of `AWSBRIDGE_ISSUER` (without `https://` and without a trailing `/`. Example: `awsbridge-oidc-mcp.example.com`; for a workers.dev trial, `awsbridge-dev.example.workers.dev`) |
 | `Audience` | The JWT audience (default `awsbridge`. Must match the Worker's `STS_AUDIENCE`) |
 | `AllowedSubjects` | Users who can assume the read-only role (comma-separated. See the format below. Specify in lowercase) |
 | `DebugAllowedSubjects` | Users who can assume the debug role (same format. Keeping it narrower than the read-only role is recommended) |
@@ -112,7 +127,8 @@ Fixed defaults are in `mise.toml`. Account-specific values go in `mise.local.tom
 
 ```toml
 [env]
-AWSBRIDGE_ISSUER = "https://awsbridge.example.workers.dev"   # The Worker's URL (OIDC issuer)
+AWSBRIDGE_ISSUER = "https://awsbridge-oidc-mcp.example.com"             # The OIDC issuer (a dedicated host on your domain; no path). Not the MCP connection host awsbridge-mcp.example.com
+AWSBRIDGE_WRANGLER_ENV = "prod"                               # env.prod of wrangler.jsonc (Custom Domains). The default is dev (workers.dev, for a trial)
 AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org" # Users who can assume the read-only role (comma-separated)
 AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS = "admin@example.com"       # Users who can assume the debug role (comma-separated)
 # AWSBRIDGE_READONLY_ROLE_NAME = "FederatedAwsBridgeMcpViewer"        # Optional. Role name (default value)
@@ -184,7 +200,7 @@ You can switch between multiple AWS accounts with the `aws_profile` argument of 
 - Profile names: 1 to 32 characters of alphanumerics, `_`, and `-` (exceeding that results in 500 `server_misconfigured`). Names consisting only of digits are ordered first in numeric order by the rules for objects, so avoid them if you intend a particular order.
 - `default`: required. The profile used when `aws_profile` is omitted, and for requests other than `tools/call` such as `tools/list`.
 - `tools`: optional. The tools that `aws_profile` applies to (all tools if omitted; omitting is normally fine). The names are the actual tool names returned by the AWS MCP Server (for example `aws___run_script`; you can check them with `tools/list`), and if you write a name that does not exist, `aws_profile` has no effect. An `aws_profile` attached to a tool that is not a target is ignored and removed.
-- In the `tools/list` response, `inputSchema.properties.aws_profile` (`{type: "string", description}`; no `enum`, and the description contains neither the default nor any profile name) is injected into the target tools, and a `list_aws_profiles` tool is added (not on the second and later pages of a paginated `tools/list`). Clients (such as Claude) get the available profiles at run time by calling `list_aws_profiles`, which the Worker answers by itself after authentication (it returns `{default, profiles: [{name, description?}]}`, never a `roleArn`). Because the injected schema does not depend on the profile list, adding a profile needs neither a re-sync of the MCP Server Portal nor a reconnection of claude.ai. A re-sync and reconnection are needed only when the upstream tool set changes or when an awsbridge update changes the injected schema (including the first time you take in the update that removed the `enum` and added `list_aws_profiles`). Tools whose upstream definition already has `aws_profile` are not injected. If the response cannot be processed, it is returned as is.
+- In the `tools/list` response, `inputSchema.properties.aws_profile` (`{type: "string", description}`; no `enum`, and the description contains neither the default nor any profile name) is injected into the target tools, and a `list_aws_profiles` tool is added (not on the second and later pages of a paginated `tools/list`). Clients (such as Claude) get the available profiles at run time by calling `list_aws_profiles`, which the Worker answers by itself after authentication (it returns `{default, profiles: [{name, description?}]}`, never a `roleArn`). Because the injected schema does not depend on the profile list, adding a profile needs neither a re-sync of the MCP Portal nor a reconnection of claude.ai. A re-sync and reconnection are needed only when the upstream tool set changes or when an awsbridge update changes the injected schema (including the first time you take in the update that removed the `enum` and added `list_aws_profiles`). Tools whose upstream definition already has `aws_profile` are not injected. If the response cannot be processed, it is returned as is.
 - `aws_profile` is removed before being sent upstream. For a single `tools/call`, a name not in the list (`unknown_aws_profile`) or a non-string (`invalid_aws_profile`) is returned as HTTP 200 with a JSON-RPC result `isError: true` whose text contains the error code, the available profile names, and the default, so the client can correct it in one try. In a JSON-RPC batch, it results in 400 with `{"error": "<code>"}`.
 - For a JSON-RPC batch, if the `aws_profile` of all target tools is the same (omitted means `default`), it is relayed with that role; if they differ, it results in 400 `batch_not_supported`.
 - If the list is invalid (a format error, a duplicate, empty, and so on), the result is 500 `server_misconfigured` (the log shows only `config: invalid profiles: <kind>`, never the values). Unset makes the build fail.
@@ -229,13 +245,13 @@ From step 1 until step 3 is done, MCP calls fail (the profile list still points 
 
 #### Separate stack in parallel (when the issuer URL also changes)
 
-If you also change the issuer URL (the Worker's public URL), you can run a new stack next to the old one and switch with almost no downtime. Use values different from the old deployment for all three of: the issuer URL (`AWSBRIDGE_ISSUER`), the stack name (`AWSBRIDGE_STACK_NAME`), and the role names (`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME`). An account has only one IAM OIDC provider per URL, and role names are unique within an account, so if any of them is the same, the two stacks cannot coexist. No upstream code change is needed (all of them are already parameters).
+If you also change the issuer URL (the issuer host), you can run a new stack next to the old one and switch with almost no downtime. Use values different from the old deployment for all three of: the issuer URL (`AWSBRIDGE_ISSUER`), the stack name (`AWSBRIDGE_STACK_NAME`), and the role names (`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME`). An account has only one IAM OIDC provider per URL, and role names are unique within an account, so if any of them is the same, the two stacks cannot coexist. No upstream code change is needed (all of them are already parameters).
 
 Decide these before you start:
 
 - **Deleting the old stack is part of the migration. Set a deadline for it.** The old debug role keeps `SecretRead` until its stack is deleted, so "secret values cannot be read directly through the API" does not hold until then.
 - **Whether the old and new deployments share the signing key.** If they share it, a leaked key still reaches the old roles (including the old debug role that can read secret values) until the old stack is deleted, so the deadline matters even more. If you separate them, point `AWSBRIDGE_KEY_FILE` at a new file and run `mise run keygen` for the new deployment; this is a chance to renew the key (see "Signing key rotation" for the existing procedure).
-- **A new URL also changes the Cloudflare Access application (AUD) and the MCP clients' server URL.** Protect the new host with an Access application and the `/.well-known/*` bypass (see `infra/cloudflare`), and set the new Worker's `ACCESS_AUD` (`AWSBRIDGE_ACCESS_AUD`) to the new application's AUD. The Worker verifies the Access JWT against `ACCESS_AUD` itself, so a request that reaches it without passing Access (another host, a Preview URL) gets 401; check this on the new host too (for example, `/mcp` without Access returns 401). If the new URL is a custom domain, also consider disabling the workers.dev URL and Preview URLs.
+- **A new URL also changes the Cloudflare Access application (AUD) and the MCP clients' server URL.** Protect the new connection host with an Access application and keep `/.well-known/*` public on the new issuer host (see `infra/cloudflare` and "Decide the hosts"), and set the new Worker's `ACCESS_AUD` (`AWSBRIDGE_ACCESS_AUD`) to the new application's AUD. The Worker verifies the Access JWT against `ACCESS_AUD` itself, so a request that reaches it without passing Access (the issuer host, another host, a Preview URL) gets 401; check this on the new hosts too (for example, `/mcp` on the issuer host returns 401). Keep workers.dev and Preview URLs closed (`workers_dev` and `preview_urls` set to `false`, as in the custom domain form).
 
 Steps (the Worker comes first: IAM reads the issuer's `/.well-known/openid-configuration` when it creates the OIDC provider, as on the first deployment):
 
@@ -243,10 +259,10 @@ Steps (the Worker comes first: IAM reads the issuer's `/.well-known/openid-confi
 2. Deploy the new stack with `mise run deploy:aws`, setting the new `AWSBRIDGE_ISSUER`, `AWSBRIDGE_STACK_NAME`, and role names. Do this in every target account.
 3. Write the new `roleArn` values in the new Worker's profile list and deploy it again.
 4. Before switching the clients, confirm once that the new roles can be assumed: `AWSBRIDGE_ISSUER=<new URL> AWSBRIDGE_STACK_NAME=<new stack> AWS_PROFILE=<target> mise run poc:sts` (it signs a JWT with `AWSBRIDGE_KEY_FILE`, which must be the key of the Worker at the new URL; for the debug role, pass `--role-arn <DebugRoleArn>`).
-5. Change the MCP clients' server URL to the new URL. The Worker's URL is also the MCP endpoint, so clients need to be reconfigured and authorized again.
+5. Change the MCP clients' server URL to the new connection URL (`https://<connection host>/mcp`; it differs from the issuer URL when you use separate hosts, as in "Decide the hosts"). The connection URL and the Access application are new, so clients need to be reconfigured and authorized again.
 6. Check that both roles work.
 7. By the deadline, delete the old stack in every account (`AWSBRIDGE_STACK_NAME=<old stack> AWS_PROFILE=<target> mise run destroy:aws`). This removes the old OIDC provider and roles. Confirm in IAM that they are gone in every account.
-8. Only after the old OIDC provider is gone from every account, remove the old Worker and give up the old host name. In the reverse order, if a third party takes over the released host name (especially a workers.dev subdomain), a remaining provider would trust it as an issuer.
+8. Only after the old OIDC provider is gone from every account, remove the old Worker and give up the old issuer host name (the domain, or the workers.dev subdomain). In the reverse order, if a third party takes over the released host name, a remaining provider would trust it as an issuer.
 
 This way you can check the old and new deployments side by side before you switch. Without a second Worker this is not a parallel migration: the new stack can be created only after the Worker's `ISSUER` has moved to the new URL, and from then until the new stack and the new `roleArn` values are deployed, MCP calls fail (the old roles no longer accept the Worker's tokens). If you do it that way, prepare the rollback first (redeploy the Worker with the old `ISSUER` and the old `roleArn` values; keep the old stack until the new one works).
 
@@ -354,7 +370,7 @@ git remote rename origin upstream
 git remote add origin <private repository URL>   # The downstream push destination
 ```
 
-2. Add `wrangler.<name>.jsonc` (commit it. Role ARNs are not secrets). Keep `main` and the others the same as the upstream `wrangler.jsonc`, and customize only `name` / `workers_dev` / `alias`. `alias` replaces the module `awsbridge:profiles` with your profile list JSON (`deploy/profiles.json`, created right after step 2). Do not use the env section (the values are dummies).
+2. Add `wrangler.<name>.jsonc` (commit it. Role ARNs are not secrets). Keep `main` and the others the same as the upstream `wrangler.jsonc`, and customize only `name` / `workers_dev` / `preview_urls` / `routes` / `alias`. `alias` replaces the module `awsbridge:profiles` with your profile list JSON (`deploy/profiles.json`, created right after step 2). Do not use the env section (the values are dummies).
 
 ```jsonc
 {
@@ -364,10 +380,17 @@ git remote add origin <private repository URL>   # The downstream push destinati
   "compatibility_date": "2026-07-21",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
-  "workers_dev": true,
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "awsbridge-mcp.example.com", "custom_domain": true },
+    { "pattern": "awsbridge-oidc-mcp.example.com", "custom_domain": true }
+  ],
   "alias": { "awsbridge:profiles": "./deploy/profiles.json" }
 }
 ```
+
+   `awsbridge-mcp.example.com` is the MCP connection host and `awsbridge-oidc-mcp.example.com` is the issuer host (`AWSBRIDGE_ISSUER=https://awsbridge-oidc-mcp.example.com`); replace both with your own domain. For a workers.dev trial, set `workers_dev` to `true` and remove `preview_urls` and `routes`.
 
    The format of `deploy/profiles.json` is the same as the JSON in "Multi-account" above (commit it. Role ARNs are not secrets). Copying the upstream `config/profiles.example.json` and rewriting it is the quickest way.
 
@@ -389,7 +412,7 @@ AWSBRIDGE_KEY_FILE = ".secrets/awsbridge-mcp-signing-key.json"   # Use a separat
 env = ["awsbridge-mcp"]
 ```
 
-4. Write secret values and environment-specific values in `mise.local.toml` (gitignored. Do not commit it): `AWSBRIDGE_ISSUER` (the Worker's URL), `AWSBRIDGE_ALLOWED_SUBJECTS`, `AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS`, `AWSBRIDGE_ACCESS_TEAM_DOMAIN`, `AWSBRIDGE_ACCESS_AUD`, and so on (see "Variables in `mise.local.toml`" above). The profile list goes in `deploy/profiles.json`, not in `mise.local.toml`.
+4. Write secret values and environment-specific values in `mise.local.toml` (gitignored. Do not commit it): `AWSBRIDGE_ISSUER` (the issuer URL, such as `https://awsbridge-oidc-mcp.example.com`), `AWSBRIDGE_ALLOWED_SUBJECTS`, `AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS`, `AWSBRIDGE_ACCESS_TEAM_DOMAIN`, `AWSBRIDGE_ACCESS_AUD`, and so on (see "Variables in `mise.local.toml`" above). The profile list goes in `deploy/profiles.json`, not in `mise.local.toml`.
 
 5. Deploy (first time).
 
@@ -408,6 +431,6 @@ git pull --no-rebase upstream main
 Notes:
 
 - **Keep signing keys separate per environment.** Do not reuse the same key and the same issuer as the upstream's development deployment (use a different path for `AWSBRIDGE_KEY_FILE`). You can swap keys without downtime by following the "Signing key rotation" procedure (`mise run key:prepare` → `secrets` → wait → `key:activate` → `secrets` → wait → `key:retire` → `secrets`).
-- **The issuer (the Worker's URL) differs per environment**, so the CloudFormation stack that creates the IAM OIDC provider and roles is also separate per environment (use different values of `AWSBRIDGE_STACK_NAME`). When placing multiple environments in the same account, also separate the role names (`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME`).
+- **The issuer (the issuer URL) differs per environment**, so the CloudFormation stack that creates the IAM OIDC provider and roles is also separate per environment (use different values of `AWSBRIDGE_STACK_NAME`). When placing multiple environments in the same account, also separate the role names (`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME`).
 - mise gives `mise.<name>.toml` precedence over `mise.toml`, and `mise.local.toml` precedence over `mise.<name>.toml`. `.config/mise/conf.d/*.toml` loses to `mise.toml`, so it cannot be used.
 - The upstream `wrangler.jsonc` (`name: awsbridge` / `env.dev`) is for the upstream's development use. Do not use it downstream.
