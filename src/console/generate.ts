@@ -266,14 +266,17 @@ function listAccounts(
       if (accountId === undefined || name === undefined || ouPath === undefined) return;
       if (ids.has(accountId)) out.add(join(p, "accountId"), "duplicate");
       ids.add(accountId);
-      // 停止中・閉鎖待ちのアカウントは一覧に出さない（状態がなければ有効とみなす）
-      if (status !== undefined && status !== "ACTIVE") return;
       const path = ouPath;
       const kinds = [
         ...new Set(
           org.kindOus.filter((k) => k.ouIds.some((ou) => path.includes(ou))).map((k) => k.kind),
         ),
       ];
+      // 種類の OU に入るアカウントは、停止中でも StackSets の配る先になる。署名を置くアカウントなら誤り（cto の決裁 (5)(b)）
+      if (kinds.length > 0 && config.signing.accountIds.includes(accountId))
+        out.add(join(p, "accountId"), "signing_account");
+      // 停止中・閉鎖待ちのアカウントは一覧に出さない（状態がなければ有効とみなす）
+      if (status !== undefined && status !== "ACTIVE") return;
       if (kinds.length > 1) {
         // 種類の OU が入れ子になっている（同じロールが 2 つの StackSet から配られて衝突する。§11.6）
         out.add(p, "ou_nested");

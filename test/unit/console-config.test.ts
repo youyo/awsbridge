@@ -734,3 +734,48 @@ describe("parseConsoleConfig: SignInLocalDevelopmentAccess（aws login --remote 
     }
   });
 });
+
+describe("parseConsoleConfig: signing.accountIds（署名を置くアカウント。cto の決裁 (5)(b)）", () => {
+  it("省略できる（既定は空）。書けば 12 桁のアカウント ID の一覧として受け付ける", () => {
+    expect(parseConsoleConfig(companyConfig()).config.signing).toEqual({ accountIds: [] });
+    const c = withChange(companyConfig, (x) => {
+      x.signing = { accountIds: ["999999999999"] };
+    });
+    expect(parseConsoleConfig(c).config.signing).toEqual({ accountIds: ["999999999999"] });
+  });
+
+  it("形の誤り・空・未知のキー・重複は誤り（値は出さない）", () => {
+    const found = issuesOf(
+      withChange(companyConfig, (x) => {
+        x.signing = { accountIds: ["12345", "999999999999", "999999999999"], extra: 1 };
+      }),
+    );
+    expect(found).toContainEqual(issue("signing.accountIds[0]", "pattern"));
+    expect(found).toContainEqual(issue("signing.accountIds[2]", "duplicate"));
+    expect(found).toContainEqual(issue("signing.extra", "unknown_key"));
+    expect(
+      issuesOf(
+        withChange(companyConfig, (x) => {
+          x.signing = { accountIds: [] };
+        }),
+      ),
+    ).toContainEqual(issue("signing.accountIds", "empty"));
+    expect(
+      issuesOf(
+        withChange(companyConfig, (x) => {
+          x.signing = {};
+        }),
+      ),
+    ).toContainEqual(issue("signing.accountIds", "required"));
+  });
+
+  it("署名を置くアカウントを配る先（placement: accounts）に含めたら誤り（プロバイダーとロールを配らない）", () => {
+    const found = issuesOf(
+      withChange(companyConfig, (x) => {
+        x.signing = { accountIds: ["222222222222"] };
+      }),
+    );
+    expect(found).toEqual([issue("organizations[1].accounts[0].accountId", "signing_account")]);
+    expect(JSON.stringify(found)).not.toContain("222222222222");
+  });
+});

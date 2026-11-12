@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { AUDIENCE } from "../../src/console/config";
+import { AUDIENCE } from "../../src/console/constants";
 import {
   BASE_EXPORT_NAME,
   GUARD_POLICY_NAME,

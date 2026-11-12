@@ -82,6 +82,11 @@ export type ConsoleConfig = {
   boundaries: ConsoleBoundary[];
   organizations: ConsoleOrganization[];
   inventory: { accountEmail: { managed: EmailMode; partner: EmailMode } };
+  /**
+   * 署名を置くアカウント（Admin の署名の鍵・署名役・JWKS を置くアカウント。cto の決裁 (5)(b)）。
+   * ここにはコンソールログインのプロバイダーとロールを配らない（配る先に含めたら誤り）。省略すると空。
+   */
+  signing: { accountIds: string[] };
 };
 
 export type ConsoleConfigIssueCode =
@@ -116,6 +121,7 @@ export type ConsoleConfigIssueCode =
   | "entry_aud_missing"
   | "ou_nested"
   | "signin_access_admin"
+  | "signing_account"
   // 以下は警告
   | "signin_access_standard"
   | "unassigned_team"
@@ -609,6 +615,18 @@ function parseIdentity(raw: unknown, out: IssueList): ConsoleConfig["identity"] 
   return identity;
 }
 
+function parseSigning(raw: unknown, out: IssueList): ConsoleConfig["signing"] {
+  if (raw === undefined) return { accountIds: [] };
+  const o = readObj(raw, "signing", ["accountIds"], out);
+  if (!o) return { accountIds: [] };
+  const ids = readStrArray(o.accountIds, "signing.accountIds", out, {
+    re: ACCOUNT_ID_RE,
+    nonEmpty: true,
+    required: true,
+  });
+  return { accountIds: ids ?? [] };
+}
+
 function parseInventory(raw: unknown, out: IssueList): ConsoleConfig["inventory"] {
   // 既定はすべて表示（Q-P9 の決定: 社員だけが使う前提で、管理外の先方の email も出す）
   const accountEmail: ConsoleConfig["inventory"]["accountEmail"] = {
@@ -650,6 +668,7 @@ const TOP_KEYS = [
   "boundaries",
   "organizations",
   "inventory",
+  "signing",
 ];
 
 /**
@@ -683,9 +702,10 @@ export function parseConsoleConfig(input: unknown): {
   const boundaries = collect(o, "boundaries", out, parseBoundary).items;
   const organizations = collect(o, "organizations", out, parseOrganization).items;
   const inventory = parseInventory(o.inventory, out);
+  const signing = parseSigning(o.signing, out);
 
   const warnings = new IssueList();
-  crossCheck({ portal, teams, roles, kinds, boundaries, organizations }, out, warnings);
+  crossCheck({ portal, teams, roles, kinds, boundaries, organizations, signing }, out, warnings);
 
   if (out.items.length > 0 || !portal) throw new ConsoleConfigError(out.items);
   const config: ConsoleConfig = {
@@ -698,6 +718,7 @@ export function parseConsoleConfig(input: unknown): {
     boundaries: boundaries as ConsoleBoundary[],
     organizations: organizations as ConsoleOrganization[],
     inventory,
+    signing,
   };
   return { config, warnings: warnings.items };
 }
@@ -709,6 +730,7 @@ type ParsedParts = {
   kinds: (ConsoleKind | undefined)[];
   boundaries: (ConsoleBoundary | undefined)[];
   organizations: (ConsoleOrganization | undefined)[];
+  signing: ConsoleConfig["signing"];
 };
 
 function crossCheck(c: ParsedParts, out: IssueList, warnings: IssueList): void {
@@ -835,6 +857,9 @@ function crossCheck(c: ParsedParts, out: IssueList, warnings: IssueList): void {
     } else {
       org.accounts.forEach((a, ai) => {
         accountIds.check(a.accountId, `${p}.accounts[${ai}].accountId`, out);
+        // 署名を置くアカウントにはプロバイダーとロールを配らない（cto の決裁 (5)(b)）
+        if (c.signing.accountIds.includes(a.accountId))
+          out.add(`${p}.accounts[${ai}].accountId`, "signing_account");
         if (!kindByName.has(a.kind)) out.add(`${p}.accounts[${ai}].kind`, "unknown_kind");
         else usedKinds.push(a.kind);
       });

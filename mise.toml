@@ -54,6 +54,7 @@ run = [
   "pnpm biome check .",
   "cfn-lint infra/aws/awsbridge.yaml",
   "cfn-lint infra/aws/console/base.yaml",
+  "cfn-lint infra/aws/console/kind.example.yaml",
   "cfn-lint scripts/poc/human/poc-human.yaml",
 ]
 
@@ -118,8 +119,12 @@ description = "コンソールログインの設定ファイルを検査する�
 run = "pnpm tsx scripts/console/config.ts check"
 
 [tasks."console:config:generate"]
-description = "コンソールログインの設定ファイルから、Worker 用（階層ごと）・表示用（Standard の display.standard.json）・StackSets 用・Access の検査用の生成物を書く（Standard の入口とチームの AUD が要る。Admin の入口の AUD は要らない）"
+description = "コンソールログインの設定ファイルから、Worker 用（階層ごと）・表示用（Standard の display.standard.json）・StackSets 用・Access の検査用の生成物と、種類ごとのロールのテンプレート（kind.<kind>.yaml。参考の形）を書く（Standard の入口とチームの AUD が要る。Admin の入口の AUD は要らない）"
 run = "pnpm tsx scripts/console/config.ts generate"
+
+[tasks."console:template:example"]
+description = "参考のロールのテンプレート infra/aws/console/kind.example.yaml を、会社用の設定の例（config/console.company.example.json）の種類 C から書き直す（生成器を変えたら回す）"
+run = "pnpm tsx scripts/console/kind-example.ts"
 
 # ---- 検証用（PoC 由来）。実 AWS を呼ぶので明示的に実行したときだけ使う ----
 
