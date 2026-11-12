@@ -345,6 +345,30 @@ mise run console:admin-key:retire -- --binding ADMIN_KEY_<旧い鍵> --yes   # 5
 
 発行を止めるときは、JWKS から kid を外してデプロイするか、vars `LOGIN_DISABLED` を `true` にします。
 
+## コンソールログインの 1 人停止
+
+1 人だけを止めるときは、その人の SourceIdentity（既定は email）を、コンソールログイン用のロールのインラインポリシーの予約名 `AwsbridgeConsoleDenySourceIdentity` に Deny として書きます（`aws:SourceIdentity` が一致するセッションの全操作の Deny。設計は `docs/specs/console-login.md` §6.3）。書くのは停止の道具です。
+
+- 停止の一覧は検査の `--stops` と同じ形のファイル（`{ "sourceIdentities": ["..."] }`）で、これが「止めている一覧」の正本です。**email を含むので、`.secrets/` か下流のリポジトリに置き、公開リポジトリにコミットしません。**
+- `console:stop:apply` は、対象の全ロールの予約名の中身をファイルの一覧に合わせます。対象は、設定のロール（アカウントにあるもの）、`/awsbridge-console/` のパスのロール、パスの外でコンソールのプロバイダーを信頼する設定に無いロール（計画の表示で「設定に無いロール」と出ます）です。
+- `--yes` が無ければ計画の表示だけです。ただし今の状態との差を出すため、IAM の読み取りと `sts get-caller-identity` は呼びます（Admin の鍵の道具の「`--yes` なしは API を使わない」とは違います）。書き込みは `iam put-role-policy` と `iam delete-role-policy` の 2 種類だけです。
+- `--allow-remove` が無ければ足すだけです。各ロールの予約名を「今の値とファイルの値を合わせたもの」にします。ファイルに無い値がロールに残っていても消さず、件数だけを余分（`EXTRA`）として表示します。余分があるだけなら終了コードは 0 です。足す値が 1 つも無く外す値だけがある実行（解除だけ）は、`--allow-remove` が無ければ何も書かずに終了コード 2 で止まります。
+- `--allow-remove` を付けると、ファイルの一覧にそろえます（停止の解除）。全ロールに足し終えてから外すので、外す側の失敗が足す側を止めません。§6.3 の解除の条件（そのロールの `MaxSessionDuration` が切れるまで外さない、原因の除去、古い鍵の排除、新規の発行ができないことの確認）を表示します。道具はこれらを確かめられないので、人が確かめます。設定に無いロールからも外します。
+- どちらでも 1 つのロールのために全体を止めません。予約名に停止の形でない文書があるロール・インラインの合計が 10,240 文字を超えるロール・書き込みに失敗したロールは書かずに報告し、ほかのロールには書いて、終了コード 1 で終わります。
+- `--reason` は必須です。実行の結果を 1 行の JSON（時刻・アカウントの末尾 4 桁・ロール・件数の変化・理由。値は入れません）で標準出力に出すので、運用者が保管します。出力に email の値と全桁のアカウント ID は出しません。
+- コンソール用のロール（設定のロール名か `/awsbridge-console/` のパス）のセッションからは実行しません（守りの部品が書き込みを Deny するため）。IAM Identity Center など別の入口から実行します。
+
+```bash
+mise run console:stop:show -- --profile=<p> --stops=.secrets/console-stops.json      # 読み取りだけ。ロールごとの件数と、足りない・余分
+mise run console:stop:apply -- --profile=<p> --stops=.secrets/console-stops.json --reason="<理由>"         # 計画の表示
+mise run console:stop:apply -- --profile=<p> --stops=.secrets/console-stops.json --reason="<理由>" --yes   # 書き込む
+mise run console:inspect -- --profile=<p> --stops=.secrets/console-stops.json        # 書いたあと、設定のロールを確かめる
+```
+
+`console:inspect --stops` が確かめるのは設定のロールです。設定に無いロールとパスの外のロールは、停止の道具が書いたあとの読み直しで確かめます（結果は道具の出力の表）。
+
+終了コード: 0 書き終えた（または変更なし。余分が残るだけなら 0）/ 1 書けなかったロールがある / 2 実行しなかった（入力の誤り・読み取りの失敗・呼び出し元・`--allow-remove` が無い解除だけの実行）。
+
 ## セットアップ用スキル（Claude Code）
 
 下流の private リポジトリを対話しながらセットアップする Claude Code スキルを `.claude/skills/setup-downstream/` に同梱しています。awsbridge を clone すればそのまま使えます（初回はフォルダーの信頼を求められます）。
