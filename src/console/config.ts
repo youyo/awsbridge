@@ -108,6 +108,9 @@ export type ConsoleConfigIssueCode =
   | "unknown_boundary"
   | "unknown_organization"
   | "duplicate"
+  | "admin_issuer_path"
+  | "admin_issuer_multiple"
+  | "admin_issuer_host_shared"
   | "tier_mismatch"
   | "boundary_tier_missing"
   | "placement"
@@ -796,6 +799,23 @@ function crossCheck(c: ParsedParts, out: IssueList, warnings: IssueList): void {
       }
     });
   }
+
+  // Admin の issuer（X1 の決裁 (a)・(h)、A-3 = I-B）: Cloudflare の別のホストの /admin。Admin の Worker が discovery と JWKS を出す。
+  // Admin の鍵と JWKS は 1 組なので、Admin の issuer を持つ境界は 1 つだけ。ホストは Standard の issuer のどれとも分ける（同じ・入れ子は不可）
+  const stdIssuerHosts = c.boundaries.flatMap((b) =>
+    b?.issuers.standard === undefined ? [] : [hostOf(b.issuers.standard)],
+  );
+  let adminIssuers = 0;
+  c.boundaries.forEach((b, i) => {
+    const u = b?.issuers.admin;
+    if (u === undefined) return;
+    const p = `boundaries[${i}].issuers.admin`;
+    if (new URL(u).pathname !== "/admin") out.add(p, "admin_issuer_path");
+    adminIssuers += 1;
+    if (adminIssuers > 1) out.add(p, "admin_issuer_multiple");
+    const h = hostOf(u);
+    if (stdIssuerHosts.some((s) => hostsOverlap(h, s))) out.add(p, "admin_issuer_host_shared");
+  });
 
   // ポータルのオリジンと Admin の階層
   const usesAdmin =

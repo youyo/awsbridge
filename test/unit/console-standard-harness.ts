@@ -16,6 +16,9 @@ export const STD_ISSUER = "https://id.example.com/standard";
 export const ADMIN_PORTAL = "https://admin-portal.example.com";
 export const ADMIN_HOST = "admin-portal.example.com";
 export const ADMIN_TEAM = "infra-elevated";
+/** Admin の issuer（Standard の issuer・ポータルと別のホストの /admin。X1 の決裁で A-3 = I-B）。 */
+export const ADMIN_ISSUER = "https://admin-id.example.com/admin";
+export const ADMIN_ISSUER_HOST = "admin-id.example.com";
 /** infra-elevated のチームが Administrator で入れる行（種類 A のアカウント）。 */
 export const ADMIN_ENTRY = "333333333333:admin";
 export const STS_URL = "https://sts.us-east-1.amazonaws.com/";
@@ -92,6 +95,8 @@ export type Harness = {
     email?: string;
     type?: string;
     iss?: string;
+    /** epoch 秒。省略すると現在時刻。 */
+    iat?: number;
   }): Promise<string>;
   csrf(aud: string, sub?: string): Promise<string>;
   signingJwk: JWK;
@@ -117,8 +122,8 @@ export async function createHarness(): Promise<Harness> {
         .setIssuer(p.iss ?? TEAM_DOMAIN)
         .setAudience(p.aud ?? AUDS.teams.infra ?? "")
         .setSubject(p.sub ?? SUB)
-        .setIssuedAt()
-        .setExpirationTime("10m")
+        .setIssuedAt(p.iat)
+        .setExpirationTime(p.iat === undefined ? "10m" : p.iat + 3600)
         .sign(access.privateKey);
     },
     csrf: (aud, sub = SUB) => createCsrfToken(csrfKey, { aud, sub }),

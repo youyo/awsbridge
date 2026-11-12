@@ -23,6 +23,11 @@ export type ConsoleAccessOptions = {
   getKey?: JWTVerifyGetKey;
   /** 現在時刻（epoch 秒。テスト用） */
   now?: number;
+  /**
+   * iat からの経過時間の上限（秒。正の整数）。渡したときだけ iat を必須にし、未来の iat（時計ずれの許容を超えるもの）と
+   * 上限を超えた古い iat を 401 で断る。Admin の Worker だけが渡す（X1 の決裁 (f)。Admin の Access のセッションの長さ）。
+   */
+  maxAgeSeconds?: number;
 };
 
 export type ConsoleAccessIdentity = {
@@ -42,7 +47,9 @@ export type ConsoleAccessUnauthorizedReason =
   | "invalid"
   | "expired"
   | "service_token"
-  | "identity_missing";
+  | "identity_missing"
+  | "too_old"
+  | "iat_future";
 
 export type ConsoleAccessFailure =
   | { ok: false; status: 401; code: "unauthorized"; reason: ConsoleAccessUnauthorizedReason }
@@ -125,6 +132,8 @@ export async function verifyConsoleAccess(
 ): Promise<ConsoleAccessResult> {
   const conf = readConfig(cfg);
   if (!conf) return MISCONFIGURED;
+  const maxAge = opts.maxAgeSeconds;
+  if (maxAge !== undefined && !(Number.isInteger(maxAge) && maxAge > 0)) return MISCONFIGURED;
   if (typeof token !== "string" || token === "") return unauthorized("missing");
 
   const nowSec = opts.now ?? Math.floor(Date.now() / 1000);
@@ -134,7 +143,7 @@ export async function verifyConsoleAccess(
     ({ payload } = await jwtVerify(token, opts.getKey ?? remoteJwks(conf.issuer), {
       issuer: conf.issuer,
       algorithms: ["RS256"],
-      requiredClaims: ["exp"],
+      requiredClaims: maxAge === undefined ? ["exp"] : ["exp", "iat"],
       clockTolerance: CLOCK_TOLERANCE_SECONDS,
       currentDate: new Date(nowSec * 1000),
     }));
@@ -142,6 +151,14 @@ export async function verifyConsoleAccess(
     if (e instanceof errors.JWTExpired) return unauthorized("expired");
     // 署名・iss の不一致、JWKS の取得の失敗などはすべて fail closed
     return unauthorized("invalid");
+  }
+
+  // iat からの経過時間（Admin だけ）。exp・nbf は jwtVerify で見た
+  if (maxAge !== undefined) {
+    const iat = payload.iat;
+    if (typeof iat !== "number" || !Number.isFinite(iat)) return unauthorized("invalid");
+    if (iat > nowSec + CLOCK_TOLERANCE_SECONDS) return unauthorized("iat_future");
+    if (nowSec - iat > maxAge) return unauthorized("too_old");
   }
 
   // アプリのトークン（type: app）だけを受け付ける（org はグローバルセッションのトークン）

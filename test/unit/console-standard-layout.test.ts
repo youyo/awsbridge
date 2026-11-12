@@ -22,6 +22,10 @@ const FILES = [
   "src/console/standard/issuer.ts",
   "src/console/admin/index.ts",
   "src/console/admin/worker.ts",
+  "src/console/admin/key.ts",
+  "src/console/admin/jws.ts",
+  "src/console/admin/sign-admin.ts",
+  "src/console/admin/issuer.ts",
   "src/console/portal/worker.ts",
   "src/console/portal/login.ts",
   "src/console/portal/pages.ts",
@@ -122,6 +126,21 @@ describe("Standard の Worker とポータルの部品の依存", () => {
     }
     const entry = importGraph(join(root, "src/console/admin/index.ts"));
     expect(entry.bare).toContain("awsbridge:console-worker-admin");
+  });
+
+  it("Admin の署名の部品（key・jws・sign-admin・issuer）は外部のパッケージを読まない（WebCrypto だけで JWS を組む。X1 の決裁 (d)）", () => {
+    for (const f of [
+      "src/console/admin/key.ts",
+      "src/console/admin/jws.ts",
+      "src/console/admin/sign-admin.ts",
+      "src/console/admin/issuer.ts",
+    ]) {
+      const g = importGraph(join(root, f));
+      expect(g.bare, f).toEqual([]);
+      const files = g.files.map((p) => relative(root, p));
+      expect(files, f).not.toContain("src/console/issue/sign-standard.ts");
+      expect(files, f).not.toContain("src/oidc.ts");
+    }
   });
 
   it("Standard の Worker は Admin のエントリ・Admin の生成物の alias を読まない（取り違えを防ぐ）", () => {

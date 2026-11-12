@@ -2,7 +2,8 @@
 // 9 段目の「署名」だけを切り出したインターフェース。入力は検証済みの Access の身元と、選んだ一覧の行。
 // 出力は署名済みの JWT か signing_unavailable。
 //   Standard: 境界ごとの手元の鍵で署名する実装（sign-standard.ts）。
-//   Admin:    KMS で署名する実装を後から差し込む。本番の配線がまだなら unavailableSigner（503 signing_unavailable）。
+//   Admin:    Workers の secret_key 型の取り出せない鍵で署名する実装（admin/sign-admin.ts）。今の鍵が設定に無ければ
+//             unavailableSigner（503 signing_unavailable）。
 // Admin の Worker に Standard の鍵の扱いが入らないよう、型はこのファイルに分けた。node:* を import しない。
 import type { AccessIdentity, ResolvedIdentity } from "./identity";
 

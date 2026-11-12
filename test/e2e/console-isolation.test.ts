@@ -3,9 +3,11 @@
 // 「入らない」ことを確かめる値は、本来の置き場所（生成物・バンドル）に実際にある。
 //
 //   1. MCP（src/index.ts）     コンソールログインのコード（src/console/・scripts/・human）・固定の名前・生成物の値が入らない（cto の D2）
-//   2. Standard                Admin の固有値（Admin の AUD・入口の AUD・issuer・ロールのパスと名前と ARN・鍵の参照）が入らない。
+//   2. Standard                Admin の固有値（Admin の AUD・入口の AUD・issuer・ロールのパスと名前と ARN・Admin の鍵の参照）が入らない。
 //                              表示用の Admin の情報（チーム名・Object ID）だけは入る（ADR の P1'・U2）。MCP のコード・設定の解析器と生成器・scripts/ も入らない
-//   3. Admin                   Standard の行・Standard の AUD・issuer・署名の実装（sign-standard・oidc・keys）・表示用（display）が入らない
+//   3. Admin                   Standard の行・Standard の AUD・issuer・署名の実装（sign-standard・oidc・keys）・CONSOLE_SIGNING_KEYS・
+//                              文字列の鍵を読み込む経路・表示用（display）・試験用の鍵を作るエントリ（fixtures）が入らない。
+//                              Admin の署名（secret_key の CryptoKey と WebCrypto）と Admin の issuer の文書は入る（X1 の決裁）
 //
 // 静的な import の分離（node の API・MCP 用の本体を読まない）は test/unit/console-layout.test.ts・console-standard-layout.test.ts。
 // wrangler の設定の例は console-wrangler-config.test.ts。設計: docs/specs/console-login-portal.md §9.10。
@@ -45,8 +47,13 @@ const MCP_FILES = [
   "src/profiles.ts",
 ];
 
-/** Admin の鍵（KMS）の参照。Admin の署名の経路は未接続（9 段目は 503）なので、どちらのバンドルにも入らない。 */
+/** KMS の参照。X1 の決裁で Admin の署名は Cloudflare の中（secret_key）で完結するので、どちらのバンドルにも入らない。 */
 const KEY_REFERENCE_RE = /\bkms\b/i;
+/** Admin の鍵の参照（バインディングの名前の接頭辞と vars の名前）。Admin のバンドルにだけ入る。 */
+const ADMIN_KEY_REFS = ["ADMIN_KEY_", "ADMIN_CURRENT_KEY", "ADMIN_PUBLIC_JWKS"];
+/** 試験用の鍵を作るエントリ（E2E）にだけある文字列。本番の Admin のバンドルに入らない。 */
+const TEST_KEY_ENTRY = "test/e2e/fixtures/console-admin-key-entry.ts";
+const TEST_KEY_MARKERS = ["E2E_KEY_MODE", "generateKey"];
 
 type Built = { inputs: string[]; bundle: string };
 
@@ -59,6 +66,7 @@ let adminConfig: WorkerConfig;
 let mcp: Built;
 let standard: Built;
 let admin: Built;
+let adminTestEntry: Built;
 
 /** 生成物の値のうち、片方の階層にだけあるもの。 */
 let ADMIN_ONLY: string[] = [];
@@ -188,6 +196,12 @@ beforeAll(() => {
     main: join(root, adminWrangler.main as string),
     alias: { "awsbridge:console-worker-admin": adminJson },
   });
+  // 陽性の対照: 試験用の鍵を作るエントリ（E2E 用）のバンドル。本番の Admin のバンドルとの差が見えることを確かめる
+  adminTestEntry = bundleOf("admin-test-entry", {
+    ...adminWrangler,
+    main: join(root, TEST_KEY_ENTRY),
+    alias: { "awsbridge:console-worker-admin": adminJson },
+  });
 }, 180_000);
 
 afterAll(() => {
@@ -293,15 +307,17 @@ describe("2. Standard の Worker のバンドルに Admin の固有値が入ら�
       AUD["infra-elevated"],
       AUD["dev-elevated"],
       ENTRY_ADMIN,
-      "https://id.example.com/admin",
+      "https://admin-id.example.com/admin",
       "/awsbridge-console/admin/",
       "FederatedAwsBridgeAdministrator",
     ])
       expect(standard.bundle, s).not.toContain(s);
   });
 
-  it("Admin の鍵（KMS）の参照を持たない", () => {
+  it("Admin の鍵の参照（バインディングの名前・vars）・Admin の署名の部品・KMS の参照を持たない", () => {
     expect(standard.bundle).not.toMatch(KEY_REFERENCE_RE);
+    for (const s of ADMIN_KEY_REFS) expect(standard.bundle, s).not.toContain(s);
+    expect(standard.inputs.filter((p) => p.startsWith("src/console/admin/"))).toEqual([]);
   });
 
   it("表示用の生成物（入口の一覧）は入っていて、表示用の Admin の情報（チーム名・Object ID）だけを持つ", () => {
@@ -342,6 +358,52 @@ describe("3. Admin の Worker のバンドルに Standard の行・署名の実�
     expect(admin.bundle).toContain("signing_unavailable");
   });
 
+  it("陽性の対照: Admin の署名の部品（secret_key の CryptoKey・WebCrypto の JWS）・鍵の参照・Admin の issuer の文書は入っている", () => {
+    for (const p of [
+      "src/console/admin/sign-admin.ts",
+      "src/console/admin/key.ts",
+      "src/console/admin/jws.ts",
+      "src/console/admin/issuer.ts",
+    ])
+      expect(admin.inputs, p).toContain(p);
+    for (const s of ADMIN_KEY_REFS) expect(admin.bundle, s).toContain(s);
+    expect(admin.bundle).toContain("openid-configuration");
+    expect(admin.bundle).toContain("jwks.json");
+    expect(admin.bundle).toContain("https://admin-id.example.com/admin");
+  });
+
+  it("試験用の鍵を作るエントリ（fixtures）が入らない（陽性の対照: そのエントリのバンドルには入っている）", () => {
+    expect(adminTestEntry.inputs).toContain(TEST_KEY_ENTRY);
+    for (const s of TEST_KEY_MARKERS) expect(adminTestEntry.bundle, s).toContain(s);
+    expect(admin.inputs.filter((p) => p.startsWith("test/"))).toEqual([]);
+    for (const s of TEST_KEY_MARKERS) expect(admin.bundle, s).not.toContain(s);
+  });
+
+  it("文字列の鍵（JWK）を署名鍵に読み込む経路が入らない（陽性の対照: Standard のバンドルにはある）", () => {
+    for (const s of ["signing keys must be JSON", "parseSigningKeys"]) {
+      expect(standard.bundle, s).toContain(s);
+      expect(admin.bundle, s).not.toContain(s);
+    }
+  });
+
+  it("実行時の外部の依存物は jose だけで、版は package.json で固定している", () => {
+    const pkgs = new Set(
+      admin.inputs
+        .filter((p) => p.includes("node_modules/"))
+        .map(
+          (p) =>
+            /node_modules\/(?:\.pnpm\/[^/]+\/node_modules\/)?((?:@[^/]+\/)?[^/]+)/.exec(p)?.[1],
+        ),
+    );
+    // 陽性の対照: jose（Access JWT の検証）は入っていて、パッケージ名の取り出しが空振りしていない
+    expect(pkgs.has("jose")).toBe(true);
+    expect([...pkgs].filter((p) => p !== "jose")).toEqual([]);
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+      dependencies: Record<string, string>;
+    };
+    expect(pkg.dependencies.jose).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
   it("Standard の生成物（行・AUD・入口の AUD・issuer・ロールのパスと名前と ARN）が入らない。Standard のポータルのオリジンは peerOrigin（表示のリンク）としてだけ入る", () => {
     expect(has(admin.inputs, "worker.standard.json")).toEqual([]);
     for (const s of STANDARD_ONLY) expect(admin.bundle, s).not.toContain(s);
@@ -357,7 +419,7 @@ describe("3. Admin の Worker のバンドルに Standard の行・署名の実�
       expect(admin.bundle, s).not.toContain(s);
   });
 
-  it("Standard の署名の実装・OIDC・鍵の生成・CONSOLE_SIGNING_KEYS の参照・issuer の文書が入らない", () => {
+  it("Standard の署名の実装・OIDC・鍵の生成・CONSOLE_SIGNING_KEYS の参照・Standard の issuer の文書が入らない", () => {
     for (const p of [
       "src/console/issue/sign-standard.ts",
       "src/oidc.ts",
@@ -368,10 +430,8 @@ describe("3. Admin の Worker のバンドルに Standard の行・署名の実�
     ])
       expect(admin.inputs, p).not.toContain(p);
     expect(admin.bundle).not.toContain("CONSOLE_SIGNING_KEYS");
-    expect(admin.bundle).not.toContain("openid-configuration");
-    expect(admin.bundle).not.toContain("jwks.json");
     expect(admin.bundle).not.toContain('awsbridge:console-worker"');
-    // Admin の署名の経路（KMS）はまだ無い
+    // Admin の署名は Cloudflare の中（secret_key）で完結する。KMS の参照は無い
     expect(admin.bundle).not.toMatch(KEY_REFERENCE_RE);
   });
 

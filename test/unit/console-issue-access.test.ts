@@ -297,3 +297,78 @@ describe("設定が壊れていれば発行しない（fail closed: 500 server_m
     expect(r).toMatchObject({ status: 500, code: "server_misconfigured" });
   });
 });
+
+// X1 の決裁 (f): Admin の Worker は Access JWT の iat からの経過時間に上限を置く（Admin の Access のセッションの長さ。既定 15 分）。
+// 上限は maxAgeSeconds を渡したときだけ見る（Standard は渡さないので振る舞いは変わらない）。
+describe("iat からの経過時間の上限（maxAgeSeconds。Admin だけが渡す）", () => {
+  const MAX = 900;
+  async function signAt(iat: number | null, exp = NOW + 3600) {
+    const jwt = new SignJWT(user)
+      .setProtectedHeader({ alg: "RS256", kid: "k1" })
+      .setIssuer(TEAM_DOMAIN)
+      .setAudience([devAud])
+      .setSubject(SUB)
+      .setExpirationTime(exp);
+    if (iat !== null) jwt.setIssuedAt(iat);
+    return jwt.sign(good.privateKey);
+  }
+  const verifyAged = (token: string) =>
+    verifyConsoleAccess(token, "dev", cfg(), { ...opts(), maxAgeSeconds: MAX });
+
+  it("上限の内（iat が 15 分前ちょうど）なら通る", async () => {
+    expect(codeOf(await verifyAged(await signAt(NOW - MAX)))).toBe("ok");
+  });
+
+  it("上限を超えた（15 分 1 秒前）なら 401 too_old", async () => {
+    const r = await verifyAged(await signAt(NOW - MAX - 1));
+    expect(r).toMatchObject({ ok: false, status: 401, code: "unauthorized", reason: "too_old" });
+  });
+
+  it("iat が未来（時計ずれの許容 30 秒を超える）なら 401 iat_future", async () => {
+    expect(codeOf(await verifyAged(await signAt(NOW + 30)))).toBe("ok");
+    const r = await verifyAged(await signAt(NOW + 31));
+    expect(r).toMatchObject({ ok: false, status: 401, reason: "iat_future" });
+  });
+
+  it("iat が無ければ 401（経過時間を測れないので通さない）", async () => {
+    const r = await verifyAged(await signAt(null));
+    expect(r).toMatchObject({ ok: false, status: 401, code: "unauthorized" });
+  });
+
+  it("上限は aud の判定より先（古いトークンは未知の AUD でも 401）", async () => {
+    const jwt = await new SignJWT(user)
+      .setProtectedHeader({ alg: "RS256", kid: "k1" })
+      .setIssuer(TEAM_DOMAIN)
+      .setAudience([unknownAud])
+      .setSubject(SUB)
+      .setIssuedAt(NOW - MAX - 60)
+      .setExpirationTime(NOW + 3600)
+      .sign(good.privateKey);
+    expect(await verifyAged(jwt)).toMatchObject({ status: 401, reason: "too_old" });
+  });
+
+  it("nbf が未来（許容を超える）なら 401", async () => {
+    const jwt = await new SignJWT({ ...user, nbf: NOW + 120 })
+      .setProtectedHeader({ alg: "RS256", kid: "k1" })
+      .setIssuer(TEAM_DOMAIN)
+      .setAudience([devAud])
+      .setSubject(SUB)
+      .setIssuedAt(NOW - 60)
+      .setExpirationTime(NOW + 3600)
+      .sign(good.privateKey);
+    expect(await verifyAged(jwt)).toMatchObject({ ok: false, status: 401 });
+  });
+
+  it("maxAgeSeconds を渡さなければ（Standard）古い iat・iat なしでも従来どおり通る", async () => {
+    expect(codeOf(await verify(await signAt(NOW - 86_400)))).toBe("ok");
+    expect(codeOf(await verify(await signAt(null)))).toBe("ok");
+  });
+
+  it.each([0, -1, 1.5, Number.NaN])("maxAgeSeconds が正の整数でない（%s）なら 500", async (m) => {
+    const r = await verifyConsoleAccess(await signAt(NOW - 60), "dev", cfg(), {
+      ...opts(),
+      maxAgeSeconds: m,
+    });
+    expect(r).toMatchObject({ ok: false, status: 500, code: "server_misconfigured" });
+  });
+});

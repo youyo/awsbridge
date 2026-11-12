@@ -250,6 +250,38 @@ Steps (the Worker comes first: IAM reads the issuer's `/.well-known/openid-confi
 
 This way you can check the old and new deployments side by side before you switch. Without a second Worker this is not a parallel migration: the new stack can be created only after the Worker's `ISSUER` has moved to the new URL, and from then until the new stack and the new `roleArn` values are deployed, MCP calls fail (the old roles no longer accept the Worker's tokens). If you do it that way, prepare the rollback first (redeploy the Worker with the old `ISSUER` and the old `roleArn` values; keep the old stack until the new one works).
 
+## Admin signing key for console login
+
+The Admin Worker for console login (`wrangler.console-admin.jsonc`) signs the JWT it passes to STS with a Workers binding of type `secret_key` (a non-extractable `CryptoKey`; RSASSA-PKCS1-v1_5 / SHA-256, usages `sign` only). It is a separate Worker from the Standard one, with its own issuer, key, and host.
+
+- `mise run console:admin-key:put` creates the key in its own memory and uploads it with the Cloudflare API. It does not write the key to a file or print it, and the key never passes through CI or logs. A person runs it, only from a local machine. wrangler has no command to upload a `secret_key`.
+- The binding name is `ADMIN_KEY_<first 8 bytes of the kid in hex>`, derived from the kid. Uploading to an existing name replaces the current key at once, so the tool refuses an existing name. A new key always gets a different name.
+- The Worker reads the vars `ADMIN_CURRENT_KEY` (name and kid of the current key) and `ADMIN_PUBLIC_JWKS` (public keys, at most old and new). Before signing it checks the binding (a `CryptoKey`, non-extractable, `sign` only, `exportKey` fails), and it verifies each signed JWT with the public key in the vars. If anything does not match, it does not issue and returns `503 signing_unavailable`. The same Worker serves the Admin issuer's discovery document and JWKS under `/admin` on the Admin issuer host, which is separate from the Standard issuer host and the portal hosts.
+- Tokens: for `AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN`, use a token that can write only the Admin Worker, separate from the token used for the Standard Worker's deployments and secrets (without it, the `wrangler login` OAuth token is used, in memory only). Even though the key cannot be extracted, anyone who can change the Worker's code or secrets can sign any JWT. Keep the Cloudflare account permissions narrow, and deploy the Admin Worker with a separate token from Standard, with an approval step.
+- Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID` (or `account_id` in the wrangler config), `AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN` (optional), `AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG` (default `wrangler.console-admin.jsonc`), `AWSBRIDGE_CONSOLE_ADMIN_ACCESS_TOKEN` (optional; the Access token used for the key-check in `check`).
+
+First upload:
+
+```bash
+mise run console:admin-key:put              # only shows what it would do (no API calls)
+mise run console:admin-key:put -- --yes     # creates the key and uploads it as a secret_key; prints the name, kid, public key, and the vars to set next
+# put the printed ADMIN_PUBLIC_JWKS and ADMIN_CURRENT_KEY into the vars of the wrangler config and deploy
+mise run console:admin-key:check            # binding type, discovery and JWKS, key-check (non-extractable, exportKey fails, self-verification)
+```
+
+Rotation (every 90 days or less; always rotate and remove the old kid if a compromise is suspected):
+
+```bash
+mise run console:admin-key:put -- --yes     # 1. upload a new key under a new name
+# 2. set vars ADMIN_PUBLIC_JWKS to the old and new keys and deploy (both in the JWKS)
+# -- wait at least 1 hour (24 hours to be safe): until the STS JWKS cache expires (its length is not published and was not measured) --
+# 3. set vars ADMIN_CURRENT_KEY to the new key, deploy, and run mise run console:admin-key:check
+# 4. wait longer than the JWT lifetime (5 minutes), remove the old public key from ADMIN_PUBLIC_JWKS, and deploy
+mise run console:admin-key:retire -- --binding ADMIN_KEY_<old key> --yes   # 5. delete the old key (refuses the current key and keys still in the JWKS)
+```
+
+To stop issuing, remove the kid from the JWKS and deploy, or set the var `LOGIN_DISABLED` to `true`.
+
 ## Setup skill (Claude Code)
 
 A Claude Code skill that interactively sets up a downstream private repository is bundled in `.claude/skills/setup-downstream/`. You can use it as is just by cloning awsbridge (on first use you will be asked to trust the folder).

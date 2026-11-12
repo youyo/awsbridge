@@ -70,6 +70,33 @@ describe("mise.toml のデプロイタスク", () => {
   });
 });
 
+describe("mise.toml: コンソールログインの Admin の署名鍵（X1 の決裁）", () => {
+  it("console:admin-key:put / retire / check は scripts/console/admin-key.ts を呼び、--yes を既定で付けない。wrangler deploy・aws を呼ばない", () => {
+    for (const cmd of ["put", "retire", "check"]) {
+      const sec = section(`tasks."console:admin-key:${cmd}"`);
+      const run = /^run\s*=.*$/m.exec(sec)?.[0] ?? "";
+      expect(run, cmd).toContain(`scripts/console/admin-key.ts ${cmd}`);
+      expect(run, cmd).not.toMatch(/--yes|wrangler|\baws\b|deploy/);
+    }
+  });
+  it("鍵の道具の変数（トークン・アカウント ID）を [env] に置かない", () => {
+    expect(section("env")).not.toMatch(/^AWSBRIDGE_CONSOLE_ADMIN_/m);
+  });
+  it("秘密の検査（secrets:scan）は gitleaks で作業ツリー（未コミットを含む）を見る。gitleaks の版を固定する", () => {
+    const run = /^run\s*=.*$/m.exec(section('tasks."secrets:scan"'))?.[0] ?? "";
+    expect(run).toContain("scripts/secrets-scan.sh");
+    const script = readFileSync(
+      new URL("../../scripts/secrets-scan.sh", import.meta.url).pathname,
+      "utf8",
+    );
+    expect(script).toContain("gitleaks git");
+    expect(script).toContain("gitleaks dir");
+    expect(script).toContain("git ls-files -co --exclude-standard");
+    expect(script).toContain("--redact");
+    expect(section("tools")).toMatch(/^gitleaks\s*=\s*"\d+\.\d+\.\d+"/m);
+  });
+});
+
 // 下流の想定: upstream の mise.toml と、下流が足すファイル（mise.<env>.toml + .miserc.toml）を共存させる
 describe("下流の mise 設定ファイルの上書き", () => {
   const tmp = mkdtempSync(join(tmpdir(), "awsbridge-mise-"));

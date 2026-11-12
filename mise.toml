@@ -1,4 +1,5 @@
 [tools]
+gitleaks = "8.30.1"
 node = "24"
 "pipx:cfn-lint" = "1.59.0"
 pnpm = "11.28.5"
@@ -119,6 +120,27 @@ run = "pnpm tsx scripts/console/config.ts check"
 [tasks."console:config:generate"]
 description = "コンソールログインの設定ファイルから、Worker 用（階層ごと）・表示用（Standard の display.standard.json）・StackSets 用・Access の検査用の生成物を書く（Standard の入口とチームの AUD が要る。Admin の入口の AUD は要らない）"
 run = "pnpm tsx scripts/console/config.ts generate"
+
+# ---- コンソールログイン: Admin の署名鍵（Workers の secret_key 型。X1 の決裁）。手順は README の「コンソールログインの Admin の署名鍵」----
+# 人が手元で実行する（CI から実行しない）。put と retire は -- --yes を付けたときだけ Cloudflare API を書き換える（既定は表示だけ）。
+# 変数（[env] に置かず mise.local.toml に置く）: AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID、AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN（任意。無ければ wrangler の OAuth）、
+#   AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG（既定 wrangler.console-admin.jsonc）、AWSBRIDGE_CONSOLE_ADMIN_ACCESS_TOKEN（check の key-check 用。任意）
+
+[tasks."console:admin-key:put"]
+description = "Admin の署名鍵を手元のメモリの中で作り、Cloudflare API で secret_key（ADMIN_KEY_<kid の 16 進>）として入れる。同じ名前があれば止める。-- --yes で実行（既定は表示だけ）"
+run = "pnpm tsx scripts/console/admin-key.ts put"
+
+[tasks."console:admin-key:retire"]
+description = "旧い Admin の署名鍵のバインディングを消す（今の鍵・vars とデプロイ済みの JWKS に残る鍵は断る。JWKS が取れなければ断る）。-- --binding ADMIN_KEY_… --yes で実行"
+run = "pnpm tsx scripts/console/admin-key.ts retire"
+
+[tasks."console:admin-key:check"]
+description = "デプロイ後の確認: 今の鍵が secret_key か、Admin の issuer の discovery と JWKS が vars と合うか、key-check（取り出せない・exportKey が失敗する・自己検証）"
+run = "pnpm tsx scripts/console/admin-key.ts check"
+
+[tasks."secrets:scan"]
+description = "gitleaks で秘密の漏れを検査する（コミットの履歴と、未コミットを含む作業ツリー）"
+run = "bash scripts/secrets-scan.sh"
 
 # ---- 検証用（PoC 由来）。実 AWS を呼ぶので明示的に実行したときだけ使う ----
 

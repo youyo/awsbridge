@@ -1,12 +1,12 @@
 // コンソールログイン（ポータルの Worker の工場）: 階層（Standard / Admin）に共通の経路・画面・発行の振り分け。
 // 設計: docs/specs/console-login-portal.md §3・§9・§10・§11。階層ごとのエントリ（standard/worker.ts・admin/worker.ts）が、
-// 階層・署名の部品・issuer の文書の有無（任意）を渡してこの工場を呼ぶ。この工場は Standard の鍵の扱い・issuer の文書・OIDC を知らない。
+// 階層・署名の部品・issuer の文書を渡してこの工場を呼ぶ。この工場は階層ごとの鍵の扱い・issuer の文書の中身・OIDC を知らない。
 //
-//   issuer のホスト   （任意。Standard だけ）境界の issuer の文書。スペックが渡す serveIssuer が処理する。Admin は持たない
+//   issuer のホスト   境界の issuer の文書。スペックが渡す serveIssuer が処理する（Standard は境界ごと、Admin は Admin の issuer の /admin）
 //   ポータルのホスト  ポータルの経路（portal/routes.ts。パス方式 R-P が既定、設定でホスト方式 R-H）
 //   それ以外のホスト  404
 //
-// teamPathOnly（Admin）: 設定を確かめたら、env を読む前に、チームのパス（またはチームのホスト）以外を 404 にする（G-6）。
+// teamPathOnly（Admin）: 設定を確かめたら、env を読む前に、チームのパス（またはチームのホスト）と isIssuerDoc の経路以外を 404 にする（G-6）。
 // 生成物と secret は最初の要求で検査し、壊れていればどの経路も 500 server_misconfigured（ログは種別だけ）。
 // 試験用の差し替え（PortalOverrides）は E2E・unit のためのもので、本番のエントリは何も渡さない。
 import type { JWTVerifyGetKey } from "jose";
@@ -94,14 +94,30 @@ export type EntryHandler = (req: Request, ctx: EntryContext) => Promise<Response
 /** 階層ごとの部品。env から作る。 */
 export type TierPart = {
   signer: TokenSigner;
-  /** Standard だけ。Admin は issuer の文書を出さない（G1 の決裁 I-C）。 */
+  /** 境界の issuer の文書（Standard は境界ごと、Admin は Admin の issuer のホストの /admin。X1 の決裁で A-3 = I-B）。 */
   serveIssuer?: IssuerHandler;
+  /**
+   * Access JWT の iat からの経過時間の上限（秒）。渡せば画面と発行の両方で見る（Admin だけ。X1 の決裁 (f)）。
+   * 渡さなければ見ない（Standard の振る舞いは変えない）。
+   */
+  accessMaxAgeSeconds?: number;
+  /**
+   * デプロイ後の確認（GET <team-base>/key-check）。Access JWT の検証と回数の制限（LOGIN_RATE_LIMITER、
+   * キー admin-key-check:<sub>）の後ろで呼ぶ。Admin だけ。
+   * 渡さない階層（Standard）は、この経路を JWT の検証の前に 404 にする。
+   */
+  keyCheck?: () => Promise<unknown>;
 };
 
 export type PortalWorkerSpec<Env extends PortalEnv> = {
   tier: Tier;
   /** true: チームのパス以外を、env を読む前（処理の最初）に 404 にする。入口（/）も持たない。 */
   teamPathOnly?: boolean;
+  /**
+   * teamPathOnly のとき、処理の最初の 404 の例外にする issuer の文書の経路（設定だけで判定する。env は読まない）。
+   * Admin は Admin の issuer のホストの 2 つの文書のパスだけ。
+   */
+  isIssuerDoc?(url: URL, config: WorkerConfig): boolean;
   /** 入口（/）の画面。渡さなければ入口は 404。 */
   serveEntry?: EntryHandler;
   /** 階層ごとの env の検査と部品の作成。誤りは EnvError（種別だけ）で投げる。 */
@@ -208,12 +224,15 @@ export function createPortalWorker<Env extends PortalEnv>(
     }
     const url = new URL(req.url);
 
-    // 処理の最初（Admin）: チームのパス以外は 404。env・Access JWT は見ない（G-6）
+    // 処理の最初（Admin）: チームのパスと issuer の文書のパス以外は 404。env・Access JWT は見ない（G-6）
     let early: PortalRoute | undefined;
     if (spec.teamPathOnly) {
       early = matchPortal(url, c.config);
-      if (early?.kind !== "team")
-        return htmlResponse(errorPage("not_found", { requestId, mark }), 404);
+      if (early?.kind !== "team") {
+        if (!spec.isIssuerDoc?.(url, c.config))
+          return htmlResponse(errorPage("not_found", { requestId, mark }), 404);
+        early = undefined;
+      }
     }
 
     const rt = await loadRuntime(c.config, env);
@@ -282,12 +301,16 @@ export function createPortalWorker<Env extends PortalEnv>(
         now,
         log: (line) => console.log(line),
         getAccessKey: o.getAccessKey,
+        accessMaxAgeSeconds: rt.part.accessMaxAgeSeconds,
       });
       if (out.ok) return new Response(null, { status: 302, headers: { Location: out.location } });
       return htmlResponse(errorPage(out.code, errOpts), out.status);
     }
 
     if (page === "asset" && !isAssetName(portal.asset ?? ""))
+      return htmlResponse(errorPage("not_found", errOpts), 404);
+    // デプロイ後の確認は持つ階層（Admin）だけ。持たない階層は JWT の検証の前に 404
+    if (page === "key-check" && !rt.part.keyCheck)
       return htmlResponse(errorPage("not_found", errOpts), 404);
     if (!isRead) return methodNotAllowed("GET, HEAD", requestId, mark);
 
@@ -300,9 +323,29 @@ export function createPortalWorker<Env extends PortalEnv>(
       {
         ...(o.getAccessKey ? { getKey: o.getAccessKey } : {}),
         now: Math.floor(now() / 1000),
+        ...(rt.part.accessMaxAgeSeconds !== undefined
+          ? { maxAgeSeconds: rt.part.accessMaxAgeSeconds }
+          : {}),
       },
     );
     if (!access.ok) return htmlResponse(errorPage(access.code, errOpts), access.status);
+
+    if (page === "key-check" && rt.part.keyCheck) {
+      // 回数の制限（利用者ごと。キーは検証済みの Access の sub）。binding がない・例外なら返さない
+      const limiter = env.LOGIN_RATE_LIMITER;
+      if (!limiter || typeof limiter.limit !== "function")
+        return htmlResponse(errorPage("server_misconfigured", errOpts), 500);
+      let allowed: boolean;
+      try {
+        allowed = (await limiter.limit({ key: `admin-key-check:${access.sub}` })).success === true;
+      } catch {
+        return htmlResponse(errorPage("temporarily_unavailable", errOpts), 503);
+      }
+      if (!allowed) return htmlResponse(errorPage("rate_limited", errOpts), 429);
+      return new Response(JSON.stringify(await rt.part.keyCheck()), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
     if (page === "asset") return assetResponse(portal.asset ?? "") as Response;
     if (page === "login") return htmlResponse(loginGetPage(teamBase, mark));

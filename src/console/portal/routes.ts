@@ -5,7 +5,15 @@
 import { ACCOUNT_ID_RE } from "../constants";
 import type { WorkerConfig } from "../types";
 
-export type TeamPage = "list" | "account" | "cli" | "login" | "expired" | "asset";
+export type TeamPage =
+  | "list"
+  | "account"
+  | "cli"
+  | "login"
+  | "expired"
+  | "asset"
+  /** デプロイ後の確認（Admin だけが持つ。Standard は 404。portal/worker.ts）。 */
+  | "key-check";
 
 export type PortalRoute =
   /** 入口（/）と、入口の静的なファイル（/assets/<name>） */
@@ -35,6 +43,7 @@ function teamRest(
   if (asset) return { page: "asset", asset: asset[1] as string };
   if (rest === "/login") return { page: "login" };
   if (rest === "/expired") return { page: "expired" };
+  if (rest === "/key-check") return { page: "key-check" };
   const m = /^\/a\/([^/]+)(\/cli)?$/.exec(rest);
   if (m && ACCOUNT_ID_RE.test(m[1] as string))
     return { page: m[2] ? "cli" : "account", accountId: m[1] as string };

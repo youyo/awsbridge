@@ -250,6 +250,38 @@ issuer の URL（Worker の公開 URL）も変えるなら、新しいスタッ�
 
 この方法なら、切り替える前に旧と新を並べて確かめられます。別名の Worker を使わない場合は並行稼働になりません。Worker の `ISSUER` を新しい URL に移してからでないと新しいスタックを作れず、その後、新しいスタックと新しい `roleArn` をデプロイし終えるまで MCP の呼び出しは失敗します（旧ロールは Worker の JWT を受け付けなくなるため）。その方法を取るなら、切り戻しの手順（旧の `ISSUER` と旧の `roleArn` で Worker を再デプロイする。新しい側が動くまで旧スタックは残す）を先に用意してください。
 
+## コンソールログインの Admin の署名鍵
+
+コンソールログインの Admin の Worker（`wrangler.console-admin.jsonc`）は、Workers の `secret_key` 型のバインディング（取り出せない `CryptoKey`。RSASSA-PKCS1-v1_5 / SHA-256、usages は `sign` だけ）で STS に渡す JWT に署名します。Standard の Worker とは別の Worker・別の issuer・別の鍵・別のホストです。
+
+- 鍵は `mise run console:admin-key:put` が手元のメモリの中で作り、Cloudflare API で入れます。ファイルに書かず、出力もしません。CI やログを通しません。実行するのは人で、手元からだけです。wrangler には `secret_key` を入れるコマンドがありません。
+- バインディングの名前は `ADMIN_KEY_<kid の先頭 8 バイトの 16 進>` で、kid から決まります。同じ名前に入れると今の鍵が即座に置き換わるので、道具は同じ名前への投入を断ります。差し替えは必ず別の名前で入れます。
+- Worker は vars の `ADMIN_CURRENT_KEY`（今の鍵の名前と kid）と `ADMIN_PUBLIC_JWKS`（公開鍵。新旧 2 つまで）を読みます。署名の前にバインディングを確かめ（`CryptoKey`・取り出せない・`sign` だけ・`exportKey` が失敗する）、署名した JWT を vars の公開鍵で確かめます。合わなければ発行せず `503 signing_unavailable` を返します。Admin の issuer の discovery と JWKS は、Admin の issuer のホスト（Standard の issuer・ポータルと別のホスト）の `/admin` で同じ Worker が出します。
+- トークン: `AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN` には Admin の Worker だけを書けるトークンを使い、Standard の Worker のデプロイや secret に使うトークンと分けます（無ければ `wrangler login` の OAuth をメモリの中だけで使います）。鍵を取り出せなくても、Worker のコードや secret を書き換えられる人は任意の JWT に署名できます。Cloudflare のアカウントの権限を絞り、Admin のデプロイは Standard と別のトークンで承認を付けて行います。
+- 変数（`mise.local.toml`）: `AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID`（または wrangler の設定の `account_id`）、`AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN`（任意）、`AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG`（既定 `wrangler.console-admin.jsonc`）、`AWSBRIDGE_CONSOLE_ADMIN_ACCESS_TOKEN`（任意。`check` の key-check に使う Access のトークン）。
+
+初回の投入:
+
+```bash
+mise run console:admin-key:put              # 何をするかの表示だけ（API を呼ばない）
+mise run console:admin-key:put -- --yes     # 鍵を作って secret_key として入れる。名前・kid・公開鍵と、次に入れる vars を表示する
+# 表示された ADMIN_PUBLIC_JWKS と ADMIN_CURRENT_KEY を wrangler の設定の vars に書いてデプロイする
+mise run console:admin-key:check            # バインディングの型・discovery と JWKS・key-check（取り出せない・exportKey が失敗する・自己検証）
+```
+
+差し替え（90 日以下を目安に。侵害の疑いがあれば必ず替え、旧い kid を外す）:
+
+```bash
+mise run console:admin-key:put -- --yes     # 1. 新しい鍵を別の名前で入れる
+# 2. vars ADMIN_PUBLIC_JWKS を新旧 2 つにしてデプロイする（JWKS に並べる）
+# ── 最低 1 時間（安全側に 24 時間）待つ: STS の JWKS キャッシュが切れるまで（長さは公開されておらず未測定） ──
+# 3. vars ADMIN_CURRENT_KEY を新しい鍵にしてデプロイし、mise run console:admin-key:check
+# 4. JWT の有効期限（5 分）より長く待ってから、旧い公開鍵を ADMIN_PUBLIC_JWKS から外してデプロイする
+mise run console:admin-key:retire -- --binding ADMIN_KEY_<旧い鍵> --yes   # 5. 旧い鍵を消す（今の鍵・JWKS に残る鍵は断る）
+```
+
+発行を止めるときは、JWKS から kid を外してデプロイするか、vars `LOGIN_DISABLED` を `true` にします。
+
 ## セットアップ用スキル（Claude Code）
 
 下流の private リポジトリを対話しながらセットアップする Claude Code スキルを `.claude/skills/setup-downstream/` に同梱しています。awsbridge を clone すればそのまま使えます（初回はフォルダーの信頼を求められます）。
