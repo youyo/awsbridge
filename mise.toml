@@ -120,6 +120,28 @@ run = "pnpm tsx scripts/console/config.ts check"
 description = "コンソールログインの設定ファイルから、Worker 用（階層ごと）・表示用（Standard の display.standard.json）・StackSets 用・Access の検査用の生成物を書く（Standard の入口とチームの AUD が要る。Admin の入口の AUD は要らない）"
 run = "pnpm tsx scripts/console/config.ts generate"
 
+# ---- コンソールログイン（Standard）の運用: 鍵 → secret → ビルド確認（デプロイは利用者が承認して手で行う）----
+# 手順は README の「Console login: operations」。wrangler の設定は AWSBRIDGE_CONSOLE_WRANGLER_CONFIG（既定 wrangler.console-standard.jsonc）。
+# MCP 用の AWSBRIDGE_WRANGLER_CONFIG / AWSBRIDGE_WRANGLER_ENV には左右されない（--env は付けない）。
+#   AWSBRIDGE_CONSOLE_KEY_FILE       署名鍵 JSON の置き場所（既定 .secrets/console/signing-keys.json。gitignore）
+#   AWSBRIDGE_CONSOLE_CSRF_KEY_FILE  CSRF の鍵の置き場所（既定 .secrets/console/csrf-key。gitignore）
+
+[tasks."console:keygen"]
+description = "コンソールログイン: 境界ごとの RS256 署名鍵（2048 bit）を作り、CONSOLE_SIGNING_KEYS の JSON として 0600 で .secrets/console/ に書く（--boundary <名前> で指定、省くと設定ファイルの Standard の境界。既存なら --force が無い限り誤り。kid を表示）"
+run = "pnpm tsx scripts/console/keygen.ts"
+
+[tasks."console:secrets:standard"]
+description = "コンソールログイン（Standard）: Worker secret CONSOLE_SIGNING_KEYS と CONSOLE_CSRF_KEY（無ければ 32 バイトのランダムを作る）を wrangler secret put で入れる。--yes が無ければ何を入れるかだけを表示（dry-run）。値は表示しない"
+run = "pnpm tsx scripts/console/secrets.ts"
+
+[tasks."console:build:standard"]
+description = "コンソールログイン（Standard）: wrangler deploy --dry-run でバンドルだけ確かめる（デプロイしない。先に console:config:generate が要る）"
+run = 'env AWSBRIDGE_WRANGLER_CONFIG="${AWSBRIDGE_CONSOLE_WRANGLER_CONFIG:-wrangler.console-standard.jsonc}" AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy --dry-run --outdir dist/console-standard'
+
+[tasks."console:dev"]
+description = "コンソールログイン（Standard）: wrangler dev で手元に起動（手元用。先に console:config:generate が要る）"
+run = 'env AWSBRIDGE_WRANGLER_CONFIG="${AWSBRIDGE_CONSOLE_WRANGLER_CONFIG:-wrangler.console-standard.jsonc}" AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh dev'
+
 # ---- 検証用（PoC 由来）。実 AWS を呼ぶので明示的に実行したときだけ使う ----
 
 [tasks."poc:mint"]

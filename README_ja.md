@@ -250,6 +250,33 @@ issuer の URL（Worker の公開 URL）も変えるなら、新しいスタッ�
 
 この方法なら、切り替える前に旧と新を並べて確かめられます。別名の Worker を使わない場合は並行稼働になりません。Worker の `ISSUER` を新しい URL に移してからでないと新しいスタックを作れず、その後、新しいスタックと新しい `roleArn` をデプロイし終えるまで MCP の呼び出しは失敗します（旧ロールは Worker の JWT を受け付けなくなるため）。その方法を取るなら、切り戻しの手順（旧の `ISSUER` と旧の `roleArn` で Worker を再デプロイする。新しい側が動くまで旧スタックは残す）を先に用意してください。
 
+## コンソールログインの運用
+
+コンソールログインの Standard の Worker（`wrangler.console-standard.jsonc`。MCP 用とは別の Worker）の運用手順です。**デプロイは利用者が承認して手で行います**（`wrangler deploy`）。以下のタスクはどれもデプロイしません。下流のリポジトリは、`AWSBRIDGE_CONSOLE_WRANGLER_CONFIG` を自前の `wrangler.<name>-console.jsonc` に向けます（既定は `wrangler.console-standard.jsonc`）。これらのタスクは、MCP 側の `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` を読みません。
+
+```bash
+# 1. 設定を検査し、Worker の入力を生成（AUD のファイルが要る。docs/specs/console-login-portal.md 参照）
+mise run console:config:check
+mise run console:config:generate
+# 2. 境界ごとに RS256 の署名鍵（RSA 2048 bit）を作る -> .secrets/console/signing-keys.json（0600、gitignore）
+mise run console:keygen                       # 境界は設定ファイルから（issuers.standard があるもの）
+mise run console:keygen -- --boundary managed --boundary partner:partner-x   # 名前で指定してもよい
+# 3. secret を入れる。--yes が無ければ、何を入れるかを表示するだけ（dry-run）
+mise run console:secrets:standard
+mise run console:secrets:standard -- --yes
+# 4. バンドルできるか確かめる（デプロイしない）
+mise run console:build:standard
+# 5. 承認したあと手でデプロイ（wrangler の設定の routes と vars を先に確かめる）
+#    例: bash scripts/wrangler.sh deploy   （AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-standard.jsonc、AWSBRIDGE_WRANGLER_ENV= を付ける）
+```
+
+`mise run console:dev` は手元用に `wrangler dev` を起動します。
+
+- **署名鍵。** `console:keygen` は、secret `CONSOLE_SIGNING_KEYS`（境界の名前 → 秘密鍵 JWK）になる JSON を書きます。鍵は RS256・2048 bit 以上・公開指数 65537 で、表示される `kid` は公開鍵の thumbprint です。ファイルは秘密鍵を含むので、リポジトリに入れず（`.secrets/` は gitignore）、権限は 0600 に保ち（`console:secrets:standard` はそれより広いと止まります）、ログやチャットに貼らないでください。既存のファイルは上書きしません。作り直すには `--force` が要り、`kid` と公開する JWKS が変わるので、意図したローテーションとして行ってください。
+- **CSRF の鍵。** `CONSOLE_CSRF_KEY` は CSRF トークンの HMAC の鍵で、署名鍵とは別の 32 バイト以上のランダムな文字列です。`.secrets/console/csrf-key` が無ければ `console:secrets:standard --yes` が 32 バイトのランダム（16 進 64 文字、0600）を作ります。32 バイト未満の鍵は受け付けません。
+- **秘密の値は表示しません。** 値は引数ではなく標準入力で `wrangler secret put` に渡し、タスクの出力は境界の名前・`kid`・ファイルのパスだけです。
+- **停止スイッチ。** var `LOGIN_DISABLED` が発行を止めます。発行が動くのは、未設定・空文字・`"false"`・`"0"`（大文字小文字は区別せず、前後の空白は無視）のときだけです。それ以外の値（例 `"true"`・`"1"`）にすると Worker は 503 `login_disabled` を返します。wrangler の設定で値を変えてデプロイすると止まる・再開します。値の変更もデプロイなので、ほかのデプロイと同じく承認して行ってください。
+
 ## セットアップ用スキル（Claude Code）
 
 下流の private リポジトリを対話しながらセットアップする Claude Code スキルを `.claude/skills/setup-downstream/` に同梱しています。awsbridge を clone すればそのまま使えます（初回はフォルダーの信頼を求められます）。

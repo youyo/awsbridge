@@ -70,6 +70,38 @@ describe("mise.toml のデプロイタスク", () => {
   });
 });
 
+describe("mise.toml のコンソールログインの運用タスク", () => {
+  it("console:keygen / console:secrets:standard / console:build:standard / console:dev がある", () => {
+    for (const n of ["keygen", "secrets:standard", "build:standard", "dev"]) {
+      expect(section(`tasks."console:${n}"`), n).not.toBe("");
+    }
+  });
+  it("console:keygen は scripts/console/keygen.ts、console:secrets:standard は scripts/console/secrets.ts を呼ぶ（--yes は付けない）", () => {
+    expect(section('tasks."console:keygen"')).toContain("scripts/console/keygen.ts");
+    const run = /^run\s*=.*$/m.exec(section('tasks."console:secrets:standard"'))?.[0] ?? "";
+    expect(run).toContain("scripts/console/secrets.ts");
+    expect(run).not.toContain("--yes");
+  });
+  it("console:build:standard は wrangler deploy --dry-run をコンソール用の設定で呼び、デプロイしない", () => {
+    const s = section('tasks."console:build:standard"');
+    expect(s).toContain("scripts/wrangler.sh");
+    expect(s).toContain("deploy --dry-run");
+    expect(s).toContain("wrangler.console-standard.jsonc");
+  });
+  it("console:dev は wrangler dev をコンソール用の設定で呼ぶ", () => {
+    const s = section('tasks."console:dev"');
+    expect(s).toContain("scripts/wrangler.sh dev");
+    expect(s).toContain("wrangler.console-standard.jsonc");
+  });
+  it("コンソール用のタスクは MCP 用の AWSBRIDGE_WRANGLER_CONFIG / ENV に左右されない", () => {
+    for (const n of ["build:standard", "dev"]) {
+      const s = section(`tasks."console:${n}"`);
+      expect(s, n).toMatch(/AWSBRIDGE_WRANGLER_CONFIG=/);
+      expect(s, n).toMatch(/AWSBRIDGE_WRANGLER_ENV=(\s|")/);
+    }
+  });
+});
+
 // 下流の想定: upstream の mise.toml と、下流が足すファイル（mise.<env>.toml + .miserc.toml）を共存させる
 describe("下流の mise 設定ファイルの上書き", () => {
   const tmp = mkdtempSync(join(tmpdir(), "awsbridge-mise-"));

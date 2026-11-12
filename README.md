@@ -250,6 +250,33 @@ Steps (the Worker comes first: IAM reads the issuer's `/.well-known/openid-confi
 
 This way you can check the old and new deployments side by side before you switch. Without a second Worker this is not a parallel migration: the new stack can be created only after the Worker's `ISSUER` has moved to the new URL, and from then until the new stack and the new `roleArn` values are deployed, MCP calls fail (the old roles no longer accept the Worker's tokens). If you do it that way, prepare the rollback first (redeploy the Worker with the old `ISSUER` and the old `roleArn` values; keep the old stack until the new one works).
 
+## Console login: operations
+
+Operating the Standard Worker for the console login (`wrangler.console-standard.jsonc`, a separate Worker from the MCP one). **You approve and run the deployment by hand** (`wrangler deploy`); none of the tasks below deploys. Downstream repositories point `AWSBRIDGE_CONSOLE_WRANGLER_CONFIG` at their own `wrangler.<name>-console.jsonc` (default `wrangler.console-standard.jsonc`); these tasks do not read the MCP-side `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV`.
+
+```bash
+# 1. Check the settings and generate the Worker's input (needs the AUD file; see docs/specs/console-login-portal.md)
+mise run console:config:check
+mise run console:config:generate
+# 2. Create one RS256 signing key (RSA 2048 bit) per boundary -> .secrets/console/signing-keys.json (0600, gitignored)
+mise run console:keygen                       # boundaries from the settings file (those with issuers.standard)
+mise run console:keygen -- --boundary managed --boundary partner:partner-x   # or name them
+# 3. Put the secrets. Without --yes it only shows what it would put (dry-run)
+mise run console:secrets:standard
+mise run console:secrets:standard -- --yes
+# 4. Check that it bundles (does not deploy)
+mise run console:build:standard
+# 5. Deploy by hand after you approve it (check the routes and vars in your wrangler file first)
+#    e.g. bash scripts/wrangler.sh deploy   (with AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-standard.jsonc AWSBRIDGE_WRANGLER_ENV= set)
+```
+
+`mise run console:dev` starts `wrangler dev` for local use.
+
+- **Signing keys.** `console:keygen` writes the JSON that becomes the secret `CONSOLE_SIGNING_KEYS` (boundary name -> private JWK). Each key is RS256, 2048 bit or more, with the public exponent 65537, and the `kid` it prints is the thumbprint of the public key. The file holds private keys: keep it out of the repository (`.secrets/` is gitignored), keep it 0600 (`console:secrets:standard` refuses a wider mode), and do not paste it into logs or chats. It never overwrites an existing file; replacing the keys needs `--force`, which changes the `kid` and the published JWKS, so treat it as a deliberate rotation.
+- **CSRF key.** `CONSOLE_CSRF_KEY` is the HMAC key for CSRF tokens: a random string of at least 32 bytes, separate from the signing keys. If `.secrets/console/csrf-key` does not exist, `console:secrets:standard --yes` creates a 32-byte random one (64 hex characters, 0600). A key shorter than 32 bytes is refused.
+- **Secrets are never printed.** Values go to `wrangler secret put` on standard input, not in arguments, and the tasks print only boundary names, `kid`s and file paths.
+- **Kill switch.** The var `LOGIN_DISABLED` stops issuing. Only an unset var, an empty string, `"false"` and `"0"` (case-insensitive, surrounding whitespace ignored) leave issuing on; any other value (for example `"true"` or `"1"`) makes the Worker answer 503 `login_disabled`. Set it in your wrangler file and deploy to stop or resume; changing the value is a deployment, so approve it like any other.
+
 ## Setup skill (Claude Code)
 
 A Claude Code skill that interactively sets up a downstream private repository is bundled in `.claude/skills/setup-downstream/`. You can use it as is just by cloning awsbridge (on first use you will be asked to trust the folder).
