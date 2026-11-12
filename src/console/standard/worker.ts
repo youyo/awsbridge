@@ -10,6 +10,8 @@
 // 生成物と secret は最初の要求で検査し、壊れていればどの経路も 500 server_misconfigured（ログは種別だけ）。
 // 試験用の差し替え（StandardOverrides）は E2E・unit のためのもので、本番のエントリは何も渡さない。
 import type { JWK } from "jose";
+import { createEntryHandler } from "../display/entry";
+import type { IdentityGroupsSource } from "../display/groups";
 import { createStandardSigner, parseSigningKeys } from "../issue/sign-standard";
 import {
   createPortalWorker,
@@ -31,7 +33,13 @@ export type StandardEnv = PortalEnv & {
   CONSOLE_SIGNING_KEYS?: string;
 };
 
-export type StandardOverrides = PortalOverrides;
+export type StandardOverrides = PortalOverrides & {
+  /**
+   * 入口の一覧（S0。U2）の身元の Entra グループの取り方。取り方（Access の get-identity など）は未確定で、
+   * 本番のエントリは渡さない（そのときは「分からない」→ 全チームの S1 へのリンクに落とす）。
+   */
+  identityGroups?: IdentityGroupsSource | undefined;
+};
 
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
@@ -64,11 +72,21 @@ function issuerHandler(config: WorkerConfig, keys: Record<string, JWK>): IssuerH
   };
 }
 
-export function createStandardWorker(rawConfig: unknown, o: StandardOverrides = {}) {
+/**
+ * @param rawConfig 発行用の生成物（worker.standard.json）
+ * @param rawDisplay 表示用の生成物（display.standard.json）。入口（S0）の画面だけが読む。壊れていれば入口だけが 500
+ */
+export function createStandardWorker(
+  rawConfig: unknown,
+  o: StandardOverrides = {},
+  rawDisplay?: unknown,
+) {
+  const { identityGroups, ...portalOverrides } = o;
   return createPortalWorker<StandardEnv>(
     rawConfig,
     {
       tier: "standard",
+      serveEntry: createEntryHandler(rawDisplay, { identityGroups }),
       buildTier(env, config) {
         let keys: Record<string, JWK>;
         try {
@@ -79,6 +97,6 @@ export function createStandardWorker(rawConfig: unknown, o: StandardOverrides = 
         return { signer: createStandardSigner({ keys }), serveIssuer: issuerHandler(config, keys) };
       },
     },
-    o,
+    portalOverrides,
   );
 }

@@ -1,5 +1,7 @@
 // コンソールログインの Standard の Worker を wrangler dev で起動し、擬似の Access（certs）・STS・getSigninToken を相手に、
-// 画面（S2）→ POST /t/<team>/login → 302 までと、負の試験の代表（PR10 で網羅する）を確かめる。
+// 入口の一覧（S0）→ S2 のリンク → POST /t/<team>/login → 302 までの通しと、S1・S3・静的なファイル、負の試験の代表（PR10 で網羅する）を確かめる。
+// 入口の身元のグループの取り方は未確定なので、本物のエントリ（normal）は全チームの S1 へのリンクに落ちる経路を通り、
+// 試験用のエントリの変数 E2E_IDENTITY_GROUPS を渡したもの（grouped）が所属するチームの行の経路を通る。
 // 設定はリポジトリの wrangler.console-standard.jsonc を読み、main を E2E 用のエントリ（外向きの通信だけを擬似に向ける）にし、
 // routes を外し（手元では Host ヘッダーで振り分ける）、alias を試験用の生成物に、vars に鍵と擬似の宛先を足した一時ファイルで起動する。
 // 実 AWS・Cloudflare は呼ばない。
@@ -13,7 +15,7 @@ import { createLocalJWKSet, exportJWK, generateKeyPair, type JWK, jwtVerify, Sig
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AUDIENCE } from "../../src/console/constants";
 import { generateSigningJwk } from "../../src/keys";
-import { AUDS, standardConfig, stsXml } from "../unit/console-standard-harness";
+import { AUDS, displayConfig, standardConfig, stsXml } from "../unit/console-standard-harness";
 import { readJsonc } from "./jsonc";
 
 const root = new URL("../../", import.meta.url).pathname;
@@ -26,6 +28,9 @@ const EMAIL = "user@example.com";
 const SUB = "e2e00000-0000-4000-8000-000000000001";
 const INFRA = AUDS.teams.infra as string;
 const DEV = AUDS.teams.dev as string;
+const ENTRY_AUD = AUDS.entry.standard;
+const GROUP_INFRA = "00000000-0000-4000-8000-000000000001";
+const GROUP_INFRA_ELEVATED = "00000000-0000-4000-8000-000000000004";
 // 鍵・トークンの形の文字列は実行時に組む（gitleaks の誤検知を避ける）
 const CSRF_SECRET = ["e2e", "csrf", "c".repeat(40)].join("-");
 const ACCESS_KEY_ID = ["ASIA", "E".repeat(16)].join("");
@@ -34,6 +39,7 @@ const SIGNIN_TOKEN = ["signin", "e".repeat(24)].join("-");
 type Instance = { proc: ChildProcess; base: string; logs: string[] };
 let normal: Instance;
 let stopped: Instance;
+let grouped: Instance;
 let fake: Server | undefined;
 let fakeBase = "";
 let tmp = "";
@@ -203,6 +209,8 @@ beforeAll(async () => {
   tmp = mkdtempSync(join(tmpdir(), "awsbridge-console-std-e2e-"));
   const generated = join(tmp, "worker.standard.json");
   writeFileSync(generated, JSON.stringify(standardConfig()));
+  const generatedDisplay = join(tmp, "display.standard.json");
+  writeFileSync(generatedDisplay, JSON.stringify(displayConfig()));
   const config = readJsonc(join(root, "wrangler.console-standard.jsonc"));
   expect(config.workers_dev).toBe(false);
   expect(config.preview_urls).toBe(false);
@@ -218,7 +226,10 @@ beforeAll(async () => {
       ...config,
       $schema: undefined,
       main: join(root, "test/e2e/fixtures/console-standard-entry.ts"),
-      alias: { "awsbridge:console-worker": generated },
+      alias: {
+        "awsbridge:console-worker": generated,
+        "awsbridge:console-display": generatedDisplay,
+      },
       ratelimits,
       vars: {
         ...(config.vars as Record<string, string>),
@@ -232,15 +243,22 @@ beforeAll(async () => {
       },
     }),
   );
-  [normal, stopped] = await Promise.all([
+  [normal, stopped, grouped] = await Promise.all([
     start("normal", {}, wranglerConfig),
     start("stopped", { LOGIN_DISABLED: "true" }, wranglerConfig),
+    // infra（Standard）と infra-elevated（Admin）のグループ（試験の fixture の Object ID）
+    start(
+      "grouped",
+      { E2E_IDENTITY_GROUPS: `${GROUP_INFRA},${GROUP_INFRA_ELEVATED}` },
+      wranglerConfig,
+    ),
   ]);
 }, 90_000);
 
 afterAll(() => {
   stop(normal);
   stop(stopped);
+  stop(grouped);
   fake?.close();
   if (tmp) rmSync(tmp, { recursive: true, force: true });
 });
@@ -464,5 +482,127 @@ describe("Standard の Worker（wrangler dev）: 負の試験（代表。PR10 �
     expect(r.status).toBe(503);
     expect(r.body).toContain("login_disabled");
     noIssue();
+  });
+});
+
+/** 画面を GET する（Access のアプリの JWT を付ける）。 */
+async function page(inst: Instance, path: string, aud: string | null): Promise<HttpResult> {
+  return send(inst, {
+    host: PORTAL_HOST,
+    path,
+    headers: aud === null ? {} : { "Cf-Access-Jwt-Assertion": await accessJwt(aud) },
+  });
+}
+
+const hrefs = (html: string) => [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1] as string);
+
+describe("Standard の Worker（wrangler dev）: 入口の一覧（S0）から発行までの通し", () => {
+  it("所属するチームの行（grouped）: S0 の行のリンク → S2 → POST → 302。Administrator の行は Admin のオリジンへ [ADMIN]", async () => {
+    const s0 = await page(grouped, "/", ENTRY_AUD);
+    expect(s0.status, s0.body).toBe(200);
+    expect(s0.headers["cache-control"]).toBe("no-store");
+    expect(String(s0.headers["content-security-policy"])).toContain("script-src 'self'");
+    expect(s0.body).toContain("あなたが入れるもの");
+    expect(s0.body).toContain(
+      'href="https://admin-portal.example.com/t/infra-elevated/a/333333333333?role=admin"',
+    );
+    expect(s0.body).toContain("[ADMIN]");
+    // 所属しないチームの割り当て・アカウントの email・AUD は出さない
+    expect(s0.body).not.toContain("/t/dev/");
+    expect(s0.body).not.toMatch(/aws\+[a-z-]+@example\.(com|org)/);
+    for (const aud of Object.values(AUDS.teams)) expect(s0.body).not.toContain(aud as string);
+
+    const link = hrefs(s0.body).find((h) => h.startsWith("/t/infra/a/333333333333?role=readonly"));
+    expect(link).toBeDefined();
+    const s2 = await page(grouped, link as string, INFRA);
+    expect(s2.status, s2.body).toBe(200);
+    expect(s2.body).toContain('value="333333333333:readonly" required checked');
+    const csrf = /name="csrf" value="([^"]+)"/.exec(s2.body)?.[1] as string;
+    const r = await postLogin(grouped, {
+      jwt: await accessJwt(INFRA),
+      form: { entry: "333333333333:readonly", region: "ap-northeast-1", csrf },
+    });
+    expect(r.status, r.body).toBe(302);
+    expect(String(r.headers.location)).toContain("https://signin.aws.amazon.com/federation");
+    expect(seen.sts).toHaveLength(1);
+  });
+
+  it("所属が分からない（本物のエントリ。取り方は未設定）: S0 は全チームの S1 へのリンク → S1 → S2 → POST → 302", async () => {
+    const s0 = await page(normal, "/", ENTRY_AUD);
+    expect(s0.status, s0.body).toBe(200);
+    expect(s0.body).toContain("所属を確かめられませんでした");
+    expect(s0.body).not.toContain("svc-a-prod");
+    expect(hrefs(s0.body)).toContain("/t/infra/");
+    expect(hrefs(s0.body)).toContain("https://admin-portal.example.com/t/infra-elevated/");
+
+    const s1 = await page(normal, "/t/infra/", INFRA);
+    expect(s1.status, s1.body).toBe(200);
+    expect(s1.body).toContain("aws+svc-a-prod@example.com");
+    const link = hrefs(s1.body).find((h) => h === "/t/infra/a/333333333333?role=readonly");
+    expect(link).toBeDefined();
+    const s2 = await page(normal, link as string, INFRA);
+    const csrf = /name="csrf" value="([^"]+)"/.exec(s2.body)?.[1] as string;
+    const r = await postLogin(normal, {
+      jwt: await accessJwt(INFRA),
+      form: { entry: "333333333333:readonly", csrf },
+    });
+    expect(r.status, r.body).toBe(302);
+  });
+
+  it("U2 の条件: 入口のアプリの JWT は、身元のグループに infra が入っていても POST で 403 unknown_audience", async () => {
+    const csrf = await csrfFrom(grouped, "infra", "333333333333", INFRA);
+    const r = await postLogin(grouped, {
+      jwt: await accessJwt(ENTRY_AUD),
+      form: { entry: "333333333333:readonly", csrf },
+    });
+    expect(r.status).toBe(403);
+    expect(r.body).toContain("unknown_audience");
+    noIssue();
+  });
+
+  it("S0 は入口のアプリの JWT が無ければ 401、チームの AUD なら 403", async () => {
+    expect((await page(grouped, "/", null)).status).toBe(401);
+    expect((await page(grouped, "/", INFRA)).status).toBe(403);
+  });
+});
+
+describe("Standard の Worker（wrangler dev）: S1・S3・静的なファイル", () => {
+  it("S1 は他のチームの行・AUD を出さず、inline の script・style を使わない。?q= はサーバー側で絞る", async () => {
+    const dev = await page(normal, "/t/dev/", DEV);
+    expect(dev.status).toBe(200);
+    expect(dev.body).toContain("svc-c-dev");
+    expect(dev.body).not.toContain("333333333333");
+    for (const aud of Object.values(AUDS.teams)) expect(dev.body).not.toContain(aud as string);
+    for (const tag of dev.body.match(/<script\b[^>]*>/g) ?? [])
+      expect(tag).toMatch(/\ssrc="[^"]+"/);
+    expect(dev.body).not.toMatch(/<style\b|\sstyle=/);
+
+    const q = await page(normal, "/t/infra/?q=partner", INFRA);
+    expect(q.body).toContain('href="/t/infra/a/222222222222?role=readonly"');
+    expect(q.body).not.toContain('href="/t/infra/a/333333333333?role=readonly"');
+  });
+
+  it("S3 は aws login の手順（Viewer は --remote も）と、CSRF つきの「コンソールを開く」", async () => {
+    const r = await page(normal, "/t/infra/a/333333333333/cli?role=readonly", INFRA);
+    expect(r.status, r.body).toBe(200);
+    expect(r.body).toContain("aws login --profile svc-a-prod-readonly");
+    expect(r.body).toContain("aws login --remote");
+    expect(r.body).toContain("共有の端末では aws logout");
+    expect(r.body).toMatch(/name="csrf" value="[^"]+"/);
+    expect(r.body).not.toContain("aws+svc-a-prod@example.com");
+  });
+
+  it("静的なファイルは /assets（入口の JWT）と /t/<team>/assets（チームの JWT）から返し、no-store にしない", async () => {
+    const js = await page(normal, "/assets/portal.js", ENTRY_AUD);
+    expect(js.status).toBe(200);
+    expect(js.headers["content-type"]).toBe("text/javascript; charset=utf-8");
+    expect(js.headers["cache-control"]).not.toBe("no-store");
+    expect(js.headers["x-content-type-options"]).toBe("nosniff");
+    const css = await page(normal, "/t/infra/assets/portal.css", INFRA);
+    expect(css.status).toBe(200);
+    expect(css.headers["content-type"]).toBe("text/css; charset=utf-8");
+    expect((await page(normal, "/t/infra/assets/portal.css", null)).status).toBe(401);
+    expect((await page(normal, "/assets/other.js", ENTRY_AUD)).status).toBe(404);
+    expect((await send(normal, { host: ISSUER_HOST, path: "/assets/portal.js" })).status).toBe(404);
   });
 });

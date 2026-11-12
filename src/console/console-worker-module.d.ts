@@ -10,3 +10,10 @@ declare module "awsbridge:console-worker-admin" {
   const config: unknown;
   export default config;
 }
+
+// Standard の Worker の入口の一覧（S0）用の表示用の生成物（実体は .generated/console/display.standard.json）。
+// 形は DisplayConfig（src/console/types.ts）。Standard のエントリだけが読み、発行の経路と Admin の Worker は読まない。
+declare module "awsbridge:console-display" {
+  const display: unknown;
+  export default display;
+}
