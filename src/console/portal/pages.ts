@@ -2,6 +2,7 @@
 // S2（ロールの選択と POST のフォーム）・S4（エラー）・S5（セッション切れ）・GET /login の案内と、PR5 で中身を作る画面の枠。
 // CSP が script-src 'self'・style-src 'self' なので、inline の script・style を書かない。設定由来の値はすべてエスケープする。
 // 発行の経路（login.ts）からは import しない。node の API を使わない。
+import type { Tier } from "../constants";
 import type { IssueErrorCode } from "../issue/errors";
 import type { WorkerAccount, WorkerConfig, WorkerRole } from "../types";
 
@@ -40,17 +41,25 @@ const ERROR_TITLES: Record<
   payload_too_large: "もう一度選んでください",
 };
 
-function layout(title: string, body: string): string {
+/** Admin の画面の印（見出しとタブのタイトルの先頭に付ける）。区別を残すかは人の確認待ち（§12.1）で、既定は残す案。 */
+export const ADMIN_MARK = "[ADMIN]";
+
+/** 階層の画面の印。Standard は付けない。 */
+export const tierMark = (tier: Tier): string | undefined =>
+  tier === "admin" ? ADMIN_MARK : undefined;
+
+function layout(title: string, body: string, mark?: string): string {
+  const prefix = mark !== undefined ? `${mark} ` : "";
   return `<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="same-origin">
-<title>${esc(title)} - awsbridge</title>
+<title>${esc(prefix)}${esc(title)} - awsbridge</title>
 </head>
 <body>
-<header><p>awsbridge AWS ログイン</p></header>
+<header><p>${esc(prefix)}awsbridge AWS ログイン</p></header>
 <main>
 ${body}
 </main>
@@ -75,6 +84,8 @@ export type ErrorPageOptions = {
   /** 一覧（S1）へのリンク。チームが分かるときだけ。 */
   teamBase?: string | undefined;
   supportUrl?: string | undefined;
+  /** 階層の印（Admin は `[ADMIN]`）。 */
+  mark?: string | undefined;
 };
 
 /** S4 エラー。内部の詳細（STS の本文・例外の文）は出さない。 */
@@ -91,36 +102,40 @@ export function errorPage(code: keyof typeof ERROR_TITLES, o: ErrorPageOptions =
       o.requestId ? ` 要求 ID <code>${esc(o.requestId)}</code>` : ""
     }</p>
 ${links.length > 0 ? `<p>${links.join(" ")}</p>` : ""}`,
+    o.mark,
   );
 }
 
 /** GET <team-base>/login（Access の再認証のあとに戻る先）。発行しない。 */
-export function loginGetPage(teamBase: string): string {
+export function loginGetPage(teamBase: string, mark?: string): string {
   return layout(
     "もう一度選んでください",
     `<h1>もう一度選んでください</h1>
 <p>ログインはアカウントの画面のボタンからだけ行えます。一覧からアカウントとロールを選び直してください。</p>
 <p><a href="${esc(teamBase)}/">一覧へ</a></p>`,
+    mark,
   );
 }
 
 /** S5 コンソールのセッション切れ（フェデレーションの Issuer の戻り先）。 */
-export function expiredPage(teamBase: string): string {
+export function expiredPage(teamBase: string, mark?: string): string {
   return layout(
     "コンソールのセッションが切れました",
     `<h1>コンソールのセッションが切れました</h1>
 <p>もう一度アカウントとロールを選んでください。</p>
 <p><a href="${esc(teamBase)}/">一覧へ</a></p>`,
+    mark,
   );
 }
 
 /** PR5 で中身を作る画面（S0・S1・S3）の枠。 */
-export function placeholderPage(title: string, back?: string): string {
+export function placeholderPage(title: string, back?: string, mark?: string): string {
   return layout(
     title,
     `<h1>${esc(title)}</h1>
 <p>この画面は準備中です。</p>
 ${back !== undefined ? `<p><a href="${esc(back)}">戻る</a></p>` : ""}`,
+    mark,
   );
 }
 
@@ -136,6 +151,8 @@ export type LoginFormOptions = {
   selectedRole?: string | undefined;
   csrf: string;
   loginDisabled: boolean;
+  /** 階層の印（Admin は `[ADMIN]`）。 */
+  mark?: string | undefined;
 };
 
 /** S2 アカウントの詳細とログイン（POST <team-base>/login のフォーム。hidden に csrf）。 */
@@ -183,5 +200,6 @@ ${regionField}
 <p><button type="submit">コンソールを開く（新しいタブ）</button></p>
 </form>
 <p>開いたコンソールが別のアカウント・ロールのままのとき（または Credentials invalid になるとき）は、開いているコンソールでサインアウトしてから、もう一度「コンソールを開く」を押してください。</p>`,
+    o.mark,
   );
 }

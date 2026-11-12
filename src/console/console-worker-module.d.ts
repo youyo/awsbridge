@@ -4,3 +4,9 @@ declare module "awsbridge:console-worker" {
   const config: unknown;
   export default config;
 }
+
+// Admin の Worker 用（実体は生成物 .generated/console/worker.admin.json）。Standard の alias とは別の名前にして、取り違えをバンドルの試験で見つける。
+declare module "awsbridge:console-worker-admin" {
+  const config: unknown;
+  export default config;
+}
