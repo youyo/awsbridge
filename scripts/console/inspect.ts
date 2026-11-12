@@ -10,13 +10,13 @@
 //   --account-id <id>                 期待するアカウント（任意。プロファイルのアカウントと違えば止まる）
 // 出力は伏せ字（アカウント ID・email）。終了コード: 0 誤りなし / 1 誤りあり / 2 検査できない（入力・aws の失敗）。
 // 限界: 手で回す検査は、検査のあとの改変を防がない。定期に回し、CloudTrail の変更の通知と組み合わせる（§4.9）。
-import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { ConsoleConfigError, formatIssue, parseConsoleConfig } from "../../src/console/config";
 import { formatReport, inspectAccount, redact } from "../../src/console/inspect";
 import { parseStops, StopsError } from "../../src/console/stops";
-import { type AwsRun, readAccountSnapshot } from "./inspect-read";
+import { awsRunner } from "./aws-cli";
+import { READ_COMMANDS, readAccountSnapshot } from "./inspect-read";
 
 class InputError extends Error {}
 
@@ -28,31 +28,6 @@ function stop(message: string): never {
 /** プロファイル名（先頭の - は拒否。引数と取り違えないように）。 */
 const PROFILE_RE = /^[\w.+@][\w.+@-]{0,63}$/;
 const ACCOUNT_RE = /^\d{12}$/;
-
-/** aws CLI を非同期で呼ぶ（execFile。シェルを通さない）。失敗は伏せ字のエラーにする。 */
-function awsRunner(profile: string): AwsRun {
-  return (args) =>
-    new Promise((resolve, reject) => {
-      execFile(
-        "aws",
-        // 名前は = の形で渡す（- で始まる値を別の引数と読ませない）
-        [...args, `--profile=${profile}`, "--output", "json"],
-        { env: process.env, timeout: 60_000, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
-        (err, stdout, stderr) => {
-          if (err) {
-            const first = stderr.split("\n").find((l) => l.trim() !== "") ?? err.message;
-            reject(new Error(`aws ${args[0]} ${args[1]} failed: ${first.slice(0, 300)}`));
-            return;
-          }
-          try {
-            resolve(JSON.parse(stdout === "" ? "null" : stdout));
-          } catch {
-            reject(new Error(`aws ${args[0]} ${args[1]}: could not parse the response`));
-          }
-        },
-      );
-    });
-}
 
 function readJson(path: string, label: string): unknown {
   if (!existsSync(path)) throw new InputError(`${label} のファイルがありません: ${path}`);
@@ -103,7 +78,7 @@ async function main(): Promise<number> {
   const inventory = invPath ? readJson(invPath, "inventory") : undefined;
   const stops = values.stops !== undefined ? readStops(values.stops) : undefined;
 
-  const snapshot = await readAccountSnapshot(awsRunner(profile), {
+  const snapshot = await readAccountSnapshot(awsRunner(profile, READ_COMMANDS), {
     roleNames: config.roles.map((r) => r.roleName),
     ...(expectAccountId !== undefined ? { expectAccountId } : {}),
   });

@@ -330,6 +330,27 @@ mise run console:admin-key:retire -- --binding ADMIN_KEY_<old key> --yes   # 5. 
 
 To stop issuing, remove the kid from the JWKS and deploy, or set the var `LOGIN_DISABLED` to `true`.
 
+## Stopping one person for console login
+
+To stop a single person, the person's SourceIdentity (email by default) is written as a Deny into the inline policy with the reserved name `AwsbridgeConsoleDenySourceIdentity` on the console login roles (a Deny of every action for sessions whose `aws:SourceIdentity` matches; design in `docs/specs/console-login.md` §6.3). The stop tool writes it.
+
+- The stop list is a file in the same form as the inspect tool's `--stops` (`{ "sourceIdentities": ["..."] }`), and it is the source of truth for who is stopped. **It contains email addresses, so keep it in `.secrets/` or in your downstream repository, and never commit it to the public repository.**
+- `console:stop:apply` is declarative: it makes the reserved policy on every target role match the list in the file. The targets are the configured roles that exist in the account, roles under the `/awsbridge-console/` path, and roles outside the path that are not in the config but trust a console provider (the plan marks them as roles not in the config, with the source `unlisted`).
+- Without `--yes` it only shows the plan. It still reads IAM and calls `sts get-caller-identity` to compute the difference from the current state (unlike the Admin key tool, where no API is called without `--yes`). The only writes are `iam put-role-policy` and `iam delete-role-policy`.
+- When stopping (values are added or unchanged), it does not halt the whole run. Roles whose reserved policy holds a document that is not a stop document, roles whose inline policies would exceed 10,240 characters in total, and roles where the write fails are reported and left unwritten; the other roles are still written, and the tool exits with 1.
+- Releasing (values are removed, or an empty list) requires `--allow-remove`. The tool prints the release conditions from §6.3 (do not remove before the role's `MaxSessionDuration` has passed, the cause is removed, old keys are gone, and new issuance is confirmed impossible). The tool cannot check them, so a person does. If any role cannot be written or a role is not in the config, nothing is written; if a write fails, it stops and prints the roles done and the roles remaining.
+- `--reason` is required. The result is printed to standard output as a one-line JSON record (time, last 4 digits of the account, roles, change in counts, reason; no values), which the operator keeps. The output never contains email values or full account IDs.
+- It refuses to run from a session of a console role (a configured role name or a role under `/awsbridge-console/`), because the guard policy denies the writes. Run it through another entry point such as IAM Identity Center.
+
+```bash
+mise run console:stop:show -- --profile=<p> --stops=.secrets/console-stops.json      # read only: counts per role, missing and extra
+mise run console:stop:apply -- --profile=<p> --stops=.secrets/console-stops.json --reason="<reason>"         # show the plan
+mise run console:stop:apply -- --profile=<p> --stops=.secrets/console-stops.json --reason="<reason>" --yes   # write
+mise run console:inspect -- --profile=<p> --stops=.secrets/console-stops.json        # afterwards, check every role
+```
+
+Exit codes: 0 everything matches (or nothing to change) / 1 some roles were not written / 2 nothing was run (input error, read failure, the caller, or a release without `--allow-remove`).
+
 ## Setup skill (Claude Code)
 
 A Claude Code skill that interactively sets up a downstream private repository is bundled in `.claude/skills/setup-downstream/`. You can use it as is just by cloning awsbridge (on first use you will be asked to trust the folder).
