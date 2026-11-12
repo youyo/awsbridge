@@ -32,7 +32,7 @@ From the second time on, deploy only the side you changed.
 
 ### AWS side (per target account)
 
-Just deploy [infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml). It creates an IAM OIDC provider whose issuer is the Worker's URL, and two roles that are assumed with the JWT issued by the Worker (read-only `FederatedMcpViewer` and debug `FederatedMcpDebugger`). These MCP roles are separate from the human console roles (Viewer / Administrator); granting a person a console role does not change what the MCP roles can do. Everyone can use the Viewer (`FederatedMcpViewer`). Who gets the Debugger (`FederatedMcpDebugger`) is decided by the downstream configuration (`DebugAllowedSubjects`); there is no upstream rule. Note when granting it: through remote shells and similar actions, the Debugger gets the permissions of the target's role, which carry no MCP-only condition.
+Just deploy [infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml). It creates an IAM OIDC provider whose issuer is the Worker's URL, and two roles that are assumed with the JWT issued by the Worker (read-only `FederatedAwsBridgeMcpViewer` and debug `FederatedAwsBridgeMcpDebugger`). These MCP roles are separate from the human console roles (Viewer / Administrator); granting a person a console role does not change what the MCP roles can do. Everyone can use the Viewer (`FederatedAwsBridgeMcpViewer`). Who gets the Debugger (`FederatedAwsBridgeMcpDebugger`) is decided by the downstream configuration (`DebugAllowedSubjects`); there is no upstream rule. Note when granting it: through remote shells and similar actions, the Debugger gets the permissions of the target's role, which carry no MCP-only condition.
 
 ```
 AWS_PROFILE=<target> mise run deploy:aws    # Deploy CloudFormation (can be deployed to any number of accounts)
@@ -53,8 +53,8 @@ You can also deploy the template directly from the management console or with St
 | `Audience` | The JWT audience (default `awsbridge`. Must match the Worker's `STS_AUDIENCE`) |
 | `AllowedSubjects` | Users who can assume the read-only role (comma-separated. See the format below. Specify in lowercase) |
 | `DebugAllowedSubjects` | Users who can assume the debug role (same format. Keeping it narrower than the read-only role is recommended) |
-| `ReadOnlyRoleName` | Read-only role name (default `FederatedMcpViewer`) |
-| `DebugRoleName` | Debug role name (default `FederatedMcpDebugger`) |
+| `ReadOnlyRoleName` | Read-only role name (default `FederatedAwsBridgeMcpViewer`) |
+| `DebugRoleName` | Debug role name (default `FederatedAwsBridgeMcpDebugger`) |
 | `DebugAdditionalPolicyArns` | Optional. Additional managed policies to attach to the debug role (comma-separated. Nothing is attached if empty) |
 | `DebugPassableEcsTaskRoleArns` | Optional. IAM role ARNs that may be passed to a task with `ecs:RunTask` (comma-separated. Wildcards are not allowed). If empty, `iam:PassRole` is not granted |
 
@@ -64,8 +64,8 @@ After deployment, note the outputs `ReadOnlyRoleArn` / `DebugRoleArn` (you can a
 
 | Role | Permissions |
 |---|---|
-| `FederatedMcpViewer` | The AWS managed policy `ReadOnlyAccess` + an explicit Deny (unconditional) on retrieving SSM parameters (`ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`) and Secrets Manager values (`secretsmanager:GetSecretValue` / `BatchGetSecretValue`) |
-| `FederatedMcpDebugger` | `ReadOnlyAccess` + an inline policy (enhanced read access for investigation, light operational actions, actions that incur cost, and connection and execution; every Allow is conditional on `aws:CalledViaAWSMCP = aws-mcp.amazonaws.com`; includes the same unconditional Deny on retrieving SSM parameters and Secrets Manager values) + the optional `DebugAdditionalPolicyArns` |
+| `FederatedAwsBridgeMcpViewer` | The AWS managed policy `ReadOnlyAccess` + an explicit Deny (unconditional) on retrieving SSM parameters (`ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory`) and Secrets Manager values (`secretsmanager:GetSecretValue` / `BatchGetSecretValue`) |
+| `FederatedAwsBridgeMcpDebugger` | `ReadOnlyAccess` + an inline policy (enhanced read access for investigation, light operational actions, actions that incur cost, and connection and execution; every Allow is conditional on `aws:CalledViaAWSMCP = aws-mcp.amazonaws.com`; includes the same unconditional Deny on retrieving SSM parameters and Secrets Manager values) + the optional `DebugAdditionalPolicyArns` |
 
 The debug role's inline policy is divided into the following groups (every Allow is conditional on `aws:CalledViaAWSMCP = aws-mcp.amazonaws.com`, with Resource `*`). It does not include delete actions, IAM changes, or organization changes (a Knowledge Bases sync can still remove indexed documents as a result; see `Operations`).
 
@@ -115,8 +115,8 @@ Fixed defaults are in `mise.toml`. Account-specific values go in `mise.local.tom
 AWSBRIDGE_ISSUER = "https://awsbridge.example.workers.dev"   # The Worker's URL (OIDC issuer)
 AWSBRIDGE_ALLOWED_SUBJECTS = "user@example.com,*@example.org" # Users who can assume the read-only role (comma-separated)
 AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS = "admin@example.com"       # Users who can assume the debug role (comma-separated)
-# AWSBRIDGE_READONLY_ROLE_NAME = "FederatedMcpViewer"        # Optional. Role name (default value)
-# AWSBRIDGE_DEBUG_ROLE_NAME = "FederatedMcpDebugger"          # Optional. Role name (default value)
+# AWSBRIDGE_READONLY_ROLE_NAME = "FederatedAwsBridgeMcpViewer"        # Optional. Role name (default value)
+# AWSBRIDGE_DEBUG_ROLE_NAME = "FederatedAwsBridgeMcpDebugger"          # Optional. Role name (default value)
 # AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS = "arn:aws:iam::<account-id>:policy/<name>" # Optional. Additional managed policies for the debug role (comma-separated)
 AWSBRIDGE_POC_SUBJECT = "user@example.com"                   # The user used in the positive case of poc:sts
 AWSBRIDGE_ACCESS_TEAM_DOMAIN = "https://team.example.cloudflareaccess.com" # The Access team domain
@@ -171,10 +171,10 @@ You can switch between multiple AWS accounts with the `aws_profile` argument of 
 {
   "default": "dev-readonly",
   "profiles": [
-    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpViewer", "description": "development (read-only)" },
-    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedMcpDebugger", "description": "development (debug)" },
-    { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpViewer" },
-    { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedMcpDebugger" }
+    { "name": "dev-readonly",  "roleArn": "arn:aws:iam::111111111111:role/FederatedAwsBridgeMcpViewer", "description": "development (read-only)" },
+    { "name": "dev-debug",     "roleArn": "arn:aws:iam::111111111111:role/FederatedAwsBridgeMcpDebugger", "description": "development (debug)" },
+    { "name": "prod-readonly", "roleArn": "arn:aws:iam::222222222222:role/FederatedAwsBridgeMcpViewer" },
+    { "name": "prod-debug",    "roleArn": "arn:aws:iam::222222222222:role/FederatedAwsBridgeMcpDebugger" }
   ]
 }
 ```
@@ -209,7 +209,7 @@ The Worker no longer reads a leftover `AWS_PROFILES` var or secret (it is ignore
 
 ### Migrating: default role names changed and the debug role narrowed
 
-The default role names changed: `FederatedMcpReadOnly` → `FederatedMcpViewer` and `FederatedMcpDebug` → `FederatedMcpDebugger` (the parameter names `ReadOnlyRoleName` / `DebugRoleName`, the outputs `ReadOnlyRoleArn` / `DebugRoleArn`, and the environment variables `AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME` stay the same).
+The default role names changed: `FederatedMcpReadOnly` → `FederatedAwsBridgeMcpViewer` and `FederatedMcpDebug` → `FederatedAwsBridgeMcpDebugger`. For a short time the default was `FederatedMcpViewer` / `FederatedMcpDebugger`; if your stack uses those, the same migration applies (the parameter names `ReadOnlyRoleName` / `DebugRoleName`, the outputs `ReadOnlyRoleArn` / `DebugRoleArn`, and the environment variables `AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME` stay the same).
 
 - **The old names are kept only when you update an existing stack with `scripts/deploy-aws.sh` and do not set the names.** `scripts/deploy-aws.sh` (`mise run deploy:aws`) runs `aws cloudformation deploy` and passes a role name only when its environment variable is set; for an existing stack, parameters that are not passed keep the stack's current values. In the following cases the roles are replaced, and their `roleArn` and unique ID change: (1) you set new names with `AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME` (this is how you move to the new names); (2) you deploy the template some other way (the management console, `create-change-set` / `update-stack` without `UsePreviousValue`, StackSets, and so on), where parameters you do not give may take the template's defaults, that is, the new names; (3) you delete the stack and create it again.
 - **Before migrating, preview the change.** Run `aws cloudformation deploy` with the same arguments as `scripts/deploy-aws.sh` plus `--no-execute-changeset`, then check with `aws cloudformation describe-change-set --stack-name <stack> --change-set-name <name> --query 'Changes[].ResourceChange.[LogicalResourceId,Action,Replacement]'` whether `ReadOnlyRole` / `DebugRole` show `Replacement: True`. A change set changes nothing unless you execute it; delete it afterwards with `aws cloudformation delete-change-set`.
@@ -220,7 +220,7 @@ The default role names changed: `FederatedMcpReadOnly` → `FederatedMcpViewer` 
 
 #### Same stack (rename the roles; MCP fails during the switch)
 
-1. Update the stack with the new names: `AWSBRIDGE_READONLY_ROLE_NAME=FederatedMcpViewer AWSBRIDGE_DEBUG_ROLE_NAME=FederatedMcpDebugger AWS_PROFILE=<target> mise run deploy:aws`. Note the new outputs `ReadOnlyRoleArn` / `DebugRoleArn`.
+1. Update the stack with the new names: `AWSBRIDGE_READONLY_ROLE_NAME=FederatedAwsBridgeMcpViewer AWSBRIDGE_DEBUG_ROLE_NAME=FederatedAwsBridgeMcpDebugger AWS_PROFILE=<target> mise run deploy:aws`. Note the new outputs `ReadOnlyRoleArn` / `DebugRoleArn`.
 2. Update the `roleArn` values in the profile list (`config/profiles.json`, or `deploy/profiles.json` downstream).
 3. Deploy the Worker: `mise run deploy:worker`.
 4. Check that both roles work (call a tool with a read-only profile and a debug profile).

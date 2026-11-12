@@ -2,7 +2,7 @@
 
 - 作成日: 2026-11-11
 - 改訂: 2026-11-11 段階 1 のゲートの cto の決裁（条件付き承認）と、Sol のレビューのうち採った指摘を反映した。名前を「human」から「console」に改めた（audience・ロールのパス・RoleSessionName・StackSet と SCP の名前・ファイル・タスク・環境変数）。PoC（`scripts/poc/human/`）の名前と記録は変えていない
-- 改訂: 2026-11 設定例のロール名を `Federated*`（`FederatedViewer` / `FederatedDeveloper` / `FederatedAdministrator`）に、MCP 用ロールの既定名を `FederatedMcpViewer` / `FederatedMcpDebugger` に改めた。MCP 用ロールとの関係（§2.3 の決裁 S2）を書き足した
+- 改訂: 2026-11 設定例のロール名を `Federated*`（`FederatedViewer` / `FederatedDeveloper` / `FederatedAdministrator`）に、MCP 用ロールの既定名を `FederatedAwsBridgeMcpViewer` / `FederatedAwsBridgeMcpDebugger` に改めた（途中の版は `FederatedMcpViewer` / `FederatedMcpDebugger` だった。2026-11-13 に再度変更）。MCP 用ロールとの関係（§2.3 の決裁 S2）を書き足した
 - 改訂: 2026-11-12 cto の決裁と利用者の判断を反映した。(1) 人のロールは Viewer（Standard）と Administrator（Admin）の 2 つにし、Developer と人の Debugger を廃止した。設定例のロール名は `FederatedAwsBridgeViewer` / `FederatedAwsBridgeAdministrator`（§2.3・§3.3）。(2) `aws login --remote` は Standard（Viewer）で許し、Administrator は同じ端末だけにした。1a の前の条件 (1) を「同じ端末と `--remote` の両方が Viewer で通る」に書き直し、開発環境の再試験で成立した（§4.4・§7.2）。(3) SCP に頼らず、守りはロールとプロバイダーのスタックだけで成り立たせる。SCP は管理下のメンバーアカウントでの追加の層にし、L4・N3 を任意に下げた（§4.8・§6.5）。(4) どのグループにどのロールを渡すかは設定ファイルに任せ、ロールの CloudFormation は参考の形にした。必須はプロバイダーのスタックと守りの部品（§4.8）。(5) 段階 1 の SourceIdentity は email のまま、不透明な識別子として扱う（§3.4）。発行記録・停止の手順に email の間の運用を足した（§5.6・§6.3）。(6) 測定済みの項目（L3-1、1a の前の条件 (2)・(4)）の状態を直した。Sol のレビュー（2026-11-12）のうち採った指摘を入れた（§4.8・§4.9）
 - 改訂: 2026-11-12 同じ日の残りの決裁を反映した。(1) 入口と一覧を Standard と Admin で共通にし、署名の権限（Worker・issuer・鍵）と発行のオリジンは分けたままにする（P1'。§2.2・§3.1）。P1・P2 は段階 3 で再上申できる、P3（MCP とコンソールのプロバイダーを 1 つ）は却下（§2.3）。Admin の issuer は「発行のオリジンを分ける」形に具体化し、issuer のホストは Standard と同じホストの `/admin` でもよい（後に X1 で取り下げ。:9 を参照）（確定は段階 3。§3.1）。(2) チームを選ばせず、所属する全チームの行を 1 つの一覧に出す（U2）。表示のためだけに Entra グループの Object ID → チームの対応を Worker に持たせてよい（D5 は保つ。§2.1）。会社の Entra での実証を 1a-1・1a-2 に足した（§7.3）。(3) F2・M2-MCP の決裁への利用者の回答を記録した（§2.3）。(4) App Launcher は使わない（§8）。(5) MCP 用 Debugger は「割り当ては設定で決める」とだけ書き、決裁にない目安を外した（§2.3）
 - 改訂: 2026-11-12 同じ日の残りの決裁を反映した。(1) **会社の Entra でも SourceIdentity は email**（U-3 を閉じた。§3.4）。停止は過去の email（改名の履歴）も全部 Deny、監査の人の特定は発行記録と Entra の記録を合わせる、会社に入る前に email の再利用を確かめる（§5.6・§6.2・§6.3）。受容の文面を記録した（§6.3）。(2) **段階導入（D8）を「① 完成 → ② 個人で導入・試験 → ③ 会社に導入」に書き直した**。ゲートは G1〜G5（§7）。旧い段階（1a・1b・段階 2・段階 3）の名前で書いた条件を、決裁の「旧条件の行き先」どおりに付け替えた（§7.7）。D4 を言い直した（§2.2）。U-13 は置き換えで閉じた。(3) G1 の資料として Admin 側の発行の設計書（[console-login-admin.md](console-login-admin.md)）を足した
@@ -112,7 +112,7 @@ issuer の公開文書（discovery と JWKS）: https://<issuer-host>/std/...（
 | Access アプリ | MCP Portal と self-hosted のアプリ | 入口とチームごとのアプリ（portal §9.1）。issuer のホストには Access アプリを置かない（§3.1） |
 | issuer と鍵 | 1 つ（Worker の URL） | 階層 × 境界ごと |
 | audience | `awsbridge`（`infra/aws/awsbridge.yaml`） | `awsbridge-console`（§3.2） |
-| ロール | `FederatedMcpViewer` / `FederatedMcpDebugger`（パスなし） | `/awsbridge-console/<tier>/` の下（§3.3） |
+| ロール | `FederatedAwsBridgeMcpViewer` / `FederatedAwsBridgeMcpDebugger`（パスなし） | `/awsbridge-console/<tier>/` の下（§3.3） |
 | 認可の条件 | `<issuer>:sub` の許可リスト | `aws:RequestTag/awsbridge_team` の許可値・`aws:TagKeys`・SourceIdentity 必須。`sub` は照合しない |
 | CSRF の前提 | ブラウザを想定しない（Origin があれば検査、Content-Type は JSON） | ブラウザが本線。Origin 必須・CSRF トークン・フォームの POST（portal §9.5） |
 | 設定 | `config/profiles.json`（バンドル） | 設定ファイル → 生成物（portal §11） |
@@ -127,13 +127,13 @@ issuer の公開文書（discovery と JWKS）: https://<issuer-host>/std/...（
 | Administrator | Admin・`/awsbridge-console/admin/` | `FederatedAwsBridgeAdministrator` | ② から（会社は G5 のあと。それまで会社の IAM を伴う開発は既存の入口） |
 
 - **Developer と人の Debugger は廃止した**。`PowerUserAccess` を元にした中間のロールは、`cloudformation:UpdateStack` で CDK の `AdministratorAccess` の実行ロールに届くため、Administrator との差を保てない [資料: cto の決裁。一次情報は CDK の bootstrapping のカスタマイズと CloudFormation のサービスロールの文書]。IAM が要る開発者は Administrator を持つ（利用者が受容）
-- MCP 用ロールは Debugger（`FederatedMcpDebugger`）と Viewer（`FederatedMcpViewer`）。新しい名前（`FederatedAwsBridge*`）に変えるか、その時期と方法は未決（MCP の統合の上申で決める。§7.1）
+- MCP 用ロールは Debugger（`FederatedAwsBridgeMcpDebugger`）と Viewer（`FederatedAwsBridgeMcpViewer`）。人のロール（`FederatedAwsBridgeViewer` / `FederatedAwsBridgeAdministrator`）とは**名前もパスも別の、独立したロール**で、共有しない（利用者の判断 2026-11-13）。既定名は `infra/aws/awsbridge.yaml` の `ReadOnlyRoleName` / `DebugRoleName` の既定値で、既存のスタックの更新では、名前を渡さなければスタックの既存の値のまま（稼働中の MCP のロールは変わらない）。既存の環境を新しい名前へ移す手順は README「移行」に書いた
 
-**今はロールを共有しない。** MCP 用ロール（`FederatedMcpViewer` / `FederatedMcpDebugger`）は、人のロールと独立した別のロールで、信頼ポリシー・issuer・audience も別である。人にコンソールのロールを与えても、MCP 側の権限には効かない。
+**ロールを共有しない。** MCP 用ロール（`FederatedAwsBridgeMcpViewer` / `FederatedAwsBridgeMcpDebugger`）は、人のロールと独立した別のロールで、信頼ポリシー・issuer・audience も別である。人にコンソールのロールを与えても、MCP 側の権限には効かない。
 
-- 共有の方向: 共有するのは Viewer だけ、という方向が条件付きで承認された（cto の決裁 2026-11-12。決裁 S2 の「共有しない」を縮めた形で開き直した）。Viewer に MCP の文を足すのは**MCP の統合の上申のあと**（前の版は「段階 2 のゲートの再上申」。12 時間の受容・発行者ごとの停止の実測・負の試験・Sol のレビューなどが条件）。共有するかは G3 までに決める（§7.7）。利用者の回答（2026-11-12）: M2-MCP と MCP の統合にはまだ着手しない。Administrator に MCP の文を置くことは段階を問わず却下。それまでは同じアカウントに人の `FederatedAwsBridgeViewer` と MCP の `FederatedMcpViewer` が並ぶ
-- MCP の Viewer（`FederatedMcpViewer`）は全員が使える
-- MCP の Debugger（`FederatedMcpDebugger`）を誰に渡すかは下流が決める。**上流は割り当ての規則を持たない**（「Administrator か Developer を持つ人にだけ」という前の規則は取り下げた。cto の決裁 2026-11-12）。割り当ては設定（`DebugAllowedSubjects`）で決める。渡すときの注意: Debugger はリモートシェルなどで実行先（インスタンス・タスク）のロールの権限を得られ、その権限には MCP 経由の条件が付かない
+- 共有しない（利用者の判断 2026-11-13）: 人の Viewer と MCP の Viewer を 1 つにする案は取り下げた（cto の決裁 2026-11-12 は「共有するのは Viewer だけ」の方向を条件付きで承認していたが、利用者が共有を受容しなかった）。人のロールに MCP の文は足さない。Administrator に MCP の文を置くことも却下のまま（利用者の回答 2026-11-12）。同じアカウントには人の `FederatedAwsBridgeViewer` と MCP の `FederatedAwsBridgeMcpViewer` が別のロールとして並ぶ。M2-MCP と MCP の統合（MCP 用のロールと CloudFormation を 1 つにまとめる新しいセット、F2）にはまだ着手しない
+- MCP の Viewer（`FederatedAwsBridgeMcpViewer`）は全員が使える
+- MCP の Debugger（`FederatedAwsBridgeMcpDebugger`）を誰に渡すかは下流が決める。**上流は割り当ての規則を持たない**（「Administrator か Developer を持つ人にだけ」という前の規則は取り下げた。cto の決裁 2026-11-12）。割り当ては設定（`DebugAllowedSubjects`）で決める。渡すときの注意: Debugger はリモートシェルなどで実行先（インスタンス・タスク）のロールの権限を得られ、その権限には MCP 経由の条件が付かない
 - 運用: MCP 側の認可は email の許可リスト（`DebugAllowedSubjects`）で、アカウントごとの設定。Debugger を渡す人を変えたとき（チームのメンバーの変更など）は許可リストも直す。外し忘れは気付きにくいので、所属変更の手順に入れる
 - 将来: MCP 側の認可をチーム（Access アプリ → セッションタグ。M2-MCP）に寄せる設計は別に扱う。ロールを設定ファイルで管理する方向（§4.8）は、M2-MCP の着手の承認ではない（それまでは email の許可リスト）
 
@@ -749,7 +749,7 @@ cto の決裁（2026-11-12。D8 の段階導入の書き直しを条件付きで
 | ③ 会社に導入 | 会社の Entra・Access・アカウントに配る。**Viewer を先、Administrator を後**（§7.6） | **G3**（会社で Viewer を配る前。再上申）。**G4**（会社の Viewer を広げる前。報告でよい）。**G5**（会社で Administrator を配る前。再上申。Sol のレビューを取り、Astra を取るかは G5 で判断する） |
 
 - **完了**: ③ で会社に導入して完了とする。顧客のアカウント（他社の Organization・単独のアカウント）は「完了」の外。管理外の境界（`partner:<id>`）の設計は残すが、配る予定は決めていない
-- **MCP の統合**（MCP 用のロールと CloudFormation を 1 つにまとめる新しいセット、Viewer の共有、F2、M2-MCP）は ① に含めない。別の上申にする。利用者の回答（2026-11-12）: M2-MCP と MCP の統合には**まだ着手しない**。Viewer を MCP と共有するかだけは G3 までに決める（§2.3）
+- **MCP の統合**（MCP 用のロールと CloudFormation を 1 つにまとめる新しいセット、F2、M2-MCP）は ① に含めない。別の上申にする。利用者の回答（2026-11-12）: M2-MCP と MCP の統合には**まだ着手しない**。Viewer の共有はしないと決めた（利用者の判断 2026-11-13。§2.3）
 - 再審議の条件（cto の決裁）: 利用者の意図が違ったとき / N6 が成り立たないとき（N6 は成立した。X1 では `secret_key` の前提が崩れたとき [推測]）/ ② で停止か突き合わせが不合格のとき / 会社が Viewer と Administrator の同時の配布を求めたとき
 
 ### 7.2 引き継いだ条件（旧「1a の前の条件」(1)〜(6)）
@@ -839,7 +839,7 @@ cto の決裁（2026-11-12。D8 の段階導入の書き直しを条件付きで
 |---|---|
 | ② から持っていくもの | 旧「1b の前の確認」と U-4 の結果（§7.5 の (c)） |
 | 検査の道具を CI に | CI の読み取りロールを決める（§4.9） |
-| 会社の確認 | email を再利用しないか、再利用までの期間がロールの最長のセッションより長いか（§6.3）。Viewer を MCP と共有するか（MCP の統合の上申。§2.3） |
+| 会社の確認 | email を再利用しないか、再利用までの期間がロールの最長のセッションより長いか（§6.3） |
 | 人の承認 | 会社のセキュリティ承認（人のアクセスに Worker の鍵を使うこと。G3・G5）、PIM の扱い（G3・G5）、会社の Entra と Access の変更（チームのグループ・アプリ、U2 のためにグループを身元に載せる設定）、対象のアカウントでのスタックの作成 |
 | 下流で確定 | ポータルのホスト・issuer のホスト（§3.1）・チームと Viewer のロールの設定 |
 | 配り方 | 引き継いだ条件 (6)（CI に適用権限を持たせない）。Viewer だけ（Standard の階層。中身は §4.7）。Administrator は配らない |
@@ -892,7 +892,7 @@ cto の決裁（2026-11-12。D8 の段階導入の書き直しを条件付きで
 | N2・N5 | G2 |
 | D4（鍵の保管） | X1 で外れた。Admin は `secret_key`（人の受容）。Standard も `secret_key` に揃える（G2 までに、別 PR）。「Workers secret は G5 の前まで」の期限は無くなった |
 | P1・P2 | G1（P1' のまま）|
-| Viewer の共有・F2・M2-MCP | MCP の統合の上申（G3 までに Viewer を共有するかだけ決める） |
+| F2・M2-MCP | MCP の統合の上申（Viewer の共有はしないと決めた。2026-11-13） |
 | PIM・会社のセキュリティ承認 | G3・G5 |
 | 顧客のアカウント | 「完了」の外（利用者が確認） |
 | U-13（段階の定義の書き直し案） | この節で置き換えて閉じた |
@@ -961,7 +961,7 @@ cto の決裁（2026-11-12。D8 の段階導入の書き直しを条件付きで
 | 論点 | 決定 | 反映 |
 |---|---|---|
 | 人のロール | Viewer（Standard）と Administrator（Admin）だけ（配る時機は §2.3・§7）。Developer と人の Debugger は廃止。IAM が要る開発者は Administrator（利用者が受容）。名前は `FederatedAwsBridgeViewer` / `FederatedAwsBridgeAdministrator`、パスは `/awsbridge-console/<tier>/` | §2.3・§3.3 |
-| ロールの共有 | 共有するのは Viewer だけの方向（条件付き承認）。MCP の文を足すのは MCP の統合の上申のあと（前の版は「段階 2 のゲートの再上申」。G3 までに共有するかだけ決める）。Administrator に MCP の文は置かない | §2.3 |
+| ロールの共有 | **共有しない**（利用者の判断 2026-11-13）。以前の決裁「Viewer だけ共有する方向（条件付き承認）」は、利用者が共有を受容しなかったため取り下げた。MCP 用は `FederatedAwsBridgeMcp*` の別ロール。Administrator に MCP の文は置かない | §2.3 |
 | `aws login --remote` | Viewer は同じ端末と `--remote` の両方を許す。Administrator は同じ端末だけで、`--remote` は Admin の階層の守りの部品の明示の Deny（本人が外せるので、フィッシングへの守りで封じ込めではない）。N2（① の PoC。G2）は「Administrator で `--remote` が拒否されること」 | §4.4 |
 | SCP | 頼らない。基準はロールとプロバイダーのスタックだけ。SCP は管理下のメンバーアカウントでの任意の層。L4・N3 は任意 | §4.8・§6.5 |
 | ロールの管理 | 設定ファイルに任せる（割り当ての規則なし）。必須はプロバイダーのスタックと守りの部品、ロールの CloudFormation は参考。構造の要件は残す。手作りロールの強さは下流の責任（利用者が受容） | §4.8・§4.9 |

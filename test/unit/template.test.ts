@@ -32,8 +32,8 @@ describe("Parameters", () => {
   });
   it("既定値", () => {
     expect(p.Audience.Default).toBe("awsbridge");
-    expect(p.ReadOnlyRoleName.Default).toBe("FederatedMcpViewer");
-    expect(p.DebugRoleName.Default).toBe("FederatedMcpDebugger");
+    expect(p.ReadOnlyRoleName.Default).toBe("FederatedAwsBridgeMcpViewer");
+    expect(p.DebugRoleName.Default).toBe("FederatedAwsBridgeMcpDebugger");
     expect(p.MaxSessionDuration.Default).toBe(3600);
     expect(p.MaxSessionDuration.Type).toBe("Number");
   });
@@ -75,7 +75,7 @@ describe("入力パターン", () => {
   for (const name of ["ReadOnlyRoleName", "DebugRoleName"]) {
     it(`${name} は IAM のロール名パターン`, () => {
       const re = new RegExp(p[name].AllowedPattern);
-      expect(re.test("FederatedMcpViewer")).toBe(true);
+      expect(re.test("FederatedAwsBridgeMcpViewer")).toBe(true);
       expect(re.test("a_b+c=d,e.f@g-h")).toBe(true);
       expect(re.test("a".repeat(64))).toBe(true);
       expect(re.test("a".repeat(65))).toBe(false);

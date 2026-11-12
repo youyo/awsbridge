@@ -40,7 +40,7 @@ MCP だけでなく人間の AWS ログインにも使えるかを確かめる�
 | issuer | Worker `awsbridge`（署名もする） | Worker `awsbridge-human-poc`（discovery と JWKS を静的に返すだけ。署名しない） |
 | 署名鍵 | `.secrets/dev-signing-key.json` | `.secrets/poc-human/signing-key.json`（手元で署名） |
 | audience | `awsbridge` | `awsbridge-human-poc` |
-| ロール | `FederatedMcpReadOnly` / `FederatedMcpDebug` | `AwsbridgeHumanPoc`（1 つ。利用者 1 人） |
+| ロール | `FederatedMcpReadOnly` / `FederatedMcpDebug`（PoC 当時の既定名。今の既定は `FederatedAwsBridgeMcpViewer` / `FederatedAwsBridgeMcpDebugger`） | `AwsbridgeHumanPoc`（1 つ。利用者 1 人） |
 | CloudFormation | `infra/aws/awsbridge.yaml`（スタック `awsbridge`） | `scripts/poc/human/poc-human.yaml`（スタック `awsbridge-human-poc`） |
 | 設定 | `AWSBRIDGE_*` | `AWSBRIDGE_HUMAN_POC_*` だけ（MCP 用の変数は読まない） |
 
