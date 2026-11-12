@@ -1,0 +1,292 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  awsbridge PoC N6 (Admin tier signing key in AWS KMS) - asymmetric KMS signing keys
+  (RSA_2048 x2, ECC_NIST_P256), an IAM user whose only permission is kms:Sign on those keys
+  (its access key is created outside CloudFormation and stored as a Worker secret), an IAM OIDC
+  provider for the PoC issuer Worker (awsbridge-admin-kms-poc) and a role that a KMS-signed JWT can
+  assume with sts:AssumeRoleWithWebIdentity. Separate from the MCP stack and the other PoCs.
+  Delete it after the PoC (the keys are scheduled for deletion after 7 days).
+
+# What the PoC checks (see scripts/poc/admin-kms/README.md):
+#   K1  The Worker signs a JWT with KMS (RS256 and ES256), publishes the JWKS built from GetPublicKey,
+#       and STS AssumeRoleWithWebIdentity accepts it (session tag + SourceIdentity, same trust shape as
+#       the human PoC's Tagged role).
+#   K2  Least privilege for the Worker: kms:Sign only, on these keys only, and the key policy denies
+#       kms:Sign to every other principal, other message types and other algorithms.
+#   K4  CloudTrail records of kms:Sign, DisableKey stops new issuance.
+#   K5  Two kids side by side in the JWKS (RsaKey -> RsaNextKey).
+
+Parameters:
+  IssuerHost:
+    Type: String
+    Description: Host name of the PoC issuer Worker (no https://, no path)
+    AllowedPattern: "^awsbridge-admin-kms-poc\\.[a-z0-9-]+\\.workers\\.dev$"
+  Audience:
+    Type: String
+    Default: awsbridge-admin-kms-poc
+    AllowedPattern: "^[A-Za-z0-9._-]{1,64}$"
+  Subject:
+    Type: String
+    Default: awsbridge-kms-check
+    Description: JWT sub and SourceIdentity (a fixed non-personal value)
+    AllowedPattern: "^[A-Za-z0-9_+=,.@-]{2,64}$"
+  WorkerUserName:
+    Type: String
+    Default: awsbridge-admin-kms-poc-worker
+    AllowedPattern: "^awsbridge-admin-kms-poc[A-Za-z0-9-]*$"
+  RoleName:
+    Type: String
+    Default: AwsbridgeAdminKmsPoc
+    AllowedPattern: "^AwsbridgeAdminKmsPoc[A-Za-z0-9]*$"
+  CreateIssuerResources:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      false creates only the keys and the IAM user. IAM reads the issuer's
+      .well-known/openid-configuration when the OIDC provider is created, so the Worker
+      (whose JWKS needs the keys) must be deployed between the two phases.
+
+Conditions:
+  HasIssuer:
+    Fn::Equals: [{ Ref: CreateIssuerResources }, "true"]
+
+Resources:
+  RsaKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Description: awsbridge PoC N6 - RS256 signing key (current)
+      KeySpec: RSA_2048
+      KeyUsage: SIGN_VERIFY
+      PendingWindowInDays: 7
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountAdministration
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: DenySignExceptWorker
+            Effect: Deny
+            Principal: "*"
+            Action: kms:Sign
+            Resource: "*"
+            Condition:
+              StringNotEquals:
+                aws:PrincipalArn:
+                  Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:user/${WorkerUserName}"
+          - Sid: DenySignOtherMessageType
+            Effect: Deny
+            Principal: "*"
+            Action: kms:Sign
+            Resource: "*"
+            Condition:
+              StringNotEquals:
+                kms:MessageType: RAW
+          - Sid: DenySignOtherAlgorithm
+            Effect: Deny
+            Principal: "*"
+            Action: kms:Sign
+            Resource: "*"
+            Condition:
+              StringNotEquals:
+                kms:SigningAlgorithm: RSASSA_PKCS1_V1_5_SHA_256
+      Tags:
+        - Key: project
+          Value: awsbridge-admin-kms-poc
+
+  EcKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Description: awsbridge PoC N6 - ES256 signing key
+      KeySpec: ECC_NIST_P256
+      KeyUsage: SIGN_VERIFY
+      PendingWindowInDays: 7
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountAdministration
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: DenySignExceptWorker
+            Effect: Deny
+            Principal: "*"
+            Action: kms:Sign
+            Resource: "*"
+            Condition:
+              StringNotEquals:
+                aws:PrincipalArn:
+                  Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:user/${WorkerUserName}"
+          - Sid: DenySignOtherMessageType
+            Effect: Deny
+            Principal: "*"
+            Action: kms:Sign
+            Resource: "*"
+            Condition:
+              StringNotEquals:
+                kms:MessageType: RAW
+          - Sid: DenySignOtherAlgorithm
+            Effect: Deny
+            Principal: "*"
+            Action: kms:Sign
+            Resource: "*"
+            Condition:
+              StringNotEquals:
+                kms:SigningAlgorithm: ECDSA_SHA_256
+      Tags:
+        - Key: project
+          Value: awsbridge-admin-kms-poc
+
+  RsaNextKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Description: awsbridge PoC N6 - RS256 signing key (next, for K5)
+      KeySpec: RSA_2048
+      KeyUsage: SIGN_VERIFY
+      PendingWindowInDays: 7
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountAdministration
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: DenySignExceptWorker
+            Effect: Deny
+            Principal: "*"
+            Action: kms:Sign
+            Resource: "*"
+            Condition:
+              StringNotEquals:
+                aws:PrincipalArn:
+                  Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:user/${WorkerUserName}"
+          - Sid: DenySignOtherMessageType
+            Effect: Deny
+            Principal: "*"
+            Action: kms:Sign
+            Resource: "*"
+            Condition:
+              StringNotEquals:
+                kms:MessageType: RAW
+          - Sid: DenySignOtherAlgorithm
+            Effect: Deny
+            Principal: "*"
+            Action: kms:Sign
+            Resource: "*"
+            Condition:
+              StringNotEquals:
+                kms:SigningAlgorithm: RSASSA_PKCS1_V1_5_SHA_256
+      Tags:
+        - Key: project
+          Value: awsbridge-admin-kms-poc
+
+  WorkerUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName:
+        Ref: WorkerUserName
+      Policies:
+        - PolicyName: SignWithPocKeysOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: kms:Sign
+                Resource:
+                  - Fn::GetAtt: [RsaKey, Arn]
+                  - Fn::GetAtt: [EcKey, Arn]
+                  - Fn::GetAtt: [RsaNextKey, Arn]
+      Tags:
+        - Key: project
+          Value: awsbridge-admin-kms-poc
+
+  OidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: HasIssuer
+    Properties:
+      Url:
+        Fn::Sub: "https://${IssuerHost}"
+      ClientIdList:
+        - Ref: Audience
+      Tags:
+        - Key: project
+          Value: awsbridge-admin-kms-poc
+
+  AdminRole:
+    Type: AWS::IAM::Role
+    Condition: HasIssuer
+    Properties:
+      RoleName:
+        Ref: RoleName
+      Description: awsbridge PoC N6 - assumed with a KMS-signed JWT. No permissions (sign-in token only).
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Fn::Sub: |-
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": { "Federated": "${OidcProvider}" },
+                "Action": [
+                  "sts:AssumeRoleWithWebIdentity",
+                  "sts:TagSession",
+                  "sts:SetSourceIdentity"
+                ],
+                "Condition": {
+                  "StringEquals": {
+                    "${IssuerHost}:aud": "${Audience}",
+                    "${IssuerHost}:sub": "${Subject}",
+                    "aws:RequestTag/access_profile": ["poc-admin"]
+                  },
+                  "ForAllValues:StringEquals": {
+                    "aws:TagKeys": ["access_profile"]
+                  },
+                  "Null": {
+                    "sts:SourceIdentity": "false"
+                  }
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: project
+          Value: awsbridge-admin-kms-poc
+
+Outputs:
+  RoleArn:
+    Condition: HasIssuer
+    Value:
+      Fn::GetAtt: [AdminRole, Arn]
+  WorkerUserName:
+    Value:
+      Ref: WorkerUser
+  RsaKeyArn:
+    Value:
+      Fn::GetAtt: [RsaKey, Arn]
+  EcKeyArn:
+    Value:
+      Fn::GetAtt: [EcKey, Arn]
+  RsaNextKeyArn:
+    Value:
+      Fn::GetAtt: [RsaNextKey, Arn]
+  OidcProviderArn:
+    Condition: HasIssuer
+    Value:
+      Ref: OidcProvider

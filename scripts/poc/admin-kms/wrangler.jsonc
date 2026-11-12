@@ -1,0 +1,16 @@
+{
+  // PoC N6（Admin の階層の署名鍵を AWS KMS に置く）の issuer Worker。MCP 用・既存の PoC の Worker とは別。
+  // discovery と JWKS を静的に返し、/poc/*（bearer 必須）で KMS の Sign → STS → getSigninToken を測る。
+  // 文書と vars は deploy.ts が <OUT_DIR>/wrangler.deploy.json に書いた設定でデプロイする（実値はここに書かない）。
+  // デプロイ: mise run poc:admin-kms:deploy、削除: mise run poc:admin-kms:destroy（scripts/poc/admin-kms/README.md）。
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "awsbridge-admin-kms-poc",
+  "main": "worker.ts",
+  "compatibility_date": "2026-07-21",
+  "workers_dev": true,
+  "preview_urls": false,
+  // パスはこのファイルからの相対（deploy.ts が絶対パスに置き換える）
+  "alias": {
+    "awsbridge-admin-kms-poc-documents": "../../../.secrets/poc-admin-kms/issuer-documents.json"
+  }
+}
