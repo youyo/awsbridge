@@ -61,3 +61,23 @@ describe("README のプロファイル一覧（alias でバンドル）", () => 
     });
   }
 });
+
+describe("README のコンソールログインの Admin の署名鍵（X1 の決裁）", () => {
+  for (const f of ["README.md", "README_ja.md"]) {
+    it(`${f}: put（--yes）・check・retire の手順、secret_key、別の名前での差し替えを載せ、「KMS 相当」と書かない`, () => {
+      const text = read(f);
+      for (const s of [
+        "mise run console:admin-key:put -- --yes",
+        "mise run console:admin-key:check",
+        "mise run console:admin-key:retire -- --binding",
+        "secret_key",
+        "ADMIN_KEY_",
+        "ADMIN_CURRENT_KEY",
+        "ADMIN_PUBLIC_JWKS",
+        "AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN",
+      ])
+        expect(text, s).toContain(s);
+      expect(text).not.toMatch(/KMS 相当|equivalent to KMS|KMS-equivalent/i);
+    });
+  }
+});

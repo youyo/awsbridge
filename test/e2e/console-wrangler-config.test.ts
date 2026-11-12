@@ -76,8 +76,33 @@ describe("wrangler.console-admin.jsonc（設定の例）", () => {
       expect(r.pattern).toMatch(/(^|\.)example\.com$/);
     }
     expect(config).not.toHaveProperty("env");
-    // issuer のホスト（id.*）は持たない: Admin の issuer の文書はこの Worker から出さない
-    expect(routes.map((r) => r.pattern)).not.toContain("id.example.com");
+    // Admin の issuer のホスト（admin-id.*。X1 の決裁で A-3 = I-B）を持ち、Standard の issuer のホスト（id.*）・Standard のポータルは持たない
+    const patterns = routes.map((r) => r.pattern);
+    expect(patterns).toContain("admin-id.example.com");
+    expect(patterns).toContain("admin-portal.example.com");
+    expect(patterns).not.toContain("id.example.com");
+    const standard = readJsonc(join(root, "wrangler.console-standard.jsonc"));
+    const stdPatterns = (standard.routes as { pattern: string }[]).map((r) => r.pattern);
+    for (const p of patterns) expect(stdPatterns, p).not.toContain(p);
+  });
+
+  it("互換フラグを持たない（nodejs_compat・webcrypto_modern_algorithms を有効にしない）", () => {
+    expect(config).not.toHaveProperty("compatibility_flags");
+    const raw = readFileSync(join(root, file), "utf8");
+    expect(raw).not.toMatch(/"nodejs_compat"|"webcrypto_modern_algorithms"/);
+  });
+
+  it("署名鍵は secret_key 型のバインディング（ADMIN_KEY_<16 進>）で、例には実際の鍵の値を書かない。今の鍵と公開鍵の vars は空（鍵が無ければ 503）", () => {
+    const raw = readFileSync(join(root, file), "utf8");
+    expect(raw).toContain("secret_key");
+    expect(raw).toContain("ADMIN_KEY_");
+    expect(raw).toContain("mise run console:admin-key:put");
+    expect(raw).not.toMatch(/KMS/);
+    const vars = config.vars as Record<string, string>;
+    expect(vars.ADMIN_CURRENT_KEY).toBe("");
+    expect(vars.ADMIN_PUBLIC_JWKS).toBe("");
+    expect(vars.ACCESS_MAX_AGE_SECONDS).toBe("900");
+    expect(raw).not.toMatch(/"n"\s*:/);
   });
 
   it("エントリと Admin の生成物の alias（Standard の alias は持たない）、回数の制限の binding、vars を持ち、secret を vars に書かない", () => {
@@ -92,13 +117,16 @@ describe("wrangler.console-admin.jsonc（設定の例）", () => {
     expect([10, 60]).toContain(rl[0]?.simple.period);
     const vars = config.vars as Record<string, string>;
     expect(Object.keys(vars).sort()).toEqual([
+      "ACCESS_MAX_AGE_SECONDS",
       "ACCESS_TEAM_DOMAIN",
+      "ADMIN_CURRENT_KEY",
+      "ADMIN_PUBLIC_JWKS",
       "LOGIN_DISABLED",
       "STS_REGION",
     ]);
     expect(vars.ACCESS_TEAM_DOMAIN).toMatch(/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/);
     expect(vars.LOGIN_DISABLED).toBe("false");
-    // 署名鍵の secret は持たない。CSRF の鍵の名前だけを説明のコメントに書く（値はない）
+    // 署名鍵の secret（文字列）は持たない。CSRF の鍵の名前だけを説明のコメントに書く（値はない）
     const raw = readFileSync(join(root, file), "utf8");
     expect(raw).toContain("CONSOLE_CSRF_KEY");
     expect(vars).not.toHaveProperty("CONSOLE_CSRF_KEY");

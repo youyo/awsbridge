@@ -1,6 +1,6 @@
 // コンソールログインの発行: Standard の署名。境界ごとの手元の秘密鍵（RS256）で JWT に署名する（signer.ts の TokenSigner の実装）。
 // 鍵は境界の名前 → 秘密鍵 JWK の JSON を 1 つの secret に入れて渡す（parseSigningKeys）。
-// Admin の署名（KMS）はこのファイルを使わない（Admin の Worker のバンドルに鍵の扱いを入れないため）。
+// Admin の署名（admin/sign-admin.ts。secret_key の CryptoKey）はこのファイルを使わない（Admin の Worker のバンドルに文字列の鍵の扱いを入れないため）。
 // Worker に入るので node:* を import しない。
 import { calculateJwkThumbprint, importJWK, type JWK, SignJWT } from "jose";
 import { buildClaims } from "./claims";

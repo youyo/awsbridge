@@ -12,7 +12,7 @@ importers:
         specifier: 1.0.20
         version: 1.0.20
       jose:
-        specifier: ^6.1.0
+        specifier: 6.2.15
         version: 6.2.15
     devDependencies:
       '@biomejs/biome':

@@ -1,6 +1,7 @@
 // コンソールログインの Admin の Worker: 経路（チームのパス以外は処理の最初で 404）・画面（[ADMIN] の印）・発行の 1〜8 段。
-// 署名の経路はまだ無いので、9 段目は 503 signing_unavailable で止まり、STS を呼ばない。issuer の文書は出さない。
-// 設計: docs/specs/console-login-portal.md §3・§8・§9、G1 の決裁（I-C: Admin の Worker は issuer の文書を出さない）、G-6。
+// ここでは署名鍵を設定しない（vars ADMIN_CURRENT_KEY なし）ので、9 段目は 503 signing_unavailable で止まり、STS を呼ばない。
+// 鍵があるときの署名・Admin の issuer の文書（Admin の issuer のホスト）・iat の上限・key-check は console-admin-worker-key.test.ts。
+// 設計: docs/specs/console-login-portal.md §3・§8・§9、X1 の決裁、G-6。
 // 偽の Access（手元の鍵）・STS・getSigninToken を相手に、Worker の fetch を直接呼ぶ。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAdminWorker } from "../../src/console/admin/worker";

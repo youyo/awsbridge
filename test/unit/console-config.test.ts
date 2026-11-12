@@ -488,6 +488,54 @@ describe("parseConsoleConfig: ポータルのオリジン", () => {
   });
 });
 
+// X1 の決裁 (a)・(h): Admin は Standard と別の issuer・別のホスト。Admin の issuer の文書は Admin の Worker が
+// Cloudflare の別のホストの /admin で出す（A-3 = I-B）。Admin の鍵は 1 組なので、Admin の issuer は 1 つだけ。
+describe("parseConsoleConfig: Admin の issuer（X1 の決裁）", () => {
+  it.each([
+    ["https://admin-id.example.com", "パスなし"],
+    ["https://admin-id.example.com/standard", "別のパス"],
+    ["https://admin-id.example.com/admin/x", "深いパス"],
+    ["https://admin-id.example.com/Admin", "大文字"],
+  ])("パスが /admin でない %s（%s）は admin_issuer_path", (url) => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[0].issuers.admin = url;
+    });
+    expect(issuesOf(c)).toContainEqual(issue("boundaries[0].issuers.admin", "admin_issuer_path"));
+  });
+
+  it("Admin の issuer を持つ境界が 2 つ以上なら admin_issuer_multiple（Admin の鍵と JWKS は 1 組）", () => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[1].issuers.admin = "https://admin-id2.example.com/admin";
+    });
+    expect(issuesOf(c)).toContainEqual(
+      issue("boundaries[1].issuers.admin", "admin_issuer_multiple"),
+    );
+  });
+
+  it.each([
+    ["Standard の issuer と同じホスト", "https://id.example.com/admin"],
+    ["管理外の先方の Standard の issuer と同じホスト", "https://id.example.com/admin"],
+    ["Standard の issuer のホストのサブドメイン", "https://a.id.example.com/admin"],
+    ["Standard の issuer のホストがサブドメイン", "https://example.com/admin"],
+  ])("Admin の issuer が %s は admin_issuer_host_shared", (_name, url) => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[0].issuers.admin = url;
+    });
+    expect(issuesOf(c)).toContainEqual(
+      issue("boundaries[0].issuers.admin", "admin_issuer_host_shared"),
+    );
+  });
+
+  it("別の境界の Standard の issuer のホストと重なっても admin_issuer_host_shared", () => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[1].issuers.standard = "https://admin-id.example.com/partner-x";
+    });
+    expect(issuesOf(c)).toContainEqual(
+      issue("boundaries[0].issuers.admin", "admin_issuer_host_shared"),
+    );
+  });
+});
+
 // G-8: issuer のホスト（STS が信頼する公開文書。Access の Bypass）と、ポータル（とチーム）のホストは分ける。
 // 同じホスト・入れ子（どちらかがもう一方のサブドメイン）になると、Bypass の範囲・Cookie の範囲・ホスト方式のチームのホストが重なる。
 describe("parseConsoleConfig: issuer のホストとポータルのホストの重なり（G-8）", () => {
@@ -498,10 +546,10 @@ describe("parseConsoleConfig: issuer のホストとポータルのホストの�
     expect(issuesOf(personalConfig())).toEqual([]);
   });
 
-  it("Standard と Admin の issuer が同じホスト（パスだけ違う）なのは受け付ける（Admin の issuer は同じホストの /admin でもよい）", () => {
+  it("会社用の設定の Admin の issuer は、Standard の issuer と別のホスト（admin-id.*）の /admin", () => {
     const c = companyConfig();
-    expect(c.boundaries[0].issuers.standard).toContain("id.example.com/standard");
-    expect(c.boundaries[0].issuers.admin).toContain("id.example.com/admin");
+    expect(c.boundaries[0].issuers.standard).toBe("https://id.example.com/standard");
+    expect(c.boundaries[0].issuers.admin).toBe("https://admin-id.example.com/admin");
     expect(issuesOf(c)).toEqual([]);
   });
 
