@@ -29,11 +29,11 @@ output "mcp_access_aud" {
 }
 
 output "portal_access_app_id" {
-  description = "ポータルの Access アプリの ID（create_portal = true のときだけ）"
+  description = "MCP Portal の Access アプリの ID（create_portal = true のときだけ）"
   value       = one(cloudflare_zero_trust_access_application.portal[*].id)
 }
 
 output "portal_url" {
-  description = "ポータルの URL（create_portal = true のときだけ）"
+  description = "MCP Portal の URL（create_portal = true のときだけ）"
   value       = var.create_portal ? "https://${var.portal_hostname}/mcp" : null
 }

@@ -327,7 +327,7 @@ describe("2. Standard の Worker のバンドルに Admin の固有値が入ら�
       AUD["infra-elevated"],
       AUD["dev-elevated"],
       ENTRY_ADMIN,
-      "https://admin-id.example.com/admin",
+      "https://awsbridge-oidc-admin-console.example.com/admin",
       "/awsbridge-console/admin/",
       "FederatedAwsBridgeAdministrator",
     ])
@@ -401,7 +401,7 @@ describe("3. Admin の Worker のバンドルに Standard の行・署名の実�
     expect(admin.inputs).toContain("src/console/issue/signer.ts");
     expect(has(admin.inputs, "worker.admin.json")).toHaveLength(1);
     for (const s of ADMIN_ONLY) expect(admin.bundle, s).toContain(s);
-    expect(admin.bundle).toContain("https://admin-portal.example.com");
+    expect(admin.bundle).toContain("https://awsbridge-admin-console.example.com");
     expect(admin.bundle).toContain("signing_unavailable");
   });
 
@@ -417,7 +417,7 @@ describe("3. Admin の Worker のバンドルに Standard の行・署名の実�
     for (const s of ADMIN_KEY_REFS) expect(admin.bundle, s).toContain(s);
     expect(admin.bundle).toContain("openid-configuration");
     expect(admin.bundle).toContain("jwks.json");
-    expect(admin.bundle).toContain("https://admin-id.example.com/admin");
+    expect(admin.bundle).toContain("https://awsbridge-oidc-admin-console.example.com/admin");
   });
 
   it("試験用の鍵を作るエントリ（fixtures）が入らない（陽性の対照: そのエントリのバンドルには入っている）", () => {
@@ -469,7 +469,7 @@ describe("3. Admin の Worker のバンドルに Standard の行・署名の実�
       AUD.dev,
       AUD.sa,
       ENTRY_STD,
-      "https://id.example.com/standard",
+      "https://awsbridge-oidc-console.example.com/std",
       "/awsbridge-console/std/",
       "FederatedAwsBridgeViewer",
     ])

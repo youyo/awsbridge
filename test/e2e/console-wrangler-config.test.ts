@@ -97,9 +97,9 @@ describe("wrangler.console-admin.jsonc（設定の例）", () => {
     expect(config).not.toHaveProperty("env");
     // Admin の issuer のホスト（admin-id.*。X1 の決裁で A-3 = I-B）を持ち、Standard の issuer のホスト（id.*）・Standard のポータルは持たない
     const patterns = routes.map((r) => r.pattern);
-    expect(patterns).toContain("admin-id.example.com");
-    expect(patterns).toContain("admin-portal.example.com");
-    expect(patterns).not.toContain("id.example.com");
+    expect(patterns).toContain("awsbridge-oidc-admin-console.example.com");
+    expect(patterns).toContain("awsbridge-admin-console.example.com");
+    expect(patterns).not.toContain("awsbridge-oidc-console.example.com");
     const standard = readJsonc(join(root, "wrangler.console-standard.jsonc"));
     const stdPatterns = (standard.routes as { pattern: string }[]).map((r) => r.pattern);
     for (const p of patterns) expect(stdPatterns, p).not.toContain(p);

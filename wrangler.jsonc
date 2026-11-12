@@ -16,7 +16,24 @@
   // The profile list is NOT an env var / secret any more (AWS_PROFILES was removed): see "alias" above and config/profiles.example.json.
   // Format: { "default": "dev-readonly", "profiles": [ { "name": ..., "roleArn": ..., "description"?: ... } ], "tools"?: [...] }
   // `profiles` is an array (recommended): its order becomes the order of `list_aws_profiles` (the default profile always comes first).
+  // Environments (select one with AWSBRIDGE_WRANGLER_ENV; the default is `dev`).
+  //   prod: the basic form. Custom Domains on your own zone (replace example.com). The issuer host and the connection host are separate:
+  //     awsbridge-oidc-mcp.example.com  the OIDC issuer (the URL of the IAM OIDC provider). Set AWSBRIDGE_ISSUER=https://awsbridge-oidc-mcp.example.com (no path).
+  //                           Open /.well-known/* to the public (Access bypass) because STS reads it. Any other path (/mcp) is 401 here (the Worker checks the Access JWT).
+  //     awsbridge-mcp.example.com      where MCP clients connect (/mcp). The Access application protects this host.
+  //     One Worker serves both hosts. workers.dev and Preview URLs are closed (entrances that skip Access).
+  //     The issuer host is what the IAM OIDC provider trusts: a domain that expires, is unlocked at the registrar, or sits in a zone others can edit lets a third party issue tokens. Protect it like a signing key.
+  //   dev: a quick trial on workers.dev (no domain needed). The issuer is https://<worker>.<subdomain>.workers.dev. Use prod for real use.
   "env": {
+    "prod": {
+      "name": "awsbridge",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [
+        { "pattern": "awsbridge-mcp.example.com", "custom_domain": true },
+        { "pattern": "awsbridge-oidc-mcp.example.com", "custom_domain": true }
+      ]
+    },
     "dev": {
       "name": "awsbridge-dev",
       "workers_dev": true

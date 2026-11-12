@@ -50,7 +50,7 @@ Parameters:
   IssuerHost:
     Type: String
     Description: >-
-      Host of the console login issuer, without scheme, path or trailing slash (e.g. id.example.com).
+      Host of the console login issuer, without scheme, path or trailing slash (e.g. awsbridge-oidc-console.example.com).
       Dedicated to the console login issuer (not the portal host, not workers.dev).
     # 小文字のラベル（[a-z0-9]([a-z0-9-]*[a-z0-9])?）を . でつないだ形だけ。URL 全体（https://<host>/<path>）は
     # OIDC プロバイダーの上限 255 文字以内: 8 + 180 + 1 + 64 = 253。

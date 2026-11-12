@@ -19,7 +19,7 @@
   - **[推測]** 作成者の推論
   - **[未検証]** 調べたが分からなかったもの、またはまだ試していないもの
 - 表記（値）: 実ドメインは `<domain>`、アカウント ID は `<account-id>` や `xxxx-xxxx-0001`、利用者は `<email>` と書く。この文書に実際の値は書かない（awsbridge は public リポジトリ）
-- 用語: この文書の「**階層**」は Standard / Admin（デプロイと issuer の分かれ目）だけを指す。Administrator / Viewer は「**ロール**」と呼ぶ（設計上申と §0 の cto の決裁は、ロールも「階層」と呼んでいる）。設定ファイルでは、ロールごとに属する階層を `tier` で持つ（§11.3）。「**ポータル**」（portal）はコンソールログインのうち、人がブラウザで開く入口の画面とその Worker の経路（`src/console/portal/`・設定の `portal.*`）を指す。仕組み全体・AWS と Cloudflare に出る名前（ロールのパス `/awsbridge-console/`・aud・守りの部品・Worker 名）は「**コンソール**」（console）の語を使う。2 語はこの使い分けで残し、そろえない（利用者の判断 2026-11-13）。Cloudflare の「**MCP Portal**」（MCP の入口の製品）とは別物で、文書でこれを指すときは必ず「MCP Portal」と書く。ポータルのホスト名は下流が決める（例 `portal.<domain>`。個人の環境 ② では `console.<domain>` / `admin-console.<domain>` を使う）
+- 用語: この文書の「**階層**」は Standard / Admin（デプロイと issuer の分かれ目）だけを指す。Administrator / Viewer は「**ロール**」と呼ぶ（設計上申と §0 の cto の決裁は、ロールも「階層」と呼んでいる）。設定ファイルでは、ロールごとに属する階層を `tier` で持つ（§11.3）。「**ポータル**」（portal）はコンソールログインのうち、人がブラウザで開く入口の画面とその Worker の経路（`src/console/portal/`・設定の `portal.*`）を指す。仕組み全体・AWS と Cloudflare に出る名前（ロールのパス `/awsbridge-console/`・aud・守りの部品・Worker 名）は「**コンソール**」（console）の語を使う。2 語はこの使い分けで残し、そろえない（利用者の判断 2026-11-13）。Cloudflare の「**MCP Portal**」（MCP の入口の製品）とは別物で、文書でこれを指すときは必ず「MCP Portal」と書く。ポータルのホスト名は下流が決める（例 `awsbridge-console.<domain>`。個人の環境 ② では `awsbridge-console.<domain>` / `awsbridge-admin-console.<domain>` を使う）
 
 ## 目次
 
@@ -154,10 +154,10 @@ M2 では、チームごとに Access アプリを分ける。分け方は 2 通
 
 | 案 | Standard の URL | Admin の URL | 利点 | 欠点 |
 |---|---|---|---|---|
-| **R-P パスで分ける**（第一案） | `https://portal.<domain>/t/<team>/` | `https://admin-portal.<domain>/t/<team>/` | ホストと証明書が 1 つで済む。localStorage（お気に入り・最近使ったもの）がチームをまたいで共有される | 同じホストに Access アプリが並ぶ。Access の「Cookie Path」の設定次第で、チームを切り替えるたびに Cookie が上書きされ、再認証のリダイレクトが起きる [確認済み: Cloudflare の文書に Cookie Path の挙動の記載。実際の切り替えの見え方は未検証]。**Cookie Path はすべてのチームのアプリで有効にする（要件）**。無効だと、同じホストの別のアプリの AUD も JWT の `aud` に入り、Worker の「aud はちょうど 1 つ」の検査で断られる（G1-b の PoC。[console-login-admin.md](console-login-admin.md) §3.1） |
-| R-H ホストで分ける | `https://<team>.portal.<domain>/` | `https://<team>.admin-portal.<domain>/` | Cookie と画面の状態がチームごとに完全に分かれる | ホストと DNS がチームの数だけ要る。チームを足すたびに Worker の Custom Domain（wrangler の設定）も足す。localStorage がチームをまたいで共有されない |
+| **R-P パスで分ける**（第一案） | `https://awsbridge-console.<domain>/t/<team>/` | `https://awsbridge-admin-console.<domain>/t/<team>/` | ホストと証明書が 1 つで済む。localStorage（お気に入り・最近使ったもの）がチームをまたいで共有される | 同じホストに Access アプリが並ぶ。Access の「Cookie Path」の設定次第で、チームを切り替えるたびに Cookie が上書きされ、再認証のリダイレクトが起きる [確認済み: Cloudflare の文書に Cookie Path の挙動の記載。実際の切り替えの見え方は未検証]。**Cookie Path はすべてのチームのアプリで有効にする（要件）**。無効だと、同じホストの別のアプリの AUD も JWT の `aud` に入り、Worker の「aud はちょうど 1 つ」の検査で断られる（G1-b の PoC。[console-login-admin.md](console-login-admin.md) §3.1） |
+| R-H ホストで分ける | `https://<team>.awsbridge-console.<domain>/` | `https://<team>.awsbridge-admin-console.<domain>/` | Cookie と画面の状態がチームごとに完全に分かれる | ホストと DNS がチームの数だけ要る。チームを足すたびに Worker の Custom Domain（wrangler の設定）も足す。localStorage がチームをまたいで共有されない |
 
-`portal` / `admin-portal` のラベルは例で、実際のホスト名は下流の設定ファイル（`portal.standardOrigin` / `portal.adminOrigin`。§11.3）で決める。入口と一覧は Standard のオリジンに 1 つだけ置き（P1'。§8）、Admin のオリジンには Admin の階層のチームの S1〜S5（確認と発行を含む）を置く。Admin のオリジンでは、Admin の Worker がチームのパス以外を 404 にする（G-6 の承認。§3.2）。オリジン全体を断る Access アプリの採否は G5 の前に決める。Admin の発行を同じホストのパスで分けることはしない（別のオリジンにする）。
+`console` / `admin-console` のラベルは例で、実際のホスト名は下流の設定ファイル（`portal.standardOrigin` / `portal.adminOrigin`。§11.3）で決める。入口と一覧は Standard のオリジンに 1 つだけ置き（P1'。§8）、Admin のオリジンには Admin の階層のチームの S1〜S5（確認と発行を含む）を置く。Admin のオリジンでは、Admin の Worker がチームのパス以外を 404 にする（G-6 の承認。§3.2）。オリジン全体を断る Access アプリの採否は G5 の前に決める。Admin の発行を同じホストのパスで分けることはしない（別のオリジンにする）。
 
 #### ホスト名を自社ドメインにしたことの影響
 
@@ -166,14 +166,14 @@ M2 では、チームごとに Access アプリを分ける。分け方は 2 通
 | 項目 | 内容 |
 |---|---|
 | Worker の公開 | Workers の **Custom Domain** で、ホスト全体を Worker に向ける（Worker がオリジンになる。DNS レコードと証明書は Cloudflare が作る）[確認済み: Cloudflare の文書「Custom Domains」]。Route（`<host>/*`）は、別のオリジンの前に置く場合の方式なので使わない。Custom Domain は下流の `wrangler.<name>.jsonc` の `routes`（`custom_domain: true`）に書く |
-| R-P と R-H | 自社ドメインなので、どちらも取れる（`workers.dev` では Worker ごとのホストが 1 つに決まるので、R-H は取りにくかった [推測]）。R-P は Custom Domain が Standard・Admin で 1 つずつ。R-H はチームの数だけ要る（Custom Domain はワイルドカードを受け付けない [確認済み: 同じ文書]）。R-H の `<team>.portal.<domain>` は 2 段のサブドメインで、Universal SSL の対象外だが、Custom Domain を作ると、そのホスト用の証明書が別料金なしで発行される [確認済み: 同じ文書の Certificates の節] |
+| R-P と R-H | 自社ドメインなので、どちらも取れる（`workers.dev` では Worker ごとのホストが 1 つに決まるので、R-H は取りにくかった [推測]）。R-P は Custom Domain が Standard・Admin で 1 つずつ。R-H はチームの数だけ要る（Custom Domain はワイルドカードを受け付けない [確認済み: 同じ文書]）。R-H の `<team>.awsbridge-console.<domain>` は 2 段のサブドメインで、Universal SSL の対象外だが、Custom Domain を作ると、そのホスト用の証明書が別料金なしで発行される [確認済み: 同じ文書の Certificates の節] |
 | G-1 への影響 | 証明書は R-H を退ける理由にならなくなった。決め手は N1（パスごとに AUD と Cookie が分かれるか）と、チームを足す手間（R-P は Access アプリだけ、R-H は Access アプリと Custom Domain）。第一案は R-P のまま |
 | Access アプリ | Access アプリの対象（ドメインとパス）は、設定ファイルの `portal.*Origin` とチーム名から Terraform で作る（§9.1・§11.4） |
 | `Issuer`（フェデレーション） | S5 の URL（`<team-base>/expired`）。設定ファイルの `portal.standardOrigin` から作る（§6.3）。ホスト名を変えると、発行済みのコンソールのセッションが切れたときの戻り先が古いホストになる |
-| OIDC の issuer（STS が信頼する URL） | フェデレーションの `Issuer` とは**別物**。各アカウントの IAM OIDC プロバイダーの URL で、StackSets で全アカウントに配る。ホストとパスは N9 で決める（この文書の範囲外）。`workers.dev` に置かない方がよい（Cloudflare のアカウントのサブドメインに縛られ、変えると全アカウントのプロバイダーを作り直すことになる）[推測]。ポータルと別の専用ホストにすると cto が決裁した（G-8。Standard は `https://<issuer-host>/std`、Admin は別ホストの `/admin`。[console-login.md](console-login.md) §3.1） |
+| OIDC の issuer（STS が信頼する URL） | フェデレーションの `Issuer` とは**別物**。各アカウントの IAM OIDC プロバイダーの URL で、StackSets で全アカウントに配る。ホストとパスは N9 で決める（この文書の範囲外）。`workers.dev` に置かない方がよい（Cloudflare のアカウントのサブドメインに縛られ、変えると全アカウントのプロバイダーを作り直すことになる）[推測]。ポータルと別の専用ホスト（接頭辞 `awsbridge-oidc-`。例 `awsbridge-oidc-console.<domain>`）にすると cto が決裁した（G-8。Standard は `https://<issuer-host>/std`、Admin は別ホストの `/admin`。[console-login.md](console-login.md) §3.1）。そのドメインを奪われると issuer を奪われるので、自動更新・レジストラのロック・ゾーンの権限を絞る（同 §3.1） |
 | 変えにくさ | ポータルのホスト名は `Issuer`・ブックマーク・Access アプリ・CSRF の Origin の検査に入る。最初に配る前に下流の設定で確定する（② は個人の下流、③ は会社の下流） |
 
-この文書では、チームの起点の URL を **`<team-base>`** と書く（R-P なら `https://portal.<domain>/t/<team>`、R-H なら `https://<team>.portal.<domain>`）。どちらの案でも次を守る。
+この文書では、チームの起点の URL を **`<team-base>`** と書く（R-P なら `https://awsbridge-console.<domain>/t/<team>`、R-H なら `https://<team>.awsbridge-console.<domain>`）。どちらの案でも次を守る。
 
 - **チームは検証した Access JWT の AUD だけから決める**。パスやホストのチーム名は経路の振り分けにだけ使い、AUD から決めたチームと食い違えば拒否する（`team_mismatch`）
 - 未知の AUD には何も発行しない（`unknown_audience`）
@@ -184,7 +184,7 @@ M2 では、チームごとに Access アプリを分ける。分け方は 2 通
 
 | # | 画面 | URL（Standard） | 担当 | 内容 |
 |---|---|---|---|---|
-| S0 | 入口（1 つの一覧） | `https://portal.<domain>/` | Worker | 所属する全チーム（Standard と Admin の階層）の行を 1 つの一覧に出す（§4.1・§7）。各行のロールは、その行のチームのパスの S2 へのリンク（Admin の行は Admin のオリジンの S2）。所属が分からないときは全チームの S1 へのリンクに落とす。最近使ったもの（localStorage）。**発行はしない** |
+| S0 | 入口（1 つの一覧） | `https://awsbridge-console.<domain>/` | Worker | 所属する全チーム（Standard と Admin の階層）の行を 1 つの一覧に出す（§4.1・§7）。各行のロールは、その行のチームのパスの S2 へのリンク（Admin の行は Admin のオリジンの S2）。所属が分からないときは全チームの S1 へのリンクに落とす。最近使ったもの（localStorage）。**発行はしない** |
 | S1 | チームの一覧 | `<team-base>/` | Worker | そのチームを受け付けるアカウント × ロールの一覧。所属が分からないときの落とし先と、ブックマーク用。検索・絞り込み・お気に入り・最近使ったもの |
 | S2 | アカウントの詳細とログイン | `<team-base>/a/<account-id>` | Worker | ロールの選択、リージョンの選択、セッションの長さの表示、「コンソールを開く」ボタン（POST） |
 | S3 | `aws login` の手順 | `<team-base>/a/<account-id>/cli?role=<role>` | Worker | `~/.aws/config` の断片と手順 |
@@ -195,7 +195,7 @@ M2 では、チームごとに Access アプリを分ける。分け方は 2 通
 | S8 | AWS コンソール | — | **AWS** | フェデレーションの URL で開く |
 | S9 | `aws login` のセッション選択 | — | **AWS** | `aws login` が開くブラウザの画面。アクティブなセッションの一覧から選ぶ |
 
-Admin のオリジン（`https://admin-portal.<domain>/`）には、Admin の階層のチームの S1〜S5 を置く。入口（S0）と一覧は Standard と共通（§8）。Admin のオリジンでは、Admin の Worker がチームのパスと Admin の issuer の 2 つの文書のパス以外を、処理の最初（env も Access JWT も見る前）に 404 にする（G-6 の承認。PR #23・#27）。チームのパスは、Access JWT が無い・AUD が未知なら必ず断る。オリジン全体を断る Access アプリの採否は G5 の前に決める。
+Admin のオリジン（`https://awsbridge-admin-console.<domain>/`）には、Admin の階層のチームの S1〜S5 を置く。入口（S0）と一覧は Standard と共通（§8）。Admin のオリジンでは、Admin の Worker がチームのパスと Admin の issuer の 2 つの文書のパス以外を、処理の最初（env も Access JWT も見る前）に 404 にする（G-6 の承認。PR #23・#27）。チームのパスは、Access JWT が無い・AUD が未知なら必ず断る。オリジン全体を断る Access アプリの採否は G5 の前に決める。
 
 ### 3.3 画面遷移
 
@@ -471,7 +471,7 @@ Access の「Custom block pages」で出す文面の案。描くのは Access �
 
 ### 4.8 Admin のオリジンの S2（Administrator の行を選んだあと）
 
-入口と一覧は共通（§4.1）。Administrator の行を選ぶと、Admin のオリジン（`https://admin-portal.<domain>/t/<team>/a/<account-id>`）の S2 に移る。確認と発行（POST）は Admin のオリジンの Worker（Admin のデプロイ）だけが行う（P1'。§8）。
+入口と一覧は共通（§4.1）。Administrator の行を選ぶと、Admin のオリジン（`https://awsbridge-admin-console.<domain>/t/<team>/a/<account-id>`）の S2 に移る。確認と発行（POST）は Admin のオリジンの Worker（Admin のデプロイ）だけが行う（P1'。§8）。
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
@@ -746,8 +746,8 @@ App Launcher は使わない（入れるものは入口の一覧で分かる）�
 
 | 項目 | Standard | Admin |
 |---|---|---|
-| 入口と一覧（S0） | **共通**: Standard のオリジン（`https://portal.<domain>/`）に 1 つ。Administrator の行も同じ一覧に出す（§4.1） | 入口と一覧は置かない。Admin の Worker はチームのパス以外を 404（処理の最初）、チームのパスは Access JWT 無し・AUD 未知なら必ず断る。入口の AUD はどちらの Worker でも発行に受けない（AUD → チームの表に載せない）。Standard は Admin の行を発行しない（7 段目）。オリジン全体を断る Access アプリの採否は G5 の前（G-6 の承認） |
-| 確認と発行（S2 の POST） | Standard のオリジンの Worker（Standard のデプロイ） | **Admin のオリジン**（`https://admin-portal.<domain>/`）の Worker（Admin のデプロイ）だけ。同じホストのパス分けにはしない |
+| 入口と一覧（S0） | **共通**: Standard のオリジン（`https://awsbridge-console.<domain>/`）に 1 つ。Administrator の行も同じ一覧に出す（§4.1） | 入口と一覧は置かない。Admin の Worker はチームのパス以外を 404（処理の最初）、チームのパスは Access JWT 無し・AUD 未知なら必ず断る。入口の AUD はどちらの Worker でも発行に受けない（AUD → チームの表に載せない）。Standard は Admin の行を発行しない（7 段目）。オリジン全体を断る Access アプリの採否は G5 の前（G-6 の承認） |
+| 確認と発行（S2 の POST） | Standard のオリジンの Worker（Standard のデプロイ） | **Admin のオリジン**（`https://awsbridge-admin-console.<domain>/`）の Worker（Admin のデプロイ）だけ。同じホストのパス分けにはしない |
 | Worker | Standard のデプロイ | Admin のデプロイ（別の Worker。D3 は「Admin は別の Worker デプロイ」を保ち、画面の分離だけを緩めた） |
 | issuer と鍵 | Standard の鍵（境界ごと）。今は Workers の secret（JSON）で、`secret_key` に揃える（決裁済み・別 PR・G2 までに）。D4 の期限（G5 の前まで）は無くなった。Standard の issuer の名前は変えない | Admin の鍵（Workers の `secret_key`。境界ごと。[console-login-admin.md](console-login-admin.md) §4）。issuer は **別ホストの `/admin`**（I-B。Admin の Worker が出す。Standard の issuer のホストともポータルのホストとも別。[console-login.md](console-login.md) §3.1）。「同じホストの `/admin` でもよい」は取り下げた |
 | Access アプリ | 入口 + 設定ファイルの `tier: "standard"` のチームごと（例 `infra` / `dev` / `sa`） | `tier: "admin"` のチームごと（例 `infra-elevated`）。Admin 用の別の Entra グループ（PIM など）は必須にしない（人が決める。PIM は G3・G5） |
@@ -780,9 +780,9 @@ P1' の条件:
 
 | Access アプリ | 対象（R-P の場合） | ポリシー | AUD の扱い |
 |---|---|---|---|
-| 入口（Standard と Admin で共通。P1'） | `portal.<domain>/`（チームのパス以外） | チームの Entra グループのどれかに所属（Object ID。和集合）。Admin の階層のチームのグループも和集合に含める（G-6 の承認。Admin の階層だけの人も共通の入口に入れる）。入口の一覧（U2）のために、Entra のグループを Access の身元に載せる設定が要る（会社の Entra と Access の変更。人の承認） | 既知だが、**どのチームにも対応しない**。この AUD では発行しない。入口の JWT でチームの発行経路を通れないこと |
-| チーム `<team>`（Standard） | `portal.<domain>/t/<team>/` | そのチームの Entra グループ（Object ID） | AUD → `<team>`。Terraform の出力から Worker 用の設定に生成する（§11.4） |
-| チーム `<team>`（Admin の階層） | `admin-portal.<domain>/t/<team>/`（Admin の発行のオリジン。§8） | 同じ | AUD → `<team>`。Admin の Worker の設定にだけ入れる（Standard のバンドルに入れない） |
+| 入口（Standard と Admin で共通。P1'） | `awsbridge-console.<domain>/`（チームのパス以外） | チームの Entra グループのどれかに所属（Object ID。和集合）。Admin の階層のチームのグループも和集合に含める（G-6 の承認。Admin の階層だけの人も共通の入口に入れる）。入口の一覧（U2）のために、Entra のグループを Access の身元に載せる設定が要る（会社の Entra と Access の変更。人の承認） | 既知だが、**どのチームにも対応しない**。この AUD では発行しない。入口の JWT でチームの発行経路を通れないこと |
+| チーム `<team>`（Standard） | `awsbridge-console.<domain>/t/<team>/` | そのチームの Entra グループ（Object ID） | AUD → `<team>`。Terraform の出力から Worker 用の設定に生成する（§11.4） |
+| チーム `<team>`（Admin の階層） | `awsbridge-admin-console.<domain>/t/<team>/`（Admin の発行のオリジン。§8） | 同じ | AUD → `<team>`。Admin の Worker の設定にだけ入れる（Standard のバンドルに入れない） |
 | issuer の公開文書 | `/.well-known/...`（パスは issuer の分け方で決まる。N9） | Bypass（IAM が読む）。**issuer を専用ホストに置く案（[console-login.md](console-login.md) §3.1）ならポータルのホストには不要** | — |
 
 - Access の Cookie の設定（推奨）: Binding cookie を有効にする。HttpOnly は既定のまま有効。SameSite は Lax（Strict はリダイレクトの繰り返しを起こしうると文書にある）。R-P では **Cookie Path をすべてのチームのアプリで有効にする（要件。Standard も Admin も）**。チームごとに Cookie が分かれ、`aud` が 1 つになる。無効だと別のアプリの AUD も `aud` に入り、Worker が断る（可用性の問題）。G1-b の PoC では、無効のとき、aud の完全一致を見ない署名側が Standard の階層のアプリの JWT で Admin の JWT を発行した [確認済み: [console-login-admin.md](console-login-admin.md) 付録 A.4。Cloudflare の文書に各設定の説明]。Access の Terraform・設定の検査・README に要件として書く(**未着手**)。生成器や検査での強制も未実装
@@ -1070,8 +1070,8 @@ MCP 用のバンドルの検査（`test/e2e/console-isolation.test.ts`。`wrangl
 {
   "schemaVersion": 1,
   "portal": {
-    "standardOrigin": "https://portal.<domain>",
-    "adminOrigin": "https://admin-portal.<domain>",
+    "standardOrigin": "https://awsbridge-console.<domain>",
+    "adminOrigin": "https://awsbridge-admin-console.<domain>",
     "routing": "path",
     "regions": { "allowed": ["ap-northeast-1", "us-east-1"], "default": "ap-northeast-1" },
     "supportUrl": "https://<問い合わせの窓口>"
@@ -1209,7 +1209,7 @@ cto の条件との整合:
 ```json
 {
   "schemaVersion": 1,
-  "portal": { "standardOrigin": "https://aws.<domain>" },
+  "portal": { "standardOrigin": "https://awsbridge-console.<domain>" },
   "teams": [
     { "name": "me", "displayName": "自分", "access": { "aud": "<access-aud>" } }
   ],

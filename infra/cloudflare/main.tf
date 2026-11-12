@@ -1,6 +1,9 @@
 locals {
   mcp_url = "https://${var.worker_host}/mcp"
 
+  # OIDC issuer のホスト。未指定なら接続先のホストと同じ（workers.dev の試用など、1 つのホストで済ませる形）。
+  issuer_host = coalesce(var.issuer_host, var.worker_host)
+
   # mcp 型・mcp_portal 型のアプリは MCP クライアントが別オリジンから呼ぶので CORS を開ける。
   mcp_cors_headers = {
     allow_all_headers = true
@@ -23,8 +26,10 @@ check "portal_hostname_required" {
   }
 }
 
-# 1. Worker 本体を守る self-hosted アプリ。直 URL でのアクセスを Access で塞ぎ、Worker は
-#    Cf-Access-Jwt-Assertion を検証する。この aud が Worker の secret ACCESS_AUD になる。
+# 1. 接続先のホスト（worker_host。例 awsbridge-mcp.example.com）を守る self-hosted アプリ。直 URL でのアクセスを Access で塞ぎ、
+#    Worker は Cf-Access-Jwt-Assertion を検証する。この aud が Worker の secret ACCESS_AUD になる。
+#    issuer のホスト（issuer_host。例 awsbridge-oidc-mcp.example.com）はこのアプリの対象にしない。そこに来た /mcp は Access を通らず、
+#    Worker の Access JWT の検証で 401 になる。
 resource "cloudflare_zero_trust_access_application" "worker" {
   account_id                = var.account_id
   name                      = var.name
@@ -46,7 +51,7 @@ resource "cloudflare_zero_trust_access_application" "worker" {
       enabled                = true
       allow_any_on_localhost = true
       allow_any_on_loopback  = true
-      # Portal（<portal>/servers-callback）とダッシュボードが MCP サーバーとして OAuth 接続するためのコールバック。
+      # MCP Portal（<portal>/servers-callback）とダッシュボードが MCP サーバーとして OAuth 接続するためのコールバック。
       # 無いと「Redirect URI not allowed by application configuration」になり、MCP サーバーが waiting のままになる。
       allowed_uris = concat(
         ["https://dash.cloudflare.com/${var.account_id}/one/access-controls/ai-controls/mcp-server/oauth-callback/*"],
@@ -58,8 +63,9 @@ resource "cloudflare_zero_trust_access_application" "worker" {
   policies = local.policies
 }
 
-# 2. OIDC ディスカバリと JWKS は AWS IAM / STS が認証なしで取りに来るので Access を bypass する。
-#    パス付きの destination はホスト全体のアプリより具体的なため、こちらが優先される。
+# 2. OIDC ディスカバリと JWKS は AWS IAM / STS が認証なしで取りに来るので、issuer のホストで Access を bypass する。
+#    issuer のホストを分けた形（issuer_host を指定）では、このホストを覆う Access のアプリ（ゾーン全体を守るものなど）が他にあっても、この 2 つのパスは公開になる。
+#    issuer のホストを接続先と同じにした形では、パス付きの destination がホスト全体のアプリより具体的なため、こちらが優先される。
 resource "cloudflare_zero_trust_access_policy" "bypass_everyone" {
   account_id = var.account_id
   name       = "${var.name}-bypass-well-known"
@@ -80,11 +86,11 @@ resource "cloudflare_zero_trust_access_application" "well_known_bypass" {
   destinations = [
     {
       type = "public"
-      uri  = "${var.worker_host}/.well-known/openid-configuration"
+      uri  = "${local.issuer_host}/.well-known/openid-configuration"
     },
     {
       type = "public"
-      uri  = "${var.worker_host}/.well-known/jwks.json"
+      uri  = "${local.issuer_host}/.well-known/jwks.json"
     },
   ]
 
@@ -96,7 +102,7 @@ resource "cloudflare_zero_trust_access_application" "well_known_bypass" {
   ]
 }
 
-# 3. ポータルに登録する MCP サーバー。
+# 3. MCP Portal に登録する MCP サーバー。
 resource "cloudflare_zero_trust_access_ai_controls_mcp_server" "this" {
   id                               = var.name
   account_id                       = var.account_id
@@ -107,8 +113,8 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_server" "this" {
   is_shared_oauth_callback_enabled = false
 }
 
-# 4. ポータル経由のアクセスを許可する mcp 型アプリ。API / Terraform で MCP サーバーを作っても
-#    自動では作られず、無いとポータルの同意画面に出ない。
+# 4. MCP Portal 経由のアクセスを許可する mcp 型アプリ。API / Terraform で MCP サーバーを作っても
+#    自動では作られず、無いと MCP Portal の同意画面に出ない。
 resource "cloudflare_zero_trust_access_application" "mcp" {
   account_id                = var.account_id
   name                      = "${var.name}-mcp"
@@ -133,7 +139,7 @@ resource "cloudflare_zero_trust_access_application" "mcp" {
   }
 }
 
-# 5. ポータル（任意）。portal リソースは servers 一覧全体を所有するため、既存の portal と共存管理できない。
+# 5. MCP Portal（任意）。portal リソースは servers 一覧全体を所有するため、既存の portal と共存管理できない。
 #    既存の portal を使う場合は create_portal = false のまま、出力 mcp_server_id を portal 側の servers に足す。
 resource "cloudflare_zero_trust_access_application" "portal" {
   count = var.create_portal ? 1 : 0
@@ -181,7 +187,7 @@ resource "cloudflare_zero_trust_access_ai_controls_mcp_portal" "this" {
   servers = [
     {
       server_id = cloudflare_zero_trust_access_ai_controls_mcp_server.this.id
-      # 必ず true（利用者ごとの認証）。false だと Portal が管理者の資格を全員で共用して接続し、
+      # 必ず true（利用者ごとの認証）。false だと MCP Portal が管理者の資格を全員で共用して接続し、
       # 全員が管理者の身元で AWS のロールを引き受けてしまう（awsbridge は利用者本人の身元で権限を決める）。
       on_behalf = true
     },

@@ -19,7 +19,7 @@
 - 表記: **[確認済み]** PoC で観測したもの・一次資料で確かめたもの、**[資料]** 設計文書と cto の決裁にあるもの、**[推測]** 作成者の推論、**[未検証]** まだ試していないもの・調べて分からなかったもの
 - 実測値の但し書き: PoC の秒数は、開発環境（IdP は Google、AWS は開発用アカウント 1 つ、利用者 1 人）で**1 回ずつ測った値**である。会社の環境（Entra ID）と複数アカウントでの値は測っていない。**保証値として使わない**（手順は固定の待ち時間ではなく「拒否を確かめて完了」にする。§6）
 - 値の表記: 実ドメインは `<domain>`、issuer のホストは `<issuer-host>`、アカウント ID は `<account-id>`、利用者は `<email>` と書く。この文書に実際の値は書かない（awsbridge は public リポジトリ）
-- 用語: 「**コンソールログイン**」はこの仕組みの名前で、AWS コンソールへのログインと `aws login`（CLI）の両方を含む。単に「コンソール」と書くときは AWS マネジメントコンソールを指す。「**階層**」（tier）は Standard / Admin（発行する Worker・issuer・鍵の分かれ目。**権限の強さは保証しない**。§3.3）。「**ロール**」は設定の `roles[]`（参考の形は Viewer・Administrator の 2 つ）。「**境界**」は信頼の境界（管理下 `managed` / 管理外の先方 `partner:<id>`）。「**ポータル**」（portal）はコンソールログインのうち、人がブラウザで開く入口の画面とその Worker の経路（`src/console/portal/`・設定の `portal.*`）を指す。仕組み全体・AWS と Cloudflare に出る名前（ロールのパス `/awsbridge-console/`・aud・守りの部品・Worker 名）は「**コンソール**」（console）の語を使う。2 語はこの使い分けで残し、そろえない（利用者の判断 2026-11-13）。Cloudflare の「**MCP Portal**」（MCP の入口の製品）とは別物で、文書でこれを指すときは必ず「MCP Portal」と書く。ポータルのホスト名は下流が決める（例 `portal.<domain>`。個人の環境 ② では `console.<domain>` / `admin-console.<domain>` を使う）
+- 用語: 「**コンソールログイン**」はこの仕組みの名前で、AWS コンソールへのログインと `aws login`（CLI）の両方を含む。単に「コンソール」と書くときは AWS マネジメントコンソールを指す。「**階層**」（tier）は Standard / Admin（発行する Worker・issuer・鍵の分かれ目。**権限の強さは保証しない**。§3.3）。「**ロール**」は設定の `roles[]`（参考の形は Viewer・Administrator の 2 つ）。「**境界**」は信頼の境界（管理下 `managed` / 管理外の先方 `partner:<id>`）。「**ポータル**」（portal）はコンソールログインのうち、人がブラウザで開く入口の画面とその Worker の経路（`src/console/portal/`・設定の `portal.*`）を指す。仕組み全体・AWS と Cloudflare に出る名前（ロールのパス `/awsbridge-console/`・aud・守りの部品・Worker 名）は「**コンソール**」（console）の語を使う。2 語はこの使い分けで残し、そろえない（利用者の判断 2026-11-13）。Cloudflare の「**MCP Portal**」（MCP の入口の製品）とは別物で、文書でこれを指すときは必ず「MCP Portal」と書く。ポータルのホスト名は下流が決める（例 `awsbridge-console.<domain>`。個人の環境 ② では `awsbridge-console.<domain>` / `awsbridge-admin-console.<domain>` を使う）
 
 ## 目次
 
@@ -71,7 +71,7 @@
    │
    ▼
 Cloudflare Access（コンソールログイン用。MCP 用とは別のアプリ）
-   │  チームごとのアプリ（R-P: https://portal.<domain>/t/<team>/）。ポリシーはそのチームの Entra グループ（Object ID）
+   │  チームごとのアプリ（R-P: https://awsbridge-console.<domain>/t/<team>/）。ポリシーはそのチームの Entra グループ（Object ID）
    │  IdP は Access の設定（会社は Entra ID）。この設計の前提にはしない
    ▼
 console Worker（Standard のデプロイ）        console Worker（Admin のデプロイ。① で作る。会社で配るのは G5 のあと）
@@ -172,11 +172,13 @@ issuer の公開文書（discovery と JWKS）: https://<issuer-host>/std/...（
 | 部分 | 規則 | 例 |
 |---|---|---|
 | スキーム | `https` | — |
-| ホスト | 自社ドメインの、issuer **専用**のホスト（`<issuer-host>`。例 `id.<domain>` のような名前）。ポータルのホストと分ける。`workers.dev` は使わない | — |
+| ホスト | 自社ドメインの、issuer **専用**のホスト（`<issuer-host>`。例 `awsbridge-oidc-console.<domain>`。Admin は `awsbridge-oidc-admin-console.<domain>`）。ポータルのホストと分ける。`workers.dev` は使わない | — |
 | `<tier>` | `std`（Standard）/ `admin`（Admin） | `/std`・`/admin` |
 | 管理外 | `/p/<partner-id>/<tier>`。`<partner-id>` は先方の名前を含まない不透明な短い ID（`^[a-z0-9]{2,16}$`。例 `p01`）。discovery は誰でも読めるので、URL から取引先が分からないようにする | `/p/p01/std` |
 | 末尾 | スラッシュなし。クエリ・フラグメントなし（IAM は issuer を完全一致で照合する [確認済み: N9 のケース 6]） | — |
 | 公開文書 | `<issuer>/.well-known/openid-configuration` と `<issuer>/.well-known/jwks.json`（N9 と同じ） | `/std/.well-known/jwks.json` |
+
+issuer のホストの名前は、接頭辞 `awsbridge-oidc-` を付けた issuer 専用のホストにする（issuer にも `awsbridge` を付けるのは、同じドメインで別の仕組みの OIDC を立てたときに持ち主が分かるようにするため。コンソールの Standard は `awsbridge-oidc-console.<domain>`、Admin は `awsbridge-oidc-admin-console.<domain>`。MCP 用の issuer は `awsbridge-oidc-mcp.<domain>` で、MCP の接続先 `awsbridge-mcp.<domain>` とは別のホストにする）。**issuer のホストは IAM の OIDC プロバイダーが信頼する相手なので、そのドメインを奪われることは issuer を奪われることになる。** ドメインの自動更新を有効にし、レジストラでドメインをロックし、ゾーン（DNS・Routes・Custom Domain。A13・A14）を編集できる人と API トークンを絞る。
 
 ポータルのホストと分ける理由:
 
