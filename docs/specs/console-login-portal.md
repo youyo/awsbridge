@@ -19,7 +19,7 @@
   - **[推測]** 作成者の推論
   - **[未検証]** 調べたが分からなかったもの、またはまだ試していないもの
 - 表記（値）: 実ドメインは `<domain>`、アカウント ID は `<account-id>` や `xxxx-xxxx-0001`、利用者は `<email>` と書く。この文書に実際の値は書かない（awsbridge は public リポジトリ）
-- 用語: この文書の「**階層**」は Standard / Admin（デプロイと issuer の分かれ目）だけを指す。Administrator / Viewer は「**ロール**」と呼ぶ（設計上申と §0 の cto の決裁は、ロールも「階層」と呼んでいる）。設定ファイルでは、ロールごとに属する階層を `tier` で持つ（§11.3）
+- 用語: この文書の「**階層**」は Standard / Admin（デプロイと issuer の分かれ目）だけを指す。Administrator / Viewer は「**ロール**」と呼ぶ（設計上申と §0 の cto の決裁は、ロールも「階層」と呼んでいる）。設定ファイルでは、ロールごとに属する階層を `tier` で持つ（§11.3）。「**ポータル**」（portal）はコンソールログインのうち、人がブラウザで開く入口の画面とその Worker の経路（`src/console/portal/`・設定の `portal.*`）を指す。仕組み全体・AWS と Cloudflare に出る名前（ロールのパス `/awsbridge-console/`・aud・守りの部品・Worker 名）は「**コンソール**」（console）の語を使う。2 語はこの使い分けで残し、そろえない（利用者の判断 2026-11-13）。Cloudflare の「**MCP Portal**」（MCP の入口の製品）とは別物で、文書でこれを指すときは必ず「MCP Portal」と書く。ポータルのホスト名は下流が決める（例 `portal.<domain>`。個人の環境 ② では `console.<domain>` / `admin-console.<domain>` を使う）
 
 ## 目次
 
