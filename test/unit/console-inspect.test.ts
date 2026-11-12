@@ -13,6 +13,7 @@ import type { Json } from "./cfn";
 import {
   ACCOUNT,
   ADMIN_GUARD,
+  ADMIN_HOST,
   ADMIN_PROVIDER,
   goodSnapshot,
   guardDocument,
@@ -180,7 +181,7 @@ describe("信頼ポリシー（許可リスト方式）", () => {
       "aud の条件キーが別の階層の issuer",
       (st) => {
         const e = st.Condition.StringEquals;
-        e[`${HOST}/admin:aud`] = e[`${HOST}/standard:aud`];
+        e[`${ADMIN_HOST}/admin:aud`] = e[`${HOST}/standard:aud`];
         delete e[`${HOST}/standard:aud`];
       },
       "trust_aud",

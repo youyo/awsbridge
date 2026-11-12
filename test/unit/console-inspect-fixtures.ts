@@ -15,8 +15,10 @@ export const ACCOUNT = "333333333333";
 /** 署名を置くアカウント（signing.accountIds）。どの種類の OU にも入っていない。 */
 export const SIGNING_ACCOUNT = "666666666666";
 export const HOST = "id.example.com";
+/** Admin の issuer のホスト（Standard とは別のホスト。設定の boundaries[].issuers.admin = https://admin-id.example.com/admin）。 */
+export const ADMIN_HOST = "admin-id.example.com";
 export const STD_PROVIDER = `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/standard`;
-export const ADMIN_PROVIDER = `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/admin`;
+export const ADMIN_PROVIDER = `arn:aws:iam::${ACCOUNT}:oidc-provider/${ADMIN_HOST}/admin`;
 export const STD_GUARD = `arn:aws:iam::${ACCOUNT}:policy/awsbridge-console/AwsbridgeConsoleGuardStandard`;
 export const ADMIN_GUARD = `arn:aws:iam::${ACCOUNT}:policy/awsbridge-console/AwsbridgeConsoleGuardAdmin`;
 /** MCP 用のプロバイダー（コンソールログイン用ではない）。 */
