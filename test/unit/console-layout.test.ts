@@ -62,6 +62,7 @@ describe("MCP 用 Worker との分離（静的な import）", () => {
       "src/console/generate.ts",
       "src/console/guard.ts",
       "src/console/inspect.ts",
+      "src/console/stops.ts",
       "src/console/issue/claims.ts",
       "src/console/issue/errors.ts",
       "src/console/issue/federation.ts",

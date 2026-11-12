@@ -16,6 +16,7 @@ import { AUDIENCE, ROLE_PATH_PREFIX, rolePath, TEAM_TAG_KEY, TIERS, type Tier } 
 import { generateConsoleArtifacts } from "./generate";
 import { guardPolicyDocument } from "./guard";
 import { GUARD_POLICY_NAME, GUARD_POLICY_PATH, STOP_USER_INLINE_POLICY_NAME } from "./reserved";
+import { stopValues } from "./stops";
 
 export type RoleSnapshot = {
   roleName: string;
@@ -299,38 +300,6 @@ function canon(v: unknown, key = ""): unknown {
 }
 const samePolicy = (a: unknown, b: unknown) =>
   JSON.stringify(canon(a)) === JSON.stringify(canon(b));
-
-/**
- * 1 人停止の Deny の形（予約名のインラインに書いてよい唯一の形）なら、止める値を返す。違えば undefined（衝突）。
- * 形: すべての文が Deny・Action "*"・Resource "*"・条件は StringEquals の aws:SourceIdentity だけ（値は 1 つ以上）。
- */
-function stopValues(doc: unknown): string[] | undefined {
-  if (!isObj(doc) || doc.Version !== "2012-10-17") return undefined;
-  if (!Object.keys(doc).every((k) => ["Version", "Statement", "Id"].includes(k))) return undefined;
-  const list = statements(doc);
-  if (!list || list.length === 0) return undefined;
-  const values: string[] = [];
-  for (const st of list) {
-    if (
-      !Object.keys(st).every((k) =>
-        ["Sid", "Effect", "Action", "Resource", "Condition"].includes(k),
-      )
-    )
-      return undefined;
-    if (st.Effect !== "Deny") return undefined;
-    const a = asList(st.Action);
-    const r = asList(st.Resource);
-    if (!a || !sameSet(a, ["*"]) || !r || !sameSet(r, ["*"])) return undefined;
-    const c = st.Condition;
-    if (!isObj(c) || !sameKeys(c, ["StringEquals"])) return undefined;
-    const eq = c.StringEquals;
-    if (!isObj(eq) || !sameKeys(eq, ["aws:SourceIdentity"])) return undefined;
-    const v = asList(eq["aws:SourceIdentity"]);
-    if (!v || v.length === 0) return undefined;
-    values.push(...v);
-  }
-  return [...new Set(values)];
-}
 
 /**
  * 条件のない全拒否があるか。ロールがほとんど何もできなくなる（強すぎる Deny）。
