@@ -1,5 +1,7 @@
 // コンソールログインの Standard の Worker の実際のバンドル（wrangler deploy --dry-run）と wrangler の設定の例を確かめる。
-// 設計: docs/specs/console-login-portal.md §9.10（Standard のバンドルに Admin の固有値・MCP のコードが入らない）、
+// 設計: docs/specs/console-login-portal.md §9.10（Standard のバンドルに Admin の発行に使える値・MCP のコードが入らない）、
+//       ADR の P1'・U2（Standard のバンドルに入れてよい Admin の情報は表示用だけ。Admin のチーム名・表示用の行・Object ID は可、
+//       Admin の AUD・Admin のロールの ARN・Admin の issuer は不可。2026-11-12 に分離の試験を引き直した）、
 //       console-login.md §5 の T11（Access を経由しない入口: workers.dev・Preview URL を閉じる）。デプロイはしない。
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -24,7 +26,7 @@ const AUD = {
 const ENTRY_STD = `stdentryaud${"6".repeat(40)}`;
 const ENTRY_ADMIN = `adminentryaud${"7".repeat(40)}`;
 
-// Admin の生成物にだけある値（Standard のバンドルに入ってはならない）
+// Admin の発行に使える値（Admin の生成物にだけあり、Standard のバンドルに入ってはならない）
 const ADMIN_ONLY = [
   AUD["infra-elevated"],
   AUD["dev-elevated"],
@@ -32,9 +34,9 @@ const ADMIN_ONLY = [
   "https://id.example.com/admin",
   "/awsbridge-console/admin/",
   "FederatedAwsBridgeAdministrator",
-  "infra-elevated",
-  "dev-elevated",
 ];
+// 表示用だけの Admin の情報（Standard のバンドルに入ってよい。表示用の生成物から入る）
+const ADMIN_DISPLAY = ["infra-elevated", "dev-elevated", "00000000-0000-0000-0000-000000000004"];
 
 let out = "";
 let inputs: string[] = [];
@@ -42,6 +44,7 @@ let bundle = "";
 let config: Record<string, unknown> = {};
 let standardJson = "";
 let adminJson = "";
+let displayJson = "";
 
 beforeAll(() => {
   out = mkdtempSync(join(tmpdir(), "awsbridge-console-std-bundle-"));
@@ -66,12 +69,14 @@ beforeAll(() => {
   writeFileSync(standardJson, JSON.stringify(artifacts.worker.standard));
   adminJson = join(out, "worker.admin.json");
   writeFileSync(adminJson, JSON.stringify(artifacts.worker.admin));
+  displayJson = join(out, "display.standard.json");
+  writeFileSync(displayJson, JSON.stringify(artifacts.display));
 
   const bundleConfig = {
     ...config,
     $schema: undefined,
     main: join(root, config.main as string),
-    alias: { "awsbridge:console-worker": standardJson },
+    alias: { "awsbridge:console-worker": standardJson, "awsbridge:console-display": displayJson },
   };
   const wranglerConfig = join(out, "wrangler.bundle.json");
   writeFileSync(wranglerConfig, JSON.stringify(bundleConfig));
@@ -126,7 +131,10 @@ describe("wrangler.console-standard.jsonc（設定の例）", () => {
     expect(config.main).toBe("src/console/standard/index.ts");
     expect(config.alias).toEqual({
       "awsbridge:console-worker": "./.generated/console/worker.standard.json",
+      "awsbridge:console-display": "./.generated/console/display.standard.json",
     });
+    // 静的なファイルはバンドルに埋め込む（Workers の静的アセットは Worker より先に返るので使わない）
+    expect(config).not.toHaveProperty("assets");
     const rl = config.ratelimits as {
       name: string;
       namespace_id: string;
@@ -165,7 +173,7 @@ describe("Standard の Worker のバンドル", () => {
     expect(bundle).toContain("https://id.example.com/standard");
   });
 
-  it("Admin の固有値（Admin のチームの AUD・Admin の入口の AUD・Admin の issuer・Admin の行・Admin のチーム）が入らない", () => {
+  it("Admin の発行に使える値（Admin のチームの AUD・Admin の入口の AUD・Admin の issuer・Admin のロールの ARN とロール名）が入らない", () => {
     expect(inputs.filter((p) => p.endsWith("worker.admin.json"))).toEqual([]);
     for (const s of ADMIN_ONLY) {
       expect(bundle, s).not.toContain(s);
@@ -177,12 +185,37 @@ describe("Standard の Worker のバンドル", () => {
   it("陽性の対照: 上の Admin の固有値は、Admin の生成物（worker.admin.json）には実際にある（入らないことの試験が空振りしていない）", () => {
     const admin = readFileSync(adminJson, "utf8");
     for (const s of ADMIN_ONLY) expect(admin, s).toContain(s);
-    // 逆向きの対照: Standard の生成物には、Admin の固有値がない
+    // 逆向きの対照: Standard の生成物（発行用・表示用）には、Admin の発行に使える値がない
     const std = readFileSync(standardJson, "utf8");
     for (const s of ADMIN_ONLY) expect(std, s).not.toContain(s);
+    const display = readFileSync(displayJson, "utf8");
+    for (const s of ADMIN_ONLY) expect(display, s).not.toContain(s);
   });
 
-  it("MCP のコード・設定の解析器と生成器・表示用の生成物・scripts/ を読み込まない", () => {
+  it("表示用の生成物（入口の一覧）は入っていて、表示用の Admin の情報（チーム名・Object ID）だけを持つ", () => {
+    expect(inputs.filter((p) => p.endsWith("display.standard.json"))).toHaveLength(1);
+    expect(inputs).toContain("src/console/display/entry.ts");
+    for (const s of ADMIN_DISPLAY) expect(bundle, s).toContain(s);
+    // Admin のバンドルの「表示用が無い」の試験（console-admin-bundle.test.ts）の陽性の対照
+    expect(bundle).toContain("membership unknown");
+    expect(bundle).toContain("no_group_table");
+    expect(bundle).toContain("00000000-0000-0000-0000-000000000001");
+    // 表示用の Administrator の行は email を持たない（司令塔の決定）
+    const display = JSON.parse(readFileSync(displayJson, "utf8")) as {
+      accounts: { tier: string; email?: string }[];
+    };
+    const admins = display.accounts.filter((a) => a.tier === "admin");
+    expect(admins.length).toBeGreaterThan(0);
+    for (const a of admins) expect(a).not.toHaveProperty("email");
+  });
+
+  it("静的なファイル（CSS・JS）はバンドルに埋め込まれ、外部の script を読まない", () => {
+    expect(inputs).toContain("src/console/portal/assets.ts");
+    expect(bundle).toContain("awsbridge.console.recent");
+    expect(bundle).not.toMatch(/<script[^>]+src="https?:/);
+  });
+
+  it("MCP のコード・設定の解析器と生成器・scripts/ を読み込まない", () => {
     for (const p of [
       "src/index.ts",
       "src/handler.ts",
@@ -197,7 +230,6 @@ describe("Standard の Worker のバンドル", () => {
     }
     expect(inputs.filter((p) => p.startsWith("scripts/"))).toEqual([]);
     expect(inputs.filter((p) => /profiles/.test(p))).toEqual([]);
-    expect(inputs.filter((p) => /display/.test(p))).toEqual([]);
     expect(bundle).not.toContain("list_aws_profiles");
     expect(bundle).not.toContain("awsbridge:profiles");
   });

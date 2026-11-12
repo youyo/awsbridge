@@ -691,10 +691,10 @@ describe("画面（S2・S4・S5 と経路の枠）", () => {
     expect(html).toContain('href="/t/infra/"');
   });
 
-  it("S5（/expired）・S0（/）・S1（/t/<team>/）・S3（/cli）の枠を返す（一覧の中身は PR5）", async () => {
+  it("S5（/expired）・S1（/t/<team>/）・S3（/cli）を返し、S0（/）は入口の JWT が無ければ断る（中身は console-portal-*.test.ts）", async () => {
     const jwt = await h.accessJwt();
     expect((await get("/t/infra/expired", { jwt })).status).toBe(200);
-    expect((await get("/")).status).toBe(200);
+    expect((await get("/")).status).toBe(401);
     expect((await get("/t/infra/", { jwt })).status).toBe(200);
     expect((await get("/t/infra/a/333333333333/cli", { jwt })).status).toBe(200);
     // チームのページは Access JWT を確かめる

@@ -4,7 +4,7 @@ import { createLocalJWKSet, exportJWK, generateKeyPair, type JWK, SignJWT } from
 import { parseConsoleConfig } from "../../src/console/config";
 import { generateConsoleArtifacts } from "../../src/console/generate";
 import { createCsrfToken, importCsrfKey } from "../../src/console/issue/csrf";
-import type { WorkerConfig } from "../../src/console/types";
+import type { DisplayConfig, WorkerConfig } from "../../src/console/types";
 import { generateSigningJwk } from "../../src/keys";
 import { companyAuds, companyConfig, companyInventory } from "./console-fixtures";
 
@@ -43,6 +43,18 @@ export function standardConfig(): WorkerConfig {
     auds: companyAuds(),
     inventory: companyInventory(),
   }).worker.standard;
+}
+
+/** 会社用の設定（試験の fixture）から作った表示用の生成物（display.standard.json）。 */
+export function displayConfig(): DisplayConfig {
+  const { config } = parseConsoleConfig(companyConfig());
+  return generateConsoleArtifacts(config, {
+    mode: "deploy",
+    generatedAt: "2026-11-12T00:00:00.000Z",
+    sourceRevision: "unit",
+    auds: companyAuds(),
+    inventory: companyInventory(),
+  }).display;
 }
 
 export function adminConfig(): WorkerConfig {

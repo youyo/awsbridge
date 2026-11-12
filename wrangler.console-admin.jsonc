@@ -7,6 +7,8 @@
   //   チームのパス（パス方式 /t/<team>/...、ホスト方式 <team>.<host>/...）以外は、処理の最初に 404（env も Access JWT も見ない）。
   // 生成物: mise run console:config:generate が書く .generated/console/worker.admin.json（gitignore）を alias で読む。
   //   Standard の生成物（worker.standard.json）と表示用（display.standard.json）はここでは読まない。
+  // 静的なファイル（/t/<team>/assets の CSS・JS）はバンドルに埋め込み、Worker から返す（Workers の静的アセットは使わない。
+  //   Worker より先に返り、チームのパス以外の 404 と Access の検証を飛ばすため）。/assets（入口）は持たない。
   // 署名: 署名の経路（KMS・署名役の呼び出し・Admin のプロバイダーの URL）はまだ無い（G1-b）。ログインの最後の段は 503 signing_unavailable で止まり、STS を呼ばない。
   //   署名鍵の secret（CONSOLE_SIGNING_KEYS）は持たない。
   // secret（wrangler secret put。値はここに書かない）:

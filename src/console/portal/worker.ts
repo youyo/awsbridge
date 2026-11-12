@@ -17,14 +17,17 @@ import { createCsrfToken, importCsrfKey } from "../issue/csrf";
 import { stsEndpoint } from "../issue/federation";
 import type { TokenSigner } from "../issue/signer";
 import type { WorkerConfig } from "../types";
+import { assetResponse, isAssetName, isStaticResponse } from "./assets";
 import { handleLogin, type LoginRateLimiter } from "./login";
 import {
+  cliPage,
   errorPage,
   expiredPage,
   htmlResponse,
+  listPage,
   loginFormPage,
   loginGetPage,
-  placeholderPage,
+  QUERY_MAX,
   tierMark,
 } from "./pages";
 import { matchPortal, type PortalRoute } from "./routes";
@@ -71,6 +74,23 @@ export type IssuerHandler = (
   ctx: { isRead: boolean; requestId: string | undefined },
 ) => Promise<Response | undefined>;
 
+/** 入口（S0）の画面を描く処理に渡す文脈。 */
+export type EntryContext = {
+  config: WorkerConfig;
+  accessTeamDomain: string;
+  getAccessKey?: JWTVerifyGetKey | undefined;
+  now: () => number;
+  requestId: string | undefined;
+  /** 入口の静的なファイル（/assets/<name>）の名前。無ければ入口の画面（/）。 */
+  asset?: string | undefined;
+};
+
+/**
+ * 入口（S0。GET・HEAD の /）を描く処理。Standard だけが渡す（表示用の生成物はこの処理の中だけで読む）。
+ * 共通の工場は表示用の照合のコードと生成物を import しない（Admin のバンドルに入れないため）。
+ */
+export type EntryHandler = (req: Request, ctx: EntryContext) => Promise<Response>;
+
 /** 階層ごとの部品。env から作る。 */
 export type TierPart = {
   signer: TokenSigner;
@@ -82,6 +102,8 @@ export type PortalWorkerSpec<Env extends PortalEnv> = {
   tier: Tier;
   /** true: チームのパス以外を、env を読む前（処理の最初）に 404 にする。入口（/）も持たない。 */
   teamPathOnly?: boolean;
+  /** 入口（/）の画面。渡さなければ入口は 404。 */
+  serveEntry?: EntryHandler;
   /** 階層ごとの env の検査と部品の作成。誤りは EnvError（種別だけ）で投げる。 */
   buildTier(env: Env, config: WorkerConfig): Promise<TierPart> | TierPart;
 };
@@ -227,8 +249,18 @@ export function createPortalWorker<Env extends PortalEnv>(
     const { config } = rt;
     const loginDisabled = isLoginDisabled(env.LOGIN_DISABLED);
     if (portal.kind === "entry") {
+      // 入口は Standard だけ（Admin は処理の最初で 404）。静的なファイルは許可リストの名前だけ
+      if (!spec.serveEntry || (portal.asset !== undefined && !isAssetName(portal.asset)))
+        return htmlResponse(errorPage("not_found", { requestId, mark }), 404);
       if (!isRead) return methodNotAllowed("GET, HEAD", requestId, mark);
-      return htmlResponse(placeholderPage("AWS ログイン", undefined, mark));
+      return spec.serveEntry(req, {
+        config,
+        accessTeamDomain: rt.accessTeamDomain,
+        getAccessKey: o.getAccessKey,
+        now,
+        requestId,
+        asset: portal.asset,
+      });
     }
     const { team, teamBase, teamOrigin, page } = portal;
     const errOpts = { requestId, teamBase, supportUrl: config.portal.supportUrl, mark };
@@ -255,9 +287,11 @@ export function createPortalWorker<Env extends PortalEnv>(
       return htmlResponse(errorPage(out.code, errOpts), out.status);
     }
 
+    if (page === "asset" && !isAssetName(portal.asset ?? ""))
+      return htmlResponse(errorPage("not_found", errOpts), 404);
     if (!isRead) return methodNotAllowed("GET, HEAD", requestId, mark);
 
-    // チームのパスの画面（GET /login・/expired・S1・S2・S3）は、Access JWT を確かめてから描く（G-6 の原則。
+    // チームのパスの画面（GET /login・/expired・S1・S2・S3）と静的なファイルは、Access JWT を確かめてから描く（G-6 の原則。
     // JWT がない・AUD が未知・チームが違えば断る。S2 の CSRF トークンにも aud と sub が要る）
     const access = await verifyConsoleAccess(
       req.headers.get("Cf-Access-Jwt-Assertion"),
@@ -270,24 +304,51 @@ export function createPortalWorker<Env extends PortalEnv>(
     );
     if (!access.ok) return htmlResponse(errorPage(access.code, errOpts), access.status);
 
+    if (page === "asset") return assetResponse(portal.asset ?? "") as Response;
     if (page === "login") return htmlResponse(loginGetPage(teamBase, mark));
     if (page === "expired") return htmlResponse(expiredPage(teamBase, mark));
 
-    if (page === "list") return htmlResponse(placeholderPage("一覧", undefined, mark));
+    const params = new URL(req.url).searchParams;
+    if (page === "list") {
+      const q = (params.get("q") ?? "").slice(0, QUERY_MAX);
+      return htmlResponse(listPage({ config, tier, team, teamBase, q, mark }));
+    }
     const account = config.accounts.find((a) => a.accountId === portal.accountId);
     const roles = (account?.roles ?? []).flatMap((r) => {
       const role = config.roles.find((x) => x.name === r.role);
       return role && r.teams.includes(team) ? [{ role, sessionSeconds: r.sessionSeconds }] : [];
     });
     if (!account || roles.length === 0) return htmlResponse(errorPage("not_listed", errOpts), 404);
-    if (page === "cli") return htmlResponse(placeholderPage("CLI で使う", `${teamBase}/`, mark));
+    const roleParam = params.get("role") ?? undefined;
+    const newCsrf = () =>
+      createCsrfToken(rt.csrfKey, { aud: access.aud, sub: access.sub }, Math.floor(now() / 1000));
 
-    const roleParam = new URL(req.url).searchParams.get("role") ?? undefined;
-    const csrf = await createCsrfToken(
-      rt.csrfKey,
-      { aud: access.aud, sub: access.sub },
-      Math.floor(now() / 1000),
-    );
+    if (page === "cli") {
+      // ロールの指定があればこのチームのロールであること。無ければ 1 つならそれ、複数なら選ぶリンク
+      const selected =
+        roleParam !== undefined
+          ? roles.find((r) => r.role.name === roleParam)
+          : roles.length === 1
+            ? roles[0]
+            : undefined;
+      if (roleParam !== undefined && !selected)
+        return htmlResponse(errorPage("not_listed", errOpts), 404);
+      return htmlResponse(
+        cliPage({
+          config,
+          tier,
+          team,
+          teamBase,
+          account,
+          roles,
+          selected,
+          csrf: selected ? await newCsrf() : undefined,
+          mark,
+        }),
+      );
+    }
+
+    const csrf = await newCsrf();
     return htmlResponse(
       loginFormPage({
         config,
@@ -313,7 +374,8 @@ export function createPortalWorker<Env extends PortalEnv>(
         console.error("console: unexpected error");
         res = misconfigured(req.headers.get("Cf-Ray") ?? undefined, mark);
       }
-      const secured = withSecurityHeaders(res);
+      // 静的なファイル（CSS・JS。秘密を含まない）だけはキャッシュを許す。それ以外は no-store
+      const secured = withSecurityHeaders(res, isStaticResponse(res) ? "static" : "page");
       return req.method === "HEAD"
         ? new Response(null, { status: secured.status, headers: secured.headers })
         : secured;

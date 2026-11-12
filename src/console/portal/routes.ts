@@ -5,10 +5,11 @@
 import { ACCOUNT_ID_RE } from "../constants";
 import type { WorkerConfig } from "../types";
 
-export type TeamPage = "list" | "account" | "cli" | "login" | "expired";
+export type TeamPage = "list" | "account" | "cli" | "login" | "expired" | "asset";
 
 export type PortalRoute =
-  | { kind: "entry" }
+  /** 入口（/）と、入口の静的なファイル（/assets/<name>） */
+  | { kind: "entry"; asset?: string }
   | {
       kind: "team";
       team: string;
@@ -18,11 +19,20 @@ export type PortalRoute =
       teamOrigin: string;
       page: TeamPage;
       accountId?: string;
+      /** page が asset のときのファイル名（許可リストの検査は呼び出し側）。 */
+      asset?: string;
     }
   | { kind: "not_found" };
 
-function teamRest(rest: string): { page: TeamPage; accountId?: string } | undefined {
+/** 静的なファイルの名前の形（中身の許可リストは portal/assets.ts）。 */
+const ASSET_PATH_RE = /^\/assets\/([a-z][a-z0-9-]*\.(?:js|css))$/;
+
+function teamRest(
+  rest: string,
+): { page: TeamPage; accountId?: string; asset?: string } | undefined {
   if (rest === "" || rest === "/") return { page: "list" };
+  const asset = ASSET_PATH_RE.exec(rest);
+  if (asset) return { page: "asset", asset: asset[1] as string };
   if (rest === "/login") return { page: "login" };
   if (rest === "/expired") return { page: "expired" };
   const m = /^\/a\/([^/]+)(\/cli)?$/.exec(rest);
@@ -39,9 +49,14 @@ export function matchPortal(url: URL, config: WorkerConfig): PortalRoute | undef
   const origin = new URL(config.portal.origin);
   const teams = new Set(config.teams.map((t) => t.name));
 
+  const entry = (): PortalRoute => {
+    if (url.pathname === "/") return { kind: "entry" };
+    const asset = ASSET_PATH_RE.exec(url.pathname);
+    return asset ? { kind: "entry", asset: asset[1] as string } : { kind: "not_found" };
+  };
+
   if (config.portal.routing === "host") {
-    if (url.host === origin.host)
-      return url.pathname === "/" ? { kind: "entry" } : { kind: "not_found" };
+    if (url.host === origin.host) return entry();
     const suffix = `.${origin.host}`;
     if (!url.host.endsWith(suffix)) return undefined;
     const team = url.host.slice(0, -suffix.length);
@@ -58,9 +73,8 @@ export function matchPortal(url: URL, config: WorkerConfig): PortalRoute | undef
   }
 
   if (url.host !== origin.host) return undefined;
-  if (url.pathname === "/") return { kind: "entry" };
   const m = /^\/t\/([^/]+)(\/.*)?$/.exec(url.pathname);
-  if (!m) return { kind: "not_found" };
+  if (!m) return entry();
   const team = m[1] as string;
   if (!teams.has(team)) return { kind: "not_found" };
   const rest = teamRest(m[2] ?? "");

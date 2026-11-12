@@ -227,4 +227,16 @@ describe("Admin の Worker のバンドル", () => {
     expect(bundle).not.toContain("list_aws_profiles");
     expect(bundle).not.toContain("awsbridge:profiles");
   });
+
+  it("表示用の生成物・照合のコード（入口の一覧）を持たない（Object ID・照合のコードの文字列が無い）", () => {
+    // 陽性の対照は console-standard-bundle.test.ts（Standard のバンドルには同じ照合のコードの文字列と Object ID がある）
+    expect(bundle).not.toContain("membership unknown");
+    expect(bundle).not.toContain("no_group_table");
+    for (const n of [1, 2, 3, 4, 5]) {
+      const id = `00000000-0000-0000-0000-00000000000${n}`;
+      expect(bundle, id).not.toContain(id);
+    }
+    // 陽性の対照: チームの画面の静的なファイルは入っている
+    expect(inputs).toContain("src/console/portal/assets.ts");
+  });
 });
