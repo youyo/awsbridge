@@ -4,8 +4,10 @@
 //
 //   1. MCP（src/index.ts）     コンソールログインのコード（src/console/・scripts/・human）・固定の名前・生成物の値が入らない（cto の D2）
 //   2. Standard                Admin の固有値（Admin の AUD・入口の AUD・issuer・ロールのパスと名前と ARN・Admin の鍵の参照）が入らない。
-//                              表示用の Admin の情報（チーム名・Object ID）だけは入る（ADR の P1'・U2）。MCP のコード・設定の解析器と生成器・scripts/ も入らない
-//   3. Admin                   Standard の行・Standard の AUD・issuer・署名の実装（sign-standard・oidc・keys）・CONSOLE_SIGNING_KEYS・
+//                              表示用の Admin の情報（チーム名・Object ID）だけは入る（ADR の P1'・U2）。MCP のコード・設定の解析器と生成器・scripts/ も入らない。
+//                              文字列の秘密鍵を読む経路（旧 parseSigningKeys・CONSOLE_SIGNING_KEYS・src/keys.ts・src/oidc.ts）と試験用の鍵を作るエントリも入らず、
+//                              境界ごとの secret_key の署名（共通の signing/ と Standard の鍵の参照）は入る（cto の決裁「Standard も secret_key に揃える」）
+//   3. Admin                   Standard の行・Standard の AUD・issuer・署名の実装（sign-standard・oidc・keys）・Standard の鍵の参照・
 //                              文字列の鍵を読み込む経路・表示用（display）・試験用の鍵を作るエントリ（fixtures）が入らない。
 //                              Admin の署名（secret_key の CryptoKey と WebCrypto）と Admin の issuer の文書は入る（X1 の決裁）
 //
@@ -54,6 +56,17 @@ const ADMIN_KEY_REFS = ["ADMIN_KEY_", "ADMIN_CURRENT_KEY", "ADMIN_PUBLIC_JWKS"];
 /** 試験用の鍵を作るエントリ（E2E）にだけある文字列。本番の Admin のバンドルに入らない。 */
 const TEST_KEY_ENTRY = "test/e2e/fixtures/console-admin-key-entry.ts";
 const TEST_KEY_MARKERS = ["E2E_KEY_MODE", "generateKey"];
+/** Standard の鍵の参照（バインディングの名前の接頭辞と vars の名前）。Standard のバンドルにだけ入る。 */
+const STANDARD_KEY_REFS = ["STANDARD_KEY_", "STANDARD_CURRENT_KEYS", "STANDARD_PUBLIC_JWKS"];
+/** Standard の試験用の鍵を作るエントリ（E2E。本物のエントリも含む）。 */
+const STD_TEST_KEY_ENTRY = "test/e2e/fixtures/console-standard-entry.ts";
+/** 文字列の秘密鍵（JWK）を署名鍵に読み込む経路の印（MCP 用の Worker だけが持つ）。 */
+const STRING_KEY_PATHS = ["src/keys.ts", "src/oidc.ts"];
+const STRING_KEY_MARKERS = [
+  "parseSigningKeys",
+  "CONSOLE_SIGNING_KEYS",
+  "signing keys must be JSON",
+];
 
 type Built = { inputs: string[]; bundle: string };
 
@@ -67,6 +80,7 @@ let mcp: Built;
 let standard: Built;
 let admin: Built;
 let adminTestEntry: Built;
+let standardTestEntry: Built;
 
 /** 生成物の値のうち、片方の階層にだけあるもの。 */
 let ADMIN_ONLY: string[] = [];
@@ -196,6 +210,12 @@ beforeAll(() => {
     main: join(root, adminWrangler.main as string),
     alias: { "awsbridge:console-worker-admin": adminJson },
   });
+  // 陽性の対照: 試験用の鍵を作るエントリ（E2E 用）のバンドル。本番の Standard のバンドルとの差が見えることを確かめる
+  standardTestEntry = bundleOf("standard-test-entry", {
+    ...stdWrangler,
+    main: join(root, STD_TEST_KEY_ENTRY),
+    alias: { "awsbridge:console-worker": standardJson, "awsbridge:console-display": displayJson },
+  });
   // 陽性の対照: 試験用の鍵を作るエントリ（E2E 用）のバンドル。本番の Admin のバンドルとの差が見えることを確かめる
   adminTestEntry = bundleOf("admin-test-entry", {
     ...adminWrangler,
@@ -320,6 +340,33 @@ describe("2. Standard の Worker のバンドルに Admin の固有値が入ら�
     expect(standard.inputs.filter((p) => p.startsWith("src/console/admin/"))).toEqual([]);
   });
 
+  it("陽性の対照: 境界ごとの secret_key の署名（共通の signing/・Standard の鍵の参照）は入っている", () => {
+    for (const p of [
+      "src/console/signing/key.ts",
+      "src/console/signing/jws.ts",
+      "src/console/signing/signer.ts",
+      "src/console/standard/key.ts",
+    ])
+      expect(standard.inputs, p).toContain(p);
+    for (const s of STANDARD_KEY_REFS) expect(standard.bundle, s).toContain(s);
+  });
+
+  it("文字列の秘密鍵（JWK）を署名鍵に読み込む経路が入らない（陽性の対照: MCP 用の Worker のバンドルにはある）", () => {
+    for (const p of STRING_KEY_PATHS) {
+      expect(mcp.inputs, p).toContain(p);
+      expect(standard.inputs, p).not.toContain(p);
+    }
+    expect(mcp.bundle).toContain("SIGNING_JWK");
+    for (const s of STRING_KEY_MARKERS) expect(standard.bundle, s).not.toContain(s);
+  });
+
+  it("試験用の鍵を作るエントリ（fixtures）が入らない（陽性の対照: そのエントリのバンドルには入っている）", () => {
+    expect(standardTestEntry.inputs).toContain(STD_TEST_KEY_ENTRY);
+    expect(standardTestEntry.bundle).toContain("E2E_KEY_MODE");
+    expect(standard.inputs.filter((p) => p.startsWith("test/"))).toEqual([]);
+    expect(standard.bundle).not.toContain("E2E_KEY_MODE");
+  });
+
   it("表示用の生成物（入口の一覧）は入っていて、表示用の Admin の情報（チーム名・Object ID）だけを持つ", () => {
     expect(has(standard.inputs, "display.standard.json")).toHaveLength(1);
     expect(standard.inputs).toContain("src/console/display/entry.ts");
@@ -362,8 +409,9 @@ describe("3. Admin の Worker のバンドルに Standard の行・署名の実�
     for (const p of [
       "src/console/admin/sign-admin.ts",
       "src/console/admin/key.ts",
-      "src/console/admin/jws.ts",
       "src/console/admin/issuer.ts",
+      "src/console/signing/jws.ts",
+      "src/console/signing/signer.ts",
     ])
       expect(admin.inputs, p).toContain(p);
     for (const s of ADMIN_KEY_REFS) expect(admin.bundle, s).toContain(s);
@@ -379,11 +427,20 @@ describe("3. Admin の Worker のバンドルに Standard の行・署名の実�
     for (const s of TEST_KEY_MARKERS) expect(admin.bundle, s).not.toContain(s);
   });
 
-  it("文字列の鍵（JWK）を署名鍵に読み込む経路が入らない（陽性の対照: Standard のバンドルにはある）", () => {
-    for (const s of ["signing keys must be JSON", "parseSigningKeys"]) {
+  it("文字列の鍵（JWK）を署名鍵に読み込む経路が入らない（陽性の対照: MCP 用の Worker のバンドルにはある）", () => {
+    for (const p of STRING_KEY_PATHS) {
+      expect(mcp.inputs, p).toContain(p);
+      expect(admin.inputs, p).not.toContain(p);
+    }
+    for (const s of STRING_KEY_MARKERS) expect(admin.bundle, s).not.toContain(s);
+  });
+
+  it("Standard の鍵の参照（バインディングの名前・vars）が入らない（陽性の対照: Standard のバンドルにはある）", () => {
+    for (const s of STANDARD_KEY_REFS) {
       expect(standard.bundle, s).toContain(s);
       expect(admin.bundle, s).not.toContain(s);
     }
+    expect(admin.inputs).not.toContain("src/console/standard/key.ts");
   });
 
   it("実行時の外部の依存物は jose だけで、版は package.json で固定している", () => {
@@ -419,7 +476,7 @@ describe("3. Admin の Worker のバンドルに Standard の行・署名の実�
       expect(admin.bundle, s).not.toContain(s);
   });
 
-  it("Standard の署名の実装・OIDC・鍵の生成・CONSOLE_SIGNING_KEYS の参照・Standard の issuer の文書が入らない", () => {
+  it("Standard の署名の実装・OIDC・鍵の生成・旧い CONSOLE_SIGNING_KEYS の参照・Standard の issuer の文書が入らない", () => {
     for (const p of [
       "src/console/issue/sign-standard.ts",
       "src/oidc.ts",

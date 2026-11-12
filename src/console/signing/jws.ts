@@ -1,6 +1,6 @@
-// コンソールログインの Admin の署名: RS256 の JWS（JWT）を WebCrypto だけで組む・確かめる（外部のライブラリに頼らない。X1 の決裁 (d)）。
+// コンソールログインの署名（Admin と Standard に共通）: RS256 の JWS（JWT）を WebCrypto だけで組む・確かめる（外部のライブラリに頼らない。X1 の決裁 (d)）。
 // 鍵は取り出せない CryptoKey（Workers の secret_key 型のバインディング）。鍵の中身には触れない。
-// 自己検証（verifyJws）に使う公開鍵は vars の公開鍵 JWK（admin/key.ts の parsePublicJwks を通したもの）だけで、usages は verify だけ。
+// 自己検証（verifyJws）に使う公開鍵は vars の公開鍵 JWK（signing/key.ts の readPublicJwks を通したもの）だけで、usages は verify だけ。
 // Worker に入るので node:* を import しない。
 import { base64url, type PublicJwk, RS256_ALGORITHM } from "./key";
 

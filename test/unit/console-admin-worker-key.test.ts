@@ -530,18 +530,34 @@ describe("デプロイ後の確認: GET <team-base>/key-check（Access の検証
     ).toBe(405);
   });
 
-  it("Standard の Worker には無い（JWT の検証の前に 404）", async () => {
+  it("Standard の Worker の key-check は Standard の境界の鍵だけを返し、Admin の鍵・vars を見ない（Admin の JWT は通らない）", async () => {
     const std = createStandardWorker(standardConfig(), {
       getAccessKey: h.getAccessKey,
       fetch: h.fetch,
     });
-    const jwt = await h.accessJwt({ aud: AUDS.teams.infra as string });
-    for (const headers of [{}, { "Cf-Access-Jwt-Assertion": jwt }]) {
-      const res = await std.fetch(
-        new Request(`https://${PORTAL_HOST}/t/infra/key-check`, { headers }),
-        baseEnv(h),
-      );
-      expect(res.status).toBe(404);
-    }
+    const env = baseEnv(h, keyedEnv());
+    const stdJwt = await h.accessJwt({ aud: AUDS.teams.infra as string });
+    const res = await std.fetch(
+      new Request(`https://${PORTAL_HOST}/t/infra/key-check`, {
+        headers: { "Cf-Access-Jwt-Assertion": stdJwt },
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(Object.keys((JSON.parse(text) as { boundaries: object }).boundaries).sort()).toEqual([
+      "managed",
+      "partner:partner-x",
+    ]);
+    expect(text).not.toContain(a.kid);
+    expect(text).not.toContain("ADMIN");
+    const adminJwt = await h.accessJwt({ aud: ADMIN_AUD });
+    const denied = await std.fetch(
+      new Request(`https://${PORTAL_HOST}/t/infra/key-check`, {
+        headers: { "Cf-Access-Jwt-Assertion": adminJwt },
+      }),
+      env,
+    );
+    expect(denied.status).toBe(403);
   });
 });

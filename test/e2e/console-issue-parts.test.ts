@@ -3,7 +3,7 @@
 // 実 AWS・Cloudflare は呼ばない。9 段のうち 8 段目と 9 段目の部品だけを順に呼ぶ（Worker 本体は PR4）。
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { importJWK, type JWK, jwtVerify } from "jose";
+import { importJWK, jwtVerify } from "jose";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AUDIENCE, UUID_RE } from "../../src/console/constants";
 import { ISSUE_ERRORS, stsErrorKindToCode } from "../../src/console/issue/errors";
@@ -17,10 +17,10 @@ import {
 } from "../../src/console/issue/federation";
 import { resolveIdentity } from "../../src/console/issue/identity";
 import { createIssueRecord, maskIssueRecord } from "../../src/console/issue/record";
-import { createStandardSigner, parseSigningKeys } from "../../src/console/issue/sign-standard";
+import { createStandardSigner } from "../../src/console/issue/sign-standard";
 import { type IssueRow, unavailableSigner } from "../../src/console/issue/signer";
-import { generateSigningJwk, publicJwkOf } from "../../src/keys";
 import { assumeRoleWithWebIdentityDetailed, StsError } from "../../src/sts";
+import { makeStandardKey, type TestKey } from "../unit/console-standard-harness";
 
 const ISSUER = "https://idp.example.test/std";
 const ACCESS_KEY_ID = ["ASIA", "E".repeat(16)].join("");
@@ -35,7 +35,8 @@ let stsMode: "ok" | "denied";
 let servers: Server[] = [];
 let stsUrl = "";
 let signinUrl = "";
-let keyJwk: JWK;
+// 署名鍵は本番の secret_key と同じ形（取り出せない CryptoKey）
+let key: TestKey;
 
 const readBody = (req: IncomingMessage) =>
   new Promise<string>((resolve) => {
@@ -54,7 +55,7 @@ const listen = (s: Server) =>
   });
 
 beforeAll(async () => {
-  keyJwk = await generateSigningJwk();
+  key = await makeStandardKey();
   const sts = createServer(async (req, res) => {
     seen.sts.push(new URLSearchParams(await readBody(req)));
     if (stsMode === "denied") {
@@ -89,6 +90,13 @@ beforeEach(() => {
   stsMode = "ok";
 });
 
+const standardKeyOf = (k: TestKey) => ({
+  issuer: ISSUER,
+  current: { binding: k.binding, kid: k.kid },
+  publicJwk: k.publicJwk,
+  key: k.privateKey,
+});
+
 const row: IssueRow = {
   team: "infra",
   boundary: "managed",
@@ -109,7 +117,8 @@ describe("発行の部品を通しで（擬似の STS・サインイン）", () 
     if (!resolved.ok) return;
 
     const signer = createStandardSigner({
-      keys: parseSigningKeys(JSON.stringify({ managed: keyJwk })),
+      boundaries: { managed: standardKeyOf(key) },
+      log: () => {},
     });
     const signed = await signer.sign({ identity, resolved: resolved.value, row });
     expect(signed.ok).toBe(true);
@@ -135,7 +144,7 @@ describe("発行の部品を通しで（擬似の STS・サインイン）", () 
     // 擬似の STS に届いた JWT を、公開鍵でその場で検証する（AWS が見る claim と同じ）
     const { payload } = await jwtVerify(
       form.get("WebIdentityToken") as string,
-      await importJWK(await publicJwkOf(keyJwk), "RS256"),
+      await importJWK(key.publicJwk, "RS256"),
       { issuer: ISSUER, audience: AUDIENCE },
     );
     expect("azp" in payload).toBe(false);
@@ -231,7 +240,10 @@ describe("発行の部品を通しで（擬似の STS・サインイン）", () 
 
   it("STS が AccessDenied のときは StsError（forbidden）→ sts_denied（403）", async () => {
     stsMode = "denied";
-    const signer = createStandardSigner({ keys: { managed: keyJwk } });
+    const signer = createStandardSigner({
+      boundaries: { managed: standardKeyOf(key) },
+      log: () => {},
+    });
     const identity = { sub: "s", email: "bob@example.com" };
     const resolved = resolveIdentity(identity, "email");
     if (!resolved.ok) throw new Error("fixture");

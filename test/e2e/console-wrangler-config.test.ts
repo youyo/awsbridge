@@ -48,16 +48,35 @@ describe("wrangler.console-standard.jsonc（設定の例）", () => {
     expect(Object.keys(vars).sort()).toEqual([
       "ACCESS_TEAM_DOMAIN",
       "LOGIN_DISABLED",
+      "STANDARD_CURRENT_KEYS",
+      "STANDARD_PUBLIC_JWKS",
       "STS_REGION",
     ]);
     expect(vars.ACCESS_TEAM_DOMAIN).toMatch(/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/);
     expect(vars.LOGIN_DISABLED).toBe("false");
     const raw = readFileSync(join(root, file), "utf8");
     // secret は名前だけ（説明のコメント）で、値はない
-    expect(raw).toContain("CONSOLE_SIGNING_KEYS");
     expect(raw).toContain("CONSOLE_CSRF_KEY");
-    expect(vars).not.toHaveProperty("CONSOLE_SIGNING_KEYS");
     expect(vars).not.toHaveProperty("CONSOLE_CSRF_KEY");
+  });
+
+  it("互換フラグを持たない（nodejs_compat・webcrypto_modern_algorithms を有効にしない）", () => {
+    expect(config).not.toHaveProperty("compatibility_flags");
+    const raw = readFileSync(join(root, file), "utf8");
+    expect(raw).not.toMatch(/"nodejs_compat"|"webcrypto_modern_algorithms"/);
+  });
+
+  it("署名鍵は境界ごとの secret_key 型のバインディング（STANDARD_KEY_<16 進>）で、文字列の秘密鍵の secret（CONSOLE_SIGNING_KEYS）は使わない。例には鍵の値を書かず、今の鍵と公開鍵の vars は空（鍵が無ければ 500）", () => {
+    const raw = readFileSync(join(root, file), "utf8");
+    expect(raw).toContain("secret_key");
+    expect(raw).toContain("STANDARD_KEY_");
+    expect(raw).toContain("mise run console:standard-key:put");
+    expect(raw).not.toContain("CONSOLE_SIGNING_KEYS");
+    expect(raw).not.toMatch(/KMS/);
+    expect(raw).not.toMatch(/"n"\s*:/);
+    const vars = config.vars as Record<string, string>;
+    expect(vars.STANDARD_CURRENT_KEYS).toBe("");
+    expect(vars.STANDARD_PUBLIC_JWKS).toBe("");
   });
 });
 

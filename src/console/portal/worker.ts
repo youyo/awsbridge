@@ -103,10 +103,10 @@ export type TierPart = {
   accessMaxAgeSeconds?: number;
   /**
    * デプロイ後の確認（GET <team-base>/key-check）。Access JWT の検証と回数の制限（LOGIN_RATE_LIMITER、
-   * キー admin-key-check:<sub>）の後ろで呼ぶ。Admin だけ。
-   * 渡さない階層（Standard）は、この経路を JWT の検証の前に 404 にする。
+   * キー <階層>-key-check:<sub>。Admin は admin-key-check:、Standard は standard-key-check:）の後ろで呼ぶ。
+   * team はパスのチーム（Access JWT の検証済み）。渡さない階層は、この経路を JWT の検証の前に 404 にする。
    */
-  keyCheck?: () => Promise<unknown>;
+  keyCheck?: (ctx: { team: string }) => Promise<unknown>;
 };
 
 export type PortalWorkerSpec<Env extends PortalEnv> = {
@@ -309,7 +309,7 @@ export function createPortalWorker<Env extends PortalEnv>(
 
     if (page === "asset" && !isAssetName(portal.asset ?? ""))
       return htmlResponse(errorPage("not_found", errOpts), 404);
-    // デプロイ後の確認は持つ階層（Admin）だけ。持たない階層は JWT の検証の前に 404
+    // デプロイ後の確認は持つ階層だけ。持たない階層は JWT の検証の前に 404
     if (page === "key-check" && !rt.part.keyCheck)
       return htmlResponse(errorPage("not_found", errOpts), 404);
     if (!isRead) return methodNotAllowed("GET, HEAD", requestId, mark);
@@ -337,12 +337,13 @@ export function createPortalWorker<Env extends PortalEnv>(
         return htmlResponse(errorPage("server_misconfigured", errOpts), 500);
       let allowed: boolean;
       try {
-        allowed = (await limiter.limit({ key: `admin-key-check:${access.sub}` })).success === true;
+        allowed =
+          (await limiter.limit({ key: `${spec.tier}-key-check:${access.sub}` })).success === true;
       } catch {
         return htmlResponse(errorPage("temporarily_unavailable", errOpts), 503);
       }
       if (!allowed) return htmlResponse(errorPage("rate_limited", errOpts), 429);
-      return new Response(JSON.stringify(await rt.part.keyCheck()), {
+      return new Response(JSON.stringify(await rt.part.keyCheck({ team })), {
         headers: { "Content-Type": "application/json" },
       });
     }

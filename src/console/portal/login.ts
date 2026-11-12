@@ -1,7 +1,7 @@
 // コンソールログイン: `POST <team-base>/login` の検査と発行（docs/specs/console-login-portal.md §9.3・§9.4・§10.3）。
 // 発行の経路はこのモジュールに閉じる（ルーター・画面・入口の表示用の照合を import しない。§9.10 の U2 の条件）。
 // 階層（Standard / Admin）に共通で、違いは署名の部品（signer）と Access JWT の経過時間の上限（Admin だけ）。
-// Standard は境界ごとの手元の鍵、Admin は Workers の secret_key 型の取り出せない鍵（鍵が無ければ 503 signing_unavailable）。
+// Standard（境界ごと）も Admin も Workers の secret_key 型の取り出せない鍵（鍵が使えなければ 503 signing_unavailable）。
 //
 // 段の順（司令塔の決定。§9.3 の「本文の前に 1〜3、STS の前に 4〜8」は満たす）:
 //   停止スイッチ → 要求の検査（Origin・Sec-Fetch-Site・Content-Type）→ Access JWT（aud ちょうど 1 つ・入口の AUD は受けない）

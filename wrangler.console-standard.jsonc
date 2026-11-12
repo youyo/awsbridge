@@ -10,13 +10,23 @@
   //   Admin の生成物（worker.admin.json）はここでは読まない。
   // 静的なファイル（/assets・/t/<team>/assets の CSS・JS）はバンドルに埋め込み、Worker から返す（Workers の静的アセットは使わない。
   //   Worker より先に返り、Access の検証と issuer のホストの 404 を飛ばすため）。
-  // secret（wrangler secret put。値はここに書かない）:
-  //   CONSOLE_SIGNING_KEYS  境界の名前 → 秘密鍵 JWK（RS256・2048 bit 以上）の JSON。例 {"managed": {...}, "partner:partner-x": {...}}
-  //   CONSOLE_CSRF_KEY      CSRF トークンの HMAC の鍵（32 バイト以上のランダムな文字列。署名鍵と別）
+  // 互換フラグは付けない（nodejs_compat は要らない。公開鍵は vars で渡すので webcrypto_modern_algorithms も使わない）。
+  //
+  // 署名鍵: 境界ごとの Workers の secret_key 型のバインディング（取り出せない CryptoKey。RSASSA-PKCS1-v1_5 / SHA-256・usages sign）。
+  //   名前は STANDARD_KEY_<kid の先頭 8 バイトの大文字の 16 進>（kid から決まる。差し替えは必ず別の名前）。値はこのファイルにもどこにも書かない。
+  //   wrangler には secret_key を入れるコマンドが無いので、手元で mise run console:standard-key:put を人が実行して Cloudflare API で入れる
+  //   （鍵はメモリの中で作り、ファイル・CI・ログを通さない。README の「コンソールログインの Standard の署名鍵」）。
+  //   バインディングは wrangler deploy・wrangler secret put・secret bulk のあとも残る（API 側が保つ。PoC X1-(h) で測定）。
+  //   ダッシュボード・Terraform で Worker のバインディングを管理しない（全量で送る経路は測っていない）。
+  //   鍵が無い・使えない・公開鍵と合わないときは、その境界の発行が 503 signing_unavailable（STS を呼ばない）。
+  // secret（mise run console:secrets:standard。値はここに書かない）:
+  //   CONSOLE_CSRF_KEY      CSRF トークンの HMAC の鍵（32 バイト以上のランダムな文字列。署名鍵と別。secret_text のまま）
   // vars:
   //   ACCESS_TEAM_DOMAIN    Access のチームドメイン（https://<team>.cloudflareaccess.com）
   //   LOGIN_DISABLED        停止スイッチ。"false" 以外（"true" など）にすると発行を止める（503 login_disabled）
   //   STS_REGION            STS の地域の endpoint（sts.<region>.amazonaws.com）。CloudTrail の AssumeRoleWithWebIdentity はこのリージョンに残る
+  //   STANDARD_CURRENT_KEYS 境界の名前 → 今の署名鍵（{"binding":"STANDARD_KEY_…","kid":"…"}）の JSON 文字列。空・壊れていればどの経路も 500
+  //   STANDARD_PUBLIC_JWKS  境界の名前 → 公開鍵 JWK の配列（新旧 2 つまで）の JSON 文字列。その境界の issuer の JWKS と、署名の自己検証に使う
   // ratelimits: 利用者（Access の sub）ごとの発行の回数の制限。値は仮の既定（G3 で確定）。namespace_id はアカウント内で一意の数字の文字列。
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "awsbridge-console-standard",
@@ -36,7 +46,9 @@
   "vars": {
     "ACCESS_TEAM_DOMAIN": "https://example.cloudflareaccess.com",
     "LOGIN_DISABLED": "false",
-    "STS_REGION": "us-east-1"
+    "STS_REGION": "us-east-1",
+    "STANDARD_CURRENT_KEYS": "",
+    "STANDARD_PUBLIC_JWKS": ""
   },
   "ratelimits": [
     {

@@ -18,17 +18,32 @@ import {
   type PublicJwk,
   parseCurrentKey,
   parsePublicJwks,
-  RS256_ALGORITHM,
 } from "../../src/console/admin/key";
 import { readWorkerConfig } from "../../src/console/portal/worker-config";
 import type { WorkerConfig } from "../../src/console/types";
+import {
+  ACCOUNT_RE,
+  apiBaseFromVar,
+  cfApi as cfApiCommon,
+  cfErrors,
+  forgetPrivate,
+  generateRsa,
+  getJson,
+  isObj,
+  jwksKids,
+  keyCheckUrl,
+  PRIVATE_MEMBERS,
+  putSucceeded,
+  readJsonc,
+  SCRIPT_RE,
+  secretKeyBody,
+  secretNames,
+  type ToolDeps,
+} from "./key-tool-common";
 
-export const CF_API_BASE = "https://api.cloudflare.com/client/v4";
-const LOOPBACK_RE = /^http:\/\/127\.0\.0\.1:\d{1,5}$/;
-const ACCOUNT_RE = /^[0-9a-f]{32}$/;
-const SCRIPT_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+export { CF_API_BASE, readJsonc } from "./key-tool-common";
+
 const BINDING_RE = /^ADMIN_KEY_[0-9A-F]{16}$/;
-const PRIVATE_MEMBERS = ["d", "p", "q", "dp", "dq", "qi"] as const;
 
 export type Settings = {
   wranglerConfigPath: string;
@@ -41,32 +56,11 @@ export type Settings = {
   adminConfig?: WorkerConfig | undefined;
 };
 
-export type Deps = {
-  fetch: typeof fetch;
-  /** Cloudflare API のトークン（環境変数か wrangler の OAuth。メモリの中だけで使う）。 */
-  token: () => Promise<string>;
-  print: (line: string) => void;
-  /** 試験用。省略すると WebCrypto で RSA 2048 を作る。 */
-  generateKeyPair?: () => Promise<CryptoKeyPair>;
-};
-
-/** 行頭の // のコメントだけを外して JSON として読む（wrangler の設定の例は行の途中にコメントを書かない）。 */
-export function readJsonc(text: string): Record<string, unknown> {
-  return JSON.parse(
-    text
-      .split("\n")
-      .filter((l) => !/^\s*\/\//.test(l))
-      .join("\n"),
-  ) as Record<string, unknown>;
-}
+export type Deps = ToolDeps;
 
 /** Cloudflare API の宛先。上書きは手元（http://127.0.0.1:<port>）の試験用だけ（トークンを外へ送らない）。 */
 export function apiBaseFrom(env: Record<string, string | undefined>): string {
-  const v = env.AWSBRIDGE_CONSOLE_ADMIN_CF_API_BASE;
-  if (v === undefined || v === "") return CF_API_BASE;
-  if (!LOOPBACK_RE.test(v))
-    throw new Error("AWSBRIDGE_CONSOLE_ADMIN_CF_API_BASE は試験用で、http://127.0.0.1:<port> だけ");
-  return v;
+  return apiBaseFromVar(env, "AWSBRIDGE_CONSOLE_ADMIN_CF_API_BASE");
 }
 
 /**
@@ -130,74 +124,8 @@ const secretsUrl = (s: Settings, name?: string) =>
     name === undefined ? "" : `/${name}`
   }`;
 
-type ApiResult = { status: number; json: unknown };
-
-async function cfApi(
-  s: Settings,
-  d: Deps,
-  token: string,
-  method: string,
-  url: string,
-  body?: unknown,
-): Promise<ApiResult> {
-  const res = await d.fetch(url, {
-    method,
-    headers: {
-      authorization: `Bearer ${token}`,
-      ...(body === undefined ? {} : { "content-type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  let json: unknown;
-  try {
-    json = JSON.parse(await res.text());
-  } catch {
-    json = undefined;
-  }
-  void s;
-  return { status: res.status, json };
-}
-
-/** Cloudflare API のエラー（code と、短くした message）だけ。 */
-function cfErrors(json: unknown): string {
-  const errs = (json as { errors?: unknown })?.errors;
-  if (!Array.isArray(errs)) return "（エラーの本文なし）";
-  return errs
-    .map((e: { code?: unknown; message?: unknown }) => {
-      const msg = typeof e?.message === "string" ? e.message.slice(0, 200) : "";
-      return `${String(e?.code)} ${msg}`.trim();
-    })
-    .join("; ");
-}
-
-const isObj = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null && !Array.isArray(v);
-
-function secretKeyBody(name: string, jwk: JsonWebKey) {
-  const key_jwk: Record<string, string> = { kty: "RSA" };
-  for (const m of ["n", "e", ...PRIVATE_MEMBERS]) {
-    const v = (jwk as unknown as Record<string, unknown>)[m];
-    if (typeof v !== "string" || !/^[A-Za-z0-9_-]+$/.test(v))
-      throw new Error("RSA の秘密鍵 JWK が要る");
-    key_jwk[m] = v;
-  }
-  return {
-    name,
-    type: "secret_key",
-    format: "jwk",
-    algorithm: RS256_ALGORITHM,
-    usages: ["sign"],
-    key_jwk,
-  };
-}
-
-function generateRsa(): Promise<CryptoKeyPair> {
-  return crypto.subtle.generateKey(
-    { ...RS256_ALGORITHM, modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]) },
-    true,
-    ["sign", "verify"],
-  ) as Promise<CryptoKeyPair>;
-}
+const cfApi = (_s: Settings, d: Deps, token: string, method: string, url: string, body?: unknown) =>
+  cfApiCommon(d, token, method, url, body);
 
 const NEXT_STEPS = [
   "次の手順（README の「コンソールログインの Admin の署名鍵」）:",
@@ -251,10 +179,7 @@ export async function runPut(s: Settings, d: Deps, o: { yes: boolean }): Promise
 
     // 同じ名前が無いことを secret の一覧で確かめる（読めなければ入れない）
     const list = await cfApi(s, d, token, "GET", secretsUrl(s));
-    const names =
-      list.status === 200 && isObj(list.json) && Array.isArray(list.json.result)
-        ? list.json.result.map((x: unknown) => (isObj(x) ? x.name : undefined))
-        : undefined;
+    const names = secretNames(list);
     if (!names) {
       d.print(
         `[NG] secret の一覧を読めず、名前の有無を確かめられない（HTTP ${list.status}）。何もしていない`,
@@ -268,17 +193,7 @@ export async function runPut(s: Settings, d: Deps, o: { yes: boolean }): Promise
 
     body = secretKeyBody(name, jwk);
     const put = await cfApi(s, d, token, "PUT", secretsUrl(s), body);
-    const result = isObj(put.json) ? put.json.result : undefined;
-    const ok =
-      put.status >= 200 &&
-      put.status < 300 &&
-      isObj(put.json) &&
-      put.json.success === true &&
-      isObj(result) &&
-      Object.keys(result).sort().join(",") === "name,type" &&
-      result.name === name &&
-      result.type === "secret_key";
-    if (!ok) {
+    if (!putSucceeded(put, name)) {
       if (leaks(put.json))
         d.print(`[NG] PUT の応答に想定外の項目がある（HTTP ${put.status}。本文は出さない）`);
       else d.print(`[NG] PUT が失敗した（HTTP ${put.status}）: ${cfErrors(put.json)}`);
@@ -298,8 +213,7 @@ export async function runPut(s: Settings, d: Deps, o: { yes: boolean }): Promise
     return 0;
   } finally {
     // 秘密の成分の参照を外す（手元の写しを残さない）
-    if (jwk) for (const m of PRIVATE_MEMBERS) delete (jwk as unknown as Record<string, unknown>)[m];
-    if (body) body.key_jwk = {};
+    forgetPrivate(jwk, body);
     jwk = undefined;
   }
 }
@@ -339,10 +253,7 @@ export async function runRetire(
     return 1;
   }
   const served = await getJson(d, `${issuer}/.well-known/jwks.json`);
-  const servedKids =
-    served.status === 200 && isObj(served.json) && Array.isArray(served.json.keys)
-      ? served.json.keys.map((k: unknown) => (isObj(k) ? k.kid : undefined))
-      : undefined;
+  const servedKids = jwksKids(served);
   if (!servedKids) {
     d.print(
       `[NG] デプロイ済みの JWKS（${issuer}/.well-known/jwks.json）を取れない（HTTP ${served.status}）。消さない`,
@@ -371,33 +282,6 @@ function safeBindingName(kid: string): string | undefined {
     return bindingNameForKid(kid);
   } catch {
     return undefined;
-  }
-}
-
-/** key-check の URL（パス方式は <origin>/t/<team>/key-check、ホスト方式は https://<team>.<host>/key-check）。 */
-function keyCheckUrl(config: WorkerConfig, team: string): string {
-  const origin = new URL(config.portal.origin);
-  return config.portal.routing === "host"
-    ? `${origin.protocol}//${team}.${origin.host}/key-check`
-    : `${config.portal.origin}/t/${team}/key-check`;
-}
-
-async function getJson(d: Deps, url: string, headers: Record<string, string> = {}) {
-  try {
-    // リダイレクトは追わない（Access のログインへ飛ばされたら、その状態を失敗として出す。トークンを転送先へ送らない）
-    const res = await d.fetch(url, {
-      headers: { accept: "application/json", ...headers },
-      redirect: "manual",
-    });
-    let json: unknown;
-    try {
-      json = JSON.parse(await res.text());
-    } catch {
-      json = undefined;
-    }
-    return { status: res.status, json };
-  } catch {
-    return { status: 0, json: undefined };
   }
 }
 

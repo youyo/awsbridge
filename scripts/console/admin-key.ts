@@ -9,31 +9,10 @@
 //   AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG Admin の Worker の wrangler の設定（既定 wrangler.console-admin.jsonc）
 //   AWSBRIDGE_CONSOLE_OUT_DIR               生成物の置き場所（既定 .generated/console。check が worker.admin.json を読む）
 //   AWSBRIDGE_CONSOLE_ADMIN_ACCESS_TOKEN    check の key-check に使う Access のトークン（任意。cloudflared access token の値）
-import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { adminKeySettings, type Deps, runCheck, runPut, runRetire } from "./admin-key-lib";
-
-function wranglerOAuthToken(): string {
-  const env: NodeJS.ProcessEnv = { ...process.env, WRANGLER_SEND_METRICS: "false" };
-  delete env.CLOUDFLARE_API_TOKEN;
-  const r = spawnSync("pnpm", ["exec", "wrangler", "auth", "token", "--json"], {
-    env,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  if (r.status !== 0)
-    throw new Error("wrangler auth token が失敗した（pnpm exec wrangler login を確かめる）");
-  let token: unknown;
-  try {
-    token = (JSON.parse(r.stdout) as { token?: unknown }).token;
-  } catch {
-    token = undefined;
-  }
-  if (typeof token !== "string" || token === "")
-    throw new Error("wrangler auth token の出力に token が無い");
-  return token;
-}
+import { wranglerOAuthToken } from "./wrangler-oauth";
 
 async function main(): Promise<number> {
   const { values, positionals } = parseArgs({

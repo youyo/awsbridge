@@ -2,7 +2,9 @@
 // Admin の issuer のホスト（Standard の issuer・ポータルのホストと別。設定の検査 admin_issuer_host_shared・issuer_host_overlaps_portal）で、
 // <issuer>/.well-known/openid-configuration と <issuer>/.well-known/jwks.json の 2 つのパスだけを返す。それ以外は 404。
 // JWKS は vars ADMIN_PUBLIC_JWKS の公開鍵（新旧 2 つまで）だけ。秘密鍵（バインディング）には触れない。
-// Standard の OIDC の部品（src/oidc.ts。鍵の読み込みを含む）は import しない（Admin のバンドルに入れない）。discovery の形は同じにする。
+// MCP 用の OIDC の部品（src/oidc.ts。鍵の読み込みを含む）は import しない。discovery の形は Standard と共通（signing/issuer-doc.ts）。
+
+import { issuerDiscovery, issuerJwks } from "../signing/issuer-doc";
 import type { WorkerConfig } from "../types";
 import type { PublicJwk } from "./key";
 
@@ -37,18 +39,9 @@ export const isAdminIssuerHost = (url: URL, issuer: string): boolean =>
 
 /** discovery（Standard の issuer と同じ形。AWS の OIDC プロバイダーが読むのは issuer と jwks_uri）。 */
 export function adminDiscovery(issuer: string) {
-  return {
-    issuer,
-    jwks_uri: `${issuer}/.well-known/jwks.json`,
-    authorization_endpoint: `${issuer}/oauth/authorize`,
-    token_endpoint: `${issuer}/oauth/token`,
-    response_types_supported: ["id_token"],
-    subject_types_supported: ["public"],
-    id_token_signing_alg_values_supported: ["RS256"],
-    claims_supported: ["sub", "aud", "exp", "iat", "iss", "email"],
-  };
+  return issuerDiscovery(issuer);
 }
 
 export function adminJwks(keys: readonly PublicJwk[]): { keys: PublicJwk[] } {
-  return { keys: keys.map((k) => ({ ...k })) };
+  return issuerJwks(keys);
 }

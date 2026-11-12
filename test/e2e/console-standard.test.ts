@@ -4,7 +4,8 @@
 // 入口の身元のグループの取り方は未確定なので、本物のエントリ（normal）は全チームの S1 へのリンクに落ちる経路を通り、
 // 試験用のエントリの変数 E2E_IDENTITY_GROUPS を渡したもの（grouped）が所属するチームの行の経路を通る。
 // 設定はリポジトリの wrangler.console-standard.jsonc を読み、main を E2E 用のエントリ（外向きの通信だけを擬似に向ける）にし、
-// routes を外し（手元では Host ヘッダーで振り分ける）、alias を試験用の生成物に、vars に鍵と擬似の宛先を足した一時ファイルで起動する。
+// routes を外し（手元では Host ヘッダーで振り分ける）、alias を試験用の生成物に、vars に擬似の宛先を足した一時ファイルで起動する。
+// 署名鍵は E2E 用のエントリが Worker の中で境界ごとに取り出せない鍵を作る（本番の secret_key と同じ CryptoKey の形）。
 // 実 AWS・Cloudflare は呼ばない。
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -12,10 +13,9 @@ import { createServer as createHttpServer, request as httpRequest, type Server }
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createLocalJWKSet, exportJWK, generateKeyPair, type JWK, jwtVerify, SignJWT } from "jose";
+import { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify, SignJWT } from "jose";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AUDIENCE } from "../../src/console/constants";
-import { generateSigningJwk } from "../../src/keys";
 import { AUDS, displayConfig, standardConfig, stsXml } from "../unit/console-standard-harness";
 import { readJsonc } from "./jsonc";
 
@@ -44,7 +44,6 @@ let fake: Server | undefined;
 let fakeBase = "";
 let tmp = "";
 let accessKeys: Awaited<ReturnType<typeof generateKeyPair>>;
-let signingJwk: JWK;
 const seen = { sts: [] as URLSearchParams[], signin: [] as URLSearchParams[] };
 
 function freePort(): Promise<number> {
@@ -172,7 +171,6 @@ function stop(inst: Instance | undefined) {
 beforeAll(async () => {
   accessKeys = await generateKeyPair("RS256", { extractable: true });
   const accessJwk = { ...(await exportJWK(accessKeys.publicKey)), kid: "e2e-access", alg: "RS256" };
-  signingJwk = await generateSigningJwk();
 
   fake = createHttpServer((req, res) => {
     let body = "";
@@ -234,10 +232,6 @@ beforeAll(async () => {
       vars: {
         ...(config.vars as Record<string, string>),
         ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
-        CONSOLE_SIGNING_KEYS: JSON.stringify({
-          managed: signingJwk,
-          "partner:partner-x": signingJwk,
-        }),
         CONSOLE_CSRF_KEY: CSRF_SECRET,
         E2E_FAKE_BASE: fakeBase,
       },

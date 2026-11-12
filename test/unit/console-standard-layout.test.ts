@@ -20,10 +20,14 @@ const FILES = [
   "src/console/standard/index.ts",
   "src/console/standard/worker.ts",
   "src/console/standard/issuer.ts",
+  "src/console/standard/key.ts",
+  "src/console/signing/key.ts",
+  "src/console/signing/jws.ts",
+  "src/console/signing/signer.ts",
+  "src/console/signing/issuer-doc.ts",
   "src/console/admin/index.ts",
   "src/console/admin/worker.ts",
   "src/console/admin/key.ts",
-  "src/console/admin/jws.ts",
   "src/console/admin/sign-admin.ts",
   "src/console/admin/issuer.ts",
   "src/console/portal/worker.ts",
@@ -118,6 +122,7 @@ describe("Standard の Worker とポータルの部品の依存", () => {
         "src/console/standard/index.ts",
         "src/console/standard/worker.ts",
         "src/console/standard/issuer.ts",
+        "src/console/standard/key.ts",
         "src/keys.ts",
       ]) {
         expect(files, `${f} → ${banned}`).not.toContain(banned);
@@ -128,12 +133,15 @@ describe("Standard の Worker とポータルの部品の依存", () => {
     expect(entry.bare).toContain("awsbridge:console-worker-admin");
   });
 
-  it("Admin の署名の部品（key・jws・sign-admin・issuer）は外部のパッケージを読まない（WebCrypto だけで JWS を組む。X1 の決裁 (d)）", () => {
+  it("Admin の署名の部品（key・sign-admin・issuer と共通の signing/）は外部のパッケージを読まない（WebCrypto だけで JWS を組む。X1 の決裁 (d)）", () => {
     for (const f of [
       "src/console/admin/key.ts",
-      "src/console/admin/jws.ts",
       "src/console/admin/sign-admin.ts",
       "src/console/admin/issuer.ts",
+      "src/console/signing/key.ts",
+      "src/console/signing/jws.ts",
+      "src/console/signing/signer.ts",
+      "src/console/signing/issuer-doc.ts",
     ]) {
       const g = importGraph(join(root, f));
       expect(g.bare, f).toEqual([]);
@@ -141,6 +149,28 @@ describe("Standard の Worker とポータルの部品の依存", () => {
       expect(files, f).not.toContain("src/console/issue/sign-standard.ts");
       expect(files, f).not.toContain("src/oidc.ts");
     }
+  });
+
+  it("Standard の署名の部品（sign-standard・standard/key・standard/issuer）は外部のパッケージ・文字列の秘密鍵を読む部品（src/keys・src/oidc）・Admin の部品を読まない（cto の決裁「Standard も secret_key に揃える」）", () => {
+    for (const f of [
+      "src/console/issue/sign-standard.ts",
+      "src/console/standard/key.ts",
+      "src/console/standard/issuer.ts",
+    ]) {
+      const g = importGraph(join(root, f));
+      expect(g.bare, f).toEqual([]);
+      const files = g.files.map((p) => relative(root, p));
+      for (const banned of ["src/keys.ts", "src/oidc.ts"]) expect(files, f).not.toContain(banned);
+      expect(
+        files.filter((p) => p.startsWith("src/console/admin/")),
+        f,
+      ).toEqual([]);
+    }
+    // 陽性の対照: 共通の署名の部品は届いている
+    const files = importGraph(join(root, "src/console/issue/sign-standard.ts")).files.map((p) =>
+      relative(root, p),
+    );
+    expect(files).toContain("src/console/signing/signer.ts");
   });
 
   it("Standard の Worker は Admin のエントリ・Admin の生成物の alias を読まない（取り違えを防ぐ）", () => {
