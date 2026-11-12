@@ -55,7 +55,19 @@ describe("MCP 用 Worker との分離（静的な import）", () => {
   });
 
   it("コンソールログイン用のコード（src/console/）は MCP 用のエントリ・ハンドラーを import しない", () => {
-    for (const f of ["src/console/config.ts", "src/console/generate.ts"]) {
+    for (const f of [
+      "src/console/constants.ts",
+      "src/console/types.ts",
+      "src/console/config.ts",
+      "src/console/generate.ts",
+      "src/console/issue/claims.ts",
+      "src/console/issue/errors.ts",
+      "src/console/issue/federation.ts",
+      "src/console/issue/identity.ts",
+      "src/console/issue/record.ts",
+      "src/console/issue/sign-standard.ts",
+      "src/console/issue/signer.ts",
+    ]) {
       const g = importGraph(join(root, f));
       for (const mcp of ["src/index.ts", "src/handler.ts", "src/proxy.ts"]) {
         expect(g.files, `${f} → ${mcp}`).not.toContain(join(root, mcp));
@@ -106,6 +118,29 @@ describe("設定の例（config/console*.example.json）", () => {
       const raw = read(p);
       expect(raw, p).not.toMatch(/developer|PowerUserAccess/i);
     }
+  });
+
+  it("会社用の例は SourceIdentity の出どころ（identity.sourceIdentity）を email と明示する", () => {
+    const { config } = parseConsoleConfig(read("config/console.company.example.json"));
+    expect(config.identity.sourceIdentity).toBe("email");
+    expect(JSON.parse(read("config/console.company.example.json")).identity).toEqual({
+      sourceIdentity: "email",
+    });
+  });
+
+  it("会社用の例（Admin のチームが 2 つ）は admin の入口の AUD なしで deploy 生成できる", () => {
+    const { config } = parseConsoleConfig(read("config/console.company.example.json"));
+    expect(config.teams.filter((t) => t.tier === "admin")).toHaveLength(2);
+    const teams = Object.fromEntries(
+      config.teams.map((t, i) => [t.name, String(i + 1).repeat(64)]),
+    );
+    const r = generateConsoleArtifacts(config, {
+      mode: "deploy",
+      generatedAt: "x",
+      auds: { teams, entry: { standard: "a".repeat(64) } },
+    });
+    expect(r.worker.admin?.teams).toHaveLength(2);
+    expect(r.display.groups).toHaveLength(5);
   });
 
   it("例はダミーの値だけを持つ（アカウント ID・ドメイン・email）", () => {

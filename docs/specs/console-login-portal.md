@@ -922,9 +922,9 @@ cto の条件（MCP 用 Worker のバンドルにコンソールログイン用�
 | 設定の読み込み | Standard のデプロイに Admin の階層の行・チーム・issuer が渡されたら、起動時（初回の要求時）に `server_misconfigured` で止まる（生成の段階でも弾く。§11.6） |
 | 設定の分離 | Worker 用の生成物に、種類の定義（`kinds`）・Access のポリシー ID・他の階層の AUD が入っていない。Entra のグループの Object ID は表示用の対応表としてだけ入れてよい（U2。前の版は「入れない」だった。PR #16 で生成器を引き直した。このブランチの生成器と `test/unit/console-generate.test.ts` は前の約束のまま） |
 
-実装の状態: 3 方向の分離の試験（MCP・Standard・Admin。比べる値は生成物から求め、すべての「入らない」に陽性の対照を付ける）と負の試験の E2E は PR #26（未マージ。`test/e2e/console-isolation.test.ts`・`console-negative.test.ts`）に入った。旧い `console-bundle`・`console-standard-bundle`・`console-admin-bundle` の試験はそこへ移した。Admin のバンドルに、試験用の鍵の作り方と文字列の秘密鍵の経路が入らないことも見る（PR #27）。
+実装の状態（実装済み。PR #26・#27）: 3 方向の分離の試験（MCP・Standard・Admin。比べる値は生成物から求め、すべての「入らない」に陽性の対照を付ける）と負の試験の E2E は `test/e2e/console-isolation.test.ts`・`console-negative.test.ts` に入った。旧い `console-bundle`・`console-standard-bundle`・`console-admin-bundle` の試験はそこへ移した。Admin のバンドルに、試験用の鍵の作り方と文字列の秘密鍵の経路が入らないことも見る。
 
-このブランチにあるもの（§11 の設定の実装と一緒に入れた）: MCP 用のバンドルの検査（`test/e2e/console-bundle.test.ts`。`wrangler deploy --dry-run` の metafile の inputs に `src/console/` がなく、本文にタグのキー・audience（`awsbridge-console`）・ロールのパスの接頭辞・`/t/` がないこと。`test/unit/console-layout.test.ts` は `src/index.ts` からの静的な import をたどる）と、設定の分離（`test/unit/console-generate.test.ts`）。Standard・Admin のバンドルと設定の読み込みの検査は、ポータル本体と一緒に足す。
+MCP 用のバンドルの検査（`test/e2e/console-isolation.test.ts`。`wrangler deploy --dry-run` の metafile の inputs に `src/console/` がなく、本文にタグのキー・audience（`awsbridge-console`）・ロールのパスの接頭辞・`/t/` がないこと。`test/unit/console-layout.test.ts` は `src/index.ts` からの静的な import をたどる）と、設定の分離（`test/unit/console-generate.test.ts`）も実装済み（§11 の設定の実装と一緒に入れた）。
 
 ---
 
@@ -1050,7 +1050,7 @@ cto の条件（MCP 用 Worker のバンドルにコンソールログイン用�
 - `portal.*Origin` は `https://<host>` の形そのもの（末尾の `/`・パス・ポート以外の付加物・利用者情報を受け付けない。§9.3 で `Origin` と完全一致させるため）。`workers.dev` とそのサブドメインは大文字小文字を問わず拒否する
 - `portal.regions` は `allowed`（1 件以上）と `default`（`allowed` に含まれること）がどちらも必須
 - `boundaries[].issuers` の URL は `https`、クエリ・フラグメント・末尾の `/` なし。issuer の URL は境界・階層をまたいで重複してはいけない（鍵を境界 × 階層で分けるため。cto の D3）。issuer の `workers.dev` は拒否しない
-- issuer のホストの検査（PR #26・#27）: どの issuer のホストも、ポータル（Standard・Admin）やホスト方式のチームのホストと同じか入れ子なら `issuer_host_overlaps_portal`（ラベル単位で比べる。G-8）。Admin の issuer は、パスが `/admin` でなければ `admin_issuer_path`、Admin の issuer を持つ境界が複数なら `admin_issuer_multiple`、Standard の issuer のどのホストとも同じか入れ子なら `admin_issuer_host_shared`
+- issuer のホストの検査（PR #26・#27）: どの issuer のホストも、ポータル（Standard・Admin）やホスト方式のチームのホストと同じか入れ子なら `boundaries[i].issuers.<tier>: issuer_host_overlaps_portal`（URL の値は出さない。ホストは小文字・末尾のドットなし・ポートなしで、ラベル単位で比べる。G-8。Bypass の範囲・Cookie の範囲・ホスト方式のチームのホストが重なるため）。Admin の issuer は、パスが `/admin` でなければ `admin_issuer_path`、Admin の issuer を持つ境界が複数なら `admin_issuer_multiple`、Standard の issuer のどのホストとも同じか入れ子なら `admin_issuer_host_shared`
 - `signing.accountIds`（PR #20）: 署名を置くアカウントの ID。そのアカウントにコンソールのロールを配る設定は `signing_account`（誤り）。X1 で署名用アカウントが無くなったので、残すかは未決（console-login.md §9.2 の U-26）
 - `identity.sourceIdentity`（PR #16）: SourceIdentity の出どころ。既定 `email`、`custom.<name>`。`sub` は受け付けない
 - Admin の階層のロールに `SignInLocalDevelopmentAccess` を付けると `signin_access_admin`（誤り）、Standard の階層なら `signin_access_standard`（警告）（PR #16）。`portal.entryAud.admin` は要求しない（PR #16。G-6）

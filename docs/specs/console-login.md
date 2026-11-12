@@ -97,7 +97,7 @@ issuer の公開文書（discovery と JWKS）: https://<issuer-host>/std/...（
 
 | 項目 | 決定・案 | 根拠 |
 |---|---|---|
-| Worker | コンソールログイン用は MCP 用と別の Worker。awsbridge リポジトリ内の別エントリ。MCP 用のバンドルにコンソールログイン用の経路が入らないことをテストで確かめる（このブランチにある試験: `test/e2e/console-bundle.test.ts`・`test/unit/console-layout.test.ts`。MCP・Standard・Admin の 3 方向の分離の試験は PR #26〈未マージ〉の `test/e2e/console-isolation.test.ts` に集約された） | [資料: cto の決裁 D2] |
+| Worker | コンソールログイン用は MCP 用と別の Worker。awsbridge リポジトリ内の別エントリ。MCP 用のバンドルにコンソールログイン用の経路が入らないことをテストで確かめる（実装済み: `test/e2e/console-isolation.test.ts`・`test/unit/console-layout.test.ts`。MCP・Standard・Admin の 3 方向の分離の試験は `test/e2e/console-isolation.test.ts` に集約した。PR #26） | [資料: cto の決裁 D2] |
 | Standard と Admin | 別の Worker デプロイ（D3 のこの部分は保つ）。**入口と一覧は共通**（P1'。2026-11-12）で、Administrator の行も Standard の一覧に表示用だけで出す。Admin の発行は Admin のオリジンの Worker だけが行い、Standard の Worker は代わりに行わない。Standard のバンドルに Admin の鍵の参照・Admin のチームの AUD・Access のポリシー ID を入れない（portal §8・§9.10） | [資料: cto の決裁 D3、2026-11-12 の P1'] |
 | 鍵 | 「階層（Standard / Admin）× 境界（管理下 / 管理外の先方ごと）」で分ける。issuer も同じ単位で分け、1 つの issuer に 1 つの鍵 | [資料: cto の決裁 D3]。設定の検査（issuer の URL の重複を誤りにする）は実装済み（`src/console/config.ts`） |
 | 鍵の保管 | **Standard も Admin も、Workers の `secret_key`（取り出せない `CryptoKey`）に揃える**。公開鍵は vars。Admin は X1 で `secret_key`（実装は PR #27）。Standard の移行は決裁済み・未実装で、別 PR（G2 までに。条件は [console-login-admin.md](console-login-admin.md) §4.5）。D4 の「Admin は KMS 必須」は X1 の決裁で外れ（人の受容。② は利用者本人、③ は G5 で会社のセキュリティの承認）、「Standard の Workers secret は会社で Administrator を配る前まで」という期限も無くなった。**`secret_key` は KMS の代わりになるものではない**（署名を頼める主体を絞れず、外部の記録と外部からの停止が無い）。Worker のコードを変えられる者は、鍵を持ち出せなくても任意の JWT に署名できる（admin §4.4・§5）。KMS と AWS 側の署名役は退避先（admin の付録 A） | [資料: cto の決裁 X1・「Standard も secret_key に揃える」、2026-11-12] |

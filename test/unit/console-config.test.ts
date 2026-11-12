@@ -1,14 +1,11 @@
 // コンソールログインの設定ファイル（チーム・ロール・種類）の検証。設計: docs/specs/console-login-portal.md §11.3・§11.6。
 import { describe, expect, it } from "vitest";
 import {
-  AUDIENCE,
   ConsoleConfigError,
   type ConsoleConfigIssue,
   parseConsoleConfig,
-  ROLE_PATH_PREFIX,
-  rolePath,
-  TEAM_TAG_KEY,
 } from "../../src/console/config";
+import { AUDIENCE, ROLE_PATH_PREFIX, rolePath, TEAM_TAG_KEY } from "../../src/console/constants";
 import { companyConfig, personalConfig, type Raw, uuid } from "./console-fixtures";
 
 function issuesOf(raw: unknown): ConsoleConfigIssue[] {
@@ -491,6 +488,164 @@ describe("parseConsoleConfig: ポータルのオリジン", () => {
   });
 });
 
+// X1 の決裁 (a)・(h): Admin は Standard と別の issuer・別のホスト。Admin の issuer の文書は Admin の Worker が
+// Cloudflare の別のホストの /admin で出す（A-3 = I-B）。Admin の鍵は 1 組なので、Admin の issuer は 1 つだけ。
+describe("parseConsoleConfig: Admin の issuer（X1 の決裁）", () => {
+  it.each([
+    ["https://admin-id.example.com", "パスなし"],
+    ["https://admin-id.example.com/standard", "別のパス"],
+    ["https://admin-id.example.com/admin/x", "深いパス"],
+    ["https://admin-id.example.com/Admin", "大文字"],
+  ])("パスが /admin でない %s（%s）は admin_issuer_path", (url) => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[0].issuers.admin = url;
+    });
+    expect(issuesOf(c)).toContainEqual(issue("boundaries[0].issuers.admin", "admin_issuer_path"));
+  });
+
+  it("Admin の issuer を持つ境界が 2 つ以上なら admin_issuer_multiple（Admin の鍵と JWKS は 1 組）", () => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[1].issuers.admin = "https://admin-id2.example.com/admin";
+    });
+    expect(issuesOf(c)).toContainEqual(
+      issue("boundaries[1].issuers.admin", "admin_issuer_multiple"),
+    );
+  });
+
+  it.each([
+    ["Standard の issuer と同じホスト", "https://id.example.com/admin"],
+    ["管理外の先方の Standard の issuer と同じホスト", "https://id.example.com/admin"],
+    ["Standard の issuer のホストのサブドメイン", "https://a.id.example.com/admin"],
+    ["Standard の issuer のホストがサブドメイン", "https://example.com/admin"],
+  ])("Admin の issuer が %s は admin_issuer_host_shared", (_name, url) => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[0].issuers.admin = url;
+    });
+    expect(issuesOf(c)).toContainEqual(
+      issue("boundaries[0].issuers.admin", "admin_issuer_host_shared"),
+    );
+  });
+
+  it("別の境界の Standard の issuer のホストと重なっても admin_issuer_host_shared", () => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[1].issuers.standard = "https://admin-id.example.com/partner-x";
+    });
+    expect(issuesOf(c)).toContainEqual(
+      issue("boundaries[0].issuers.admin", "admin_issuer_host_shared"),
+    );
+  });
+});
+
+// G-8: issuer のホスト（STS が信頼する公開文書。Access の Bypass）と、ポータル（とチーム）のホストは分ける。
+// 同じホスト・入れ子（どちらかがもう一方のサブドメイン）になると、Bypass の範囲・Cookie の範囲・ホスト方式のチームのホストが重なる。
+describe("parseConsoleConfig: issuer のホストとポータルのホストの重なり（G-8）", () => {
+  const overlap = (path: string) => issue(path, "issuer_host_overlaps_portal");
+
+  it("会社用の設定（issuer は id.*、ポータルは portal.*・admin-portal.*）は兄弟のホストなので受け付ける", () => {
+    expect(issuesOf(companyConfig())).toEqual([]);
+    expect(issuesOf(personalConfig())).toEqual([]);
+  });
+
+  it("会社用の設定の Admin の issuer は、Standard の issuer と別のホスト（admin-id.*）の /admin", () => {
+    const c = companyConfig();
+    expect(c.boundaries[0].issuers.standard).toBe("https://id.example.com/standard");
+    expect(c.boundaries[0].issuers.admin).toBe("https://admin-id.example.com/admin");
+    expect(issuesOf(c)).toEqual([]);
+  });
+
+  it.each([
+    [
+      "Standard の issuer が Standard のポータルと同じホスト",
+      "standard",
+      "https://portal.example.com/standard",
+    ],
+    [
+      "Standard の issuer が Admin のポータルと同じホスト",
+      "standard",
+      "https://admin-portal.example.com/standard",
+    ],
+    [
+      "Admin の issuer が Standard のポータルと同じホスト",
+      "admin",
+      "https://portal.example.com/admin",
+    ],
+    [
+      "Admin の issuer が Admin のポータルと同じホスト",
+      "admin",
+      "https://admin-portal.example.com/admin",
+    ],
+    ["ポートだけ違う同じホスト名", "standard", "https://portal.example.com:8443/standard"],
+    [
+      "issuer のホストがポータルのサブドメイン（ホスト方式のチームのホストと重なる）",
+      "standard",
+      "https://id.portal.example.com/standard",
+    ],
+    [
+      "issuer のホストがポータルの深いサブドメイン",
+      "admin",
+      "https://a.b.admin-portal.example.com/admin",
+    ],
+    ["ポータルのホストが issuer のサブドメイン", "standard", "https://example.com/standard"],
+  ])("%s は issuer_host_overlaps_portal", (_name, tier, url) => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[0].issuers[tier] = url;
+    });
+    expect(issuesOf(c)).toContainEqual(overlap(`boundaries[0].issuers.${tier}`));
+  });
+
+  it("ホスト方式（routing: host）でも、チームのホスト（<team>.<ポータル>）と重なる issuer を弾く", () => {
+    const c = withChange(companyConfig, (x) => {
+      x.portal.routing = "host";
+      x.boundaries[0].issuers.standard = "https://infra.portal.example.com/standard";
+    });
+    expect(issuesOf(c)).toContainEqual(overlap("boundaries[0].issuers.standard"));
+  });
+
+  it("管理外の先方の境界（2 つ目）の issuer も検査する。位置は境界の添字で示す", () => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[1].issuers.standard = "https://portal.example.com/partner-x";
+    });
+    expect(issuesOf(c)).toContainEqual(overlap("boundaries[1].issuers.standard"));
+  });
+
+  it("ホストの末尾のドット（FQDN の形）は同じホストとして扱う。issuer の形の検査（url）が先に弾く場合も、重なりは見逃さない", () => {
+    // ポータルのオリジンの末尾のドット（checkOrigin は許す）と同じホストの issuer
+    const c = withChange(companyConfig, (x) => {
+      x.portal.standardOrigin = "https://portal.example.com.";
+      x.boundaries[0].issuers.standard = "https://portal.example.com/standard";
+    });
+    expect(issuesOf(c)).toContainEqual(overlap("boundaries[0].issuers.standard"));
+  });
+
+  it("大文字小文字だけが違うホストは、重なりを検査する前に形の検査（origin・url）で弾かれ、すり抜けない", () => {
+    const upperOrigin = withChange(companyConfig, (x) => {
+      x.portal.standardOrigin = "https://Portal.Example.com";
+      x.boundaries[0].issuers.standard = "https://portal.example.com/standard";
+    });
+    expect(issuesOf(upperOrigin)).toContainEqual(issue("portal.standardOrigin", "origin"));
+    const upperIssuer = withChange(companyConfig, (x) => {
+      x.boundaries[0].issuers.standard = "https://PORTAL.example.com/standard";
+    });
+    expect(issuesOf(upperIssuer)).toContainEqual(issue("boundaries[0].issuers.standard", "url"));
+  });
+
+  it("名前だけが似ているホスト（portal.example.com と myportal.example.com）は重ならない", () => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[0].issuers.standard = "https://myportal.example.com/standard";
+    });
+    expect(issuesOf(c)).toEqual([]);
+  });
+
+  it("誤りの出力には URL の値を含めず、パスと種別だけを持つ", () => {
+    const c = withChange(companyConfig, (x) => {
+      x.boundaries[0].issuers.standard = "https://portal.example.com/standard";
+    });
+    const found = issuesOf(c).filter((i) => i.code === "issuer_host_overlaps_portal");
+    expect(found).toHaveLength(1);
+    expect(JSON.stringify(found)).not.toContain("portal.example.com");
+  });
+});
+
 describe("parseConsoleConfig: 参照と重複", () => {
   it("kinds[].assign の未知のロール・未知のチーム", () => {
     const c = withChange(companyConfig, (x) => {
@@ -628,5 +783,157 @@ describe("parseConsoleConfig: 警告", () => {
     const { warnings } = parseConsoleConfig(c);
     expect(warnings).toContainEqual(issue("teams[1]", "unassigned_team"));
     expect(warnings).toContainEqual(issue("roles[1]", "unassigned_role"));
+  });
+});
+
+describe("parseConsoleConfig: identity.sourceIdentity（SourceIdentity の値の出どころ。U-14）", () => {
+  const sourceOf = (raw: Raw) => parseConsoleConfig(raw).config.identity.sourceIdentity;
+
+  it("省略すると email", () => {
+    expect(sourceOf(personalConfig())).toBe("email");
+    expect(
+      sourceOf(
+        withChange(personalConfig, (x) => {
+          x.identity = {};
+        }),
+      ),
+    ).toBe("email");
+  });
+
+  it("email と custom.<名前> を受け付ける", () => {
+    for (const v of ["email", "custom.employee_id", "custom.oid"]) {
+      const c = withChange(personalConfig, (x) => {
+        x.identity = { sourceIdentity: v };
+      });
+      expect(sourceOf(c)).toBe(v);
+    }
+  });
+
+  it("sub は受け付けない（Access の sub は発行記録に残す値で、SourceIdentity には使わない）", () => {
+    const c = withChange(personalConfig, (x) => {
+      x.identity = { sourceIdentity: "sub" };
+    });
+    expect(issuesOf(c)).toEqual([issue("identity.sourceIdentity", "pattern")]);
+  });
+
+  it.each(["custom.", "custom", "Email", "custom.a b", "oid", "custom.1a"])(
+    "形が違う値 %s は pattern",
+    (v) => {
+      const c = withChange(personalConfig, (x) => {
+        x.identity = { sourceIdentity: v };
+      });
+      expect(issuesOf(c)).toEqual([issue("identity.sourceIdentity", "pattern")]);
+    },
+  );
+
+  it("文字列でなければ type、未知のキーは unknown_key、identity がオブジェクトでなければ type", () => {
+    const num = withChange(personalConfig, (x) => {
+      x.identity = { sourceIdentity: 1 };
+    });
+    expect(issuesOf(num)).toEqual([issue("identity.sourceIdentity", "type")]);
+    const extra = withChange(personalConfig, (x) => {
+      x.identity = { claim: "email" };
+    });
+    expect(issuesOf(extra)).toEqual([issue("identity.claim", "unknown_key")]);
+    const notObj = withChange(personalConfig, (x) => {
+      x.identity = "email";
+    });
+    expect(issuesOf(notObj)).toEqual([issue("identity", "type")]);
+  });
+});
+
+describe("parseConsoleConfig: SignInLocalDevelopmentAccess（aws login --remote を許す管理ポリシー。U-16）", () => {
+  const POLICY = "arn:aws:iam::aws:policy/SignInLocalDevelopmentAccess";
+  const warningsOf = (raw: Raw) => parseConsoleConfig(raw).warnings;
+  const attach = (roleName: string, arn: string) => (x: Raw) => {
+    const r = x.roles.find((r: Raw) => r.name === roleName);
+    r.permissions.managedPolicyArns.push(arn);
+  };
+
+  it("Admin の階層のロールにあれば誤り（--remote を許してしまう）", () => {
+    const c = withChange(companyConfig, attach("admin", POLICY));
+    const i = companyConfig().roles.findIndex((r: Raw) => r.name === "admin");
+    expect(issuesOf(c)).toEqual([
+      issue(`roles[${i}].permissions.managedPolicyArns[1]`, "signin_access_admin"),
+    ]);
+  });
+
+  it("Standard の階層のロールにあれば警告（誤りにはしない。参考の形は付けない）", () => {
+    const c = withChange(companyConfig, attach("readonly", POLICY));
+    const i = companyConfig().roles.findIndex((r: Raw) => r.name === "readonly");
+    expect(issuesOf(c)).toEqual([]);
+    expect(warningsOf(c)).toEqual([
+      issue(`roles[${i}].permissions.managedPolicyArns[1]`, "signin_access_standard"),
+    ]);
+  });
+
+  it("パーティション違い・大文字小文字違いも同じ扱い", () => {
+    for (const arn of [
+      "arn:aws-us-gov:iam::aws:policy/SignInLocalDevelopmentAccess",
+      "arn:aws:iam::aws:policy/signinlocaldevelopmentaccess",
+    ]) {
+      expect(issuesOf(withChange(companyConfig, attach("admin", arn)))).toHaveLength(1);
+      expect(warningsOf(withChange(companyConfig, attach("readonly", arn)))).toHaveLength(1);
+    }
+  });
+
+  it("似た名前や別のポリシーには反応しない", () => {
+    for (const arn of [
+      "arn:aws:iam::aws:policy/SignInLocalDevelopmentAccessExtra",
+      "arn:aws:iam::aws:policy/service-role/SignIn",
+      "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess",
+    ]) {
+      const c = withChange(companyConfig, (x) => {
+        attach("admin", arn)(x);
+        attach("readonly", arn)(x);
+      });
+      expect(issuesOf(c)).toEqual([]);
+      expect(warningsOf(c)).toEqual([]);
+    }
+  });
+});
+
+describe("parseConsoleConfig: signing.accountIds（署名を置くアカウント。cto の決裁 (5)(b)）", () => {
+  it("省略できる（既定は空）。書けば 12 桁のアカウント ID の一覧として受け付ける", () => {
+    expect(parseConsoleConfig(companyConfig()).config.signing).toEqual({ accountIds: [] });
+    const c = withChange(companyConfig, (x) => {
+      x.signing = { accountIds: ["999999999999"] };
+    });
+    expect(parseConsoleConfig(c).config.signing).toEqual({ accountIds: ["999999999999"] });
+  });
+
+  it("形の誤り・空・未知のキー・重複は誤り（値は出さない）", () => {
+    const found = issuesOf(
+      withChange(companyConfig, (x) => {
+        x.signing = { accountIds: ["12345", "999999999999", "999999999999"], extra: 1 };
+      }),
+    );
+    expect(found).toContainEqual(issue("signing.accountIds[0]", "pattern"));
+    expect(found).toContainEqual(issue("signing.accountIds[2]", "duplicate"));
+    expect(found).toContainEqual(issue("signing.extra", "unknown_key"));
+    expect(
+      issuesOf(
+        withChange(companyConfig, (x) => {
+          x.signing = { accountIds: [] };
+        }),
+      ),
+    ).toContainEqual(issue("signing.accountIds", "empty"));
+    expect(
+      issuesOf(
+        withChange(companyConfig, (x) => {
+          x.signing = {};
+        }),
+      ),
+    ).toContainEqual(issue("signing.accountIds", "required"));
+  });
+
+  it("署名を置くアカウントを配る先（placement: accounts）に含めたら誤り（プロバイダーとロールを配らない）", () => {
+    const found = issuesOf(
+      withChange(companyConfig, (x) => {
+        x.signing = { accountIds: ["222222222222"] };
+      }),
+    );
+    expect(found).toEqual([issue("organizations[1].accounts[0].accountId", "signing_account")]);
+    expect(JSON.stringify(found)).not.toContain("222222222222");
   });
 });
