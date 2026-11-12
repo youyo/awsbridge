@@ -378,6 +378,36 @@ mise run console:inspect -- --profile=<p> --stops=.secrets/console-stops.json   
 
 Exit codes: 0 done (or nothing to change; extra values alone still give 0) / 1 some roles were not written / 2 nothing was run (input error, read failure, the caller, or a release-only run without `--allow-remove`).
 
+## Reconciling console logins (issue records x CloudTrail)
+
+`mise run console:reconcile` matches the console Workers' issue records (the structured log `console_issue`) against the CloudTrail `AssumeRoleWithWebIdentity` events of the profile's account, using the JWT `jti` (= `requestParameters.webIdentityTokenId`). It reports **assumptions with no issue record** (a forged JWT, or issuance outside the Worker) as errors. Reconciliation is detection material, not proof of completeness (a compromised Worker can also write fake records).
+
+- One account per run (`--profile` is required). It reads CloudTrail in **all enabled regions** of the account (`account list-regions`; `ec2 describe-regions` if that is not allowed). A region it cannot read is an error.
+- It runs only four read-only aws commands: `sts get-caller-identity`, `account list-regions`, `ec2 describe-regions`, `cloudtrail lookup-events`. The profile needs `sts:GetCallerIdentity`, `account:ListRegions` (or `ec2:DescribeRegions`), and `cloudtrail:LookupEvents`.
+- It looks only at console assumptions (role path `/awsbridge-console/`, or a provider whose host is a configured issuer host). MCP assumptions are not counted. A console role assumed through a provider that is not in the config is an error.
+- Issue records come from one of two inputs:
+  - `--records <file|dir>`: NDJSON (plain lines, Logpush Trace Events envelopes, or Workers Logs events; `.gz` is read too).
+  - `--logs-api`: reads Workers Logs with the Cloudflare API (`POST /accounts/{account_id}/workers/observability/telemetry/query`). This query is the only Cloudflare API the tool calls.
+- Where issue records live (stage 2, the personal environment): Workers Logs (7 days of retention on Workers Paid). The wrangler configs of both console Workers pin `observability.head_sampling_rate` to `1` so that sampling never drops a record.
+- Retention window: the default lookback is 6 days (shorter than the 7-day retention). Assumptions older than the record retention that have no record are counted separately as `unverifiable`. A lookback longer than the retention is a warning (`--retention-days` changes the retention).
+- Truncated record lines (`$cloudflare.truncated` and similar) and unreadable lines are errors; only their positions are printed.
+- The output is redacted (`jti` shows its first 8 characters, no email, account IDs show the last 4 digits). The summary shows the window read, the number of regions, the unverifiable count, truncated lines, and where the records came from (`source: api` or `file`).
+- Exit codes: `0` no errors / `1` errors / `2` could not run (input, aws, or API failure).
+- Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_LOGS_TOKEN` (API token for `--logs-api`; environment variable only), `AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID` (Cloudflare account ID), `AWSBRIDGE_CONSOLE_LOGS_WORKERS` (optional; Worker names, default `awsbridge-console-standard,awsbridge-console-admin`), `AWSBRIDGE_CONSOLE_CONFIG` (config file).
+- Token: a read-only token is preferable, but according to the Cloudflare API specification `telemetry/query` accepts only the "Workers Observability Write" permission. Whether a Read-only token works is to be checked in stage 2. Limit the token to Workers Observability; do not give it permission to write Workers or secrets.
+
+```bash
+mise run console:reconcile -- --profile <profile> --logs-api               # from Workers Logs (default lookback 6 days)
+mise run console:reconcile -- --profile <profile> --records ./issue-logs/  # from exported files
+mise run console:reconcile -- --profile <profile> --logs-api --since 2026-11-10T00:00:00Z
+```
+
+Operations:
+
+- **Run it by hand at least once a week.** Issue records are kept for 7 days, so **an issuance not reconciled within 7 days cannot be verified later**.
+- Daily monitoring (scheduled runs and notifications) is outside awsbridge; the operator decides how to do it.
+- At the start of stage 2, check against real data: the shape of the Cloudflare API response (`events`, the `$metadata.id` cursor, what `count` means, whether the truncation flag is `$workers.truncated` or `$cloudflare.truncated`) and the CloudTrail `AssumeRoleWithWebIdentity` field names (`requestParameters.webIdentityTokenId`, `userIdentity.identityProvider`, and so on). If they differ, fix `scripts/console/reconcile-cf.ts`, `src/console/reconcile-input.ts`, and the fixtures.
+
 ## Setup skill (Claude Code)
 
 A Claude Code skill that interactively sets up a downstream private repository is bundled in `.claude/skills/setup-downstream/`. You can use it as is just by cloning awsbridge (on first use you will be asked to trust the folder).

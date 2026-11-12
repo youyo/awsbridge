@@ -377,6 +377,36 @@ mise run console:inspect -- --profile=<p> --stops=.secrets/console-stops.json   
 
 終了コード: 0 書き終えた（または変更なし。余分が残るだけなら 0）/ 1 書けなかったロールがある / 2 実行しなかった（入力の誤り・読み取りの失敗・呼び出し元・`--allow-remove` が無い解除だけの実行）。
 
+## コンソールログインの突き合わせ（発行記録 × CloudTrail）
+
+`mise run console:reconcile` は、コンソールの Worker の発行記録（構造化ログ `console_issue`）と、プロファイルのアカウントの CloudTrail の `AssumeRoleWithWebIdentity` を、JWT の `jti`（= `requestParameters.webIdentityTokenId`）で突き合わせます。**記録に無い引き受け**（作られた JWT か、Worker の外からの発行）を誤りとして知らせます。突き合わせは検知の材料で、完全性の証明ではありません（侵害された Worker は偽の記録も書けます）。
+
+- 1 回で 1 アカウント（`--profile` が要る）。CloudTrail は、そのアカウントの**有効な全リージョン**を読みます（`account list-regions`。使えなければ `ec2 describe-regions`）。読めなかったリージョンは誤りです。
+- 呼ぶ aws のコマンドは照会の 4 種類だけです: `sts get-caller-identity`・`account list-regions`・`ec2 describe-regions`・`cloudtrail lookup-events`。プロファイルに要る権限は `sts:GetCallerIdentity`・`account:ListRegions`（または `ec2:DescribeRegions`）・`cloudtrail:LookupEvents` です。
+- コンソールの引き受けだけを見ます（ロールのパスが `/awsbridge-console/`、またはプロバイダーのホストが設定の issuer のホスト）。MCP の引き受けは数えません。コンソールのロールを設定に無いプロバイダーで引き受けたものは誤りです。
+- 発行記録の入力は 2 つです。どちらか 1 つを渡します。
+  - `--records <file|dir>`: NDJSON（生の行・Logpush の Trace Events の包み・Workers Logs のイベント。`.gz` も読みます）。
+  - `--logs-api`: Cloudflare の API（`POST /accounts/{account_id}/workers/observability/telemetry/query`）から Workers Logs を読みます。道具が呼ぶ Cloudflare の API はこの照会だけです。
+- 発行記録の置き場所（② の個人の環境）は Workers Logs です（保持は Workers Paid で 7 日）。コンソールの 2 つの Worker の wrangler の設定は、間引きで記録が落ちないよう `observability.head_sampling_rate` を `1` に固定しています。
+- 保持の窓: 既定のさかのぼりは 6 日です（保持の 7 日より短く）。記録の保持より古く記録の無い引き受けは「検証できない（`unverifiable`）」として別に数えます。さかのぼりを保持より長くすると警告です（`--retention-days` で保持の日数を変えられます）。
+- 切られた記録の行（`$cloudflare.truncated` など）と読めない行は、位置だけを出して誤りにします。
+- 出力は伏せ字です（`jti` は先頭 8 文字、email は出さない、アカウント ID は末尾 4 桁）。要約に、読んだ期間・リージョン数・検証できない件数・切られた行・記録をどこから読んだか（`source: api` か `file`）を出します。
+- 終了コード: `0` 誤りなし / `1` 誤りあり / `2` 実行できない（入力・aws・API の失敗）。
+- 変数（`mise.local.toml`）: `AWSBRIDGE_CONSOLE_LOGS_TOKEN`（`--logs-api` の API のトークン。環境変数だけ）、`AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID`（Cloudflare のアカウント ID）、`AWSBRIDGE_CONSOLE_LOGS_WORKERS`（任意。Worker の名前。既定 `awsbridge-console-standard,awsbridge-console-admin`）、`AWSBRIDGE_CONSOLE_CONFIG`（設定ファイル）。
+- トークン: 読み取りだけのトークンが望ましいですが、Cloudflare の API の仕様では `telemetry/query` は「Workers Observability Write」の権限しか受け付けません。読み取り（Read）だけで通るかは ② で確かめます。トークンは Workers Observability だけに絞り、Worker や secret を書ける権限を付けません。
+
+```bash
+mise run console:reconcile -- --profile <プロファイル> --logs-api               # Workers Logs から（既定のさかのぼり 6 日）
+mise run console:reconcile -- --profile <プロファイル> --records ./issue-logs/   # 取り出したファイルから
+mise run console:reconcile -- --profile <プロファイル> --logs-api --since 2026-11-10T00:00:00Z
+```
+
+運用:
+
+- **週 1 回は手で回します**。発行記録の保持は 7 日なので、**7 日以内に突き合わせなかった発行は、あとから検証できません**。
+- 毎日の監視（定期の実行と通知）は awsbridge の外です。仕組みは利用者が決めます。
+- ② の最初に、実物で次を確かめます: Cloudflare の API の応答の形（`events`・`$metadata.id` のカーソル・`count` の意味・切られた印が `$workers.truncated` か `$cloudflare.truncated` か）、CloudTrail の `AssumeRoleWithWebIdentity` のフィールド名（`requestParameters.webIdentityTokenId`・`userIdentity.identityProvider` など）。違えば `scripts/console/reconcile-cf.ts`・`src/console/reconcile-input.ts` とフィクスチャを直します。
+
 ## セットアップ用スキル（Claude Code）
 
 下流の private リポジトリを対話しながらセットアップする Claude Code スキルを `.claude/skills/setup-downstream/` に同梱しています。awsbridge を clone すればそのまま使えます（初回はフォルダーの信頼を求められます）。
