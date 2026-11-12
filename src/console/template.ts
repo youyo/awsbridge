@@ -16,6 +16,8 @@
 //   - 権限: 設定の AWS 管理ポリシー、その階層の守りの部品（必須のスタックの Export を ImportValue）、aws login の Allow
 //     （Standard は localhost と remote、Admin は localhost だけ）、Standard の階層は秘密値の読み取りの Deny（§4.7）、
 //     下流のポリシー文書（permissions.inlinePolicyFiles。中身は呼び出し側が読んで渡す）
+//   - MaxSessionDuration: Admin の階層はちょうど 3600（AWS が強制できる最短）、Standard は sessionSeconds。Admin の sessionSeconds が
+//     3600 を超える設定は作らない（admin_session_seconds。cto の決裁 G2 の論点 5）
 //   - 1 人停止の Deny のインラインポリシー（予約名 STOP_USER_INLINE_POLICY_NAME）は作らず、名前も使わない（§6.3。cto の回答 U-15）
 
 import {
@@ -25,7 +27,14 @@ import {
   IssueList,
   teamsParameterName,
 } from "./config";
-import { AUDIENCE, rolePath, TEAM_TAG_KEY, type Tier } from "./constants";
+import {
+  ADMIN_MAX_SESSION_SECONDS,
+  AUDIENCE,
+  roleMaxSessionDuration,
+  rolePath,
+  TEAM_TAG_KEY,
+  type Tier,
+} from "./constants";
 import { BASE_EXPORT_NAME } from "./reserved";
 
 // biome-ignore lint/suspicious/noExplicitAny: CloudFormation のテンプレートは任意の形をとる
@@ -266,7 +275,8 @@ function build(config: ConsoleConfig, kind: string, inline: Map<number, unknown[
       Properties: {
         RoleName: role.roleName,
         Path: rolePath(role.tier),
-        MaxSessionDuration: role.sessionSeconds,
+        // Admin はちょうど 3600（AWS が強制できる最短）、Standard は sessionSeconds（G2 の決裁の論点 5）
+        MaxSessionDuration: roleMaxSessionDuration(role),
         // 守りの部品は、その種類で割り当てのあるロールにだけ付ける。割り当てのないロールは AllowedPattern で作られず、
         // ImportValue を置くと Admin の Export の無い基盤（AdminIssuerHost が空）で解決に失敗しうるため出さない
         ManagedPolicyArns: [
@@ -293,6 +303,19 @@ function build(config: ConsoleConfig, kind: string, inline: Map<number, unknown[
 }
 
 /**
+ * Admin の階層のロールの sessionSeconds が MaxSessionDuration（3600）を超えていないか。設定の解析（parseConsoleConfig）でも
+ * 断るが、解析を通さずに組んだ設定でも、Worker が求める長さがロールの上限を超えるテンプレートを作らない。
+ */
+function checkAdminSessions(config: ConsoleConfig): void {
+  const out = new IssueList();
+  config.roles.forEach((r, i) => {
+    if (r.tier === "admin" && r.sessionSeconds > ADMIN_MAX_SESSION_SECONDS)
+      out.add(`roles[${i}].sessionSeconds`, "admin_session_seconds");
+  });
+  if (out.items.length > 0) throw new ConsoleConfigError(out.items);
+}
+
+/**
  * 1 つの種類のテンプレートを作る。誤り（設定にない種類・下流のポリシー文書の欠落や形の違い）は ConsoleConfigError。
  * 戻り値は CloudFormation のテンプレート（JSON / YAML に直列化して使う）。時刻などの変わる値は入れない。
  */
@@ -303,6 +326,7 @@ export function buildKindTemplate(
 ): CfnTemplate {
   if (!config.kinds.some((x) => x.name === kind))
     throw new ConsoleConfigError([{ path: "kind", code: "unknown_kind" }]);
+  checkAdminSessions(config);
   return build(config, kind, resolveInline(config, options));
 }
 
@@ -311,6 +335,7 @@ export function buildKindTemplates(
   config: ConsoleConfig,
   options: TemplateOptions = {},
 ): KindTemplate[] {
+  checkAdminSessions(config);
   const inline = resolveInline(config, options);
   return config.kinds.map((k) => ({
     kind: k.name,

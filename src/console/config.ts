@@ -7,6 +7,7 @@
 
 import {
   ACCOUNT_ID_RE,
+  ADMIN_MAX_SESSION_SECONDS,
   AUD_RE,
   CONSOLE_SCHEMA_VERSION,
   DEFAULT_SOURCE_IDENTITY,
@@ -126,6 +127,7 @@ export type ConsoleConfigIssueCode =
   | "ou_nested"
   | "signin_access_admin"
   | "signing_account"
+  | "admin_session_seconds"
   // 以下は警告
   | "signin_access_standard"
   | "unassigned_team"
@@ -479,6 +481,9 @@ function parseRole(raw: unknown, p: string, out: IssueList): ConsoleRole | undef
     o.sessionSeconds > SESSION_SECONDS_MAX
   )
     out.add(sp, "range");
+  // Admin の階層のロールは MaxSessionDuration をちょうど 3600 にするので、Worker が求める長さもそれ以下（G2 の決裁の論点 5）
+  else if (tier === "admin" && o.sessionSeconds > ADMIN_MAX_SESSION_SECONDS)
+    out.add(sp, "admin_session_seconds");
   else sessionSeconds = o.sessionSeconds;
   let managedPolicyArns: string[] = [];
   let inlinePolicyFiles: string[] = [];

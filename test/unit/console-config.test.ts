@@ -475,6 +475,8 @@ describe("parseConsoleConfig: ポータルのオリジン", () => {
   it("Admin のロールだけがある場合も adminOrigin が要る", () => {
     const c = withChange(personalConfig, (x) => {
       x.roles[0].tier = "admin";
+      // Admin のロールの sessionSeconds は 3600 以下（admin_session_seconds にならない値にして、adminOrigin の検査だけを見る）
+      x.roles[0].sessionSeconds = 3600;
       x.kinds[0].assign = { developer: ["me"] };
     });
     expect(issuesOf(c)).toContainEqual(issue("portal.adminOrigin", "admin_origin_missing"));
@@ -742,6 +744,64 @@ describe("parseConsoleConfig: 参照と重複", () => {
     const found = issuesOf(c);
     expect(found).toContainEqual(issue("roles[4].name", "param_collision"));
     expect(found).not.toContainEqual(issue("roles[2].name", "param_collision"));
+  });
+});
+
+describe("parseConsoleConfig: Admin のセッションの長さ（cto の決裁 G2 の論点 5。MaxSessionDuration はちょうど 3600）", () => {
+  // companyConfig の roles[0] は Admin の階層（admin）、roles[1]・roles[2] は Standard の階層
+  it.each([900, 1800, 3600])(
+    "Admin のロールの sessionSeconds %i は受け付ける（3600 以下）",
+    (v) => {
+      const c = withChange(companyConfig, (x) => {
+        x.roles[0].sessionSeconds = v;
+      });
+      expect(issuesOf(c)).toEqual([]);
+    },
+  );
+
+  it.each([3601, 7200, 43200])(
+    "Admin のロールの sessionSeconds %i は admin_session_seconds（range ではない）",
+    (v) => {
+      const c = withChange(companyConfig, (x) => {
+        x.roles[0].sessionSeconds = v;
+      });
+      const found = issuesOf(c);
+      expect(found).toContainEqual(issue("roles[0].sessionSeconds", "admin_session_seconds"));
+      expect(found).not.toContainEqual(issue("roles[0].sessionSeconds", "range"));
+    },
+  );
+
+  it("Admin でも、全体の範囲（900〜43200）の外は今までどおり range だけ", () => {
+    for (const v of [899, 43201]) {
+      const c = withChange(companyConfig, (x) => {
+        x.roles[0].sessionSeconds = v;
+      });
+      const found = issuesOf(c).filter((i) => i.path === "roles[0].sessionSeconds");
+      expect(
+        found.map((i) => i.code),
+        String(v),
+      ).toEqual(["range"]);
+    }
+  });
+
+  it("Standard のロールは今のまま（900〜43200。3600 を超えてよい）", () => {
+    const ok = withChange(companyConfig, (x) => {
+      x.roles[1].sessionSeconds = 43200;
+      x.roles[2].sessionSeconds = 900;
+    });
+    expect(issuesOf(ok)).toEqual([]);
+    const low = withChange(companyConfig, (x) => {
+      x.roles[1].sessionSeconds = 899;
+    });
+    expect(issuesOf(low)).toContainEqual(issue("roles[1].sessionSeconds", "range"));
+  });
+
+  it("tier を書かない（既定の standard）ロールは 3600 を超えてよい", () => {
+    const c = withChange(companyConfig, (x) => {
+      delete x.roles[1].tier;
+      x.roles[1].sessionSeconds = 28800;
+    });
+    expect(issuesOf(c)).toEqual([]);
   });
 });
 
