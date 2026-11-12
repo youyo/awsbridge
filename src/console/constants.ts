@@ -2,7 +2,7 @@
 // Worker のエントリは、設定の解析器（config.ts）や生成器（generate.ts）をバンドルに引き込まないよう、このファイルと
 // 契約の型（types.ts）だけを読む。設定の検証・生成に使う道具はここに置かない。
 // 設計: docs/specs/console-login-portal.md §11.1（固定の約束）・console-login.md §3.4（SourceIdentity）。
-// MCP 用 Worker（src/index.ts）からは import しない（test/unit/console-layout.test.ts と test/e2e/console-bundle.test.ts で確かめる）。
+// MCP 用 Worker（src/index.ts）からは import しない（test/unit/console-layout.test.ts と test/e2e/console-isolation.test.ts で確かめる）。
 
 export const CONSOLE_SCHEMA_VERSION = 1;
 /** セッションタグのキー（チーム）。cto の D9 で名前空間つきに決めた。 */

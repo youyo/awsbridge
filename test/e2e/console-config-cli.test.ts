@@ -83,6 +83,29 @@ describe("console:config:check", () => {
     expect(r.stderr + r.stdout).not.toContain("222222222222");
   });
 
+  it("issuer のホストがポータルのホストと同じ・入れ子なら終了コード 1（G-8）。generate も何も書かない", () => {
+    const d = tmp();
+    const c = companyConfig();
+    c.boundaries[0].issuers.standard = "https://portal.example.com/standard";
+    c.boundaries[0].issuers.admin = "https://id.admin-portal.example.com/admin";
+    const file = write(d, "console.json", c);
+    const r = run("check", { AWSBRIDGE_CONSOLE_CONFIG: file });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("boundaries[0].issuers.standard: issuer_host_overlaps_portal");
+    expect(r.stderr).toContain("boundaries[0].issuers.admin: issuer_host_overlaps_portal");
+    expect(r.stderr + r.stdout).not.toContain("portal.example.com");
+    const out = join(d, "out");
+    const g = run("generate", {
+      AWSBRIDGE_CONSOLE_CONFIG: file,
+      AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
+      AWSBRIDGE_CONSOLE_INVENTORY_FILE: write(d, "inventory.json", companyInventory()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
+    });
+    expect(g.status).toBe(1);
+    expect(g.stderr).toContain("issuer_host_overlaps_portal");
+    expect(existsSync(out)).toBe(false);
+  });
+
   it("AUD のファイルを渡すと、AUD の対応（欠落・食い違い）まで検査する", () => {
     const d = tmp();
     const auds = companyAuds();

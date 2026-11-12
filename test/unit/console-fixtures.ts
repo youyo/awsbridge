@@ -67,7 +67,7 @@ export function companyConfig(): Raw {
         name: "managed",
         issuers: {
           standard: "https://id.example.com/standard",
-          admin: "https://id.example.com/admin",
+          admin: "https://admin-id.example.com/admin",
         },
       },
       { name: "partner:partner-x", issuers: { standard: "https://id.example.com/partner-x" } },
