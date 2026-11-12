@@ -126,6 +126,10 @@ run = "pnpm tsx scripts/console/config.ts generate"
 description = "参考のロールのテンプレート infra/aws/console/kind.example.yaml を、会社用の設定の例（config/console.company.example.json）の種類 C から書き直す（生成器を変えたら回す）"
 run = "pnpm tsx scripts/console/kind-example.ts"
 
+[tasks."console:inspect"]
+description = "コンソールログインの検査の道具: プロファイルのアカウントの IAM を読み（書き込まない）、信頼ポリシー（許可リスト方式）・パス・守りの部品の今の版・予約名の衝突・棚卸し・署名アカウントを確かめる（--profile <名前> が要る。--stops <file> で停止中の確認。出力は伏せ字）"
+run = "pnpm tsx scripts/console/inspect.ts"
+
 # ---- 検証用（PoC 由来）。実 AWS を呼ぶので明示的に実行したときだけ使う ----
 
 [tasks."poc:mint"]

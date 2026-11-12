@@ -1,5 +1,5 @@
 // コンソールログインの設定の置き場所: MCP 用 Worker から切り離されていること（cto の D2）、例・gitignore・mise タスク。
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -60,6 +60,8 @@ describe("MCP 用 Worker との分離（静的な import）", () => {
       "src/console/types.ts",
       "src/console/config.ts",
       "src/console/generate.ts",
+      "src/console/guard.ts",
+      "src/console/inspect.ts",
     ]) {
       const g = importGraph(join(root, f));
       for (const mcp of ["src/index.ts", "src/handler.ts", "src/proxy.ts"]) {
@@ -71,6 +73,61 @@ describe("MCP 用 Worker との分離（静的な import）", () => {
         f,
       ).toEqual([]);
     }
+  });
+});
+
+describe("検査の道具（src/console/inspect.ts）の置き場所", () => {
+  const INSPECT = ["src/console/inspect.ts", "src/console/guard.ts"];
+
+  /** リポジトリの wrangler の設定（node_modules を除く）の main（Worker のエントリ）。 */
+  function workerEntries(): string[] {
+    const found: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(join(root, dir), { withFileTypes: true })) {
+        if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+        const rel = dir === "" ? e.name : `${dir}/${e.name}`;
+        if (e.isDirectory()) walk(rel);
+        else if (/^wrangler.*\.jsonc?$/.test(e.name)) {
+          const main = /"main"\s*:\s*"([^"]+)"/.exec(read(rel))?.[1];
+          if (main) found.push(join(root, dir, main));
+        }
+      }
+    };
+    walk("");
+    return found;
+  }
+
+  it("どの Worker のエントリ（wrangler の main）からも届かない", () => {
+    const entries = workerEntries();
+    // 陽性の対照: MCP 用と PoC の Worker のエントリを見つけている
+    expect(entries.map((f) => relative(root, f))).toEqual(
+      expect.arrayContaining(["src/index.ts", "scripts/poc/human/worker.ts"]),
+    );
+    for (const entry of entries) {
+      const files = importGraph(entry).files.map((f) => relative(root, f));
+      for (const f of INSPECT) expect(files, `${relative(root, entry)} → ${f}`).not.toContain(f);
+    }
+  });
+
+  it("src/ と scripts/ のうち検査の判定を（間接にでも）import するのは読み取りの CLI（scripts/console/inspect*.ts）だけ", () => {
+    const importers: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(join(root, dir), { withFileTypes: true })) {
+        const rel = `${dir}/${e.name}`;
+        if (e.isDirectory()) walk(rel);
+        else if (rel.endsWith(".ts") && !INSPECT.includes(rel)) {
+          const direct = importGraph(join(root, rel)).files.map((f) => relative(root, f));
+          if (direct.includes("src/console/inspect.ts")) importers.push(rel);
+        }
+      }
+    };
+    walk("src");
+    walk("scripts");
+    // 読み取りの CLI とその部品（scripts/console/inspect-read.ts）だけ。陽性の対照として CLI を含むこと
+    expect(importers.sort()).toEqual([
+      "scripts/console/inspect-read.ts",
+      "scripts/console/inspect.ts",
+    ]);
   });
 });
 
@@ -162,6 +219,12 @@ describe("mise タスク（console:config:*）", () => {
   ])("%s は scripts/console/config.ts を呼び、wrangler・aws・terraform を呼ばない", (cmd, name) => {
     const run = /^run\s*=.*$/m.exec(section(name))?.[0] ?? "";
     expect(run).toContain(`scripts/console/config.ts ${cmd}`);
+    expect(run).not.toMatch(/wrangler|\baws\b|terraform/);
+  });
+
+  it("console:inspect は scripts/console/inspect.ts を呼び、wrangler・terraform を呼ばない（aws の読み取りはスクリプトの中だけ）", () => {
+    const run = /^run\s*=.*$/m.exec(section('tasks."console:inspect"'))?.[0] ?? "";
+    expect(run).toContain("scripts/console/inspect.ts");
     expect(run).not.toMatch(/wrangler|\baws\b|terraform/);
   });
 
