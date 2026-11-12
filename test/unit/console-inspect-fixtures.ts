@@ -7,7 +7,7 @@ import { parse } from "yaml";
 import { type ConsoleConfig, parseConsoleConfig } from "../../src/console/config";
 import type { AccountSnapshot, RoleSnapshot } from "../../src/console/inspect";
 import { buildKindTemplate } from "../../src/console/template";
-import { evaluate, type Json } from "./cfn";
+import { conditionValues, evaluate, type Json } from "./cfn";
 import { companyConfig, companyInventory } from "./console-fixtures";
 
 /** 試験の対象のアカウント（会社用の設定のインベントリで種類 A: admin ← infra-elevated、readonly ← sa・infra）。 */
@@ -39,11 +39,24 @@ const BASE: Json = parse(
 
 const PSEUDO = { "AWS::Partition": "aws", "AWS::AccountId": ACCOUNT };
 
-/** base.yaml の部品の文書を、このアカウントの値で評価する。 */
-export function guardDocument(logicalId: "StandardGuardPolicy" | "AdminGuardPolicy"): Json {
-  return evaluate(BASE.Resources[logicalId].Properties.PolicyDocument, {
+/**
+ * base.yaml の部品の文書を、このアカウントの値で評価する。admin = false は Admin の階層の無いアカウント
+ * （base に AdminIssuerHost を渡さない）の形。
+ */
+export function guardDocument(
+  logicalId: "StandardGuardPolicy" | "AdminGuardPolicy",
+  admin = true,
+): Json {
+  const params = {
     ...PSEUDO,
     IssuerHost: HOST,
+    StandardPath: "standard",
+    AdminIssuerHost: admin ? ADMIN_HOST : "",
+    AdminPath: "admin",
+  };
+  return evaluate(BASE.Resources[logicalId].Properties.PolicyDocument, {
+    ...params,
+    ...conditionValues(BASE, params),
   });
 }
 
@@ -53,7 +66,8 @@ function roleFromTemplate(logicalId: string, params: Record<string, string>): Ro
     ...PSEUDO,
     IssuerHost: HOST,
     StandardPath: "standard",
-    AdminProviderArn: ADMIN_PROVIDER,
+    AdminIssuerHost: ADMIN_HOST,
+    AdminPath: "admin",
     ...params,
   });
   const managed = (p.ManagedPolicyArns as Json[]).map((x) =>

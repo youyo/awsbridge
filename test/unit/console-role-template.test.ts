@@ -130,11 +130,13 @@ function props(tpl: Json, logicalId: string, params: Params): Json {
   });
 }
 
-const ADMIN_PROVIDER = `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/admin`;
+const ADMIN_HOST = "admin-id.example.com";
+const ADMIN_PROVIDER = `arn:aws:iam::${ACCOUNT}:oidc-provider/${ADMIN_HOST}/admin`;
 const STD = { IssuerHost: HOST, StandardPath: "standard" };
+const ADMIN = { AdminIssuerHost: ADMIN_HOST, AdminPath: "admin" };
 const ALL = {
   ...STD,
-  AdminProviderArn: ADMIN_PROVIDER,
+  ...ADMIN,
   ViewerTeams: "sa,infra",
   AdministratorTeams: "infra-elevated",
 };
@@ -148,7 +150,7 @@ const allows = (p: Json) =>
     .filter((s) => s.Effect === "Allow");
 
 describe("信頼ポリシー（Admin）", () => {
-  it("Admin: Principal はパラメーターで受けた Admin のプロバイダーだけで、aud の条件キーはその issuer（完全一致）", () => {
+  it("Admin: Principal は AdminIssuerHost・AdminPath とアカウントから組んだ Admin のプロバイダーだけで、aud の条件キーはその issuer（完全一致）", () => {
     const doc = props(templateC(), "AdministratorRole", ALL).AssumeRolePolicyDocument;
     expect(JSON.parse(doc)).toEqual({
       Version: "2012-10-17",
@@ -159,7 +161,7 @@ describe("信頼ポリシー（Admin）", () => {
           Action: ["sts:AssumeRoleWithWebIdentity", "sts:TagSession", "sts:SetSourceIdentity"],
           Condition: {
             StringEquals: {
-              [`${HOST}/admin:aud`]: "awsbridge-console",
+              [`${ADMIN_HOST}/admin:aud`]: "awsbridge-console",
               "aws:RequestTag/awsbridge_team": ["infra-elevated"],
             },
             "ForAllValues:StringEquals": { "aws:TagKeys": ["awsbridge_team"] },
@@ -170,12 +172,39 @@ describe("信頼ポリシー（Admin）", () => {
     });
   });
 
-  it("AdminProviderArn が既定（空）でも、組み込み関数の評価が失敗しない（Fn::Select が範囲外にならない）", () => {
-    const p = props(templateC(), "AdministratorRole", {
-      ...STD,
-      AdministratorTeams: "infra-elevated",
+  it("Admin の Principal は Fn::Sub で AWS::AccountId から組む（パラメーターにアカウント ID を入れない。StackSet で 1 つの値にできる）", () => {
+    const tpl = templateC();
+    const sub = tpl.Resources.AdministratorRole.Properties.AssumeRolePolicyDocument["Fn::Sub"][1];
+    // Fn::Sub の変数の参照（${Name}）
+    const ref = (name: string) => `\${${name}}`;
+    const issuer = `${ref("AdminIssuerHost")}/${ref("AdminPath")}`;
+    expect(sub.Principal).toEqual({
+      "Fn::Sub": `arn:${ref("AWS::Partition")}:iam::${ref("AWS::AccountId")}:oidc-provider/${issuer}`,
     });
-    expect(typeof p.AssumeRolePolicyDocument).toBe("string");
+    expect(sub.Issuer).toEqual({ "Fn::Sub": issuer });
+    // 別のアカウントでも同じパラメーターで、そのアカウントの ARN になる
+    const other = evaluate(tpl.Resources.AdministratorRole.Properties.AssumeRolePolicyDocument, {
+      ...PSEUDO,
+      "AWS::AccountId": "222222222222",
+      ...ALL,
+    });
+    expect(JSON.parse(other).Statement[0].Principal.Federated).toBe(
+      `arn:aws:iam::222222222222:oidc-provider/${ADMIN_HOST}/admin`,
+    );
+    // ARN を分割する式は残っていない
+    expect(JSON.stringify(tpl)).not.toContain("Fn::Select");
+  });
+
+  it("世代つきのパス（AdminPath）を変えると Principal と条件キーが一緒に変わる", () => {
+    const doc = props(templateC(), "AdministratorRole", {
+      ...ALL,
+      AdminPath: "admin-2",
+    }).AssumeRolePolicyDocument;
+    const st = JSON.parse(doc).Statement[0];
+    expect(st.Principal.Federated).toBe(
+      `arn:aws:iam::${ACCOUNT}:oidc-provider/${ADMIN_HOST}/admin-2`,
+    );
+    expect(Object.keys(st.Condition.StringEquals)).toContain(`${ADMIN_HOST}/admin-2:aud`);
   });
 
   it("どちらの階層でも Allow の文は 1 つだけ（別の文で迂回できない）", () => {
@@ -200,23 +229,43 @@ describe("Parameters", () => {
     for (const ng of ["/std", "std/", "STD", "", 'std"']) expect(path.test(ng), ng).toBe(false);
   });
 
-  it("AdminProviderArn は既定が空で、空か OIDC プロバイダーの ARN だけを受け付ける（G1-b まで値は未確定）", () => {
-    expect(p().AdminProviderArn.Default).toBe("");
-    const re = new RegExp(p().AdminProviderArn.AllowedPattern);
-    for (const ok of [
-      "",
-      ADMIN_PROVIDER,
-      `arn:aws:iam::${ACCOUNT}:oidc-provider/admin.example.com/p/admin`,
-    ])
-      expect(re.test(ok), ok).toBe(true);
+  it("AdminIssuerHost は既定が空で、空か base.yaml と同じ規則のホスト名だけ（JSON に差し込めない）。AdminProviderArn は無い", () => {
+    expect(p().AdminProviderArn).toBeUndefined();
+    expect(p().AdminIssuerHost.Default).toBe("");
+    expect(p().AdminIssuerHost.MaxLength).toBe(180);
+    const re = new RegExp(p().AdminIssuerHost.AllowedPattern);
+    for (const ok of ["", ADMIN_HOST, "a"]) expect(re.test(ok), ok).toBe(true);
     for (const ng of [
-      `arn:aws:iam::${ACCOUNT}:role/x`,
-      `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}`,
-      `${ADMIN_PROVIDER}"`,
-      `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/admin/`,
+      ADMIN_PROVIDER,
+      `https://${ADMIN_HOST}`,
+      `${ADMIN_HOST}/`,
+      `${ADMIN_HOST}/admin`,
+      `${ADMIN_HOST}"`,
+      "Admin-id.example.com",
       "*",
     ])
       expect(re.test(ng), ng).toBe(false);
+  });
+
+  it("AdminPath は既定 admin、StandardPath と同じ規則", () => {
+    expect(p().AdminPath.Default).toBe("admin");
+    expect(p().AdminPath.AllowedPattern).toBe(p().StandardPath.AllowedPattern);
+    expect(p().AdminPath.MaxLength).toBe(64);
+    const re = new RegExp(p().AdminPath.AllowedPattern);
+    for (const ok of ["admin", "admin-2"]) expect(re.test(ok), ok).toBe(true);
+    for (const ng of ["/admin", "admin/", "", 'admin"']) expect(re.test(ng), ng).toBe(false);
+  });
+
+  it("Admin のパラメーターは base.yaml の同じ名前のパラメーターと同じ規則", () => {
+    const base = parse(
+      readFileSync(resolve(import.meta.dirname, "../../infra/aws/console/base.yaml"), "utf8"),
+      { customTags: [] },
+    ).Parameters;
+    for (const k of ["IssuerHost", "StandardPath", "AdminIssuerHost", "AdminPath"]) {
+      expect(p()[k].AllowedPattern, k).toBe(base[k].AllowedPattern);
+      expect(p()[k].MaxLength, k).toBe(base[k].MaxLength);
+      expect(p()[k].Default, k).toBe(base[k].Default);
+    }
   });
 
   it("ロールごとの <Name>Teams: 既定は空。その種類で割り当てたチームの組み合わせだけを受け付ける（JSON に差し込めない）", () => {
@@ -238,14 +287,20 @@ describe("Parameters", () => {
     expect(re.test("infra-elevated")).toBe(false);
   });
 
-  it("パラメーターは StackSets 用の生成物（assignments[].parameters）のキーと、issuer の 3 つだけ", async () => {
+  it("パラメーターは StackSets 用の生成物（assignments[].parameters）のキーと、issuer の 4 つだけ", async () => {
     const { generateConsoleArtifacts } = await import("../../src/console/generate");
     const config = parsed(viewerAdminConfig());
     const { stacksets } = generateConsoleArtifacts(config, { mode: "check", generatedAt: "x" });
     for (const a of stacksets.assignments) {
       const tpl = buildKindTemplate(config, a.kind);
       expect(Object.keys(tpl.Parameters).sort(), a.kind).toEqual(
-        [...Object.keys(a.parameters), "IssuerHost", "StandardPath", "AdminProviderArn"].sort(),
+        [
+          ...Object.keys(a.parameters),
+          "IssuerHost",
+          "StandardPath",
+          "AdminIssuerHost",
+          "AdminPath",
+        ].sort(),
       );
       // 生成物の値はテンプレートの規則を満たす
       for (const [k, v] of Object.entries(a.parameters))
@@ -253,7 +308,7 @@ describe("Parameters", () => {
     }
   });
 
-  it("Admin の階層のロールがなければ AdminProviderArn を置かない", () => {
+  it("Admin の階層のロールがなければ AdminIssuerHost・AdminPath を置かない", () => {
     const c = viewerAdminConfig();
     c.roles = c.roles.filter((r: Json) => r.name === "viewer");
     c.teams = c.teams.filter((t: Json) => t.tier !== "admin");
@@ -274,14 +329,19 @@ describe("Conditions: 割り当てのパラメーターが空のロールは作�
     expect(created(templateC(), ALL)).toContain("ViewerRole");
   });
 
-  it("Administrator は AdministratorTeams と AdminProviderArn の両方があるときだけ作る", () => {
+  it("Administrator は AdministratorTeams と AdminIssuerHost の両方があるときだけ作る", () => {
     expect(created(templateC(), ALL)).toContain("AdministratorRole");
     expect(created(templateC(), { ...ALL, AdministratorTeams: "" })).not.toContain(
       "AdministratorRole",
     );
-    expect(created(templateC(), { ...ALL, AdminProviderArn: "" })).not.toContain(
+    expect(created(templateC(), { ...ALL, AdminIssuerHost: "" })).not.toContain(
       "AdministratorRole",
     );
+    // AdminIssuerHost が空でも、組み込み関数の評価は失敗しない
+    expect(
+      typeof props(templateC(), "AdministratorRole", { ...ALL, AdminIssuerHost: "" })
+        .AssumeRolePolicyDocument,
+    ).toBe("string");
     expect(created(templateC(), { ...STD })).toEqual([]);
   });
 

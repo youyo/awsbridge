@@ -130,6 +130,22 @@ describe("console:inspect（偽の aws で実プロセス）", () => {
     NO_SECRETS(r.out);
   });
 
+  it("穴の回帰: Admin のホストの Deny が無い古い部品は、Admin の階層のアカウントで終了コード 1（guard_version_mismatch）", () => {
+    const s = goodSnapshot();
+    for (const p of s.managedPolicies) {
+      const st = (p.document as Json).Statement.find(
+        (x: Json) => x.Sid === "DenyConsoleProviderWrites",
+      );
+      // 前の版の部品: プロバイダーの Deny が Standard のホストだけ
+      st.Resource = (st.Resource as string[])[0];
+    }
+    const r = inspect(s);
+    expect(r.status, r.out).toBe(1);
+    expect(r.out).toMatch(/ERROR\s+guard_version_mismatch\s+FederatedViewer/);
+    expect(r.out).toMatch(/ERROR\s+guard_version_mismatch\s+FederatedAdministrator/);
+    NO_SECRETS(r.out);
+  });
+
   it("停止の一覧を渡すと、Deny の無いロールを違反にする（値は出さない）", () => {
     const s = goodSnapshot();
     role(s, "FederatedViewer").inlinePolicies?.push({

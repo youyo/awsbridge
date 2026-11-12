@@ -41,6 +41,28 @@ describe("必須のスタックのテンプレート（cfn-lint）", () => {
     expect(r.out).toContain("W3037");
   });
 
+  // プロバイダーの Deny の Resource は Standard の部品では Fn::If、Admin の部品（条件つきのリソース）では 2 つのホスト。
+  // どちらの文でも cfn-lint が Action を検査することを、その部品の中だけを壊して確かめる
+  it.each([
+    ["Standard の部品（Resource が Fn::If）", "\n  StandardGuardPolicy:", "AdminGuardPolicy:"],
+    ["Admin の部品（条件つき）", "\n  AdminGuardPolicy:", "\nOutputs:"],
+  ])("陰性対照: %s のプロバイダーの Deny の Action の綴りを誤ると落ちる", (name, start, end) => {
+    const text = readFileSync(BASE, "utf8");
+    const at = text.indexOf(start);
+    const to = text.indexOf(end, at + 1);
+    expect(at).toBeGreaterThan(0);
+    expect(to).toBeGreaterThan(at);
+    const from = "iam:AddClientIDToOpenIDConnectProvider";
+    const part = text.slice(at, to);
+    expect(part).toContain(from);
+    expect(part).toContain("AdminIssuerHost");
+    const path = join(dir, `bad-provider-${name.length}.yaml`);
+    writeFileSync(path, text.slice(0, at) + part.replace(from, `${from}X`) + text.slice(to));
+    const r = cfnLint(path);
+    expect(r.status).not.toBe(0);
+    expect(r.out).toContain("W3037");
+  });
+
   it("陰性対照: aws login --remote の Deny の Action の綴りを誤ると落ちる", () => {
     const r = cfnLint(
       brokenCopy("bad-signin.yaml", "signin:CreateOAuth2Token", "signin:CreateOAuth2Tokn"),

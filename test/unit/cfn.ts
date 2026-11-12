@@ -66,3 +66,28 @@ function resolveRef(name: string, params: Record<string, string | string[]>): st
   if (v === undefined) throw new Error(`未解決の参照: ${name}`);
   return v;
 }
+
+/** Conditions の式（Fn::Equals / Fn::Not / Fn::And / Fn::Or / Condition）を、パラメーターで評価する。 */
+export function evalCondition(tpl: Json, expr: Json, params: Record<string, string>): boolean {
+  const [key] = Object.keys(expr);
+  const arg = expr[key as string];
+  if (key === "Condition") return evalCondition(tpl, tpl.Conditions[arg], params);
+  if (key === "Fn::Equals") {
+    const [a, b] = (arg as Json[]).map((v) => evaluate(v, params));
+    return a === b;
+  }
+  if (key === "Fn::Not") return !evalCondition(tpl, arg[0], params);
+  if (key === "Fn::And") return (arg as Json[]).every((e) => evalCondition(tpl, e, params));
+  if (key === "Fn::Or") return (arg as Json[]).some((e) => evalCondition(tpl, e, params));
+  throw new Error(`未対応の条件: ${key}`);
+}
+
+/** テンプレートのすべての Conditions を評価した値（"true" / "false"）。evaluate の Fn::If に渡す。 */
+export function conditionValues(tpl: Json, params: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(tpl.Conditions ?? {}).map(([k, v]) => [
+      k,
+      String(evalCondition(tpl, v, params)),
+    ]),
+  );
+}

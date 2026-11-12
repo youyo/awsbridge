@@ -266,6 +266,50 @@ Steps (the Worker comes first: IAM reads the issuer's `/.well-known/openid-confi
 
 This way you can check the old and new deployments side by side before you switch. Without a second Worker this is not a parallel migration: the new stack can be created only after the Worker's `ISSUER` has moved to the new URL, and from then until the new stack and the new `roleArn` values are deployed, MCP calls fail (the old roles no longer accept the Worker's tokens). If you do it that way, prepare the rollback first (redeploy the Worker with the old `ISSUER` and the old `roleArn` values; keep the old stack until the new one works).
 
+## Required stack for console login (base)
+
+[`infra/aws/console/base.yaml`](infra/aws/console/base.yaml) (StackSet `awsbridge-console-base`) creates the IAM OIDC providers for console login and the per-tier guard policies (customer managed, explicit Denies only). It does not create roles (the reference role template is [`infra/aws/console/kind.example.yaml`](infra/aws/console/kind.example.yaml); regenerate it with `mise run console:template:example` after changing the generator). Design: `docs/specs/console-login.md` §4.2 and §4.8.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `IssuerHost` | none (required) | Host of the Standard issuer (e.g. `awsbridge-oidc-console.example.com`) |
+| `StandardPath` | `std` | Path of the Standard issuer. Issuer = `https://<IssuerHost>/<StandardPath>` |
+| `AdminIssuerHost` | empty | Host of the Admin issuer (e.g. `awsbridge-oidc-admin-console.example.com`). Empty: the Admin provider and the Admin guard policy are not created. The same value as `IssuerHost` is rejected by `Rules` (the Admin issuer is on a separate host) |
+| `AdminPath` | `admin` | Path of the Admin issuer. Issuer = `https://<AdminIssuerHost>/<AdminPath>` |
+| `Audience` | `awsbridge-console` | Fixed |
+
+- **Pass `AdminIssuerHost` only to the accounts that get Administrator** (a StackSets parameter override: `--parameter-overrides` of `aws cloudformation create-stack-instances` / `update-stack-instances`). Leave it empty for every other account.
+- In accounts with the Admin tier, both the Standard and the Admin guard policies also deny writes to the Admin provider (create, delete, adding a client ID, and so on). The inspection tool (`mise run console:inspect`) expects guard policies that protect both hosts in accounts that get Administrator in the config, and guard policies that protect only the Standard host elsewhere (otherwise `guard_version_mismatch`).
+- Order: publish the Admin issuer (discovery and JWKS of the Admin Worker) first, then pass `AdminIssuerHost`.
+- To stop using the Admin tier: delete the Admin role stacks first (they import the Admin guard policy export), then set `AdminIssuerHost` back to empty. In the other order the export cannot be removed and the stack update fails.
+- Deploy and update with a principal other than the console-login roles (for example the StackSets execution role). A console-login role session with a guard policy attached cannot update this stack.
+- The provider ARNs are outputs but not exports. The role template builds the ARN from `AdminIssuerHost`, `AdminPath`, and the account ID (`AWS::AccountId`), so the role stack parameters contain no account ID.
+
+### Stopping only the Admin provider (L2)
+
+This stops new Administrator assumptions without relying on Cloudflare (`docs/specs/console-login-admin.md` §7). It does not stop AWS sessions that were already issued, so combine it with revoke (L3). **It is done outside CloudFormation.** The commands and the restore procedure below have not been run yet; they are to be confirmed in ②.
+
+1. With a principal other than the console-login roles, delete the Admin provider in the target account (the guard policy Denies only block writes from the console-login roles).
+
+   ```sh
+   aws iam delete-open-id-connect-provider --profile <operator profile> \
+     --open-id-connect-provider-arn arn:aws:iam::<account ID>:oidc-provider/awsbridge-oidc-admin-console.example.com/admin
+   ```
+
+2. **While it is stopped, do not update the base stack (the stack instance for that account).** The provider has drifted from the stack, and what an update does in that state (fail, or recreate the provider) has not been measured. If it is recreated, the stop is undone.
+3. To restore, recreate the provider with the same URL, the same client ID, and the same tags. The ARN is determined by the URL, so the role trust policies do not change.
+
+   ```sh
+   aws iam create-open-id-connect-provider --profile <operator profile> \
+     --url https://awsbridge-oidc-admin-console.example.com/admin \
+     --client-id-list awsbridge-console \
+     --tags Key=project,Value=awsbridge Key=awsbridge-console-tier,Value=admin
+   ```
+
+4. After recreating it, run stack drift detection and confirm there is no difference before you resume stack updates (whether the recreated provider is reported as not drifted has not been confirmed; to be confirmed in ②).
+
+To be measured in ② and added to this procedure: the time from deletion until assumptions stop, what a stack update does while stopped, the restore procedure, and the time until assumptions succeed again after the restore.
+
 ## Access applications for console login (Cookie Path)
 
 The console-login portal (the entry screen) sits behind Cloudflare Access applications. When teams are separated by path (`portal.routing: path`, the default), **Cookie Path (`path_cookie_attribute`) must be enabled on the entry application and on every team application** (Standard and Admin alike). If it is disabled, the AUD of another application on the same host also lands in the `aud` of the Access JWT, and the Worker's "exactly one `aud`" check rejects it (nobody can log in). When teams are separated by host (`routing: host`), cookies are already separated by host, so this is only a warning. The Worker does not enforce Cookie Path; it is checked in two ways.

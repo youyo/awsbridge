@@ -5,9 +5,13 @@
 
 import type { Tier } from "./constants";
 
-export type GuardParams = { partition: string; accountId: string; issuerHost: string };
+/**
+ * issuerHosts: コンソール用のプロバイダーのホスト。Standard の issuer のホストと、Admin の階層のあるアカウント
+ * （base に AdminIssuerHost を渡したもの）では Admin の issuer のホストの順。どちらの部品も両方を守る（cto の決裁 2026-11-13）。
+ */
+export type GuardParams = { partition: string; accountId: string; issuerHosts: string[] };
 
-/** その階層の守りの部品の文書（base.yaml の Fn::Sub を、アカウントの値で展開したもの）。 */
+/** その階層の守りの部品の文書（base.yaml の Fn::Sub・Fn::If を、アカウントの値で展開したもの）。 */
 export function guardPolicyDocument(tier: Tier, p: GuardParams) {
   const iam = `arn:${p.partition}:iam::${p.accountId}`;
   const statements: Record<string, unknown>[] = [
@@ -49,7 +53,8 @@ export function guardPolicyDocument(tier: Tier, p: GuardParams) {
         "iam:TagOpenIDConnectProvider",
         "iam:UntagOpenIDConnectProvider",
       ],
-      Resource: `${iam}:oidc-provider/${p.issuerHost}/*`,
+      // base.yaml は配列（Admin の階層が無ければ要素は 1 つ）。IAM が 1 要素を文字列で返しても検査（canon）は同じとみなす
+      Resource: p.issuerHosts.map((h) => `${iam}:oidc-provider/${h}/*`),
     },
     {
       Sid: "DenyGuardPolicyWrites",

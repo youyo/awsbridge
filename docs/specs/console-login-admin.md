@@ -409,7 +409,7 @@ X1 には、署名の独立の記録（KMS の Sign の CloudTrail）が無い�
 | `secret_key` の署名・Admin の issuer の文書・Access JWT の鮮度の検査・`key-check`・生成器の `admin_issuer_*` | PR #27 |
 | 運用の道具（`console:admin-key:put` / `retire` / `check`、`secrets:scan`）| PR #27 |
 | 負の試験・3 方向のバンドルの分離の試験 | PR #26 |
-| Admin のプロバイダー（基盤のスタック）| **未実装**。基盤のスタック（PR #17）は Admin のプロバイダーを作らない。ロールのテンプレート（PR #20）は `AdminProviderArn` が空なら Admin のロールを作らない。Admin のプロバイダーは別のホストなので、`IssuerHost` を階層ごとに分けるパラメーターの形が要る。`AdminProviderArn` にアカウント ID が入るため、StackSet で 1 つの値にできない。形は未決 |
+| Admin のプロバイダー（基盤のスタック）| 実装済み（cto の決裁 2026-11-13 の P-A）。基盤のスタックの `AdminIssuerHost`（既定は空。Administrator を配るアカウントにだけ渡す）と `AdminPath`（既定 `admin`）で、Admin のプロバイダーと Admin の部品を作る。`IssuerHost` と同じホストは `Rules` で断る（D3）。両方の部品のプロバイダーの Deny に Admin のホストを足した（前の版は Standard のホストだけで、Admin のプロバイダーの削除・作り直し・ClientID の追加が Deny の外だった）。ロールのテンプレートは `AdminProviderArn` をやめ、`AdminIssuerHost`・`AdminPath`・`AWS::AccountId` から ARN を組む（パラメーターにアカウント ID が入らない）。検査の道具は Admin の階層のあるアカウントで 2 つのホストの部品を期待する（古い部品は `guard_version_mismatch`）。L2 はスタックの外で行い、その間はスタックを更新しない（README）。cto の条件「この変更（PR-2）が入るまで Admin のプロバイダーを配らない」は変わらない。実物での確認（Administrator のセッションから Admin のプロバイダーの削除・作成が AccessDenied、L2 の手順の所要時間とスタック更新の挙動）は ② で行う（console-login.md §4.2）|
 | Admin の Worker に対する `secret_key` の実物での確認 | 未実施（`console:admin-key:check` が最初）|
 | Cookie Path の検査（Cloudflare API を読む道具 `console:access:inspect`。入口のアプリにも掛ける。Terraform の参考の例 `infra/cloudflare/console/`）| 実装済み。Worker と生成器では強制しない |
 | Admin の `MaxSessionDuration` の下限（3600）の生成器での強制 | 未実装 |
@@ -449,7 +449,7 @@ X1 には、署名の独立の記録（KMS の Sign の CloudTrail）が無い�
 - `wrangler secret put` / `secret bulk` / ダッシュボード / Workers Builds の経路で、別の secret を更新したあとに `secret_key` が残るか（K4 の未測定。Standard の (h)）
 - STS の JWKS のキャッシュの長さ（N5）。差し替えの待ち時間は README（1 時間以上）と PoC の観察（直後）を両方書き、G2 で確定する（§6.1）
 - Cloudflare に頼らない停止（全アカウントの L2）の所要時間（G5 の前）
-- Admin のプロバイダーのスタックの形（別ホストのパラメーター、`AdminProviderArn` のアカウント ID）。§12.3
+- （閉じた）Admin のプロバイダーのスタックの形は cto の決裁 2026-11-13 の P-A で決まり、実装した（§12.3）。残るのは ② での実物の確認（Admin のプロバイダーの削除・作成が Administrator のセッションから AccessDenied になること、L2 をスタックの外で行う手順の所要時間とその間のスタック更新の挙動）
 - `signing.accountIds` と誤り `signing_account`（署名を置くアカウントにコンソールのロールを配らない。PR #20）: G1 の「署名用アカウント」のために作られた。X1 では署名用アカウントが無いので、残すか退避先専用にするかは未決
 - Admin の issuer のホストに Access が掛かる環境での Bypass（§2.1）、本物の `secret_key` のバインディングでの Worker の検査（§3.3）
 - 新しい Worker に最初の鍵を投入するときの、スクリプトの存在の要否（§2.2）
