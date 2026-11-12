@@ -1,6 +1,6 @@
 // コンソールログイン: チーム・ロール・アカウントの種類を定義する設定ファイルのスキーマと検証。
 // 設計: docs/specs/console-login-portal.md §11（設定ファイル）。上流はスキーマ・例・生成の道具だけを持ち、実際の値は下流に置く。
-// MCP 用 Worker（src/index.ts）からは import しない（cto の D2。test/unit/console-layout.test.ts と test/e2e/console-bundle.test.ts で確かめる）。
+// MCP 用 Worker（src/index.ts）からは import しない（cto の D2。test/unit/console-layout.test.ts と test/e2e/console-isolation.test.ts で確かめる）。
 // 副作用のない純粋関数だけを置く（node の API を使わない。生成の CLI は scripts/console/config.ts）。
 // エラーは「キーのパス」と「種別」だけで表し、設定の値（AUD・email・アカウント ID など）を文面に出さない。
 // パスに入る、利用者が書いたキー（未知のキー・assign などのマップのキー）は、名前の形でなければ <redacted> にする（safeKey）。
@@ -103,6 +103,7 @@ export type ConsoleConfigIssueCode =
   | "origin"
   | "workers_dev"
   | "origin_same"
+  | "issuer_host_overlaps_portal"
   | "admin_origin_missing"
   | "region_default"
   | "access_shape"
@@ -112,6 +113,9 @@ export type ConsoleConfigIssueCode =
   | "unknown_boundary"
   | "unknown_organization"
   | "duplicate"
+  | "admin_issuer_path"
+  | "admin_issuer_multiple"
+  | "admin_issuer_host_shared"
   | "tier_mismatch"
   | "boundary_tier_missing"
   | "placement"
@@ -307,6 +311,16 @@ class Names {
     if (this.seen.has(name)) out.add(path, "duplicate");
     this.seen.add(name);
   }
+}
+
+/** URL のホスト名（小文字。末尾のドット・ポートを除く）。 */
+function hostOf(url: string): string {
+  return new URL(url).hostname.toLowerCase().replace(/\.+$/, "");
+}
+
+/** 同じホスト、またはどちらかがもう一方のサブドメイン（ラベルの境界で見る。myportal.x は portal.x の入れ子ではない）。 */
+function hostsOverlap(a: string, b: string): boolean {
+  return a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`);
 }
 
 function checkOrigin(v: string | undefined, p: string, out: IssueList): string | undefined {
@@ -789,6 +803,40 @@ function crossCheck(c: ParsedParts, out: IssueList, warnings: IssueList): void {
       const u = b.issuers[t];
       if (u !== undefined) issuers.check(u, `boundaries[${i}].issuers.${t}`, out);
     }
+  });
+
+  // issuer のホストとポータル（とチーム）のホストは分ける（G-8）。同じホスト・入れ子は Bypass・Cookie・ホスト方式のチームのホストが重なる
+  if (c.portal) {
+    const portalHosts = [c.portal.standardOrigin, c.portal.adminOrigin].flatMap((o) =>
+      o === undefined ? [] : [hostOf(o)],
+    );
+    c.boundaries.forEach((b, i) => {
+      if (!b) return;
+      for (const t of TIERS) {
+        const u = b.issuers[t];
+        if (u === undefined) continue;
+        const h = hostOf(u);
+        if (portalHosts.some((p) => hostsOverlap(h, p)))
+          out.add(`boundaries[${i}].issuers.${t}`, "issuer_host_overlaps_portal");
+      }
+    });
+  }
+
+  // Admin の issuer（X1 の決裁 (a)・(h)、A-3 = I-B）: Cloudflare の別のホストの /admin。Admin の Worker が discovery と JWKS を出す。
+  // Admin の鍵と JWKS は 1 組なので、Admin の issuer を持つ境界は 1 つだけ。ホストは Standard の issuer のどれとも分ける（同じ・入れ子は不可）
+  const stdIssuerHosts = c.boundaries.flatMap((b) =>
+    b?.issuers.standard === undefined ? [] : [hostOf(b.issuers.standard)],
+  );
+  let adminIssuers = 0;
+  c.boundaries.forEach((b, i) => {
+    const u = b?.issuers.admin;
+    if (u === undefined) return;
+    const p = `boundaries[${i}].issuers.admin`;
+    if (new URL(u).pathname !== "/admin") out.add(p, "admin_issuer_path");
+    adminIssuers += 1;
+    if (adminIssuers > 1) out.add(p, "admin_issuer_multiple");
+    const h = hostOf(u);
+    if (stdIssuerHosts.some((s) => hostsOverlap(h, s))) out.add(p, "admin_issuer_host_shared");
   });
 
   // ポータルのオリジンと Admin の階層

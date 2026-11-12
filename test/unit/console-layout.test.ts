@@ -62,6 +62,13 @@ describe("MCP 用 Worker との分離（静的な import）", () => {
       "src/console/generate.ts",
       "src/console/guard.ts",
       "src/console/inspect.ts",
+      "src/console/issue/claims.ts",
+      "src/console/issue/errors.ts",
+      "src/console/issue/federation.ts",
+      "src/console/issue/identity.ts",
+      "src/console/issue/record.ts",
+      "src/console/issue/sign-standard.ts",
+      "src/console/issue/signer.ts",
     ]) {
       const g = importGraph(join(root, f));
       for (const mcp of ["src/index.ts", "src/handler.ts", "src/proxy.ts"]) {

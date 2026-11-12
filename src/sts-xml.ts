@@ -61,6 +61,18 @@ export function parseAssumeRoleResponse(xml: string): ParsedCredentials | undefi
   return { accessKeyId, secretAccessKey, sessionToken, expiration, assumedRoleArn };
 }
 
+/** 成功応答の AssumedRoleUser/AssumedRoleId（CloudTrail の突き合わせ用。無ければ undefined）。 */
+export function parseAssumedRoleId(xml: string): string | undefined {
+  const user = tag(xml, "AssumedRoleUser");
+  return user ? text(user, "AssumedRoleId") : undefined;
+}
+
+/** 応答本文の ResponseMetadata/RequestId（無ければ undefined）。 */
+export function parseRequestId(xml: string): string | undefined {
+  const meta = tag(xml, "ResponseMetadata");
+  return meta ? text(meta, "RequestId") : undefined;
+}
+
 /** エラー応答（<Error>）から Code と Message を取り出す。<Error> が無ければ undefined。 */
 export function parseStsError(xml: string): { code: string; message: string } | undefined {
   const err = tag(xml, "Error");

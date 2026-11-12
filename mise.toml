@@ -1,4 +1,5 @@
 [tools]
+gitleaks = "8.30.1"
 node = "24"
 "pipx:cfn-lint" = "1.59.0"
 pnpm = "11.28.5"
@@ -130,6 +131,60 @@ run = "pnpm tsx scripts/console/kind-example.ts"
 description = "コンソールログインの検査の道具: プロファイルのアカウントの IAM を読み（書き込まない）、信頼ポリシー（許可リスト方式）・パス・守りの部品の今の版・予約名の衝突・棚卸し・署名アカウントを確かめる（--profile <名前> が要る。--stops <file> で停止中の確認。出力は伏せ字）"
 run = "pnpm tsx scripts/console/inspect.ts"
 
+# ---- コンソールログイン: Admin の署名鍵（Workers の secret_key 型。X1 の決裁）。手順は README の「コンソールログインの Admin の署名鍵」----
+# 人が手元で実行する（CI から実行しない）。put と retire は -- --yes を付けたときだけ Cloudflare API を書き換える（既定は表示だけ）。
+# 変数（[env] に置かず mise.local.toml に置く）: AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID、AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN（任意。無ければ wrangler の OAuth）、
+#   AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG（既定 wrangler.console-admin.jsonc）、AWSBRIDGE_CONSOLE_ADMIN_ACCESS_TOKEN（check の key-check 用。任意）
+
+[tasks."console:admin-key:put"]
+description = "Admin の署名鍵を手元のメモリの中で作り、Cloudflare API で secret_key（ADMIN_KEY_<kid の 16 進>）として入れる。同じ名前があれば止める。-- --yes で実行（既定は表示だけ）"
+run = "pnpm tsx scripts/console/admin-key.ts put"
+
+[tasks."console:admin-key:retire"]
+description = "旧い Admin の署名鍵のバインディングを消す（今の鍵・vars とデプロイ済みの JWKS に残る鍵は断る。JWKS が取れなければ断る）。-- --binding ADMIN_KEY_… --yes で実行"
+run = "pnpm tsx scripts/console/admin-key.ts retire"
+
+[tasks."console:admin-key:check"]
+description = "デプロイ後の確認: 今の鍵が secret_key か、Admin の issuer の discovery と JWKS が vars と合うか、key-check（取り出せない・exportKey が失敗する・自己検証）"
+run = "pnpm tsx scripts/console/admin-key.ts check"
+
+# ---- コンソールログイン: Standard の署名鍵（境界ごとの Workers の secret_key 型。cto の決裁「Standard も secret_key に揃える」）----
+# 手順は README の「コンソールログインの Standard の署名鍵」。人が手元で実行する（CI から実行しない）。
+# put・retire・secrets は -- --yes を付けたときだけ Cloudflare API を書き換える（既定は表示だけ）。Admin の道具と別のトークンを使う。
+# 変数（[env] に置かず mise.local.toml に置く）: AWSBRIDGE_CONSOLE_STANDARD_CF_ACCOUNT_ID、AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN（任意。無ければ wrangler の OAuth）、
+#   AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG（既定 wrangler.console-standard.jsonc）、AWSBRIDGE_CONSOLE_STANDARD_ACCESS_TOKEN（check の key-check 用。任意）
+
+[tasks."console:standard-key:put"]
+description = "Standard の境界の署名鍵を手元のメモリの中で作り、Cloudflare API で secret_key（STANDARD_KEY_<kid の 16 進>）として入れる。同じ名前があれば止める。-- --boundary <境界> --yes で実行（既定は表示だけ）"
+run = "pnpm tsx scripts/console/standard-key.ts put"
+
+[tasks."console:standard-key:retire"]
+description = "旧い Standard の署名鍵のバインディングを消す（どれかの境界の今の鍵・vars とデプロイ済みの JWKS に残る鍵・STANDARD_KEY_ 以外の名前は断る）。-- --binding STANDARD_KEY_… --yes で実行"
+run = "pnpm tsx scripts/console/standard-key.ts retire"
+
+[tasks."console:standard-key:check"]
+description = "デプロイ後の確認: 境界ごとに今の鍵が secret_key か、issuer の discovery と JWKS が vars と合うか、key-check（取り出せない・exportKey が失敗する・自己検証）"
+run = "pnpm tsx scripts/console/standard-key.ts check"
+
+[tasks."console:secrets:standard"]
+description = "Standard の Worker の CSRF の鍵 CONSOLE_CSRF_KEY（secret_text）を、手元で作った 32 バイトの乱数で Cloudflare API から入れる（ファイルに書かない・表示しない）。署名鍵は入れない。-- --yes で実行"
+run = "pnpm tsx scripts/console/secrets.ts"
+
+# ---- コンソールログイン（Standard）: ビルド確認と手元の起動（デプロイは利用者が承認して手で行う）----
+# wrangler の設定は AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG（既定 wrangler.console-standard.jsonc）。MCP 用の AWSBRIDGE_WRANGLER_CONFIG / AWSBRIDGE_WRANGLER_ENV には左右されない（--env は付けない）。
+
+[tasks."console:build:standard"]
+description = "コンソールログイン（Standard）: wrangler deploy --dry-run でバンドルだけ確かめる（デプロイしない。先に console:config:generate が要る。鍵の vars が空でもよい）"
+run = 'env AWSBRIDGE_WRANGLER_CONFIG="${AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG:-wrangler.console-standard.jsonc}" AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy --dry-run --outdir dist/console-standard'
+
+[tasks."console:dev"]
+description = "コンソールログイン（Standard）: wrangler dev で手元に起動（手元用。先に console:config:generate が要る）"
+run = 'env AWSBRIDGE_WRANGLER_CONFIG="${AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG:-wrangler.console-standard.jsonc}" AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh dev'
+
+[tasks."secrets:scan"]
+description = "gitleaks で秘密の漏れを検査する（コミットの履歴と、未コミットを含む作業ツリー）"
+run = "bash scripts/secrets-scan.sh"
+
 # ---- 検証用（PoC 由来）。実 AWS を呼ぶので明示的に実行したときだけ使う ----
 
 [tasks."poc:mint"]
@@ -139,6 +194,21 @@ run = "pnpm tsx scripts/poc/mint.ts"
 [tasks."poc:sts"]
 description = "Worker 発行 JWT で AssumeRoleWithWebIdentity を実行し、否定ケースも確認（--role-arn 省略時はスタックの Output ReadOnlyRoleArn）"
 run = "pnpm tsx scripts/poc/sts.ts"
+
+# ---- PoC X1-(h): secret_key が、別の secret の更新（wrangler secret put・secret bulk など）のあとも残るか。Cloudflare だけを呼ぶ ----
+# 設定は AWSBRIDGE_X1H_POC_CF_ACCOUNT_ID（mise.local.toml）だけを読む。トークンは wrangler login の OAuth。明示的に実行したときだけ使う。
+
+[tasks."poc:x1h:run"]
+description = "PoC X1-(h): Worker awsbridge-x1h-poc をデプロイして secret_key を入れ、別の secret の更新の経路ごとに鍵が残るかを probe と API で見る"
+run = "pnpm tsx scripts/poc/x1h/run.ts"
+
+[tasks."poc:x1h:destroy"]
+description = "PoC X1-(h): Worker awsbridge-x1h-poc を消し、手元のデプロイ用の設定を消す"
+run = "bash scripts/poc/x1h/destroy.sh"
+
+[tasks."poc:x1h:clean-check"]
+description = "PoC X1-(h): Worker awsbridge-x1h-poc が残っていないかを Cloudflare API で確かめる（読み取りだけ）"
+run = "pnpm tsx scripts/poc/x1h/clean-check.ts"
 
 # ---- PoC: awsbridge 方式を人間の AWS ログイン（コンソール・aws login）に使えるか。手順は scripts/poc/human/README.md ----
 # MCP 経路とは別の issuer（Worker awsbridge-human-poc）・署名鍵・ロール・audience を使う。設定は AWSBRIDGE_HUMAN_POC_* だけを読む。

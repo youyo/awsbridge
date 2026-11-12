@@ -99,7 +99,9 @@ describe("Worker 用の生成物（階層ごと）", () => {
     expect(w?.portal.entryAud).toBe("7".repeat(64));
     expect(w?.teams.map((t) => t.name)).toEqual(["infra-elevated", "dev-elevated"]);
     expect(w?.roles.map((r) => r.name)).toEqual(["admin"]);
-    expect(w?.boundaries).toEqual([{ name: "managed", issuer: "https://id.example.com/admin" }]);
+    expect(w?.boundaries).toEqual([
+      { name: "managed", issuer: "https://admin-id.example.com/admin" },
+    ]);
   });
 
   it("一覧の行: 種類の割り当てを展開し、その階層のロールだけを入れる（§5.2 の形）", () => {
@@ -148,7 +150,7 @@ describe("Worker 用の生成物（階層ごと）", () => {
       "dev-elevated",
       "4".repeat(64),
       "7".repeat(64),
-      "https://id.example.com/admin",
+      "https://admin-id.example.com/admin",
     ]) {
       expect(s, leak).not.toContain(leak);
     }
@@ -558,7 +560,7 @@ describe("StackSets 用の生成物", () => {
         boundary: "managed",
         issuers: {
           standard: "https://id.example.com/standard",
-          admin: "https://id.example.com/admin",
+          admin: "https://admin-id.example.com/admin",
         },
       },
       {
