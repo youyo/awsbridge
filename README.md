@@ -273,7 +273,7 @@ This way you can check the old and new deployments side by side before you switc
 | Parameter | Default | Meaning |
 |---|---|---|
 | `IssuerHost` | none (required) | Host of the Standard issuer (e.g. `awsbridge-oidc-console.example.com`) |
-| `StandardPath` | `std` | Path of the Standard issuer. Issuer = `https://<IssuerHost>/<StandardPath>` |
+| `StandardPath` | `standard` | Path of the Standard issuer. Issuer = `https://<IssuerHost>/<StandardPath>` |
 | `AdminIssuerHost` | empty | Host of the Admin issuer (e.g. `awsbridge-oidc-admin-console.example.com`). Empty: the Admin provider and the Admin guard policy are not created. The same value as `IssuerHost` is rejected by `Rules` (the Admin issuer is on a separate host) |
 | `AdminPath` | `admin` | Path of the Admin issuer. Issuer = `https://<AdminIssuerHost>/<AdminPath>` |
 | `Audience` | `awsbridge-console` | Fixed |

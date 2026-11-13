@@ -84,7 +84,7 @@ const ACCOUNT = "123456789012";
 /** Admin の階層あり（Admin を配るアカウント）。 */
 const PARAMS: Params = {
   IssuerHost: HOST,
-  StandardPath: "std",
+  StandardPath: "standard",
   Audience: AUDIENCE,
   AdminIssuerHost: ADMIN_HOST,
   AdminPath: "admin",
@@ -201,7 +201,7 @@ describe("Parameters", () => {
     expect(p.IssuerHost.Default).toBeUndefined();
     const re = new RegExp(p.IssuerHost.AllowedPattern);
     expect(re.test(HOST)).toBe(true);
-    for (const ng of [`https://${HOST}`, `${HOST}/`, `${HOST}/std`, 'a"b.example.com', ""])
+    for (const ng of [`https://${HOST}`, `${HOST}/`, `${HOST}/standard`, 'a"b.example.com', ""])
       expect(re.test(ng), ng).toBe(false);
   });
   it("IssuerHost は小文字のラベルを . でつないだ形だけ（大文字・連続ドット・ラベルの端の - は不可）", () => {
@@ -227,11 +227,20 @@ describe("Parameters", () => {
     expect(pathMax).toBeGreaterThan(0);
     expect("https://".length + hostMax + "/".length + pathMax).toBeLessThanOrEqual(255);
   });
-  it("StandardPath は既定 std、§3.1 のパスの規則（先頭・末尾のスラッシュなし、小文字・数字・-）", () => {
-    expect(p.StandardPath.Default).toBe("std");
+  it("StandardPath は既定 standard、§3.1 のパスの規則（先頭・末尾のスラッシュなし、小文字・数字・-）", () => {
+    expect(p.StandardPath.Default).toBe("standard");
     const re = new RegExp(p.StandardPath.AllowedPattern);
-    for (const ok of ["std", "p/p01/std", "std-2"]) expect(re.test(ok), ok).toBe(true);
-    for (const ng of ["/std", "std/", "STD", "", "std//x", "std?x", "std#x"])
+    for (const ok of ["standard", "p/p01/standard", "standard-2"])
+      expect(re.test(ok), ok).toBe(true);
+    for (const ng of [
+      "/standard",
+      "standard/",
+      "STANDARD",
+      "",
+      "standard//x",
+      "standard?x",
+      "standard#x",
+    ])
       expect(re.test(ng), ng).toBe(false);
   });
   it("Audience は上流の定数 AUDIENCE だけ", () => {
@@ -328,8 +337,8 @@ describe("Resources", () => {
     const r = tpl.Resources.StandardProvider;
     expect(r.Type).toBe("AWS::IAM::OIDCProvider");
     expect(r.Condition).toBeUndefined();
-    const props = evaluate(r.Properties, { ...PARAMS, StandardPath: "p/p01/std" });
-    expect(props.Url).toBe(`https://${HOST}/p/p01/std`);
+    const props = evaluate(r.Properties, { ...PARAMS, StandardPath: "p/p01/standard" });
+    expect(props.Url).toBe(`https://${HOST}/p/p01/standard`);
     expect(props.ClientIdList).toEqual([AUDIENCE]);
     expect(props.ThumbprintList).toBeUndefined();
   });

@@ -273,7 +273,7 @@ issuer の URL（issuer のホスト）も変えるなら、新しいスタッ�
 | パラメーター | 既定 | 内容 |
 |---|---|---|
 | `IssuerHost` | なし（必須） | Standard の issuer のホスト（例 `awsbridge-oidc-console.example.com`） |
-| `StandardPath` | `std` | Standard の issuer のパス。issuer は `https://<IssuerHost>/<StandardPath>` |
+| `StandardPath` | `standard` | Standard の issuer のパス。issuer は `https://<IssuerHost>/<StandardPath>` |
 | `AdminIssuerHost` | 空 | Admin の issuer のホスト（例 `awsbridge-oidc-admin-console.example.com`）。空なら Admin のプロバイダーと Admin の部品を作りません。`IssuerHost` と同じ値は `Rules` で断ります（Admin の issuer は別のホスト） |
 | `AdminPath` | `admin` | Admin の issuer のパス。issuer は `https://<AdminIssuerHost>/<AdminPath>` |
 | `Audience` | `awsbridge-console` | 固定 |

@@ -141,7 +141,7 @@ describe("resolveIdentity（身元の制約。切り詰めない）", () => {
 
 describe("buildClaims（STS に渡す JWT の claim）", () => {
   const base = {
-    issuer: "https://idp.example.test/std",
+    issuer: "https://idp.example.test/standard",
     sub: "a@example.com",
     team: "infra",
     sourceIdentity: "a@example.com",
@@ -185,7 +185,7 @@ describe("buildClaims（STS に渡す JWT の claim）", () => {
 
   it.each([
     ["チーム名が規則に合わない", { team: "Infra Team" }],
-    ["issuer が https でない", { issuer: "http://idp.example.test/std" }],
+    ["issuer が https でない", { issuer: "http://idp.example.test/standard" }],
     ["SourceIdentity が 65 文字", { sourceIdentity: "x".repeat(65) }],
     ["SourceIdentity が空", { sourceIdentity: "" }],
   ])("%s は例外（発行しない側に倒す）", (_n, over) => {

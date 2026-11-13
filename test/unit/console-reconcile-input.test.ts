@@ -27,7 +27,7 @@ const issue = (over: Record<string, unknown> = {}) => ({
     role: "readonly",
     roleArn: ROLE_ARN,
     boundary: "managed",
-    issuer: "https://awsbridge-oidc-console.example.com/std",
+    issuer: "https://awsbridge-oidc-console.example.com/standard",
   },
   jwt: { jti: JTI, iat: 1_794_446_523, exp: 1_794_446_823, kid: "kid-1" },
   sts: {
@@ -174,7 +174,7 @@ describe("parseAssumeEvent（CloudTrail の AssumeRoleWithWebIdentity）", () =>
     userIdentity: {
       type: "WebIdentityUser",
       userName: "alice@example.com",
-      identityProvider: `arn:aws:iam::${ACCOUNT}:oidc-provider/awsbridge-oidc-console.example.com/std`,
+      identityProvider: `arn:aws:iam::${ACCOUNT}:oidc-provider/awsbridge-oidc-console.example.com/standard`,
     },
     eventTime: "2026-11-12T01:02:05Z",
     eventSource: "sts.amazonaws.com",
@@ -202,7 +202,7 @@ describe("parseAssumeEvent（CloudTrail の AssumeRoleWithWebIdentity）", () =>
       region: "us-east-1",
       accountId: ACCOUNT,
       roleArn: ROLE_ARN,
-      provider: `arn:aws:iam::${ACCOUNT}:oidc-provider/awsbridge-oidc-console.example.com/std`,
+      provider: `arn:aws:iam::${ACCOUNT}:oidc-provider/awsbridge-oidc-console.example.com/standard`,
       tokenId: JTI,
       accessKeyId: "ASIA…QQQQ",
       assumedRoleId: "AROA…",

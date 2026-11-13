@@ -22,7 +22,7 @@ import { type IssueRow, unavailableSigner } from "../../src/console/issue/signer
 import { assumeRoleWithWebIdentityDetailed, StsError } from "../../src/sts";
 import { makeStandardKey, type TestKey } from "../unit/console-standard-harness";
 
-const ISSUER = "https://idp.example.test/std";
+const ISSUER = "https://idp.example.test/standard";
 const ACCESS_KEY_ID = ["ASIA", "E".repeat(16)].join("");
 const SECRET = ["sec", "ret", "-", "k".repeat(24)].join("");
 const SESSION_TOKEN = ["tok", "en", "-", "t".repeat(48)].join("");
