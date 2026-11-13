@@ -873,7 +873,7 @@ architecture.md の形に合わせる。ポータルは HTML を返すが、`cod
 |---|---|
 | ポータル自身の Cookie | **持たない**。認証は Access の Cookie、個人の設定は localStorage |
 | `Cache-Control` | すべての応答で `no-store`（静的なファイルを除く） |
-| `Referrer-Policy` | `same-origin`。AWS への遷移（別のオリジン）では `Referer` を送らない。`no-referrer` にしないのは、Fetch の仕様では `no-referrer` のページからの GET・HEAD 以外のフォーム送信で `Origin: null` になり、§9.3 の 3（Origin の一致）で自分の POST まで拒否してしまうため [推測: 仕様の読み。実ブラウザでは P-4 で確かめる]。T2 で AWS に POST するときは `Origin: null` になる見込みで、AWS が受け付けるかも P-4 で確かめる |
+| `Referrer-Policy` | `same-origin`。AWS への遷移（別のオリジン）では `Referer` を送らない。`no-referrer` にしないのは、Fetch の仕様では `no-referrer` のページからの GET・HEAD 以外のフォーム送信で `Origin: null` になり、§9.3 の 3（Origin の一致）で自分の POST まで拒否してしまうため [推測: 仕様の読み。実ブラウザでは P-4 で確かめる]。T2 で AWS に POST するときは `Origin: null` になる見込みで、AWS が受け付けるかも P-4 で確かめる。**form の `rel` に `noreferrer` を付けても同じ**（HTML の仕様で送信の referrer policy が `no-referrer` になり、Chrome は POST の Origin を `null` で送る）ため、ポータルの POST の form は `rel="noopener"` だけにする [確認済み: 実環境の Chrome で `noopener noreferrer` では 403 `forbidden_origin`、`noopener` に変えると入れた] |
 | `Content-Security-Policy` | `default-src 'self'`、スクリプトは `'self'`（T2 を採るなら nonce）、`frame-ancestors 'none'`、`form-action 'self' https://signin.aws.amazon.com https://*.signin.aws.amazon.com https://console.aws.amazon.com https://*.console.aws.amazon.com`。`form-action` はフォーム送信後のリダイレクトの連鎖すべてに当たるため、サインインからコンソールへのリダイレクト先まで許す必要がある [確認済み: PoC の N10。signin だけだとコンソールへの遷移が止まった] |
 | `X-Content-Type-Options` | `nosniff` |
 | localStorage に置くもの | お気に入り・最近使ったもの（チーム・アカウント ID・アカウント名・ロール・時刻。**アカウントの email は置かない**。§5.6）、入れたことのあるチーム、リージョンの選択。認証情報・URL・トークンは置かない。消去のボタンを用意する |

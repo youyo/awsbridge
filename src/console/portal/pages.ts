@@ -156,7 +156,12 @@ export type LoginFormOptions = {
   mark?: string | undefined;
 };
 
-/** S2 アカウントの詳細とログイン（POST <team-base>/login のフォーム。hidden に csrf）。 */
+/**
+ * S2 アカウントの詳細とログイン（POST <team-base>/login のフォーム。hidden に csrf）。
+ * form の rel に noreferrer を付けない。付けると送信の referrer policy が no-referrer になり、ブラウザは POST の Origin を
+ * "null" で送って自分の検査（Origin の一致）で 403 になる。Referer を AWS へ送らないのは Referrer-Policy: same-origin と
+ * <meta name="referrer"> で満たす（noopener だけ残す）。
+ */
 export function loginFormPage(o: LoginFormOptions): string {
   const team = o.config.teams.find((t) => t.name === o.team);
   const selected =
@@ -189,7 +194,7 @@ export function loginFormPage(o: LoginFormOptions): string {
     `${notice}<p><a href="${esc(o.teamBase)}/">← 一覧へ</a></p>
 <h1>${esc(title)}</h1>
 <p>チーム: ${esc(team?.displayName ?? o.team)}</p>
-<form method="post" action="${esc(o.teamBase)}/login" target="_blank" rel="noopener noreferrer">
+<form method="post" action="${esc(o.teamBase)}/login" target="_blank" rel="noopener">
 <fieldset>
 <legend>ロール（このチームで入れるもの）</legend>
 <ul>
@@ -413,7 +418,7 @@ ${items}
 <p>前提: AWS CLI 2.32.0 以降。このロールのコンソールを、既定のブラウザで開いてあること。</p>
 <ol>
 <li>コンソールを開く（まだなら）
-<form method="post" action="${esc(o.teamBase)}/login" target="_blank" rel="noopener noreferrer">
+<form method="post" action="${esc(o.teamBase)}/login" target="_blank" rel="noopener">
 <input type="hidden" name="entry" value="${esc(`${a.accountId}:${role.name}`)}">
 <input type="hidden" name="region" value="${esc(region)}">
 <input type="hidden" name="csrf" value="${esc(o.csrf ?? "")}">

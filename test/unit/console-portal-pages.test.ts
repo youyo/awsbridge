@@ -2,6 +2,8 @@
 // 設計: docs/specs/console-login-portal.md §4.2・§4.4・§5.4・§5.6・§6.5・§9.2・§9.6。
 // 階層に共通の画面（Standard と Admin）。一覧は発行用の生成物のこのチームの行だけから作り、他のチームの行・AUD・ARN を出さない。
 // CSP（script-src 'self'・style-src 'self'）に合わせ、inline の script・style を使わない（一覧の JSON は実行されないデータの要素）。
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAdminWorker } from "../../src/console/admin/worker";
 import { createStandardWorker } from "../../src/console/standard/worker";
@@ -366,5 +368,66 @@ describe("静的なファイル（/assets と /t/<team>/assets）", () => {
       (await get(w, `/t/${ADMIN_TEAM}/assets/portal.js`, { aud: null, host: ADMIN_HOST, env }))
         .status,
     ).toBe(401);
+  });
+});
+
+/** HTML の中の `<form ...>` の開始タグを全部取り出す。 */
+const formTags = (html: string) => html.match(/<form\b[^>]*>/g) ?? [];
+
+describe("POST のフォームに noreferrer を付けない（Origin: null で自分の POST が 403 forbidden_origin になる）", () => {
+  // HTML の仕様では、form の rel に noreferrer があると送信の referrer policy が no-referrer になり、
+  // Chrome は POST の Origin を "null" で送る。Origin の完全一致を求める検査（§9.3 の 3）で拒否される。
+  // 既存の e2e は Origin を明示して送るため、この経路を捕まえられない。
+  const expectNoReferrerFree = (html: string, expectedPostForms: number) => {
+    const posts = formTags(html).filter((t) => /\smethod="post"/i.test(t));
+    expect(posts.length).toBe(expectedPostForms);
+    for (const tag of posts) {
+      expect(tag).toContain('action="');
+      expect(tag).not.toMatch(/noreferrer/i);
+      // 別タブで開くので opener は切る
+      expect(tag).toMatch(/\srel="[^"]*\bnoopener\b[^"]*"/);
+    }
+  };
+
+  it("S2 アカウントの詳細（Standard）の POST の form", async () => {
+    const html = await (await get(std(), "/t/infra/a/333333333333?role=readonly")).text();
+    expectNoReferrerFree(html, 1);
+  });
+
+  it("S2 アカウントの詳細（Admin）の POST の form", async () => {
+    const html = await (
+      await get(adm(), `/t/${ADMIN_TEAM}/a/333333333333?role=admin`, {
+        aud: ADMIN_AUD,
+        host: ADMIN_HOST,
+        env: adminEnv(h),
+      })
+    ).text();
+    expectNoReferrerFree(html, 1);
+  });
+
+  it("S3 aws login の手順（Standard）の POST の form", async () => {
+    const html = await (await get(std(), "/t/infra/a/333333333333/cli?role=readonly")).text();
+    expectNoReferrerFree(html, 1);
+  });
+
+  it("S3 aws login の手順（Admin）の POST の form", async () => {
+    const html = await (
+      await get(adm(), `/t/${ADMIN_TEAM}/a/333333333333/cli?role=admin`, {
+        aud: ADMIN_AUD,
+        host: ADMIN_HOST,
+        env: adminEnv(h),
+      })
+    ).text();
+    expectNoReferrerFree(html, 1);
+  });
+
+  it("pages.ts のどの method=post の form も noreferrer を持たない（今後足される form も捕まえる）", () => {
+    const src = readFileSync(
+      join(new URL("../../", import.meta.url).pathname, "src/console/portal/pages.ts"),
+      "utf8",
+    );
+    const posts = formTags(src).filter((t) => /\smethod="post"/i.test(t));
+    expect(posts.length).toBeGreaterThanOrEqual(2);
+    for (const tag of posts) expect(tag).not.toMatch(/noreferrer/i);
   });
 });
