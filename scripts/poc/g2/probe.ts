@@ -45,6 +45,7 @@ import {
   assertProbeLabel,
   assertProbeRoleArn,
   assumeProbe,
+  headerLine,
   keyFileOf,
   kid8,
   type ProbeSettings,
@@ -53,6 +54,7 @@ import {
   probeSettings,
   probeWranglerConfig,
   realHostsFrom,
+  refusalOf,
   signProbeToken,
   stsEndpointFrom,
 } from "./probe-lib";
@@ -167,9 +169,7 @@ async function check(retries: number): Promise<boolean> {
     const pass = status === 200 && isDeepStrictEqual(body, expected);
     if (!pass) ok = false;
     console.log(`[${pass ? "OK" : "NG"}] ${name} ${s.issuer}/.well-known/${file} HTTP ${status}`);
-    // Set-Cookie（エッジが付けるもの）は値を出さない
-    for (const [k, v] of headers)
-      console.log(`    ${k}: ${k.toLowerCase() === "set-cookie" ? "(省略)" : v}`);
+    for (const [k, v] of headers) console.log(`    ${headerLine(k, v)}`);
   }
   if (Array.isArray((docs.jwks as { keys?: unknown }).keys))
     console.log(
@@ -335,7 +335,10 @@ async function watch(): Promise<void> {
         record,
         `${JSON.stringify({ ...sample, status: o.status, elapsedSeconds: elapsedAtStart })}\n`,
       );
-      if (name === untilRefused) attempts.push({ atSeconds: elapsedAtStart, ok: o.ok });
+      // 通信の失敗・5xx は止め方に数えない（refusalOf）
+      const refused = refusalOf(o);
+      if (name === untilRefused && refused !== undefined)
+        attempts.push({ atSeconds: elapsedAtStart, ok: !refused });
       parts.push(`${name}[${kid}]=${o.ok ? "OK" : o.code}`);
     }
     console.log(`${at} +${elapsedAtStart}s ${parts.join(" ")}`);

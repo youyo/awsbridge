@@ -6,7 +6,8 @@
 //   GET <portal>/t/<team>/a/<account>?role=<role>（フォームの CSRF を取る）→ POST <portal>/t/<team>/login
 // を行い、時刻・HTTP の状態・エラーコードを 1 行ずつ出す（成功は AWS のサインインへの 302 = issued）。リダイレクトは追わない。
 // Cookie・CSRF・Location（サインインのトークン）・アカウント ID は、標準出力・記録（<g2 dir>/records/issue-watch-*.jsonl）に出さない。
-// Cookie のファイルは <g2 dir>/cookies/ の下だけを受け付け、終わったら（正常・失敗・Ctrl-C のどれでも）消して、名前と時刻を出す。
+// Cookie のファイルは <g2 dir>/cookies/ の下だけを受け付け、終わったら（正常・失敗・例外・SIGINT・SIGTERM・SIGHUP のどれでも）消して、
+// 名前と時刻を出す。SIGKILL では消せないので、そのときは手で消す。
 // 残すときは --keep-cookie。本物の Administrator（--role administrator）は断る。
 // 注意: POST のたびにポータルが本当に発行する（STS の引き受けと getSigninToken）。間隔を短くしすぎない。
 import { appendFileSync, existsSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -42,6 +43,9 @@ function cleanupCookie(): void {
   rmSync(f, { force: true });
   console.log(`Cookie のファイルを消しました: ${basename(f)} ${new Date().toISOString()}`);
 }
+
+// どの終わり方でも Cookie を残さない（例外・process.exit の経路。cleanupCookie は同期で、2 回目は何もしない）
+process.on("exit", () => cleanupCookie());
 
 function die(message: string): never {
   console.error(message);
@@ -136,6 +140,8 @@ function finish(reason: string): never {
   process.exit(0);
 }
 process.on("SIGINT", () => finish("interrupted"));
+process.on("SIGTERM", () => finish("terminated"));
+process.on("SIGHUP", () => finish("hangup"));
 
 async function request(
   method: "GET" | "POST",

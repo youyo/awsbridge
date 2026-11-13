@@ -124,21 +124,27 @@ function env(): Record<string, string> {
   return { ...e, AWSBRIDGE_G2_DEV_DIR: g2dir };
 }
 
-function run(args: string[], o: { killAfterMs?: number } = {}) {
+/** killOn を渡すと、最初の見張りの行が出たところでそのシグナルを送る（時間に頼らない）。 */
+function run(args: string[], o: { killOn?: NodeJS.Signals } = {}) {
   return new Promise<{ status: number | null; out: string }>((resolve) => {
     const p = spawn(
       join(root, "node_modules/.bin/tsx"),
       [join(root, "scripts/poc/g2/issue-watch.ts"), ...args],
-      { cwd: root, env: env() },
+      // 端末の Ctrl-C・端末を閉じたときと同じく、プロセスのグループにシグナルを送る
+      { cwd: root, env: env(), detached: true },
     );
     let out = "";
+    let sent = false;
     p.stdout.on("data", (c) => {
       out += c;
+      if (o.killOn !== undefined && !sent && /^\d{4}-\d\d-\d\dT.* team=/m.test(out)) {
+        sent = true;
+        process.kill(-(p.pid as number), o.killOn);
+      }
     });
     p.stderr.on("data", (c) => {
       out += c;
     });
-    if (o.killAfterMs !== undefined) setTimeout(() => p.kill("SIGINT"), o.killAfterMs);
     p.on("close", (status) => resolve({ status, out }));
   });
 }
@@ -233,19 +239,22 @@ describe("poc:g2:issue-watch（127.0.0.1 の擬似のポータル）", () => {
     noLeaks(deny.out + acc.out);
   });
 
-  it("Ctrl-C（SIGINT）でも要約を出し、Cookie を消す", async () => {
-    const file = cookieFile();
-    const r = await run(
-      [...target(), "--cookie-file", file, "--interval", "1", "--duration", "60"],
-      {
-        killAfterMs: 2500,
-      },
-    );
-    expect(existsSync(file)).toBe(false);
-    expect(r.out).toMatch(/Cookie のファイルを消しました/);
-    expect(r.out).toContain("| g2std |");
-    noLeaks(r.out);
-  });
+  it.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)(
+    "%s で止めても Cookie を消す（SIGINT は要約も出す）",
+    async (signal) => {
+      const file = cookieFile();
+      const r = await run(
+        [...target(), "--cookie-file", file, "--interval", "1", "--duration", "60"],
+        {
+          killOn: signal,
+        },
+      );
+      expect(existsSync(file)).toBe(false);
+      expect(r.out).toMatch(/Cookie のファイルを消しました/);
+      if (signal === "SIGINT") expect(r.out).toContain("| g2std |");
+      noLeaks(r.out);
+    },
+  );
 
   it("Cookie のファイルが <g2 dir>/cookies/ の外なら断り、何も呼ばず、そのファイルを消さない", async () => {
     const outside = join(dir, "outside.txt");

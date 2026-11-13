@@ -8,6 +8,8 @@ import {
   loginBody,
   parseIssueTarget,
 } from "../../scripts/poc/g2/issue-lib";
+import { loginFormPage, errorPage as realErrorPage } from "../../src/console/portal/pages";
+import { standardConfig } from "./console-standard-harness";
 
 // CSRF の形の文字列は実行時に組む
 const CSRF = ["v1", "1800000000", "A".repeat(43)].join(".");
@@ -175,5 +177,50 @@ describe("loginBody", () => {
     expect(
       new URLSearchParams(loginBody("123456789012", "viewer", CSRF, "us-east-1")).get("region"),
     ).toBe("us-east-1");
+  });
+});
+
+describe("本物の画面（src/console/portal/pages.ts）の出力で取り出せる", () => {
+  it("loginFormPage の hidden の csrf を取り出す", () => {
+    const config = standardConfig();
+    const account = config.accounts.find((a) => a.roles.some((r) => r.teams.length > 0));
+    if (!account) throw new Error("fixture: no account");
+    const team = account.roles.find((r) => r.teams.length > 0)?.teams[0] as string;
+    const roles = account.roles.flatMap((r) => {
+      const role = config.roles.find((x) => x.name === r.role);
+      return role ? [{ role, sessionSeconds: r.sessionSeconds }] : [];
+    });
+    const html = loginFormPage({
+      config,
+      team,
+      teamBase: `/t/${team}`,
+      account,
+      roles,
+      csrf: CSRF,
+      loginDisabled: false,
+    });
+    expect(classifyAccountPage({ status: 200, location: null, body: html })).toEqual({
+      ok: true,
+      csrf: CSRF,
+    });
+  });
+
+  it("errorPage の code を取り出す（要求 ID・戻るリンクつきでも）", () => {
+    for (const code of [
+      "csrf_failed",
+      "not_listed",
+      "login_disabled",
+      "signing_unavailable",
+    ] as const) {
+      const html = realErrorPage(code, { requestId: "req-1", teamBase: "/t/g2std" });
+      expect(classifyLogin({ status: 403, location: null, body: html }), code).toEqual({
+        ok: false,
+        code,
+      });
+      expect(classifyAccountPage({ status: 403, location: null, body: html }), code).toEqual({
+        ok: false,
+        code,
+      });
+    }
   });
 });

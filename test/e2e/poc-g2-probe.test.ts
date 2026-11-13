@@ -110,7 +110,7 @@ function env(extra: Record<string, string> = {}): Record<string, string> {
 function run(
   args: string[],
   e: Record<string, string> = env(),
-  o: { killAfterMs?: number } = {},
+  o: { killOnFirstLine?: boolean } = {},
 ): Promise<{ status: number | null; out: string; err: string }> {
   return new Promise((resolve) => {
     const p = spawn(
@@ -119,17 +119,24 @@ function run(
       {
         cwd: root,
         env: e,
+        // 端末の Ctrl-C と同じく、プロセスのグループにシグナルを送れるようにする
+        detached: true,
       },
     );
     let out = "";
     let err = "";
+    let sent = false;
     p.stdout.on("data", (c) => {
       out += c;
+      // 最初の見張りの行が出たら SIGINT を送る（時間に頼らない）
+      if (o.killOnFirstLine && !sent && /^\d{4}-\d\d-\d\dT/m.test(out)) {
+        sent = true;
+        process.kill(-(p.pid as number), "SIGINT");
+      }
     });
     p.stderr.on("data", (c) => {
       err += c;
     });
-    if (o.killAfterMs !== undefined) setTimeout(() => p.kill("SIGINT"), o.killAfterMs);
     p.on("close", (status) => resolve({ status, out, err }));
   });
 }
@@ -249,7 +256,7 @@ describe("poc:g2:probe（実プロセス）", () => {
       "--interval",
       "1",
       "--duration",
-      "1",
+      "3",
     ]);
     expect(r.status, r.out + r.err).toBe(0);
     const lines = r.out.split("\n").filter((l) => /^\d{4}-\d\d-\d\dT/.test(l));
@@ -315,7 +322,7 @@ describe("poc:g2:probe（実プロセス）", () => {
         "60",
       ],
       env(),
-      { killAfterMs: 3500 },
+      { killOnFirstLine: true },
     );
     expect(r.out).toMatch(/止めた理由: interrupted/);
     expect(r.out).toContain("| A |");

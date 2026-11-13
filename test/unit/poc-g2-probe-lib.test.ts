@@ -7,6 +7,7 @@ import {
   assertProbeIssuer,
   assertProbeRoleArn,
   assumeProbe,
+  headerLine,
   PROBE_DEFAULTS,
   parseKeyNames,
   probeDocuments,
@@ -14,6 +15,7 @@ import {
   probeSettings,
   probeWranglerConfig,
   realHostsFrom,
+  refusalOf,
   signProbeToken,
   stsEndpointFrom,
 } from "../../scripts/poc/g2/probe-lib";
@@ -405,5 +407,27 @@ describe("試験用の issuer の Worker の応答（probe-handler）", () => {
     const head = handleProbeRequest(req("/p/.well-known/jwks.json", "HEAD"), docs);
     expect(head.status).toBe(200);
     expect(await head.text()).toBe("");
+  });
+});
+
+describe("refusalOf（延長の止め方に数える結果。通信の失敗は数えない）", () => {
+  it("成功は false、STS の 4xx の拒否は true、通信の失敗・時間切れ・5xx は undefined（数えない）", () => {
+    expect(refusalOf({ ok: true, status: 200 })).toBe(false);
+    expect(refusalOf({ ok: false, code: "InvalidIdentityToken", status: 400, detail: "" })).toBe(
+      true,
+    );
+    expect(refusalOf({ ok: false, code: "AccessDenied", status: 403, detail: "" })).toBe(true);
+    expect(refusalOf({ ok: false, code: "NetworkError", status: 0, detail: "" })).toBeUndefined();
+    expect(refusalOf({ ok: false, code: "Timeout", status: 0, detail: "" })).toBeUndefined();
+    expect(
+      refusalOf({ ok: false, code: "ServiceUnavailable", status: 503, detail: "" }),
+    ).toBeUndefined();
+  });
+});
+
+describe("headerLine（check が出す応答ヘッダーの 1 行）", () => {
+  it("Set-Cookie の値は出さない。ほかはそのまま", () => {
+    expect(headerLine("cache-control", "no-store")).toBe("cache-control: no-store");
+    expect(headerLine("Set-Cookie", "__cf_bm=abc; Path=/")).toBe("Set-Cookie: (省略)");
   });
 });

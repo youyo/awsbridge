@@ -165,6 +165,27 @@ describe("runCleanCheck", () => {
     expect(r.find((c) => c.name.startsWith("cloudflare"))?.status).toBe("SKIP");
   });
 
+  it("Cloudflare の一覧に続きのページがある・success が true でない・形が違うなら ERR（残っていないと言わない）", async () => {
+    const aws = fakeAws({ providers: PROVIDERS_BASELINE });
+    const replies: Record<string, unknown> = {
+      "/workers/scripts": { success: true, result: [], result_info: { page: 1, total_pages: 2 } },
+      "/workers/domains": { success: false, result: [] },
+      "/access/apps": { success: true, result: { not: "a list" } },
+    };
+    const cf = async (url: string) => {
+      const path = url.split("?")[0] ?? "";
+      const key = Object.keys(replies).find((k) => path.endsWith(k)) as string;
+      return { status: 200, json: replies[key] };
+    };
+    const r = await runCleanCheck(
+      { aws: aws.run, cf },
+      { roleNames: [], stacks: [], baselineProviders: undefined },
+    );
+    const cfr = r.filter((c) => c.name.startsWith("cloudflare"));
+    expect(cfr.map((c) => c.status)).toEqual(["ERR", "ERR", "ERR"]);
+    expect(cfr[0]?.detail).toMatch(/truncated/);
+  });
+
   it("読めなければ ERR（残っていないとは言わない）", async () => {
     const aws = fakeAws({ fail: "iam list-roles" });
     const cf = fakeCf({ status: 403 });

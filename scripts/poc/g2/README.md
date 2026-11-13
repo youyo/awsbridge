@@ -28,7 +28,10 @@ mise run poc:g2:probe:forget -- --issuer kid                 # 測定のあと�
 - 隔離の条件（§2.6.1）はコードで守る。aud が `awsbridge-console`（と MCP の `awsbridge`）なら断る。ホストが `awsbridge-g2-probe-` で始まらないとき、または本物の issuer・ポータルのホストの一覧（`AWSBRIDGE_ISSUER`、`config/console.json` のポータルと issuer、`AWSBRIDGE_G2_PROBE_REAL_HOSTS`）にあるときも断る。ロールのパスが `/awsbridge-console/` の下なら断り、`/awsbridge-g2-probe/` 以外も断る
 - JWT は `aud` が `awsbridge-g2-probe`、`exp = iat + 300` で、回ごと・鍵ごとに作り直す。延長（`--extend-interval` と `--max-duration`）を付けると、`--duration` のあとは広げた間隔で続ける。`--until-refused` の鍵が `--stop-after-refused`（既定 30 分）続けて断られたら止める
 - 応答ヘッダーは本物の issuer と同じにする（`application/json` と `securityHeaders("page")`。`Cache-Control: no-store` を含む）
-- OIDC プロバイダーとロール（パス `/awsbridge-g2-probe/`）は、この道具では作らない（P-OP が作る）
+- OIDC プロバイダーとロールは、この道具では作らない（P-OP が作る）。合わせる値は次のとおり
+  - プロバイダーの URL は issuer と同じ `https://awsbridge-g2-probe-<label>.<zone>/p`。client ID は `awsbridge-g2-probe` だけにする
+  - ロールのパスは `/awsbridge-g2-probe/`。権限は持たせず、インラインは全 Deny の 1 つだけにする
+  - 信頼ポリシーはそのプロバイダー 1 つを信頼し、`<host>/p:aud` = `awsbridge-g2-probe`、`<host>/p:sub` = `g2-probe`（`AWSBRIDGE_G2_PROBE_SUBJECT` で変えられる）を条件にする
 
 ## 発行の見張り（`poc:g2:issue-watch`。追 1・ii-1d。Adm 枠では使わない）
 
@@ -39,7 +42,8 @@ mise run poc:g2:issue-watch -- --portal https://awsbridge-console.dev.example.co
 ```
 
 - 回ごとに `GET /t/<team>/a/<account>?role=<role>` で CSRF を取り、`POST /t/<team>/login` を送る。成功は AWS のサインインへの 302（`issued`）。リダイレクトは追わない
-- Cookie のファイルは `cookies/` の下だけを受け付ける。終わったら（正常に終えても、失敗しても、Ctrl-C でも）消して、ファイル名と時刻を出す。残すときは `--keep-cookie`
+- Cookie のファイルは `cookies/` の下だけを受け付ける。終わったら（正常・失敗・Ctrl-C・SIGTERM・端末を閉じたときのどれでも）消して、ファイル名と時刻を出す。SIGKILL では消せないので、そのときは手で消す。残すときは `--keep-cookie`
+- Cookie は始めに 1 回だけ読む。Access のセッションが切れたら（Admin は 15 分）、Cookie を置き直して起動し直す
 - `--role administrator`（本物の Administrator）は断る。POST のたびに本当に発行するので、間隔を短くしすぎない
 
 ## セッションの見張り（`poc:g2:session-watch`。ii-1c・ii-5・追 1）

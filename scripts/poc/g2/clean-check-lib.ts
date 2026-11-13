@@ -66,7 +66,7 @@ const list = (v: unknown, key: string): Obj[] => {
   return l.filter(isObj);
 };
 const names = (items: Obj[], key: string) => items.map((i) => String(i[key] ?? "?"));
-const errCode = (e: unknown) => /\(([A-Za-z.]+)\)/.exec((e as Error).message)?.[1] ?? "error";
+const errCode = (e: unknown) => /\(([A-Za-z0-9_.]+)\)/.exec((e as Error).message)?.[1] ?? "error";
 
 function verdict(name: string, leftovers: string[]): CheckResult {
   return leftovers.length === 0
@@ -204,7 +204,15 @@ export async function runCleanCheck(
     await attempt(name, async () => {
       const r = await cf(`/accounts/${o.cfAccountId ?? ""}${suffix}`);
       if (r.status !== 200) throw new Error(`(http_${r.status})`);
+      if (!isObj(r.json) || r.json.success !== true) throw new Error("(not_success)");
+      // 続きのページがあれば、全部を読めていないので「残っていない」とは言わない
+      const info = isObj(r.json.result_info) ? r.json.result_info : undefined;
+      const page = Number(info?.page ?? 1);
+      const pages = Number(info?.total_pages ?? 1);
+      const total = info?.total_count;
       const items = list(r.json, "result");
+      if (pages > page || (typeof total === "number" && total > items.length))
+        throw new Error("(truncated)");
       return verdict(
         name,
         items.map(pick).filter((x): x is string => x !== undefined),

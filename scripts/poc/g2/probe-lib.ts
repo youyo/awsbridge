@@ -338,3 +338,17 @@ export async function assumeProbe(p: {
     detail: maskDetail(err?.message ?? xml, p.token),
   };
 }
+
+/**
+ * 延長の止め方（--until-refused）に数える結果。成功は false、STS が 4xx で断ったものは true。
+ * 通信の失敗・時間切れ・5xx は undefined（数えない。手元の回線や STS の一時の失敗で「断られ続けた」と誤って止めないため）。
+ */
+export function refusalOf(o: ProbeOutcome): boolean | undefined {
+  if (o.ok) return false;
+  return o.status >= 400 && o.status < 500 ? true : undefined;
+}
+
+/** check が出す応答ヘッダーの 1 行。Set-Cookie（エッジが付けるもの）は値を出さない。 */
+export function headerLine(name: string, value: string): string {
+  return `${name}: ${name.toLowerCase() === "set-cookie" ? "(省略)" : value}`;
+}
