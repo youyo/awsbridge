@@ -25,6 +25,7 @@ import {
   type IssueTarget,
   loginBody,
   parseIssueTarget,
+  portalHostPrefixes,
 } from "./issue-lib";
 
 const g2 = g2Settings(process.env);
@@ -100,12 +101,15 @@ let count: number;
 let since: Date | undefined;
 let cookie: string;
 try {
-  target = parseIssueTarget({
-    portal: str("portal") ?? die("--portal を指定してください"),
-    team,
-    account: str("account") ?? die("--account を指定してください"),
-    role: assertWatchRole(str("role") ?? die("--role を指定してください")),
-  });
+  target = parseIssueTarget(
+    {
+      portal: str("portal") ?? die("--portal を指定してください"),
+      team,
+      account: str("account") ?? die("--account を指定してください"),
+      role: assertWatchRole(str("role") ?? die("--role を指定してください")),
+    },
+    portalHostPrefixes(process.env),
+  );
   intervalSeconds = parseDuration(str("interval") ?? "30", "--interval");
   durationSeconds = parseDuration(str("duration") ?? "15m", "--duration");
   count = Number(str("count") ?? "0");

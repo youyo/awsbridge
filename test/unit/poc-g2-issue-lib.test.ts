@@ -1,5 +1,8 @@
 // G2 の発行の見張り（poc:g2:issue-watch）の純粋関数: CSRF の取り出し・応答の分類・Cookie のファイルの置き場所。
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 import {
   assertCookieFile,
   assertWatchRole,
@@ -7,6 +10,7 @@ import {
   classifyLogin,
   loginBody,
   parseIssueTarget,
+  portalHostPrefixes,
 } from "../../scripts/poc/g2/issue-lib";
 import { loginFormPage, errorPage as realErrorPage } from "../../src/console/portal/pages";
 import { standardConfig } from "./console-standard-harness";
@@ -46,6 +50,26 @@ describe("parseIssueTarget", () => {
     ).toBe("http://127.0.0.1:8080");
   });
 
+  it("Admin のポータルも受け付ける。接頭辞は引数（環境変数 AWSBRIDGE_G2_PORTAL_HOST_PREFIXES）で変えられる", () => {
+    const t = { team: "g2adm", account: "123456789012", role: "admin-probe" };
+    expect(
+      parseIssueTarget({ ...t, portal: "https://awsbridge-admin-console.dev.example.com" }).origin,
+    ).toBe("https://awsbridge-admin-console.dev.example.com");
+    expect(
+      parseIssueTarget(
+        { ...t, portal: "https://g2dev-portal.dev.example.com" },
+        portalHostPrefixes({ AWSBRIDGE_G2_PORTAL_HOST_PREFIXES: "g2dev-portal., x." }),
+      ).origin,
+    ).toBe("https://g2dev-portal.dev.example.com");
+    expect(() =>
+      parseIssueTarget(
+        { ...t, portal: "https://awsbridge-console.dev.example.com" },
+        portalHostPrefixes({ AWSBRIDGE_G2_PORTAL_HOST_PREFIXES: "g2dev-portal." }),
+      ),
+    ).toThrow();
+    expect(portalHostPrefixes({})).toEqual(["awsbridge-console.", "awsbridge-admin-console."]);
+  });
+
   it("形の違う値は断る", () => {
     const ok = {
       portal: "https://awsbridge-console.dev.example.com",
@@ -57,6 +81,11 @@ describe("parseIssueTarget", () => {
       { portal: "https://awsbridge-console.dev.example.com/" },
       { portal: "http://awsbridge-console.dev.example.com" },
       { portal: "https://x.example.com/t/g2std" },
+      // ポータルでないホスト（接頭辞が違う・最初のラベルが違う）
+      { portal: "https://x.example.com" },
+      { portal: "https://awsbridge-console-evil.example.com" },
+      { portal: "https://evil.awsbridge-console.example.com" },
+      { portal: "https://awsbridge-console.dev.example.com." },
       { team: "G2STD" },
       { team: "a/b" },
       { account: "12345" },
@@ -75,14 +104,43 @@ describe("assertWatchRole（Adm 枠では回さない: 本物の Administrator �
 });
 
 describe("assertCookieFile（Cookie は <g2 dir>/cookies/ の下のファイルだけ。消すのもこの下だけ）", () => {
+  // 実際のファイルで確かめる（シンボリックリンクを解決するため）
+  const base = mkdtempSync(join(tmpdir(), "awsbridge-g2-cookie-"));
+  const cookies = join(base, "cookies");
+  const outside = join(base, "outside");
+  mkdirSync(join(cookies, "a"), { recursive: true });
+  mkdirSync(outside);
+  writeFileSync(join(cookies, "g2std.txt"), "x");
+  writeFileSync(join(cookies, "a", "b.txt"), "x");
+  writeFileSync(join(outside, "secret.txt"), "x");
+  writeFileSync(join(base, "other.txt"), "x");
+  symlinkSync(join(outside, "secret.txt"), join(cookies, "link.txt"));
+  symlinkSync(outside, join(cookies, "linkdir"));
+  afterAll(() => rmSync(base, { recursive: true, force: true }));
+
   it("cookies の直下・下のファイルを受け付け、絶対パスを返す", () => {
-    expect(assertCookieFile("/g2/cookies/g2std.txt", "/g2/cookies")).toBe("/g2/cookies/g2std.txt");
-    expect(assertCookieFile("/g2/cookies/a/b.txt", "/g2/cookies")).toBe("/g2/cookies/a/b.txt");
+    const real = realpathSync(cookies);
+    expect(assertCookieFile(join(cookies, "g2std.txt"), cookies)).toBe(join(real, "g2std.txt"));
+    expect(assertCookieFile(join(cookies, "a", "b.txt"), cookies)).toBe(join(real, "a", "b.txt"));
   });
 
-  it("外のファイル・cookies 自身・.. で外に出るものは断る", () => {
-    for (const f of ["/g2/other.txt", "/g2/cookies", "/g2/cookies/../x.txt", "/g2/cookiesx/a.txt"])
-      expect(() => assertCookieFile(f, "/g2/cookies"), f).toThrow();
+  it("外のファイル・cookies 自身・.. で外に出るもの・無いファイルは断る", () => {
+    for (const f of [
+      join(base, "other.txt"),
+      cookies,
+      join(cookies, "..", "other.txt"),
+      join(`${cookies}x`, "a.txt"),
+      join(cookies, "none.txt"),
+    ])
+      expect(() => assertCookieFile(f, cookies), f).toThrow();
+  });
+
+  it("シンボリックリンクのファイルは断る（リンク先が cookies の外でも中でも）", () => {
+    expect(() => assertCookieFile(join(cookies, "link.txt"), cookies)).toThrow(/リンク/);
+  });
+
+  it("リンクのディレクトリを経由して cookies の外に出るファイルは断る", () => {
+    expect(() => assertCookieFile(join(cookies, "linkdir", "secret.txt"), cookies)).toThrow();
   });
 });
 

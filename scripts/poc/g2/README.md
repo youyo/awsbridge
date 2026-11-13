@@ -25,7 +25,7 @@ mise run poc:g2:probe:check -- --issuer kid                  # 公開内容と�
 mise run poc:g2:probe:forget -- --issuer kid                 # 測定のあと、手元の鍵を消す（記録は残す）
 ```
 
-- 隔離の条件（§2.6.1）はコードで守る。aud が `awsbridge-console`（と MCP の `awsbridge`）なら断る。ホストが `awsbridge-g2-probe-` で始まらないとき、または本物の issuer・ポータルのホストの一覧（`AWSBRIDGE_ISSUER`、`config/console.json` のポータルと issuer、`AWSBRIDGE_G2_PROBE_REAL_HOSTS`）にあるときも断る。ロールのパスが `/awsbridge-console/` の下なら断り、`/awsbridge-g2-probe/` 以外も断る
+- 隔離の条件（§2.6.1）はコードで守る。aud が `awsbridge-console`（と MCP の `awsbridge`）なら断る。ホストが `awsbridge-g2-probe-<label>.<zone>`（`AWSBRIDGE_G2_PROBE_ZONE` の内の 1 段。末尾のドットは不可）でないとき、または本物の issuer・ポータルのホストの一覧（`AWSBRIDGE_ISSUER`、`config/console.json` のポータルと issuer、`AWSBRIDGE_G2_PROBE_REAL_HOSTS`）にあるときも断る。ロールのパスが `/awsbridge-console/` の下なら断り、`/awsbridge-g2-probe/` 以外も断る
 - JWT は `aud` が `awsbridge-g2-probe`、`exp = iat + 300` で、回ごと・鍵ごとに作り直す。延長（`--extend-interval` と `--max-duration`）を付けると、`--duration` のあとは広げた間隔で続ける。`--until-refused` の鍵が `--stop-after-refused`（既定 30 分）続けて断られたら止める
 - 応答ヘッダーは本物の issuer と同じにする（`application/json` と `securityHeaders("page")`。`Cache-Control: no-store` を含む）
 - OIDC プロバイダーとロールは、この道具では作らない（P-OP が作る）。合わせる値は次のとおり
@@ -44,6 +44,8 @@ mise run poc:g2:issue-watch -- --portal https://awsbridge-console.dev.example.co
 - 回ごとに `GET /t/<team>/a/<account>?role=<role>` で CSRF を取り、`POST /t/<team>/login` を送る。成功は AWS のサインインへの 302（`issued`）。リダイレクトは追わない
 - Cookie のファイルは `cookies/` の下だけを受け付ける。終わったら（正常・失敗・Ctrl-C・SIGTERM・端末を閉じたときのどれでも）消して、ファイル名と時刻を出す。SIGKILL では消せないので、そのときは手で消す。残すときは `--keep-cookie`
 - Cookie は始めに 1 回だけ読む。Access のセッションが切れたら（Admin は 15 分）、Cookie を置き直して起動し直す
+- `--portal` のホストは `awsbridge-console.`・`awsbridge-admin-console.` で始まるものだけ（Cookie をほかのホストに送らない）。名前が違うときは `AWSBRIDGE_G2_PORTAL_HOST_PREFIXES`（カンマ区切り。例 `g2dev-awsbridge-console.`）で変える
+- Cookie のファイルはシンボリックリンクにしない（断る）。リンクのディレクトリを経由して `cookies/` の外に出るものも断る
 - `--role administrator`（本物の Administrator）は断る。POST のたびに本当に発行するので、間隔を短くしすぎない
 
 ## セッションの見張り（`poc:g2:session-watch`。ii-1c・ii-5・追 1）
@@ -52,7 +54,7 @@ mise run poc:g2:issue-watch -- --portal https://awsbridge-console.dev.example.co
 mise run poc:g2:session-watch -- --profile g2-viewer --profile g2-viewer-remote --profile g2-admin-probe --interval 10
 ```
 
-- 既定の操作は `s3api list-buckets`。変えるときは `--operation "<サービス> <操作>"` で指定する（読み取りの操作だけ）。`sts get-caller-identity` は明示の Deny で止まらないので、停止の確認には使わない（指定すると警告を出す）
+- 既定の操作は `s3api list-buckets`。変えるときは `--operation "<サービス> <操作>"` で指定する（読み取りの操作だけ）。秘密を返す操作（`sts get-session-token`・`secretsmanager`・`ssm get-parameter*`・`kms` など）は断るが、一覧は網羅ではない。**操作は読み取りを選ぶ。出力は捨てるが、どの操作を呼ぶかの責任は利用者にある**。`sts get-caller-identity` は明示の Deny で止まらないので、停止の確認には使わない（指定すると警告を出す）
 
 ## 時間差の集計（`poc:g2:time-gap`。ii-2 の 6）
 

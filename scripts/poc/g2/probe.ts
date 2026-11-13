@@ -102,7 +102,7 @@ try {
     existsSync(configFile) ? readFileSync(configFile, "utf8") : undefined,
   );
   // どの操作でも、最初に issuer の隔離の条件を見る
-  assertProbeIssuer(s.issuer, realHosts);
+  assertProbeIssuer(s.issuer, realHosts, s.zone);
 } catch (e) {
   fail((e as Error).message);
 }
@@ -208,7 +208,7 @@ async function keys(): Promise<void> {
 async function deploy(): Promise<void> {
   const names = parseKeyNames(need("keys"), keyNames());
   const pubs = await Promise.all(names.map(async (n) => publicJwkOf(readKey(n))));
-  const docs = probeDocuments(s.issuer, pubs, realHosts);
+  const docs = probeDocuments(s.issuer, pubs, realHosts, s.zone);
   const template = parseJsonc(readFileSync(join(here, "wrangler.jsonc"), "utf8"));
   const cfg = probeWranglerConfig(template, {
     templateDir: here,
@@ -308,6 +308,7 @@ async function watch(): Promise<void> {
           audience: s.audience,
           subject: s.subject,
           realHosts,
+          zone: s.zone,
         });
         const o = await assumeProbe({
           endpoint,

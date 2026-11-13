@@ -7,6 +7,26 @@ export const DEFAULT_OPERATION = "s3api list-buckets";
 /** 読み取りの操作だけ（サービスと操作の 2 語。追加の引数は受け付けない）。 */
 const READ_VERB_RE = /^(list|get|describe|head)-[a-z0-9-]+$/;
 
+/**
+ * 読み取りの形でも、秘密（トークン・認証情報・秘密の値・鍵）や、その在りかを返す操作。出力は捨てるが、念のため断る。
+ * 網羅ではない（読み取りを選ぶ責任は利用者にある。README）。
+ */
+const SECRET_SERVICES = ["kms", "secretsmanager", "sso", "sso-oidc", "cognito-identity"];
+const SECRET_OPERATIONS: [string, RegExp][] = [
+  ["sts", /^get-(session|federation)-token$/],
+  ["ssm", /^get-parameter/],
+  ["ecr", /^get-authorization-token$/],
+  ["ecr-public", /^get-authorization-token$/],
+  ["codeartifact", /^get-authorization-token$/],
+  ["redshift", /^get-cluster-credentials/],
+  ["redshift-serverless", /^get-credentials$/],
+  ["eks", /^get-token$/],
+  ["ec2", /^get-password-data$/],
+  ["lambda", /^get-function$/],
+  ["lightsail", /^get-instance-access-details$/],
+  ["rds", /^generate-db-auth-token$/],
+];
+
 export function parseOperation(raw: string): { args: string[]; warning: string | undefined } {
   const parts = raw
     .trim()
@@ -22,6 +42,11 @@ export function parseOperation(raw: string): { args: string[]; warning: string |
     throw new Error(
       `--operation は「<サービス> <操作>」の 2 語（例 ${DEFAULT_OPERATION}）: '${raw}'`,
     );
+  if (
+    SECRET_SERVICES.includes(service) ||
+    SECRET_OPERATIONS.some(([sv, re]) => sv === service && re.test(op))
+  )
+    throw new Error(`--operation に秘密を返す操作は使えない: '${raw}'`);
   if (!READ_VERB_RE.test(op))
     throw new Error(`--operation は読み取りの操作（list-・get-・describe-・head-）だけ: '${raw}'`);
   const warning =

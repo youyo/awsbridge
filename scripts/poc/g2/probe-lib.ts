@@ -70,6 +70,8 @@ export function assertProbeAudience(aud: string): string {
 export function assertProbeIssuer(
   issuer: string,
   realHosts: ReadonlySet<string>,
+  /** 渡すと、ホストが awsbridge-g2-probe-<label>.<zone> の形（ゾーンの内の 1 段）であることも見る */
+  zone?: string,
 ): { issuer: string; host: string; path: string } {
   const m = /^https:\/\/([a-z0-9.-]+)(\/[a-z0-9-]+)$/.exec(issuer);
   const host = m?.[1];
@@ -77,6 +79,20 @@ export function assertProbeIssuer(
   if (!host || !path)
     throw new Error(
       `試験用の issuer は https://<host>/<path> の形（ポート・クエリなし）: '${issuer}'`,
+    );
+  // 末尾のドット（FQDN の書き方）・空のラベル・- で始まる／終わるラベルは断る（同じホストの別の書き方で一覧をすり抜けないように）
+  if (!host.split(".").every((l) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(l)))
+    throw new Error(
+      `試験用の issuer のホストの形が違う（末尾のドット・空のラベルなど）: '${host}'`,
+    );
+  if (
+    zone !== undefined &&
+    !new RegExp(
+      `^${PROBE_DEFAULTS.hostPrefix}[a-z0-9]{1,16}\\.${zone.replace(/\./g, "\\.")}$`,
+    ).test(host)
+  )
+    throw new Error(
+      `試験用の issuer のホストがゾーン ${zone} の内の ${PROBE_DEFAULTS.hostPrefix}<label> でない: '${host}'`,
     );
   if (!host.startsWith(PROBE_DEFAULTS.hostPrefix))
     throw new Error(`試験用の issuer のホストは ${PROBE_DEFAULTS.hostPrefix}* だけ: '${host}'`);
@@ -142,6 +158,8 @@ export function realHostsFrom(
 
 export interface ProbeSettings {
   label: string;
+  /** 開発用のゾーン（AWSBRIDGE_G2_PROBE_ZONE） */
+  zone: string;
   issuer: string;
   host: string;
   workerName: string;
@@ -166,6 +184,7 @@ export function probeSettings(
   const dir = join(g2Settings(env).dir, "probe", label);
   return {
     label,
+    zone,
     issuer,
     host: new URL(issuer).hostname,
     workerName: `${PROBE_DEFAULTS.workerPrefix}${label}`,
@@ -209,8 +228,9 @@ export function probeDocuments(
   issuer: string,
   publicJwks: readonly JWK[],
   realHosts: ReadonlySet<string>,
+  zone?: string,
 ): ProbeDocs {
-  assertProbeIssuer(issuer, realHosts);
+  assertProbeIssuer(issuer, realHosts, zone);
   if (publicJwks.length === 0) throw new Error("JWKS に載せる鍵がない");
   for (const k of publicJwks)
     if (["d", "p", "q", "dp", "dq", "qi"].some((f) => f in k))
@@ -225,11 +245,13 @@ export async function signProbeToken(p: {
   audience: string;
   subject: string;
   realHosts: ReadonlySet<string>;
+  /** 渡すとホストがこのゾーンの内かも見る */
+  zone?: string | undefined;
   /** epoch 秒 */
   now?: number;
 }): Promise<{ token: string; kid: string; jti: string }> {
   assertProbeAudience(p.audience);
-  assertProbeIssuer(p.issuer, p.realHosts);
+  assertProbeIssuer(p.issuer, p.realHosts, p.zone);
   const kid = await thumbprintOf(p.privateJwk);
   const key = await importJWK({ ...p.privateJwk, alg: "RS256" }, "RS256");
   const iat = p.now ?? Math.floor(Date.now() / 1000);
@@ -282,6 +304,8 @@ export function stsEndpointFrom(env: Record<string, string | undefined>, region:
   return `https://sts.${region}.amazonaws.com/`;
 }
 
+const UNPARSEABLE_DETAIL = "STS の応答を解析できない（本文は出さない）";
+
 export type ProbeOutcome =
   | { ok: true; status: number }
   | { ok: false; code: string; status: number; detail: string };
@@ -330,13 +354,11 @@ export async function assumeProbe(p: {
     };
   }
   if (status === 200 && parseAssumeRoleResponse(xml)) return { ok: true, status };
-  const err = parseStsError(xml);
-  return {
-    ok: false,
-    code: err?.code ?? `http_${status}`,
-    status,
-    detail: maskDetail(err?.message ?? xml, p.token),
-  };
+  const err = status === 200 ? undefined : parseStsError(xml);
+  // 解析できない応答（200 で認証情報が読めないものを含む）は、本文を転記しない
+  if (err === undefined)
+    return { ok: false, code: `http_${status}`, status, detail: UNPARSEABLE_DETAIL };
+  return { ok: false, code: err.code, status, detail: maskDetail(err.message, p.token) };
 }
 
 /**

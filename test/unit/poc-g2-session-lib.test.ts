@@ -35,6 +35,42 @@ describe("parseOperation", () => {
   });
 });
 
+describe("parseOperation: 秘密を返す読み取りの操作は断る", () => {
+  it.each([
+    "sts get-session-token",
+    "sts get-federation-token",
+    "secretsmanager get-secret-value",
+    "secretsmanager list-secrets",
+    "ssm get-parameter",
+    "ssm get-parameters",
+    "ssm get-parameters-by-path",
+    "ssm get-parameter-history",
+    "kms list-keys",
+    "kms get-public-key",
+    "ecr get-authorization-token",
+    "ecr-public get-authorization-token",
+    "codeartifact get-authorization-token",
+    "redshift get-cluster-credentials",
+    "eks get-token",
+    "ec2 get-password-data",
+    "lambda get-function",
+    "cognito-identity get-credentials-for-identity",
+    "sso get-role-credentials",
+  ])("%s は断る", (op) => {
+    expect(() => parseOperation(op)).toThrow(/秘密/);
+  });
+
+  it("ふつうの読み取りは通す", () => {
+    for (const op of [
+      "s3api list-buckets",
+      "iam list-roles",
+      "ec2 describe-regions",
+      "ssm describe-parameters",
+    ])
+      expect(parseOperation(op).args.join(" ")).toBe(op);
+  });
+});
+
 describe("parseProfiles", () => {
   it("プロファイル名の一覧（重複・形の違う名前・- で始まる名前は断る。空も断る）", () => {
     expect(parseProfiles(["g2-viewer", "g2-viewer-remote"])).toEqual([

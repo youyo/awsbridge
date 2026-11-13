@@ -3,6 +3,7 @@
 //   GET  <portal>/t/<team>/a/<account>?role=<role>   アカウントの画面。フォームの hidden の csrf（10 分有効）を取り出す
 //   POST <portal>/t/<team>/login                       entry=<account>:<role>&csrf=...。Origin はポータルのオリジン（必須）
 //   成功は AWS のサインイン（signin.aws.amazon.com）への 302。Location はサインインのトークンを含むので返さない・出さない。
+import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 
 export interface IssueTarget {
@@ -17,17 +18,40 @@ export interface IssueTarget {
 const ORIGIN_RE = /^(https:\/\/[a-z0-9]([a-z0-9.-]*[a-z0-9])?|http:\/\/127\.0\.0\.1:\d{1,5})$/;
 const NAME_RE = /^[a-z][a-z0-9-]{0,31}$/;
 
-/** ポータルのオリジン（https。試験は http://127.0.0.1:<port>）・チーム・アカウント・ロール（設定の名前）を確かめる。 */
-export function parseIssueTarget(p: {
-  portal: string;
-  team: string;
-  account: string;
-  role: string;
-}): IssueTarget {
+/** ポータルのホストの接頭辞の既定（Standard と Admin。ドットまで含めるので、最初のラベルが一致するものだけ）。 */
+export const DEFAULT_PORTAL_HOST_PREFIXES = ["awsbridge-console.", "awsbridge-admin-console."];
+
+/** ポータルのホストの接頭辞。AWSBRIDGE_G2_PORTAL_HOST_PREFIXES（カンマ区切り。例 g2dev-awsbridge-console.）で上書きできる。 */
+export function portalHostPrefixes(env: Record<string, string | undefined>): string[] {
+  const v = (env.AWSBRIDGE_G2_PORTAL_HOST_PREFIXES ?? "")
+    .split(",")
+    .map((x) => x.trim().toLowerCase())
+    .filter((x) => x !== "");
+  return v.length > 0 ? v : [...DEFAULT_PORTAL_HOST_PREFIXES];
+}
+
+/**
+ * ポータルのオリジン（https。試験は http://127.0.0.1:<port>）・チーム・アカウント・ロール（設定の名前）を確かめる。
+ * https のホストはポータルの接頭辞（既定 awsbridge-console.・awsbridge-admin-console.）で始まるものだけ（Cookie をほかのホストに送らない）。
+ */
+export function parseIssueTarget(
+  p: { portal: string; team: string; account: string; role: string },
+  hostPrefixes: readonly string[] = DEFAULT_PORTAL_HOST_PREFIXES,
+): IssueTarget {
   if (!ORIGIN_RE.test(p.portal))
     throw new Error(
       `--portal はポータルのオリジン（https://<host>。パス・末尾のスラッシュなし）: '${p.portal}'`,
     );
+  if (p.portal.startsWith("https://")) {
+    const host = p.portal.slice("https://".length);
+    if (
+      host.includes("..") ||
+      !hostPrefixes.some((x) => host.startsWith(x) && host.length > x.length)
+    )
+      throw new Error(
+        `--portal のホストはポータル（${hostPrefixes.join("・")} で始まるもの）だけ: '${host}'（AWSBRIDGE_G2_PORTAL_HOST_PREFIXES で変えられる）`,
+      );
+  }
   if (!NAME_RE.test(p.team)) throw new Error(`--team の形が違う: '${p.team}'`);
   if (!/^\d{12}$/.test(p.account)) throw new Error("--account は 12 桁のアカウント ID");
   if (!NAME_RE.test(p.role))
@@ -51,13 +75,31 @@ export function assertWatchRole(role: string): string {
   return role;
 }
 
-/** Cookie のファイルは <g2 dir>/cookies/ の下だけ（終わったら消すので、外のファイルを消さないように）。絶対パスを返す。 */
+const isInside = (dir: string, file: string): boolean => {
+  const rel = relative(dir, file);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+};
+
+/**
+ * Cookie のファイルは <g2 dir>/cookies/ の下の、ふつうのファイルだけ（終わったら消すので、外のファイルを読まない・消さないように）。
+ * シンボリックリンクのファイルは断る。リンクのディレクトリを経由して外に出るものも、実体のパス（realpath）で断る。
+ * 実体の絶対パスを返す（読むのも消すのもこのパス）。
+ */
 export function assertCookieFile(file: string, cookiesDir: string): string {
+  const where = `Cookie のファイルは ${cookiesDir} の下に置く`;
   const abs = resolve(file);
-  const rel = relative(resolve(cookiesDir), abs);
-  if (rel === "" || rel.startsWith("..") || isAbsolute(rel))
-    throw new Error(`Cookie のファイルは ${cookiesDir} の下に置く`);
-  return abs;
+  if (!isInside(resolve(cookiesDir), abs)) throw new Error(where);
+  let st: ReturnType<typeof lstatSync>;
+  try {
+    st = lstatSync(abs);
+  } catch {
+    throw new Error(`Cookie のファイルがありません: ${file}`);
+  }
+  if (st.isSymbolicLink()) throw new Error("Cookie のファイルにシンボリックリンクは使えない");
+  if (!st.isFile()) throw new Error("Cookie のファイルはふつうのファイルにする");
+  const real = realpathSync(abs);
+  if (!isInside(realpathSync(cookiesDir), real)) throw new Error(where);
+  return real;
 }
 
 export interface HttpReply {

@@ -431,3 +431,50 @@ describe("headerLine（check が出す応答ヘッダーの 1 行）", () => {
     expect(headerLine("Set-Cookie", "__cf_bm=abc; Path=/")).toBe("Set-Cookie: (省略)");
   });
 });
+
+describe("assertProbeIssuer の追加の検査（末尾のドット・ゾーンの内）", () => {
+  it("末尾のドットのホスト・空のラベルは断る", () => {
+    for (const i of [
+      `https://awsbridge-g2-probe-kid.${ZONE}./p`,
+      `https://awsbridge-g2-probe-kid..${ZONE}/p`,
+      `https://awsbridge-g2-probe-kid.${ZONE}.-/p`,
+    ])
+      expect(() => assertProbeIssuer(i, new Set()), i).toThrow();
+  });
+
+  it("ゾーンを渡すと、ホストがそのゾーンの内（awsbridge-g2-probe-<label>.<zone>）のときだけ通す", () => {
+    expect(assertProbeIssuer(ISSUER, new Set(), ZONE).host).toBe(`awsbridge-g2-probe-kid.${ZONE}`);
+    expect(() => assertProbeIssuer(ISSUER, new Set(), "other.example.com")).toThrow(/ゾーン/);
+    expect(() =>
+      assertProbeIssuer(`https://awsbridge-g2-probe-kid.x.${ZONE}/p`, new Set(), ZONE),
+    ).toThrow(/ゾーン/);
+  });
+
+  it("probeSettings の issuer はゾーンの内（設定のゾーンで確かめる）", () => {
+    const s = probeSettings({ AWSBRIDGE_G2_PROBE_ZONE: ZONE }, "kid");
+    expect(s.zone).toBe(ZONE);
+    expect(assertProbeIssuer(s.issuer, new Set(), s.zone).issuer).toBe(ISSUER);
+  });
+});
+
+describe("assumeProbe: 解析できない応答の本文を転記しない", () => {
+  const body = ["unexpected", "body", "k".repeat(30)].join("-");
+  it.each([200, 502])(
+    "HTTP %i で解析できなければ code は http_<status>、detail は固定の文言",
+    async (status) => {
+      const r = await assumeProbe({
+        endpoint: "https://sts.ap-northeast-1.amazonaws.com/",
+        roleArn: ROLE,
+        token: "t.o.k",
+        sessionName: "s",
+        fetch: async () => new Response(`<html>${body}</html>`, { status }),
+      });
+      expect(r).toEqual({
+        ok: false,
+        code: `http_${status}`,
+        status,
+        detail: "STS の応答を解析できない（本文は出さない）",
+      });
+    },
+  );
+});

@@ -9,6 +9,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -255,6 +256,33 @@ describe("poc:g2:issue-watch（127.0.0.1 の擬似のポータル）", () => {
       noLeaks(r.out);
     },
   );
+
+  it("cookies/ の中のシンボリックリンク（外のファイルを指す）は断り、何も呼ばず、リンク先を消さない", async () => {
+    const target = join(dir, "linked-target.txt");
+    writeFileSync(target, COOKIE);
+    mkdirSync(cookies, { recursive: true });
+    const link = join(cookies, "link.txt");
+    rmSync(link, { force: true });
+    symlinkSync(target, link);
+    const r = await run([
+      "--portal",
+      base,
+      "--team",
+      "g2std",
+      "--account",
+      ACCOUNT,
+      "--role",
+      "viewer",
+      "--cookie-file",
+      link,
+      "--count",
+      "1",
+    ]);
+    expect(r.status).not.toBe(0);
+    expect(r.out).toMatch(/リンク/);
+    expect(existsSync(target)).toBe(true);
+    expect(reqs).toEqual([]);
+  });
 
   it("Cookie のファイルが <g2 dir>/cookies/ の外なら断り、何も呼ばず、そのファイルを消さない", async () => {
     const outside = join(dir, "outside.txt");
