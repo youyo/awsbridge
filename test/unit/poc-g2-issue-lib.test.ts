@@ -1,0 +1,179 @@
+// G2 の発行の見張り（poc:g2:issue-watch）の純粋関数: CSRF の取り出し・応答の分類・Cookie のファイルの置き場所。
+import { describe, expect, it } from "vitest";
+import {
+  assertCookieFile,
+  assertWatchRole,
+  classifyAccountPage,
+  classifyLogin,
+  loginBody,
+  parseIssueTarget,
+} from "../../scripts/poc/g2/issue-lib";
+
+// CSRF の形の文字列は実行時に組む
+const CSRF = ["v1", "1800000000", "A".repeat(43)].join(".");
+const page = (csrf: string) =>
+  `<form method="post" action="/t/g2std/login"><input type="radio" name="entry" value="123456789012:viewer"><input type="hidden" name="csrf" value="${csrf}"></form>`;
+const errorPage = (code: string) =>
+  `<h1>x</h1>\n<p>問い合わせるときに貼る情報: code <code>${code}</code> 要求 ID <code>abc</code></p>`;
+
+describe("parseIssueTarget", () => {
+  it("ポータルのオリジン・チーム・アカウント・ロールを確かめる", () => {
+    expect(
+      parseIssueTarget({
+        portal: "https://awsbridge-console.dev.example.com",
+        team: "g2std",
+        account: "123456789012",
+        role: "viewer",
+      }),
+    ).toEqual({
+      origin: "https://awsbridge-console.dev.example.com",
+      team: "g2std",
+      account: "123456789012",
+      role: "viewer",
+      accountPath: "/t/g2std/a/123456789012?role=viewer",
+      loginPath: "/t/g2std/login",
+    });
+    // 試験の擬似サーバー（127.0.0.1）も受け付ける
+    expect(
+      parseIssueTarget({
+        portal: "http://127.0.0.1:8080",
+        team: "t",
+        account: "123456789012",
+        role: "r",
+      }).origin,
+    ).toBe("http://127.0.0.1:8080");
+  });
+
+  it("形の違う値は断る", () => {
+    const ok = {
+      portal: "https://awsbridge-console.dev.example.com",
+      team: "g2std",
+      account: "123456789012",
+      role: "viewer",
+    };
+    for (const bad of [
+      { portal: "https://awsbridge-console.dev.example.com/" },
+      { portal: "http://awsbridge-console.dev.example.com" },
+      { portal: "https://x.example.com/t/g2std" },
+      { team: "G2STD" },
+      { team: "a/b" },
+      { account: "12345" },
+      { role: "Viewer" },
+    ])
+      expect(() => parseIssueTarget({ ...ok, ...bad }), JSON.stringify(bad)).toThrow();
+  });
+});
+
+describe("assertWatchRole（Adm 枠では回さない: 本物の Administrator は断る）", () => {
+  it("administrator は断る。ほかは通す", () => {
+    expect(() => assertWatchRole("administrator")).toThrow(/Administrator/);
+    expect(assertWatchRole("viewer")).toBe("viewer");
+    expect(assertWatchRole("admin-probe")).toBe("admin-probe");
+  });
+});
+
+describe("assertCookieFile（Cookie は <g2 dir>/cookies/ の下のファイルだけ。消すのもこの下だけ）", () => {
+  it("cookies の直下・下のファイルを受け付け、絶対パスを返す", () => {
+    expect(assertCookieFile("/g2/cookies/g2std.txt", "/g2/cookies")).toBe("/g2/cookies/g2std.txt");
+    expect(assertCookieFile("/g2/cookies/a/b.txt", "/g2/cookies")).toBe("/g2/cookies/a/b.txt");
+  });
+
+  it("外のファイル・cookies 自身・.. で外に出るものは断る", () => {
+    for (const f of ["/g2/other.txt", "/g2/cookies", "/g2/cookies/../x.txt", "/g2/cookiesx/a.txt"])
+      expect(() => assertCookieFile(f, "/g2/cookies"), f).toThrow();
+  });
+});
+
+describe("classifyAccountPage（GET <team>/a/<account>?role=）", () => {
+  it("200 でフォームの csrf を取り出す", () => {
+    expect(classifyAccountPage({ status: 200, location: null, body: page(CSRF) })).toEqual({
+      ok: true,
+      csrf: CSRF,
+    });
+  });
+
+  it("csrf が無い 200 は no_csrf、Access のログインへの 302 は access_login_redirect、エラーの画面はその code", () => {
+    expect(classifyAccountPage({ status: 200, location: null, body: "<p>x</p>" })).toEqual({
+      ok: false,
+      code: "no_csrf",
+    });
+    expect(
+      classifyAccountPage({
+        status: 302,
+        location: "https://example-team.cloudflareaccess.com/cdn-cgi/access/login/x",
+        body: "",
+      }),
+    ).toEqual({ ok: false, code: "access_login_redirect" });
+    expect(
+      classifyAccountPage({ status: 403, location: null, body: errorPage("access_forbidden") }),
+    ).toEqual({ ok: false, code: "access_forbidden" });
+    expect(classifyAccountPage({ status: 403, location: null, body: "Forbidden" })).toEqual({
+      ok: false,
+      code: "http_403",
+    });
+  });
+});
+
+describe("classifyLogin（POST <team>/login）", () => {
+  it("AWS のサインインへの 302 は発行の成功（Location は返さない）", () => {
+    const r = classifyLogin({
+      status: 302,
+      location: "https://signin.aws.amazon.com/federation?Action=login&SigninToken=secret",
+      body: "",
+    });
+    expect(r).toEqual({ ok: true, code: "issued" });
+    expect(JSON.stringify(r)).not.toContain("secret");
+    expect(
+      classifyLogin({
+        status: 302,
+        location: "https://us-east-1.signin.aws.amazon.com/federation?SigninToken=x",
+        body: "",
+      }),
+    ).toEqual({ ok: true, code: "issued" });
+  });
+
+  it("Access のログインへの 302 と、ほかの 302 を分ける", () => {
+    expect(
+      classifyLogin({
+        status: 302,
+        location: "https://awsbridge-console.dev.example.com/cdn-cgi/access/login/x",
+        body: "",
+      }),
+    ).toEqual({ ok: false, code: "access_login_redirect" });
+    expect(
+      classifyLogin({
+        status: 302,
+        location: "https://signin.aws.amazon.com.evil.example/x",
+        body: "",
+      }),
+    ).toEqual({ ok: false, code: "http_302" });
+    expect(classifyLogin({ status: 302, location: null, body: "" })).toEqual({
+      ok: false,
+      code: "http_302",
+    });
+  });
+
+  it("エラーの画面の code を取り出す", () => {
+    expect(classifyLogin({ status: 403, location: null, body: errorPage("csrf_failed") })).toEqual({
+      ok: false,
+      code: "csrf_failed",
+    });
+    expect(
+      classifyLogin({ status: 503, location: null, body: errorPage("signing_unavailable") }),
+    ).toEqual({
+      ok: false,
+      code: "signing_unavailable",
+    });
+  });
+});
+
+describe("loginBody", () => {
+  it("entry=<account>:<role>、csrf、リージョン（指定したときだけ）", () => {
+    expect(
+      Object.fromEntries(new URLSearchParams(loginBody("123456789012", "viewer", CSRF, undefined))),
+    ).toEqual({ entry: "123456789012:viewer", csrf: CSRF });
+    expect(
+      new URLSearchParams(loginBody("123456789012", "viewer", CSRF, "us-east-1")).get("region"),
+    ).toBe("us-east-1");
+  });
+});

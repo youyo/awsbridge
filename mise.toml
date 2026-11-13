@@ -404,3 +404,48 @@ run = "pnpm tsx scripts/poc/admin-kms/trail.ts"
 [tasks."poc:admin-kms:destroy"]
 description = "PoC N6: アクセスキー → スタック（鍵は 7 日後の削除の予約）→ Worker の順に消し、鍵の削除予定日を出す"
 run = "bash scripts/poc/admin-kms/destroy.sh"
+
+# ---- G2 の開発環境の実測 (ii) の道具。手順は scripts/poc/g2/README.md、手順書は .claude/handover/g2-dev-measure-plan.md ----
+# src/ と本番のバンドルには入れない。記録・鍵・Cookie は AWSBRIDGE_G2_DEV_DIR（既定 .secrets/g2-dev。gitignore）に置く。
+# JWT・Cookie・認証情報・秘密鍵の値は、標準出力・記録に出さない。実 AWS / Cloudflare を呼ぶもの（probe:deploy・probe:check・
+# probe:watch・issue-watch・session-watch・time-gap の --profile・clean-check）は明示的に実行したときだけ使う。
+
+[tasks."poc:g2:probe:keygen"]
+description = "G2 試験用の issuer: RSA の鍵を .secrets/g2-dev/probe/<issuer>/key-<name>.json に作る（-- --issuer <n5|kid|ctrl> --name <A>。既存なら止める。出すのは kid の先頭 8 文字）"
+run = "pnpm tsx scripts/poc/g2/probe.ts keygen"
+
+[tasks."poc:g2:probe:keys"]
+description = "G2 試験用の issuer: 手元の鍵の名前と kid の先頭 8 文字、今の JWKS に載っているかを出す（-- --issuer <label>）"
+run = "pnpm tsx scripts/poc/g2/probe.ts keys"
+
+[tasks."poc:g2:probe:deploy"]
+description = "G2 試験用の issuer: 選んだ鍵の JWKS と discovery で Worker awsbridge-g2-probe-<issuer> を Custom Domain awsbridge-g2-probe-<issuer>.<zone> へデプロイし、公開内容を確かめる（-- --issuer <label> --keys A,B。kid の差し替えも同じ。--dry-run でバンドルだけ）"
+run = "pnpm tsx scripts/poc/g2/probe.ts deploy"
+
+[tasks."poc:g2:probe:check"]
+description = "G2 試験用の issuer: 公開された discovery と JWKS が手元と一致するかと、応答ヘッダーを出す（-- --issuer <label>）"
+run = "pnpm tsx scripts/poc/g2/probe.ts check"
+
+[tasks."poc:g2:probe:watch"]
+description = "G2 試験用の issuer: 鍵ごとに新しい JWT（aud awsbridge-g2-probe、exp = iat + 300）で AssumeRoleWithWebIdentity を N 秒おきに呼び、時刻・成否・エラーコードを出す（-- --issuer <label> --role-arn <arn> --keys A,B [--interval 60 --duration 60m --extend-interval 5m --max-duration 24h --until-refused A]）"
+run = "pnpm tsx scripts/poc/g2/probe.ts watch"
+
+[tasks."poc:g2:probe:forget"]
+description = "G2 試験用の issuer: 手元の鍵・文書・デプロイ用の設定を消す（-- --issuer <label>。記録は残す）"
+run = "pnpm tsx scripts/poc/g2/probe.ts forget"
+
+[tasks."poc:g2:issue-watch"]
+description = "G2: Access の Cookie（.secrets/g2-dev/cookies/）でポータルのアカウントの画面から CSRF を取り、POST /t/<team>/login を N 秒おきに行って HTTP の状態・エラーコード・時刻を出す。終わったら Cookie を消す（Adm 枠では使わない。-- --portal <origin> --team <t> --account <id> --role <r>）"
+run = "pnpm tsx scripts/poc/g2/issue-watch.ts"
+
+[tasks."poc:g2:session-watch"]
+description = "G2: aws のプロファイルで読み取りの操作（既定 s3api list-buckets）を N 秒おきに呼び、時刻・成否・エラーコードを出す（-- --profile <名前> [--operation \"s3api list-buckets\"] [--interval 10]）"
+run = "pnpm tsx scripts/poc/g2/session-watch.ts"
+
+[tasks."poc:g2:time-gap"]
+description = "G2 ii-2: 発行記録と CloudTrail の AssumeRoleWithWebIdentity を jti で結び、差（eventTime − iat）の分布（件数・最小・中央値・p90・最大）を出す（-- --records <file|dir> --profile <名前> か --trail <file>。読み取りだけ）"
+run = "pnpm tsx scripts/poc/g2/time-gap.ts"
+
+[tasks."poc:g2:clean-check"]
+description = "G2 §4.2: 開発環境のロール・プロバイダー・管理ポリシー・スタック・Worker・Access アプリが残っていないかを読み取りだけで確かめる（-- --profile <名前> [--baseline <file>]）"
+run = "pnpm tsx scripts/poc/g2/clean-check.ts"

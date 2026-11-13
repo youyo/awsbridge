@@ -1,0 +1,17 @@
+{
+  // G2 の試験用の issuer の Worker のテンプレート（手順書 §2.6・§2.6.1）。コンソール・MCP・既存の PoC の Worker とは別。
+  // discovery と JWKS を静的に返すだけで、署名はしない。
+  // probe.ts deploy が issuer ごとに name（awsbridge-g2-probe-<label>）・Custom Domain（awsbridge-g2-probe-<label>.<zone>）・
+  // alias（<g2 dir>/probe/<label>/issuer-documents.json）を入れた設定を <g2 dir>/probe/<label>/wrangler.deploy.json に書いてデプロイする。
+  // 実値はここに書かない。workers.dev と Preview URL は無効（probe.ts が検査する）。
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "awsbridge-g2-probe",
+  "main": "probe-worker.ts",
+  "compatibility_date": "2026-07-21",
+  "workers_dev": false,
+  "preview_urls": false,
+  // パスはこのファイルからの相対（probe.ts が絶対パスに置き換える）
+  "alias": {
+    "awsbridge-g2-probe-documents": "../../../.secrets/g2-dev/probe/issuer-documents.json"
+  }
+}
