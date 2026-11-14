@@ -44,11 +44,52 @@ Description: >-
 #   ecs:ExecuteCommand are equivalent to a remote shell (secrets, credentials and files can
 #   be exposed); lambda:InvokeFunction runs business logic that may have side effects.
 #   CostIncurring actions are billed, and codepipeline:RetryStageExecution can run deployments.
-# - Escalation paths closed: iam:PassRole is not granted unless DebugPassableEcsTaskRoleArns lists
-#   specific roles, and lambda:UpdateFunctionConfiguration / autoscaling:UpdateAutoScalingGroup
-#   (which can swap in a more privileged execution role / launch template) are not granted.
+# - iam:PassRole is not granted unless DebugPassableEcsTaskRoleArns / DebugPassableBedrockServiceRoleArns list
+#   specific roles (empty by default). lambda:UpdateFunctionConfiguration / autoscaling:UpdateAutoScalingGroup
+#   (which can swap in a more privileged execution role / launch template) are not granted. This does NOT
+#   make the role escalation-proof: the remote shells below remain.
 #   Remaining risk: SSM SendCommand / StartSession, ECS Exec and EC2 Instance Connect run with the
 #   instance or task role's permissions. Restrict them by tags or SSM documents in production.
+# - Jobs that keep running: Bedrock evaluation jobs (CreateEvaluationJob), batch inference
+#   (CreateModelInvocationJob), Advanced Prompt Optimization (CreateAdvancedPromptOptimizationJob) and
+#   Transcribe jobs (StartTranscriptionJob) continue after the session ends and are billed. Stopping them
+#   needs StopEvaluationJob / StopModelInvocationJob / StopAdvancedPromptOptimizationJob (all granted).
+#   The Stop actions use Resource "*", so they can also stop jobs that other people started, not only the
+#   jobs this session created. Stopping a job does not refund the cost already incurred.
+#   Transcribe has no stop operation (only DeleteTranscriptionJob, which is NOT granted), so a started
+#   transcription job cannot be stopped from here.
+# - What can be passed to a Bedrock job is "the roles listed in DebugPassableBedrockServiceRoleArns x the
+#   Create operations allowed here" (CreateEvaluationJob, CreateModelInvocationJob), and it is decided by the
+#   role's effective permissions, including anything added with DebugAdditionalPolicyArns and any Bedrock
+#   operation added in the future.
+#   Evaluation jobs and batch inference run with the passed service role's permissions, so through that role
+#   they can read data the debug role cannot read directly and write to any output location the role allows.
+#   The debug role's Deny on secret reads (SSM parameters / Secrets Manager) is NOT inherited by the service
+#   role. So make every listed role dedicated to those jobs and least-privilege (limit the input and output
+#   prefixes, the models and KMS), and do NOT list an existing role with broad permissions.
+#   In the trust policy, use aws:SourceAccount and, where supported, aws:SourceArn too (confirm that the
+#   key is provided for that job type). aws:SourceAccount is a confused-deputy countermeasure only; it does
+#   not narrow what the service role itself can do, which must be limited separately.
+#   Transcribe DataAccessRoleArn needs iam:PassRole to transcribe.amazonaws.com, which is NOT granted, so
+#   that form cannot be used.
+# - No S3 write is granted to the debug role itself (no s3:PutObject); that statement is about the debug role
+#   only. Consequences for the jobs above (all NOT measured yet):
+#   * Evaluation jobs and batch inference read and write S3 with the passed service role, so this role needs
+#     no S3 write; the service role's own S3 permissions are not limited by this (see above). Putting the input dataset into S3 must be done by other means (another role).
+#   * Advanced Prompt Optimization uses the calling identity's permissions (Forward Access Session) for S3
+#     and models; the AWS docs (advanced-prompt-optimization-prereqs) say the calling identity needs read
+#     access to the input and write access to the output location. So it is expected to FAIL to write the
+#     output with this role alone (actual behavior NOT measured). If you add s3:PutObject with
+#     DebugAdditionalPolicyArns, note that an additional managed policy does NOT automatically get the inline
+#     policy's MCP condition: limit it to the output bucket / prefix and add the aws:CalledViaAWSMCP condition
+#     yourself. The permissions it really needs are NOT measured and may include more than writing the output.
+#   * Transcribe with OutputBucketName is expected to write with the caller's permissions (the AWS docs
+#     "Permissions required for IAM roles" describe the IAM entity that makes the request needing
+#     s3:PutObject on the output bucket; whose identity is used is NOT confirmed). Without OutputBucketName
+#     the transcript goes to a service-managed bucket and no write permission is needed.
+# - NOT measured yet: whether aws:CalledViaAWSMCP is attached to the downstream calls made with the
+#   caller's permissions (Forward Access Session) by Advanced Prompt Optimization and Transcribe; global
+#   inference profiles; creating a job that needs iam:PassRole.
 # - Resource "*" is simplified. In production, scope it to specific ARNs, tags or SSM
 #   documents, and enable session logging (SSM Session Manager logs to S3/CloudWatch Logs,
 #   ECS Exec logging in the task definition, Lambda function logs). CloudTrail alone is not enough.
@@ -107,6 +148,16 @@ Parameters:
       (ecs:RunTask then works only for task definitions without a task role).
     AllowedPattern: '^(arn:aws[a-z-]*:iam::\d{12}:role/[\w+=,.@/-]+)?$'
     ConstraintDescription: Each entry must be an IAM role ARN (arn:aws:iam::<account>:role/...). Wildcards are not allowed.
+  DebugPassableBedrockServiceRoleArns:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: >-
+      IAM role ARNs that the debug role may pass to Bedrock evaluation jobs and batch inference jobs
+      (bedrock:CreateEvaluationJob / CreateModelInvocationJob; iam:PassRole, only to bedrock.amazonaws.com),
+      comma separated. Empty means iam:PassRole for Bedrock is not granted. List roles dedicated to those
+      jobs only, and add aws:SourceAccount to their trust policies.
+    AllowedPattern: '^(arn:aws[a-z-]*:iam::\d{12}:role/[\w+=,.@/-]+)?$'
+    ConstraintDescription: Each entry must be an IAM role ARN (arn:aws:iam::<account>:role/...). Wildcards are not allowed.
   MaxSessionDuration:
     Type: Number
     Default: 3600
@@ -125,6 +176,12 @@ Conditions:
     Fn::Not:
       - Fn::Equals:
           - Fn::Join: ["", { Ref: DebugPassableEcsTaskRoleArns }]
+          - ""
+
+  HasDebugPassableBedrockServiceRoles:
+    Fn::Not:
+      - Fn::Equals:
+          - Fn::Join: ["", { Ref: DebugPassableBedrockServiceRoleArns }]
           - ""
 
 Resources:
@@ -348,7 +405,14 @@ Resources:
                   StringEquals:
                     "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
               # CostIncurring: actions whose main side effect is cost (model / endpoint inference, snapshots,
-              # provisioned concurrency). No snapshot sharing (ModifyDBSnapshotAttribute etc.) is granted.
+              # provisioned concurrency, Bedrock evaluation / batch inference / prompt optimization jobs, Transcribe).
+              # No snapshot sharing (ModifyDBSnapshotAttribute etc.) is granted.
+              # Evaluation, batch inference, Advanced Prompt Optimization and Transcribe jobs keep running after the
+              # session ends and are billed, so their Stop actions are here too (Transcribe has no stop operation).
+              # CreateEvaluationJob / CreateModelInvocationJob need iam:PassRole (PassRoleForBedrockJobs below).
+              # The Stop actions use Resource "*": they can stop other people's jobs too. Stopping does not refund
+              # the cost already incurred.
+              # Transcribe DataAccessRoleArn needs iam:PassRole to transcribe.amazonaws.com, which is NOT granted.
               - Sid: CostIncurring
                 Effect: Allow
                 Action:
@@ -362,6 +426,14 @@ Resources:
                   - rds:CreateDBClusterSnapshot
                   - ec2:CreateSnapshot
                   - lambda:PutProvisionedConcurrencyConfig
+                  - bedrock:OptimizePrompt
+                  - bedrock:CreateEvaluationJob
+                  - bedrock:StopEvaluationJob
+                  - bedrock:CreateAdvancedPromptOptimizationJob
+                  - bedrock:StopAdvancedPromptOptimizationJob
+                  - bedrock:CreateModelInvocationJob
+                  - bedrock:StopModelInvocationJob
+                  - transcribe:StartTranscriptionJob
                 Resource: "*"
                 Condition:
                   StringEquals:
@@ -420,6 +492,27 @@ Resources:
                       StringEquals:
                         "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
                         "iam:PassedToService": ecs-tasks.amazonaws.com
+                  - Ref: AWS::NoValue
+              # PassRoleForBedrockJobs: lets bedrock:CreateEvaluationJob / CreateModelInvocationJob pass the listed roles, only to Bedrock.
+              # Omitted entirely unless DebugPassableBedrockServiceRoleArns is given. What can be passed =
+              # the listed roles x the Create operations allowed in CostIncurring, decided by the role's effective
+              # permissions (including DebugAdditionalPolicyArns and any Bedrock operation added later).
+              # The jobs run with the passed role's permissions, and the debug role's Deny on secret reads is not
+              # inherited. List only dedicated, least-privilege roles (limit input / output prefixes, models, KMS);
+              # never an existing broad role. Trust policy: aws:SourceAccount and, where supported, aws:SourceArn
+              # (confirm the key exists for the job type). SourceAccount only counters the confused deputy.
+              - Fn::If:
+                  - HasDebugPassableBedrockServiceRoles
+                  - Sid: PassRoleForBedrockJobs
+                    Effect: Allow
+                    Action:
+                      - iam:PassRole
+                    Resource:
+                      Ref: DebugPassableBedrockServiceRoleArns
+                    Condition:
+                      StringEquals:
+                        "aws:CalledViaAWSMCP": aws-mcp.amazonaws.com
+                        "iam:PassedToService": bedrock.amazonaws.com
                   - Ref: AWS::NoValue
       Tags:
         - Key: project

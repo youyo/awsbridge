@@ -156,6 +156,23 @@ describe("aws へ渡すパラメーター", () => {
     });
     expect(r.args).toContain(`DebugPassableEcsTaskRoleArns=${arns}`);
   });
+  it("AWSBRIDGE_DEBUG_PASSABLE_BEDROCK_SERVICE_ROLE_ARNS が空なら渡さず、あれば渡す", () => {
+    const none = run("scripts/deploy-aws.sh", full);
+    expect(none.args.some((a) => a.startsWith("DebugPassableBedrockServiceRoleArns="))).toBe(false);
+    const arns = "arn:aws:iam::111111111111:role/eval-a,arn:aws:iam::111111111111:role/path/eval-b";
+    const r = run("scripts/deploy-aws.sh", {
+      ...full,
+      AWSBRIDGE_DEBUG_PASSABLE_BEDROCK_SERVICE_ROLE_ARNS: arns,
+    });
+    expect(r.args).toContain(`DebugPassableBedrockServiceRoleArns=${arns}`);
+  });
+  it("S3 書き込みの環境変数は無い（渡さない）", () => {
+    const r = run("scripts/deploy-aws.sh", {
+      ...full,
+      AWSBRIDGE_DEBUG_WRITABLE_S3_BUCKET_ARNS: "arn:aws:s3:::eval-output-a",
+    });
+    expect(r.args.some((a) => a.startsWith("DebugWritableS3BucketArns="))).toBe(false);
+  });
   it("廃止したパラメーターは渡さない", () => {
     const r = run("scripts/deploy-aws.sh", {
       ...full,
@@ -176,6 +193,11 @@ const arnVars = [
   {
     env: "AWSBRIDGE_DEBUG_PASSABLE_ECS_TASK_ROLE_ARNS",
     ok: "arn:aws:iam::111111111111:role/a,arn:aws:iam::111111111111:role/path/b",
+    ng: ["arn:aws:iam::111111111111:role/*", "arn:aws:iam::111111111111:policy/x", "*"],
+  },
+  {
+    env: "AWSBRIDGE_DEBUG_PASSABLE_BEDROCK_SERVICE_ROLE_ARNS",
+    ok: "arn:aws:iam::111111111111:role/eval-a,arn:aws:iam::111111111111:role/path/b",
     ng: ["arn:aws:iam::111111111111:role/*", "arn:aws:iam::111111111111:policy/x", "*"],
   },
 ] as const;

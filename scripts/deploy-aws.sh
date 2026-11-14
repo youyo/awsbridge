@@ -5,7 +5,8 @@
 # 任意: AWSBRIDGE_READONLY_ROLE_NAME / AWSBRIDGE_DEBUG_ROLE_NAME（未設定なら、新規スタックではテンプレートの既定 FederatedAwsBridgeMcpViewer / FederatedAwsBridgeMcpDebugger、
 #       既存スタックの更新では aws cloudformation deploy がスタックの既存の値を使う）、
 #       AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS（デバッグロールに追加する管理ポリシー ARN。カンマ区切り）、
-#       AWSBRIDGE_DEBUG_PASSABLE_ECS_TASK_ROLE_ARNS（ecs:RunTask で渡せるタスクロール ARN。カンマ区切り。空なら iam:PassRole を付けない）
+#       AWSBRIDGE_DEBUG_PASSABLE_ECS_TASK_ROLE_ARNS（ecs:RunTask で渡せるタスクロール ARN。カンマ区切り。空なら iam:PassRole を付けない）、
+#       AWSBRIDGE_DEBUG_PASSABLE_BEDROCK_SERVICE_ROLE_ARNS（bedrock:CreateEvaluationJob / CreateModelInvocationJob で渡せるロール ARN。カンマ区切り。そのジョブ専用のロールだけ。空なら Bedrock 用の iam:PassRole を付けない）
 set -euo pipefail
 
 export AWS_PROFILE="${AWS_PROFILE:-awsbridge}"
@@ -63,6 +64,9 @@ fi
 if [ -n "${AWSBRIDGE_DEBUG_PASSABLE_ECS_TASK_ROLE_ARNS:-}" ]; then
   validate_arns AWSBRIDGE_DEBUG_PASSABLE_ECS_TASK_ROLE_ARNS "$role_arn_re"
 fi
+if [ -n "${AWSBRIDGE_DEBUG_PASSABLE_BEDROCK_SERVICE_ROLE_ARNS:-}" ]; then
+  validate_arns AWSBRIDGE_DEBUG_PASSABLE_BEDROCK_SERVICE_ROLE_ARNS "$role_arn_re"
+fi
 
 host="${AWSBRIDGE_ISSUER#https://}"
 host="${host%/}"
@@ -86,6 +90,9 @@ if [ -n "${AWSBRIDGE_DEBUG_ADDITIONAL_POLICY_ARNS:-}" ]; then
 fi
 if [ -n "${AWSBRIDGE_DEBUG_PASSABLE_ECS_TASK_ROLE_ARNS:-}" ]; then
   params+=("DebugPassableEcsTaskRoleArns=${AWSBRIDGE_DEBUG_PASSABLE_ECS_TASK_ROLE_ARNS}")
+fi
+if [ -n "${AWSBRIDGE_DEBUG_PASSABLE_BEDROCK_SERVICE_ROLE_ARNS:-}" ]; then
+  params+=("DebugPassableBedrockServiceRoleArns=${AWSBRIDGE_DEBUG_PASSABLE_BEDROCK_SERVICE_ROLE_ARNS}")
 fi
 
 aws cloudformation deploy \
