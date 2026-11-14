@@ -299,6 +299,16 @@ describe("権限", () => {
         "rds:CreateDBClusterSnapshot",
         "ec2:CreateSnapshot",
         "lambda:PutProvisionedConcurrencyConfig",
+        // 評価・プロンプト最適化のジョブ（セッションを切っても走り続けるので、止める Stop も入れる）
+        "bedrock:OptimizePrompt",
+        "bedrock:CreateEvaluationJob",
+        "bedrock:StopEvaluationJob",
+        "bedrock:CreateAdvancedPromptOptimizationJob",
+        "bedrock:StopAdvancedPromptOptimizationJob",
+        // バッチ推論・文字起こし（どちらもジョブを作る。バッチ推論には Stop がある）
+        "bedrock:CreateModelInvocationJob",
+        "bedrock:StopModelInvocationJob",
+        "transcribe:StartTranscriptionJob",
       ],
       Execution: [
         "ssm:SendCommand",
@@ -327,22 +337,33 @@ describe("権限", () => {
         "codepipeline:RetryStageExecution",
       ],
       PassRoleForEcsRunTask: ["iam:PassRole"],
+      PassRoleForBedrockJobs: ["iam:PassRole"],
     };
+    // 値を指定したときだけ付く Statement（Fn::If で出し分ける）
+    const OPTIONAL_SIDS = ["PassRoleForEcsRunTask", "PassRoleForBedrockJobs"];
     // 秘密値の取得を塞ぐ無条件の Deny（AWS MCP を経由しても読めない）
     const DENY_SIDS = Object.keys(SECRET_DENIES);
     const policies = tpl.Resources.DebugRole.Properties.Policies;
     const doc = policies[0].PolicyDocument;
     const PASSABLE = ["arn:aws:iam::111111111111:role/task-a", "arn:aws:iam::111111111111:role/b"];
-    // DebugPassableEcsTaskRoleArns を指定したときの Statement 一覧（Fn::If を評価済み）
-    const withPassable: Json[] = evaluate(doc.Statement, {
-      HasDebugPassableEcsTaskRoles: "true",
-      DebugPassableEcsTaskRoleArns: PASSABLE,
-    });
-    // 既定（空）のときの Statement 一覧
-    const withoutPassable: Json[] = evaluate(doc.Statement, {
-      HasDebugPassableEcsTaskRoles: "false",
-      DebugPassableEcsTaskRoleArns: [""],
-    });
+    const BEDROCK_ROLES = [
+      "arn:aws:iam::111111111111:role/eval-a",
+      "arn:aws:iam::111111111111:role/path/eval-b",
+    ];
+    // 2 つの任意パラメーターの指定の有無ごとの Statement 一覧（Fn::If を評価済み）
+    const build = (on: { ecs: boolean; bedrock: boolean }): Json[] =>
+      evaluate(doc.Statement, {
+        HasDebugPassableEcsTaskRoles: String(on.ecs),
+        DebugPassableEcsTaskRoleArns: on.ecs ? PASSABLE : [""],
+        HasDebugPassableBedrockServiceRoles: String(on.bedrock),
+        DebugPassableBedrockServiceRoleArns: on.bedrock ? BEDROCK_ROLES : [""],
+      });
+    // すべて指定したときの Statement 一覧
+    const withPassable: Json[] = build({ ecs: true, bedrock: true });
+    // ECS のロールだけ空のとき
+    const withoutPassable: Json[] = build({ ecs: false, bedrock: true });
+    // 既定（2 つとも空）のとき
+    const withoutOptional: Json[] = build({ ecs: false, bedrock: false });
     const statements = withPassable;
     const byGroup = (sid: string): Json => statements.find((s: Json) => s.Sid === sid);
     const actions = (s: Json): string[] => (Array.isArray(s.Action) ? s.Action : [s.Action]);
@@ -367,6 +388,7 @@ describe("権限", () => {
         expect(s.Effect).toBe("Allow");
         expect([...actions(s)].sort()).toEqual([...expected].sort());
         if (sid === "PassRoleForEcsRunTask") expect(s.Resource).toEqual(PASSABLE);
+        else if (sid === "PassRoleForBedrockJobs") expect(s.Resource).toEqual(BEDROCK_ROLES);
         else expect(s.Resource).toBe("*");
       });
     }
@@ -386,31 +408,90 @@ describe("権限", () => {
         ],
       });
       expect(withoutPassable.map((s: Json) => s.Sid)).not.toContain("PassRoleForEcsRunTask");
-      expect(withoutPassable.flatMap(actions)).not.toContain("iam:PassRole");
+      // ECS 用が空でも、Bedrock 用を指定していればそちらの iam:PassRole だけが残る
+      expect(
+        withoutPassable
+          .filter((s: Json) => actions(s).includes("iam:PassRole"))
+          .map((s: Json) => s.Sid),
+      ).toEqual(["PassRoleForBedrockJobs"]);
       expect(withoutPassable.map((s: Json) => s.Sid).sort()).toEqual(
         [...Object.keys(GROUPS).filter((k) => k !== "PassRoleForEcsRunTask"), ...DENY_SIDS].sort(),
       );
       expect(withoutPassable.flatMap(actions)).toContain("ecs:RunTask");
     });
-    it("DebugPassableEcsTaskRoleArns のパターン", () => {
-      const re = new RegExp(tpl.Parameters.DebugPassableEcsTaskRoleArns.AllowedPattern);
-      for (const ok of [
-        "arn:aws:iam::111111111111:role/task-a",
-        "arn:aws-cn:iam::111111111111:role/path/to/role",
-        "",
-      ])
-        expect(re.test(ok), ok).toBe(true);
-      for (const ng of [
-        "*",
-        "arn:aws:iam::111111111111:role/*",
-        "arn:aws:iam::111111111111:policy/x",
-        "arn:aws:iam::1111:role/x",
-        "arn:aws:iam::111111111111:role/",
-        'arn:aws:iam::111111111111:role/a"b',
-        " arn:aws:iam::111111111111:role/x",
-      ])
-        expect(re.test(ng), ng).toBe(false);
+    it("2 つの任意パラメーターが空（既定）なら iam:PassRole の Statement は出ない", () => {
+      expect(withoutOptional.map((s: Json) => s.Sid).sort()).toEqual(
+        [...Object.keys(GROUPS).filter((k) => !OPTIONAL_SIDS.includes(k)), ...DENY_SIDS].sort(),
+      );
+      expect(withoutOptional.flatMap(actions)).not.toContain("iam:PassRole");
     });
+    it("DebugPassableBedrockServiceRoleArns は空が既定の CommaDelimitedList で、条件は『空でない』（列挙のまま）", () => {
+      const param = "DebugPassableBedrockServiceRoleArns";
+      expect(tpl.Parameters[param].Type).toBe("CommaDelimitedList");
+      expect(tpl.Parameters[param].Default).toBe("");
+      expect(tpl.Conditions.HasDebugPassableBedrockServiceRoles).toEqual({
+        "Fn::Not": [{ "Fn::Equals": [{ "Fn::Join": ["", { Ref: param }] }, ""] }],
+      });
+    });
+    it("S3 書き込み用のパラメーター・条件・Statement（WriteToListedBuckets / DataWrite）は無い", () => {
+      expect(tpl.Parameters.DebugWritableS3BucketArns).toBeUndefined();
+      expect(tpl.Conditions.HasDebugWritableS3Buckets).toBeUndefined();
+      for (const list of [withPassable, withoutOptional])
+        for (const sid of ["WriteToListedBuckets", "DataWrite"])
+          expect(
+            list.map((s: Json) => s.Sid),
+            sid,
+          ).not.toContain(sid);
+    });
+    it("PassRoleForBedrockJobs は MCP 経由・bedrock.amazonaws.com 宛の iam:PassRole だけ", () => {
+      const s = byGroup("PassRoleForBedrockJobs");
+      expect(s.Effect).toBe("Allow");
+      expect(s.Action).toEqual(["iam:PassRole"]);
+      expect(s.Resource).toEqual(BEDROCK_ROLES);
+      expect(s.Condition).toEqual({
+        StringEquals: {
+          "aws:CalledViaAWSMCP": "aws-mcp.amazonaws.com",
+          "iam:PassedToService": "bedrock.amazonaws.com",
+        },
+      });
+    });
+    it("評価・バッチ推論・文字起こしの追加アクションが CostIncurring にあり、BatchDelete 系は無い", () => {
+      for (const a of [
+        "bedrock:OptimizePrompt",
+        "bedrock:CreateEvaluationJob",
+        "bedrock:StopEvaluationJob",
+        "bedrock:CreateAdvancedPromptOptimizationJob",
+        "bedrock:StopAdvancedPromptOptimizationJob",
+        "bedrock:CreateModelInvocationJob",
+        "bedrock:StopModelInvocationJob",
+        "transcribe:StartTranscriptionJob",
+      ])
+        expect(actions(byGroup("CostIncurring")), a).toContain(a);
+      expect(allActions).not.toContain("bedrock:BatchDeleteEvaluationJob");
+      for (const a of allActions) expect(a, a).not.toMatch(/BatchDelete/);
+    });
+    for (const param of ["DebugPassableEcsTaskRoleArns", "DebugPassableBedrockServiceRoleArns"]) {
+      it(`${param} のパターン（ワイルドカード不可）`, () => {
+        const re = new RegExp(tpl.Parameters[param].AllowedPattern);
+        for (const ok of [
+          "arn:aws:iam::111111111111:role/task-a",
+          "arn:aws-cn:iam::111111111111:role/path/to/role",
+          "",
+        ])
+          expect(re.test(ok), ok).toBe(true);
+        for (const ng of [
+          "*",
+          "arn:aws:iam::111111111111:role/*",
+          "arn:aws:iam::111111111111:role/ev*l",
+          "arn:aws:iam::111111111111:policy/x",
+          "arn:aws:iam::1111:role/x",
+          "arn:aws:iam::111111111111:role/",
+          'arn:aws:iam::111111111111:role/a"b',
+          " arn:aws:iam::111111111111:role/x",
+        ])
+          expect(re.test(ng), ng).toBe(false);
+      });
+    }
     it("全 Allow Statement に aws:CalledViaAWSMCP 条件（StringEquals）がある", () => {
       for (const s of allowStatements)
         expect(s.Condition.StringEquals["aws:CalledViaAWSMCP"], s.Sid).toBe(
@@ -506,8 +587,10 @@ describe("権限", () => {
         "ecs-tasks.amazonaws.com",
       );
     });
-    it("iam:PassRole は専用 Statement だけにある", () => {
-      expect(allActions.filter((a) => a === "iam:PassRole")).toHaveLength(1);
+    it("iam:PassRole は専用の Statement（ECS 用・Bedrock 用）だけにある", () => {
+      expect(allActions.filter((a) => a === "iam:PassRole")).toHaveLength(2);
+      for (const s of allowStatements.filter((x: Json) => actions(x).includes("iam:PassRole")))
+        expect(["PassRoleForEcsRunTask", "PassRoleForBedrockJobs"], s.Sid).toContain(s.Sid);
     });
     it("削除系・IAM 変更・組織変更・ワイルドカードを含まない", () => {
       for (const a of allActions) {
@@ -517,10 +600,38 @@ describe("権限", () => {
         expect(a, a).not.toContain("*");
       }
     });
-    it("s3:PutObject を含まない（Athena の結果バケットは DebugAdditionalPolicyArns で足す）", () => {
-      expect(allActions.some((a) => a.startsWith("s3:"))).toBe(false);
+    it("インラインポリシーの Allow に s3 の操作が 1 つも無い（書き込み・ACL・タグ・削除・バケット設定・読み取り）", () => {
+      for (const list of [withPassable, withoutPassable, withoutOptional])
+        for (const st of list.filter((x: Json) => x.Effect === "Allow"))
+          for (const a of actions(st)) expect(a, st.Sid).not.toMatch(/^s3/);
+      for (const a of [
+        "s3:PutObject",
+        "s3:AbortMultipartUpload",
+        "s3:PutObjectAcl",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionAcl",
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion",
+        "s3:PutBucketPolicy",
+        "s3:PutBucketAcl",
+        "s3:PutBucketVersioning",
+        "s3:PutLifecycleConfiguration",
+        "s3:PutEncryptionConfiguration",
+        "s3:GetObject",
+      ])
+        expect(allActions, a).not.toContain(a);
     });
-    it("ポリシー文書が IAM インラインポリシーの上限 10,240 文字未満", () => {
+    it("ポリシー文書が IAM インラインポリシーの上限 10,240 文字未満（2 つとも値があるときの最大の形）", () => {
+      // 空白を含む JSON.stringify で測るので、IAM の数え方（空白を除く）より厳しい
+      const longRole = (i: number) =>
+        `arn:aws:iam::111111111111:role/${"r".repeat(40)}${i}`.padEnd(100, "x");
+      const max = evaluate(doc.Statement, {
+        HasDebugPassableEcsTaskRoles: "true",
+        DebugPassableEcsTaskRoleArns: [1, 2, 3].map(longRole),
+        HasDebugPassableBedrockServiceRoles: "true",
+        DebugPassableBedrockServiceRoleArns: [4, 5, 6].map(longRole),
+      });
+      expect(JSON.stringify({ ...doc, Statement: max }).length).toBeLessThan(10240);
       expect(JSON.stringify(doc).length).toBeLessThan(10240);
     });
   });
