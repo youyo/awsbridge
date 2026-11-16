@@ -38,12 +38,29 @@ The Worker's issuer URL becomes the URL of the IAM OIDC provider, so decide the 
 
 The issuer URL becomes the OIDC issuer, so proceed in this order.
 
-1. Cloudflare side: `mise run keygen` → set `AWSBRIDGE_ISSUER` (`https://awsbridge-oidc-mcp.example.com`), `AWSBRIDGE_WRANGLER_ENV` (`prod`) and the other variables in `mise.local.toml` → `cp config/profiles.example.json config/profiles.json` (required for the build. The contents can stay as dummies for now) → `mise run deploy:worker` (this fixes the issuer URL. At this point the role ARNs are dummies, so `/mcp` is not usable)
+1. Cloudflare side: `mise run keygen` → set `AWSBRIDGE_ISSUER` (`https://awsbridge-oidc-mcp.example.com`), `AWSBRIDGE_WRANGLER_ENV` (`prod`) and the other variables in `mise.local.toml` → `cp config/profiles.example.json config/profiles.json` (required for the build. The contents can stay as dummies for now) → `AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy mise run deploy:worker` (the first deployment needs the explicit `deploy` route; see "How the Worker is deployed" below. This fixes the issuer URL. At this point the role ARNs are dummies, so `/mcp` is not usable)
 2. AWS side: `AWS_PROFILE=<target> mise run deploy:aws` (note the outputs `ReadOnlyRoleArn` / `DebugRoleArn`)
 3. Register the profile list. Write the role ARNs from the outputs into `config/profiles.json` (see "Multi-account" below) and run `mise run deploy:worker`. The list is a JSON file bundled into the Worker, not an environment variable, so the build fails without `config/profiles.json` (unset is an error)
 4. Protect the connection host with Cloudflare Access (see `infra/cloudflare`): the application goes on `awsbridge-mcp.example.com` only, and `/.well-known/openid-configuration` and `/.well-known/jwks.json` on `awsbridge-oidc-mcp.example.com` stay public. Put the application's AUD in `AWSBRIDGE_ACCESS_AUD` and run `mise run secrets`. Then check that `/mcp` on `awsbridge-oidc-mcp.example.com` returns 401 and that workers.dev and Preview URLs do not answer.
 
 From the second time on, deploy only the side you changed.
+
+### How the Worker is deployed (default route and explicit route)
+
+`scripts/wrangler.sh deploy` (which `mise run deploy:worker` uses) takes the **default route** unless you ask otherwise: `wrangler versions upload`, then it reads the Version ID from the output and runs `wrangler versions deploy <version-id>@100% --yes`. Only the code, vars and bindings of the Worker change. Custom Domains and Routes (triggers) are not synchronized, so the token needs no permission on the zone. A token that is "Individual Workers Editor for this one Worker, no zone permissions" is enough for daily deploys.
+
+- Why: a token with Workers Routes Write on the zone can add a Route to another Worker's Custom Domain host and take over its responses. Daily deploys therefore use a token without that permission.
+- Arguments: `--var`, `--message`, `--tag`, `--outdir`, `--minify`, `--keep-vars` and the other options that `wrangler versions upload` accepts are passed on. `--config` and `--env` come from `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` as before. An option that `versions upload` does not accept (such as `--routes`) stops the script with an error; it is never dropped silently. If the Version ID cannot be read from the output, it exits 1 and does not run `versions deploy`.
+- `deploy --dry-run` (used by the build tasks) still runs `wrangler deploy --dry-run`; nothing is written.
+- **Explicit route**: set `AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy` to run `wrangler deploy`, which also synchronizes the triggers (Custom Domains, Routes) and the workers.dev / Preview URL settings. Use it for the first deployment (`versions upload` cannot create a Worker that does not exist yet) and whenever a Custom Domain or Route is added, changed or removed, including a change of `workers_dev` / `preview_urls`. Run it with a short-lived token of your own that has the zone permissions, and discard the token afterwards.
+
+  ```
+  AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy CLOUDFLARE_API_TOKEN=<short-lived token> mise run deploy:worker
+  ```
+
+- **Do not run `wrangler deploy` with a token that has no zone permissions.** It uploads the code first and fails only in the later triggers step, so the command exits with a failure code **even though the new code is already live**. Treat the failure as "deployed, but triggers not synchronized".
+- `versions upload` does not change `workers_dev` or `preview_urls` of the Worker. These settings stay as the last explicit `wrangler deploy` set them, so make sure they are `false` there (the configurations in this repository fix both to `false`).
+- This also applies to the Worker that `mise run deploy:worker` deploys (the MCP Worker): its Custom Domains and Routes change only through the explicit route.
 
 ### AWS side (per target account)
 
@@ -119,7 +136,7 @@ The Knowledge Bases sync actions (`bedrock:StartIngestionJob` / `StopIngestionJo
 mise run keygen          # Generate the signing key (.secrets/, not overwritten if it exists)
 # Set AWSBRIDGE_ISSUER / AWSBRIDGE_ACCESS_* and others in mise.local.toml
 cp config/profiles.example.json config/profiles.json   # The profile list (gitignored). Write the role ARNs
-mise run deploy:worker   # Runs wrangler deploy → secrets in order (does not call AWS)
+mise run deploy:worker   # versions upload → versions deploy (see "How the Worker is deployed"; AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy runs wrangler deploy) → secrets in order (does not call AWS)
 ```
 
 `secrets` can also be run on its own (`mise run secrets`). It passes JSON to `wrangler secret bulk` via standard input, so values do not appear in command-line arguments. What it registers is `SIGNING_JWK` / `ADDITIONAL_PUBLIC_JWKS` (for signing key rotation. Normally `[]`) / `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD`. The profile list is not a secret (a Workers environment variable is limited to 5 KB each, and 270 profiles take about 38 KB). It is bundled into the Worker as `config/profiles.json` (see "Multi-account").
@@ -342,7 +359,7 @@ Checking the bundle and running locally (neither deploys; run `mise run console:
 mise run console:build:standard   # wrangler deploy --dry-run --outdir dist/console-standard (bundles even while the key vars are empty)
 mise run console:dev              # wrangler dev (local use; a secret_key binding cannot be created locally, so every route returns 500 while the key vars are empty)
 # Deploy by hand after you approve it (check the routes and vars first)
-#   e.g. AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-standard.jsonc AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy
+#   e.g. AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-standard.jsonc AWSBRIDGE_WRANGLER_ENV= AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy bash scripts/wrangler.sh deploy
 ```
 
 First upload (per boundary):
@@ -393,7 +410,7 @@ Order for the first deployment (**an example that has not been run yet**; to be 
 
 ```bash
 # 2. deploy by hand after you approve it (check the routes and vars first)
-#   e.g. AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-admin.jsonc AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy
+#   e.g. AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-admin.jsonc AWSBRIDGE_WRANGLER_ENV= AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy bash scripts/wrangler.sh deploy
 mise run console:secrets:admin              # 3. only shows what it would do (no API calls)
 mise run console:secrets:admin -- --yes     #    uploads the CSRF key (secret_text)
 mise run console:admin-key:put              #    only shows what it would do (no API calls)

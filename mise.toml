@@ -94,7 +94,7 @@ description = "Worker secret（SIGNING_JWK / ADDITIONAL_PUBLIC_JWKS / ACCESS_TEA
 run = "bash scripts/put-secrets.sh"
 
 [tasks."deploy:worker"]
-description = "Cloudflare 側のデプロイ: Worker をデプロイ（ISSUER = AWSBRIDGE_ISSUER。既定の env=dev は workers.dev、独自ドメインは AWSBRIDGE_WRANGLER_ENV=prod）→ secret 登録。AWS は呼ばない"
+description = "Cloudflare 側のデプロイ: Worker をデプロイ（既定は versions upload → versions deploy。triggers を含む wrangler deploy は AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy。README「Worker のデプロイの経路」）（ISSUER = AWSBRIDGE_ISSUER。既定の env=dev は workers.dev、独自ドメインは AWSBRIDGE_WRANGLER_ENV=prod）→ secret 登録。AWS は呼ばない"
 run = [
   "bash scripts/wrangler.sh deploy --var \"ISSUER:${AWSBRIDGE_ISSUER:?mise.local.toml に AWSBRIDGE_ISSUER を設定してください}\"",
   "mise run secrets",

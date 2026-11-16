@@ -38,12 +38,29 @@ Worker の issuer の URL は IAM の OIDC プロバイダーの URL になる�
 
 issuer の URL が OIDC issuer になるため、次の順で進めます。
 
-1. Cloudflare 側: `mise run keygen` → `mise.local.toml` に `AWSBRIDGE_ISSUER`（`https://awsbridge-oidc-mcp.example.com`）・`AWSBRIDGE_WRANGLER_ENV`（`prod`）などを設定 → `cp config/profiles.example.json config/profiles.json`（ビルドに必須。中身はこの時点ではダミーのままでよい）→ `mise run deploy:worker`（issuer の URL を確定させる。この時点ではダミーのロール ARN なので `/mcp` は使えない）
+1. Cloudflare 側: `mise run keygen` → `mise.local.toml` に `AWSBRIDGE_ISSUER`（`https://awsbridge-oidc-mcp.example.com`）・`AWSBRIDGE_WRANGLER_ENV`（`prod`）などを設定 → `cp config/profiles.example.json config/profiles.json`（ビルドに必須。中身はこの時点ではダミーのままでよい）→ `AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy mise run deploy:worker`（初回は明示の経路 `deploy` が要る。下の「Worker のデプロイの経路」を参照。issuer の URL を確定させる。この時点ではダミーのロール ARN なので `/mcp` は使えない）
 2. AWS 側: `AWS_PROFILE=<対象> mise run deploy:aws`（出力 `ReadOnlyRoleArn` / `DebugRoleArn` を控える）
 3. プロファイル一覧を登録する。`config/profiles.json` に出力のロール ARN を書き（下の「マルチアカウント」）、`mise run deploy:worker` で反映する。一覧は環境変数ではなく Worker にバンドルされる JSON なので、`config/profiles.json` が無いとビルドが失敗する（未設定はエラー）
 4. 接続先のホストを Cloudflare Access で守る（`infra/cloudflare` を参照）。アプリは `awsbridge-mcp.example.com` だけに置き、`awsbridge-oidc-mcp.example.com` の `/.well-known/openid-configuration` と `/.well-known/jwks.json` は公開のままにする。アプリの AUD を `AWSBRIDGE_ACCESS_AUD` に入れて `mise run secrets` を実行する。そのあと、`awsbridge-oidc-mcp.example.com` の `/mcp` が 401 になること、workers.dev と Preview URL が応答しないことを確かめる
 
 2 回目以降は、変更した側だけを流します。
+
+### Worker のデプロイの経路（既定と明示）
+
+`scripts/wrangler.sh deploy`（`mise run deploy:worker` が使う）は、指定がなければ**既定の経路**を通ります。`wrangler versions upload` を流し、出力から Version ID を取り出して `wrangler versions deploy <version-id>@100% --yes` を流します。変わるのは Worker のコード・vars・バインディングだけです。Custom Domain と Route（triggers）は同期しないので、トークンにゾーンの権限は要りません。日常のデプロイは「その Worker だけの Individual Workers Editor で、ゾーンの権限なし」のトークンで足ります。
+
+- 理由: ゾーンの Workers Routes Write を持つトークンは、ほかの Worker の Custom Domain のホストに Route を足して応答を奪えるためです。日常のデプロイは、その権限を持たないトークンで行います。
+- 引数: `--var`・`--message`・`--tag`・`--outdir`・`--minify`・`--keep-vars` など、`wrangler versions upload` が受け付けるものを引き継ぎます。`--config` と `--env` は、これまでどおり `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` で渡します。`versions upload` が受け付けない引数（`--routes` など）が来たら、黙って捨てずにエラーで止めます。出力から Version ID が取れなければ exit 1 で、`versions deploy` は流しません。
+- `deploy --dry-run`（ビルド系のタスクが使う）は、これまでどおり `wrangler deploy --dry-run` を流します。何も書き込みません。
+- **明示の経路**: `AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy` を指定すると `wrangler deploy` を流し、triggers（Custom Domain・Route）と workers.dev・Preview URL の設定も同期します。初回のデプロイ（`versions upload` は、まだ無い Worker を作れません）と、Custom Domain や Route の追加・変更・削除（`workers_dev` / `preview_urls` の変更を含む）のときに使います。ゾーンの権限を持つ、利用者自身の短命のトークンで流し、終わったらトークンを破棄します。
+
+  ```
+  AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy CLOUDFLARE_API_TOKEN=<短命のトークン> mise run deploy:worker
+  ```
+
+- **ゾーンの権限がないトークンで `wrangler deploy` を流さないでください。** コードの upload を先に行い、あとの triggers の段で失敗するため、**新しいコードが本番に出たあとでも**コマンドは失敗の終了コードで終わります。この失敗は「デプロイされたが triggers は同期されていない」と読みます。
+- `versions upload` は Worker の `workers_dev` と `preview_urls` を変えません。これらは直前の明示の `wrangler deploy` で設定した状態のままです。そのときに `false` になっていることを確かめてください（このリポジトリの設定は、どちらも `false` に固定しています）。
+- `mise run deploy:worker` がデプロイする Worker（MCP の Worker）にも同じ経路が効きます。その Custom Domain と Route は、明示の経路でしか変わりません。
 
 ### AWS 側（対象アカウントごと）
 
@@ -119,7 +136,7 @@ Knowledge Bases の同期（`bedrock:StartIngestionJob` / `StopIngestionJob`）�
 mise run keygen          # 署名鍵を生成（.secrets/、既存なら上書きしない）
 # mise.local.toml に AWSBRIDGE_ISSUER / AWSBRIDGE_ACCESS_* などを設定
 cp config/profiles.example.json config/profiles.json   # プロファイル一覧（gitignore）。ロール ARN を書く
-mise run deploy:worker   # wrangler deploy → secrets を順に実行（AWS は呼ばない）
+mise run deploy:worker   # versions upload → versions deploy（「Worker のデプロイの経路」参照。AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy で wrangler deploy）→ secrets を順に実行（AWS は呼ばない）
 ```
 
 `secrets` は単独でも実行できます（`mise run secrets`）。`wrangler secret bulk` に標準入力で JSON を渡すので、値がコマンドライン引数に出ません。登録するのは `SIGNING_JWK` / `ADDITIONAL_PUBLIC_JWKS`（署名鍵のローテーション用。通常は `[]`）/ `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD` です。プロファイル一覧は secret にしません（Workers の環境変数は 1 つ 5 KB が上限で、270 プロファイルなら約 38 KB になるため）。`config/profiles.json` として Worker にバンドルします（「マルチアカウント」参照）。
@@ -342,7 +359,7 @@ Administrator の新しい引き受けを、Cloudflare に頼らずに止める�
 mise run console:build:standard   # wrangler deploy --dry-run --outdir dist/console-standard（鍵の vars が空でもバンドルできる）
 mise run console:dev              # wrangler dev（手元用。secret_key のバインディングは作れないので、鍵の vars が空なら全経路 500）
 # デプロイは承認したあと手で行う（routes と vars を先に確かめる）
-#   例: AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-standard.jsonc AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy
+#   例: AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-standard.jsonc AWSBRIDGE_WRANGLER_ENV= AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy bash scripts/wrangler.sh deploy
 ```
 
 初回の投入（境界ごと）:
@@ -392,7 +409,7 @@ mise run console:standard-key:retire -- --binding STANDARD_KEY_<旧い鍵> --yes
 
 ```bash
 # 2. デプロイは承認したあと手で行う（routes と vars を先に確かめる）
-#   例: AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-admin.jsonc AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy
+#   例: AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-admin.jsonc AWSBRIDGE_WRANGLER_ENV= AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy bash scripts/wrangler.sh deploy
 mise run console:secrets:admin              # 3. 何をするかの表示だけ（API を呼ばない）
 mise run console:secrets:admin -- --yes     #    CSRF の鍵（secret_text）を入れる
 mise run console:admin-key:put              #    何をするかの表示だけ（API を呼ばない）
