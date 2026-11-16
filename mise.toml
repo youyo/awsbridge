@@ -157,6 +157,13 @@ run = "pnpm tsx scripts/console/stop.ts apply"
 description = "コンソールログインの突き合わせの道具: 発行記録（--records <file|dir> か --logs-api）と CloudTrail の AssumeRoleWithWebIdentity（有効な全リージョン）を jti で突き合わせる（--profile <名前> が要る。読み取りだけ。既定のさかのぼり 6 日。出力は伏せ字。--state で確認済みの区間のファイル、--clock-skew-seconds で時計ずれの許容を指定。毎日回す。回せない日があっても 6 日以内に回せば検証の穴はできない）"
 run = "pnpm tsx scripts/console/reconcile.ts"
 
+# ---- コンソールログイン: issuer の外からの比較（README の「コンソールログインの issuer の外からの確認」）----
+# 毎日の確認の 1 つ（もう 1 つは console:reconcile）。公開の HTTP の GET だけ（Cloudflare・AWS のトークンを使わない・書き込まない）。
+# 変数（鍵の道具と同じ。mise.local.toml に置く）: AWSBRIDGE_CONSOLE_OUT_DIR、AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG、AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG
+[tasks."console:exposure-check"]
+description = "コンソールログインの issuer の外からの比較: 公開の DNS（DoH）で引いた IP に TLS で接続し、Standard の境界ごと・Admin の discovery と JWKS が設定の公開鍵（vars）と一致するかを確かめる（kid だけでなく鍵の中身・issuer・jwks_uri・HTTP 200・リダイレクトなし。トークン不要。終了コード 0 一致 / 1 不一致 / 2 実行できない。毎日回す。検知であって予防ではない）"
+run = "pnpm tsx scripts/console/exposure-check.ts"
+
 # ---- コンソールログイン: Admin の署名鍵（Workers の secret_key 型。X1 の決裁）。手順は README の「コンソールログインの Admin の署名鍵」----
 # 人が手元で実行する（CI から実行しない）。put・retire・secrets（CSRF の鍵）は -- --yes を付けたときだけ Cloudflare API を書き換える（既定は表示だけ）。
 # 変数（[env] に置かず mise.local.toml に置く）: AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID、AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN（任意。無ければ wrangler の OAuth）、
