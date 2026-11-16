@@ -16,6 +16,7 @@
 //   error   region_unread             読めなかったリージョン（★1）
 //   error   record_line_truncated     切られた記録の行（決裁 (c)）
 //   error   record_line_unreadable    読めない記録の行
+//   error   record_read_incomplete    発行記録（API）を、別の経路の件数まで読み切れなかった窓（c2。cto の受け入れ条件 a）
 //   error   coverage_gap              前回の確認済みの区間の終わりより、今回の読み始めが後（間に読んでいない区間がある）
 //   warning jti_reused                同じ jti で 2 回以上引き受けた
 //   warning record_without_assume     引き受けがあるはずの記録に、引き受けが無い
@@ -75,6 +76,8 @@ export type ReconcileInput = {
   issuers: readonly { url: string; tier: Tier }[];
   regions: { read: readonly string[]; unread: readonly string[] };
   lines: { truncated: readonly string[]; unreadable: readonly string[]; total: number };
+  /** 発行記録の API の読み取りで、件数（別の経路）まで読み切れなかった窓（1 件 1 行の説明）。 */
+  incompleteReads?: readonly string[];
   /** 記録をどこから読んだか。 */
   source: "api" | "file";
   lagSeconds?: number;
@@ -334,6 +337,8 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
     add({ severity: "error", code: "record_line_truncated", detail: pos });
   for (const pos of i.lines.unreadable)
     add({ severity: "error", code: "record_line_unreadable", detail: pos });
+  for (const w of i.incompleteReads ?? [])
+    add({ severity: "error", code: "record_read_incomplete", detail: w });
   // 確認済みの区間: 前回の終わりより今回の読み始めが後なら、間の区間はどの実行も確かめていない（誤り）。状態が無い初回は穴なし
   const coverage: Coverage =
     i.previousCoveredUntil === undefined

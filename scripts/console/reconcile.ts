@@ -14,6 +14,8 @@
 //     AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID   Cloudflare のアカウント ID（32 桁の 16 進）
 //     AWSBRIDGE_CONSOLE_LOGS_WORKERS      Worker の名前（カンマ区切り。既定 awsbridge-console-standard,awsbridge-console-admin）
 //     AWSBRIDGE_CONSOLE_LOGS_API_BASE     試験用（http://127.0.0.1:<port> だけ）
+//     窓ごとに件数（calculations の count）を先に数え、行数が届くまで窓を割って読む（長い窓は読み取りの時点で間引かれるため。
+//     reconcile-cf.ts の冒頭）。届かない窓は誤り record_read_incomplete（終了コード 1）。api count は件数の合計
 // 既定のさかのぼりは 6 日（記録の保持 7 日より短く。決裁 (a)）。
 // 時間の検査: 対になった引き受けの時刻が、発行の時刻から「JWT の寿命 300 秒＋時計ずれ（既定 60 秒。--clock-skew-seconds）」を超えて後ろ、
 // または時計ずれを超えて前なら警告（assume_time_gap。終了コードは変えない。しきい値は ② の実測のあとで決め直し、誤りに上げる予定）。
@@ -55,7 +57,7 @@ import {
   withCoveredUntil,
 } from "../../src/console/reconcile-state";
 import { apiBaseFromVar, ACCOUNT_RE as CF_ACCOUNT_RE } from "./key-tool-common";
-import { queryIssueLogs } from "./reconcile-cf";
+import { formatIncompleteRead, queryIssueLogs } from "./reconcile-cf";
 import {
   type AwsRun,
   guardRun,
@@ -269,6 +271,7 @@ async function main(): Promise<number> {
   // 発行記録（CloudTrail を読んだあとに読む: 記録の側が後になるので、期間の端の取りこぼしが少ない）
   let read: RecordRead;
   let apiCount: number | undefined;
+  let incompleteReads: string[] = [];
   if (api) {
     const q = await queryIssueLogs(
       { fetch },
@@ -279,7 +282,9 @@ async function main(): Promise<number> {
         to: Math.min(until + RECORD_MARGIN_MS, Date.now()),
       },
     );
+    // api count は件数の経路（calculations の count）の合計。lines（読んだ行）がこれより少ない窓は誤り（record_read_incomplete）
     apiCount = q.count;
+    incompleteReads = q.incomplete.map(formatIncompleteRead);
     read = recordsFromLogEvents(q.events, "api", { workers });
   } else read = fileRead as RecordRead;
 
@@ -292,6 +297,7 @@ async function main(): Promise<number> {
     issuers,
     regions: { read: trail.read, unread: trail.unread },
     lines: { truncated: read.truncated, unreadable: read.unreadable, total: read.lines },
+    incompleteReads,
     source: api ? "api" : "file",
     lagSeconds,
     retentionDays,

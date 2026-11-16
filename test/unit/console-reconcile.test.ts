@@ -330,6 +330,26 @@ describe("reconcile: 保持の窓（決裁 (a)）・切られた行（決裁 (c)
     expect(r.summary.unreadableLines).toBe(2);
   });
 
+  it("発行記録を件数（別の経路）まで読み切れなかった区間は record_read_incomplete（誤り）。終了コード 1、確認済みの区間を進めない", () => {
+    const a = rec();
+    const r = reconcile(
+      input({
+        records: [a],
+        events: [evFor(a)],
+        source: "api",
+        incompleteReads: ["2026-11-14T04:00:00.000Z..2026-11-14T04:01:00.000Z read 3 of 5"],
+      }),
+    );
+    expect(codes(r)).toEqual(["error:record_read_incomplete"]);
+    expect(r.findings[0]?.detail).toContain("read 3 of 5");
+    expect(reconcileExitCode(r)).toBe(1);
+    expect(nextCoveredUntil(r, NOW - DAY)).toBeUndefined();
+    // 欠けが無ければ所見は無い（既定は空）
+    expect(
+      codes(reconcile(input({ records: [a], events: [evFor(a)], incompleteReads: [] }))),
+    ).toEqual([]);
+  });
+
   it("読めなかったリージョンは region_unread（誤り）", () => {
     const r = reconcile(input({ regions: { read: ["us-east-1"], unread: ["eu-west-1"] } }));
     expect(codes(r)).toEqual(["error:region_unread"]);
