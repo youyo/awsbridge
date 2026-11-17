@@ -48,12 +48,12 @@ function viewerAdminConfig(): Json {
 }
 
 describe("信頼ポリシー（§4.3 の形）", () => {
-  it("Viewer: その階層のプロバイダーだけ・aud・チームのタグの値・タグキーの制限・SourceIdentity 必須（完全一致）", () => {
+  it("Viewer: コンソールのプロバイダーだけ・aud・チームのタグの値・タグキーの制限・SourceIdentity 必須（完全一致）", () => {
     const tpl = buildKindTemplate(parsed(viewerAdminConfig()), "C");
     const doc = evaluate(tpl.Resources.ViewerRole.Properties.AssumeRolePolicyDocument, {
       ...PSEUDO,
       IssuerHost: HOST,
-      StandardPath: "standard",
+      IssuerPath: "console",
       ViewerTeams: "sa,infra",
     });
     expect(JSON.parse(doc)).toEqual({
@@ -61,11 +61,11 @@ describe("信頼ポリシー（§4.3 の形）", () => {
       Statement: [
         {
           Effect: "Allow",
-          Principal: { Federated: `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/standard` },
+          Principal: { Federated: `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/console` },
           Action: ["sts:AssumeRoleWithWebIdentity", "sts:TagSession", "sts:SetSourceIdentity"],
           Condition: {
             StringEquals: {
-              [`${HOST}/standard:aud`]: "awsbridge-console",
+              [`${HOST}/console:aud`]: "awsbridge-console",
               "aws:RequestTag/awsbridge_team": ["sa", "infra"],
             },
             "ForAllValues:StringEquals": { "aws:TagKeys": ["awsbridge_team"] },
@@ -130,13 +130,11 @@ function props(tpl: Json, logicalId: string, params: Params): Json {
   });
 }
 
-const ADMIN_HOST = "admin-id.example.com";
-const ADMIN_PROVIDER = `arn:aws:iam::${ACCOUNT}:oidc-provider/${ADMIN_HOST}/admin`;
-const STD = { IssuerHost: HOST, StandardPath: "standard" };
-const ADMIN = { AdminIssuerHost: ADMIN_HOST, AdminPath: "admin" };
+/** P2: Standard と Admin の階層で同じプロバイダー（境界ごとの issuer）。 */
+const PROVIDER = `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/console`;
+const ISSUER = { IssuerHost: HOST, IssuerPath: "console" };
 const ALL = {
-  ...STD,
-  ...ADMIN,
+  ...ISSUER,
   ViewerTeams: "sa,infra",
   AdministratorTeams: "infra-elevated",
 };
@@ -149,19 +147,19 @@ const allows = (p: Json) =>
     .flatMap((x) => x.PolicyDocument.Statement as Json[])
     .filter((s) => s.Effect === "Allow");
 
-describe("信頼ポリシー（Admin）", () => {
-  it("Admin: Principal は AdminIssuerHost・AdminPath とアカウントから組んだ Admin のプロバイダーだけで、aud の条件キーはその issuer（完全一致）", () => {
+describe("信頼ポリシー（Admin。P2: 同じプロバイダー、チームの条件で分ける）", () => {
+  it("Admin: Principal は Viewer と同じコンソールのプロバイダーで、aud の条件キーも同じ issuer。チームの条件は Admin のチームだけ（完全一致）", () => {
     const doc = props(templateC(), "AdministratorRole", ALL).AssumeRolePolicyDocument;
     expect(JSON.parse(doc)).toEqual({
       Version: "2012-10-17",
       Statement: [
         {
           Effect: "Allow",
-          Principal: { Federated: ADMIN_PROVIDER },
+          Principal: { Federated: PROVIDER },
           Action: ["sts:AssumeRoleWithWebIdentity", "sts:TagSession", "sts:SetSourceIdentity"],
           Condition: {
             StringEquals: {
-              [`${ADMIN_HOST}/admin:aud`]: "awsbridge-console",
+              [`${HOST}/console:aud`]: "awsbridge-console",
               "aws:RequestTag/awsbridge_team": ["infra-elevated"],
             },
             "ForAllValues:StringEquals": { "aws:TagKeys": ["awsbridge_team"] },
@@ -170,14 +168,17 @@ describe("信頼ポリシー（Admin）", () => {
         },
       ],
     });
+    // Viewer と Administrator で違うのはチームの条件だけ（受容 d）
+    const viewer = JSON.parse(props(templateC(), "ViewerRole", ALL).AssumeRolePolicyDocument);
+    expect(viewer.Statement[0].Principal).toEqual({ Federated: PROVIDER });
   });
 
-  it("Admin の Principal は Fn::Sub で AWS::AccountId から組む（パラメーターにアカウント ID を入れない。StackSet で 1 つの値にできる）", () => {
+  it("Principal は Fn::Sub で AWS::AccountId から組む（パラメーターにアカウント ID を入れない。StackSet で 1 つの値にできる）", () => {
     const tpl = templateC();
     const sub = tpl.Resources.AdministratorRole.Properties.AssumeRolePolicyDocument["Fn::Sub"][1];
     // Fn::Sub の変数の参照（${Name}）
     const ref = (name: string) => `\${${name}}`;
-    const issuer = `${ref("AdminIssuerHost")}/${ref("AdminPath")}`;
+    const issuer = `${ref("IssuerHost")}/${ref("IssuerPath")}`;
     expect(sub.Principal).toEqual({
       "Fn::Sub": `arn:${ref("AWS::Partition")}:iam::${ref("AWS::AccountId")}:oidc-provider/${issuer}`,
     });
@@ -189,22 +190,24 @@ describe("信頼ポリシー（Admin）", () => {
       ...ALL,
     });
     expect(JSON.parse(other).Statement[0].Principal.Federated).toBe(
-      `arn:aws:iam::222222222222:oidc-provider/${ADMIN_HOST}/admin`,
+      `arn:aws:iam::222222222222:oidc-provider/${HOST}/console`,
     );
     // ARN を分割する式は残っていない
     expect(JSON.stringify(tpl)).not.toContain("Fn::Select");
   });
 
-  it("世代つきのパス（AdminPath）を変えると Principal と条件キーが一緒に変わる", () => {
-    const doc = props(templateC(), "AdministratorRole", {
-      ...ALL,
-      AdminPath: "admin-2",
-    }).AssumeRolePolicyDocument;
-    const st = JSON.parse(doc).Statement[0];
-    expect(st.Principal.Federated).toBe(
-      `arn:aws:iam::${ACCOUNT}:oidc-provider/${ADMIN_HOST}/admin-2`,
-    );
-    expect(Object.keys(st.Condition.StringEquals)).toContain(`${ADMIN_HOST}/admin-2:aud`);
+  it("世代つきのパス（IssuerPath）を変えると、両階層の Principal と条件キーが一緒に変わる", () => {
+    for (const id of ["ViewerRole", "AdministratorRole"]) {
+      const doc = props(templateC(), id, {
+        ...ALL,
+        IssuerPath: "console-2",
+      }).AssumeRolePolicyDocument;
+      const st = JSON.parse(doc).Statement[0];
+      expect(st.Principal.Federated, id).toBe(
+        `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/console-2`,
+      );
+      expect(Object.keys(st.Condition.StringEquals), id).toContain(`${HOST}/console-2:aud`);
+    }
   });
 
   it("どちらの階層でも Allow の文は 1 つだけ（別の文で迂回できない）", () => {
@@ -213,60 +216,55 @@ describe("信頼ポリシー（Admin）", () => {
       expect(doc.Statement, id).toHaveLength(1);
     }
   });
+
+  // §7.1: B では Viewer と Administrator の JWT は同じ issuer・同じ鍵・同じ aud で、違いはタグのチームの値だけ。
+  // AdministratorTeams の AllowedPattern が、StackSets のパラメーターの上書きで Standard のチームを渡せない守りになる
+  it("AdministratorTeams の AllowedPattern に Standard のチームが入らない（どの種類でも。上書きで Standard のチームを渡せない）", () => {
+    const config = parsed(viewerAdminConfig());
+    const standardTeams = config.teams.filter((t) => t.tier === "standard").map((t) => t.name);
+    expect(standardTeams.length).toBeGreaterThan(0);
+    for (const k of config.kinds) {
+      const tpl = buildKindTemplate(config, k.name);
+      const re = new RegExp(tpl.Parameters.AdministratorTeams.AllowedPattern);
+      for (const t of standardTeams) {
+        expect(re.test(t), `${k.name}: ${t}`).toBe(false);
+        expect(re.test(`infra-elevated,${t}`), `${k.name}: infra-elevated,${t}`).toBe(false);
+      }
+      // 逆向き（Viewer のパターンに Admin のチーム）も入らない
+      const viewer = new RegExp(tpl.Parameters.ViewerTeams.AllowedPattern);
+      for (const t of config.teams.filter((x) => x.tier === "admin"))
+        expect(viewer.test(t.name), `${k.name}: ${t.name}`).toBe(false);
+    }
+  });
 });
 
 describe("Parameters", () => {
   const p = () => templateC().Parameters;
 
-  it("IssuerHost・StandardPath は必須のスタック（base.yaml）と同じ形の規則", () => {
+  it("IssuerHost・IssuerPath は必須のスタック（base.yaml）と同じ形の規則", () => {
     const host = new RegExp(p().IssuerHost.AllowedPattern);
     for (const ok of ["id.example.com", "a"]) expect(host.test(ok), ok).toBe(true);
     for (const ng of ["https://id.example.com", "id.example.com/", "ID.example.com", "", 'a"b'])
       expect(host.test(ng), ng).toBe(false);
-    expect(p().StandardPath.Default).toBe("standard");
-    const path = new RegExp(p().StandardPath.AllowedPattern);
-    for (const ok of ["standard", "p/p01/standard"]) expect(path.test(ok), ok).toBe(true);
-    for (const ng of ["/standard", "standard/", "STANDARD", "", 'standard"'])
+    expect(p().IssuerPath.Default).toBe("console");
+    const path = new RegExp(p().IssuerPath.AllowedPattern);
+    for (const ok of ["console", "p/p01/console"]) expect(path.test(ok), ok).toBe(true);
+    for (const ng of ["/console", "console/", "CONSOLE", "", 'console"'])
       expect(path.test(ng), ng).toBe(false);
   });
 
-  it("AdminIssuerHost は既定が空で、空か base.yaml と同じ規則のホスト名だけ（JSON に差し込めない）。AdminProviderArn は無い", () => {
-    expect(p().AdminProviderArn).toBeUndefined();
-    expect(p().AdminIssuerHost.Default).toBe("");
-    expect(p().AdminIssuerHost.MaxLength).toBe(180);
-    const re = new RegExp(p().AdminIssuerHost.AllowedPattern);
-    for (const ok of ["", ADMIN_HOST, "a"]) expect(re.test(ok), ok).toBe(true);
-    for (const ng of [
-      ADMIN_PROVIDER,
-      `https://${ADMIN_HOST}`,
-      `${ADMIN_HOST}/`,
-      `${ADMIN_HOST}/admin`,
-      `${ADMIN_HOST}"`,
-      "Admin-id.example.com",
-      "*",
-    ])
-      expect(re.test(ng), ng).toBe(false);
-  });
-
-  it("AdminPath は既定 admin、StandardPath と同じ規則", () => {
-    expect(p().AdminPath.Default).toBe("admin");
-    expect(p().AdminPath.AllowedPattern).toBe(p().StandardPath.AllowedPattern);
-    expect(p().AdminPath.MaxLength).toBe(64);
-    const re = new RegExp(p().AdminPath.AllowedPattern);
-    for (const ok of ["admin", "admin-2"]) expect(re.test(ok), ok).toBe(true);
-    for (const ng of ["/admin", "admin/", "", 'admin"']) expect(re.test(ng), ng).toBe(false);
-  });
-
-  it("Admin のパラメーターは base.yaml の同じ名前のパラメーターと同じ規則", () => {
+  it("issuer のパラメーターは base.yaml の同じ名前のパラメーターと同じ規則。Admin の issuer のパラメーターは無い", () => {
     const base = parse(
       readFileSync(resolve(import.meta.dirname, "../../infra/aws/console/base.yaml"), "utf8"),
       { customTags: [] },
     ).Parameters;
-    for (const k of ["IssuerHost", "StandardPath", "AdminIssuerHost", "AdminPath"]) {
+    for (const k of ["IssuerHost", "IssuerPath"]) {
       expect(p()[k].AllowedPattern, k).toBe(base[k].AllowedPattern);
       expect(p()[k].MaxLength, k).toBe(base[k].MaxLength);
       expect(p()[k].Default, k).toBe(base[k].Default);
     }
+    for (const k of ["AdminIssuerHost", "AdminPath", "StandardPath", "AdminProviderArn"])
+      expect(p()[k], k).toBeUndefined();
   });
 
   it("ロールごとの <Name>Teams: 既定は空。その種類で割り当てたチームの組み合わせだけを受け付ける（JSON に差し込めない）", () => {
@@ -288,20 +286,14 @@ describe("Parameters", () => {
     expect(re.test("infra-elevated")).toBe(false);
   });
 
-  it("パラメーターは StackSets 用の生成物（assignments[].parameters）のキーと、issuer の 4 つだけ", async () => {
+  it("パラメーターは StackSets 用の生成物（assignments[].parameters）のキーと、issuer の 2 つだけ", async () => {
     const { generateConsoleArtifacts } = await import("../../src/console/generate");
     const config = parsed(viewerAdminConfig());
     const { stacksets } = generateConsoleArtifacts(config, { mode: "check", generatedAt: "x" });
     for (const a of stacksets.assignments) {
       const tpl = buildKindTemplate(config, a.kind);
       expect(Object.keys(tpl.Parameters).sort(), a.kind).toEqual(
-        [
-          ...Object.keys(a.parameters),
-          "IssuerHost",
-          "StandardPath",
-          "AdminIssuerHost",
-          "AdminPath",
-        ].sort(),
+        [...Object.keys(a.parameters), "IssuerHost", "IssuerPath"].sort(),
       );
       // 生成物の値はテンプレートの規則を満たす
       for (const [k, v] of Object.entries(a.parameters))
@@ -309,18 +301,13 @@ describe("Parameters", () => {
     }
   });
 
-  it("Admin の階層のロールがなければ AdminIssuerHost・AdminPath を置かない", () => {
+  it("Admin の階層のロールがなくても、issuer のパラメーターは同じ 2 つ", () => {
     const c = viewerAdminConfig();
     c.roles = c.roles.filter((r: Json) => r.name === "viewer");
     c.teams = c.teams.filter((t: Json) => t.tier !== "admin");
-    c.portal.adminOrigin = undefined;
     for (const k of c.kinds) delete k.assign.administrator;
     const tpl = buildKindTemplate(parsed(c), "A");
-    expect(Object.keys(tpl.Parameters).sort()).toEqual([
-      "IssuerHost",
-      "StandardPath",
-      "ViewerTeams",
-    ]);
+    expect(Object.keys(tpl.Parameters).sort()).toEqual(["IssuerHost", "IssuerPath", "ViewerTeams"]);
   });
 });
 
@@ -330,20 +317,13 @@ describe("Conditions: 割り当てのパラメーターが空のロールは作�
     expect(created(templateC(), ALL)).toContain("ViewerRole");
   });
 
-  it("Administrator は AdministratorTeams と AdminIssuerHost の両方があるときだけ作る", () => {
+  it("Administrator は AdministratorTeams が空でないときだけ作る（Admin のプロバイダーの条件は無い）", () => {
     expect(created(templateC(), ALL)).toContain("AdministratorRole");
     expect(created(templateC(), { ...ALL, AdministratorTeams: "" })).not.toContain(
       "AdministratorRole",
     );
-    expect(created(templateC(), { ...ALL, AdminIssuerHost: "" })).not.toContain(
-      "AdministratorRole",
-    );
-    // AdminIssuerHost が空でも、組み込み関数の評価は失敗しない
-    expect(
-      typeof props(templateC(), "AdministratorRole", { ...ALL, AdminIssuerHost: "" })
-        .AssumeRolePolicyDocument,
-    ).toBe("string");
-    expect(created(templateC(), { ...STD })).toEqual([]);
+    expect(templateC().Conditions.HasAdminProvider).toBeUndefined();
+    expect(created(templateC(), { ...ISSUER })).toEqual([]);
   });
 
   it("すべてのリソースに Condition がある（割り当てのない種類では何も作らない）", () => {
@@ -412,7 +392,7 @@ describe("ロールの形", () => {
     ]);
   });
 
-  it("その種類で割り当てのないロールには守りの部品の ImportValue を出さない（Admin の Export が無い基盤でも解決しにいかない）", () => {
+  it("その種類で割り当てのないロールには守りの部品の ImportValue を出さない（作られないロールに参照を置かない）", () => {
     const tpl = buildKindTemplate(parsed(viewerAdminConfig()), "P");
     const text = JSON.stringify(tpl);
     expect(text).not.toContain(BASE_EXPORT_NAME.adminGuardPolicyArn);

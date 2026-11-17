@@ -8,22 +8,10 @@ Parameters:
     Description: Host of the console login issuer, without scheme, path or trailing slash. Same value as the base stack.
     AllowedPattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
     MaxLength: 180
-  StandardPath:
+  IssuerPath:
     Type: String
-    Default: standard
-    Description: Path of the Standard tier issuer. Same value as the base stack.
-    AllowedPattern: ^[a-z0-9-]+(/[a-z0-9-]+)*$
-    MaxLength: 64
-  AdminIssuerHost:
-    Type: String
-    Default: ""
-    Description: "Host of the Admin tier issuer (separate from IssuerHost). Same value as the base stack. Empty: the Admin tier roles are not created."
-    AllowedPattern: ^$|^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
-    MaxLength: 180
-  AdminPath:
-    Type: String
-    Default: admin
-    Description: Path of the Admin tier issuer. Same value as the base stack.
+    Default: console
+    Description: Path of the console issuer (shared by the Standard and Admin tiers). Same value as the base stack.
     AllowedPattern: ^[a-z0-9-]+(/[a-z0-9-]+)*$
     MaxLength: 64
   AdministratorTeams:
@@ -37,18 +25,11 @@ Parameters:
     Description: "Comma separated teams allowed to assume FederatedAwsBridgeViewer. Empty: the role is not created."
     AllowedPattern: ^$|^(sa|infra|dev)(,(sa|infra|dev))*$
 Conditions:
-  HasAdminProvider:
+  CreateAdministratorRole:
     Fn::Not:
       - Fn::Equals:
-          - Ref: AdminIssuerHost
+          - Ref: AdministratorTeams
           - ""
-  CreateAdministratorRole:
-    Fn::And:
-      - Fn::Not:
-          - Fn::Equals:
-              - Ref: AdministratorTeams
-              - ""
-      - Condition: HasAdminProvider
   CreateViewerRole:
     Fn::Not:
       - Fn::Equals:
@@ -113,9 +94,9 @@ Resources:
               ]
             }
           - Issuer:
-              Fn::Sub: ${AdminIssuerHost}/${AdminPath}
+              Fn::Sub: ${IssuerHost}/${IssuerPath}
             Principal:
-              Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/${AdminIssuerHost}/${AdminPath}
+              Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/${IssuerHost}/${IssuerPath}
             Teams:
               Fn::Join:
                 - '","'
@@ -204,9 +185,9 @@ Resources:
               ]
             }
           - Issuer:
-              Fn::Sub: ${IssuerHost}/${StandardPath}
+              Fn::Sub: ${IssuerHost}/${IssuerPath}
             Principal:
-              Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/${IssuerHost}/${StandardPath}
+              Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/${IssuerHost}/${IssuerPath}
             Teams:
               Fn::Join:
                 - '","'
