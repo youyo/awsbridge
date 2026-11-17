@@ -105,6 +105,112 @@ describe("createEgress（外への通信を 1 つの関数に集める）", () =
     }
   });
 
+  describe.each([
+    ["Access の certs", CERTS, "GET"],
+    ["STS", STS, "POST"],
+    ["getSigninToken", SIGNIN, "POST"],
+  ])("%s の 3xx（状態コードごと・呼び出し側の指定・入力の形によらず失敗）", (_n, url, method) => {
+    it.each([301, 302, 303, 307, 308])(
+      "%i: 呼び出し側が redirect: follow を渡しても manual で送り、失敗する（Location の先に届かない）",
+      async (status) => {
+        const r = recorder(
+          () => new Response(null, { status, headers: { Location: "https://evil.example.com/" } }),
+        );
+        const egress = createEgress(targets, r.fn, () => {});
+        await expect(egress(url, { method, redirect: "follow" })).rejects.toMatchObject({
+          kind: "egress_redirect",
+        });
+        expect(r.calls).toEqual([{ url, method, redirect: "manual" }]);
+      },
+    );
+    it.each([301, 302, 303, 307, 308])(
+      "%i: Request オブジェクト（redirect: follow）を入力にしても manual で送り、失敗する",
+      async (status) => {
+        const r = recorder(
+          () => new Response(null, { status, headers: { Location: "https://evil.example.com/" } }),
+        );
+        const egress = createEgress(targets, r.fn, () => {});
+        const req = new Request(url, { method, redirect: "follow" });
+        await expect(egress(req)).rejects.toMatchObject({ kind: "egress_redirect" });
+        expect(r.calls).toEqual([{ url, method, redirect: "manual" }]);
+      },
+    );
+  });
+
+  describe("失敗の種別を内部ログに出す（宛先の種類・種別・状態コードだけ。URL・本文・認証情報は出さない）", () => {
+    const lines = () => {
+      const out: string[] = [];
+      return { out, log: (l: string) => out.push(l) };
+    };
+    it.each([
+      ["certs", CERTS, "GET", "access_certs"],
+      ["STS", STS, "POST", "sts"],
+      ["getSigninToken", SIGNIN, "POST", "federation"],
+    ])("%s の 3xx は egress_redirect（target と status）", async (_n, url, method, target) => {
+      const l = lines();
+      const r = recorder(
+        () =>
+          new Response(null, { status: 302, headers: { Location: "https://evil.example.com/x" } }),
+      );
+      await expect(createEgress(targets, r.fn, l.log)(url, { method })).rejects.toBeInstanceOf(
+        EgressError,
+      );
+      expect(l.out.map((x) => JSON.parse(x))).toEqual([
+        { event: "console_egress", result: "egress_redirect", target, status: 302 },
+      ]);
+      expect(l.out.join("\n")).not.toContain("evil.example.com");
+    });
+    it.each([
+      ["STS", STS, "POST", "sts"],
+      ["getSigninToken", SIGNIN, "POST", "federation"],
+    ])(
+      "%s の通信の失敗（例外）は egress_network。例外は呼び出し側にそのまま返す",
+      async (_n, url, method, target) => {
+        const l = lines();
+        const boom = new TypeError("network down: secret-in-message");
+        const fn = (async () => {
+          throw boom;
+        }) as unknown as typeof fetch;
+        await expect(createEgress(targets, fn, l.log)(url, { method })).rejects.toBe(boom);
+        expect(l.out.map((x) => JSON.parse(x))).toEqual([
+          { event: "console_egress", result: "egress_network", target },
+        ]);
+        expect(l.out.join("\n")).not.toContain("secret-in-message");
+      },
+    );
+    it.each([
+      ["別のホスト", "https://evil.example.com/?token=secret-value", "POST", "other"],
+      ["STS を GET", STS, "GET", "sts"],
+      [
+        "getSigninToken の別のパス",
+        "https://signin.aws.amazon.com/oauth?x=secret-value",
+        "POST",
+        "federation",
+      ],
+    ])(
+      "%s は egress_denied（target は宛先のホストの種類だけ。URL・クエリは出さない）",
+      async (_n, url, method, target) => {
+        const l = lines();
+        const r = recorder(() => new Response("{}"));
+        await expect(createEgress(targets, r.fn, l.log)(url, { method })).rejects.toMatchObject({
+          kind: "egress_denied",
+        });
+        expect(l.out.map((x) => JSON.parse(x))).toEqual([
+          { event: "console_egress", result: "egress_denied", target },
+        ]);
+        expect(l.out.join("\n")).not.toContain("secret-value");
+      },
+    );
+    it("成功（2xx）と 4xx・5xx の応答はログを出さない（呼び出し側の発行記録が扱う）", async () => {
+      const l = lines();
+      for (const status of [200, 400, 403, 500, 503]) {
+        const r = recorder(() => new Response("{}", { status }));
+        await createEgress(targets, r.fn, l.log)(STS, { method: "POST" });
+      }
+      expect(l.out).toEqual([]);
+    });
+  });
+
   it("base を渡さなければ、呼ぶ時点の globalThis.fetch を使う（E2E のエントリが後から差し替える）", async () => {
     const egress = createEgress(targets);
     const r = recorder(() => new Response("ok"));
@@ -226,6 +332,36 @@ describe("Worker 全体: 到達先は 3 つだけ（入口・画面・発行（�
       expect(res.headers.get("Location")).toBeNull();
       expect(r.calls.map((c) => c.url)).not.toContain("https://evil.example.com/");
       expect(r.calls.every((c) => [CERTS, STS, SIGNIN].includes(c.url))).toBe(true);
+    },
+  );
+
+  it.each([
+    ["STS", STS, "sts"],
+    ["getSigninToken", SIGNIN, "federation"],
+  ])(
+    "%s の 3xx は内部ログ console_egress（egress_redirect・target）に出し、発行記録の形は変えない（result だけ）",
+    async (_n, at, target) => {
+      const r = world(at);
+      const aud = AUDS.teams.infra as string;
+      await workerWith(r.fn).fetch(
+        loginRequest({
+          jwt: await h.accessJwt({ aud }),
+          form: { entry: ENTRY, csrf: await h.csrf(aud) },
+        }),
+        baseEnv(h),
+      );
+      const lines = vi
+        .mocked(console.log)
+        .mock.calls.map((c) => String(c[0]))
+        .filter((l) => l.startsWith("{"))
+        .map((l) => JSON.parse(l));
+      expect(lines.filter((l) => l.event === "console_egress")).toEqual([
+        { event: "console_egress", result: "egress_redirect", target, status: 302 },
+      ]);
+      const issue = lines.find((l) => l.event === "console_issue");
+      expect(issue.result).toBe("temporarily_unavailable");
+      expect(Object.keys(issue)).not.toContain("egress");
+      expect(JSON.stringify(lines)).not.toContain("evil.example.com");
     },
   );
 

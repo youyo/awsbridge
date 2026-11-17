@@ -26,30 +26,70 @@ export type EgressTargets = {
   stsRegion: string;
 };
 
+/** 宛先の種類（内部ログ用。URL・クエリは出さない）。 */
+export type EgressTarget = "access_certs" | "sts" | "federation" | "other";
+
 /** 3 つの宛先（メソッドと URL の完全一致）。 */
-export function egressTargets(t: EgressTargets): { method: string; url: string }[] {
+export function egressTargets(
+  t: EgressTargets,
+): { method: string; url: string; target: Exclude<EgressTarget, "other"> }[] {
   return [
-    { method: "GET", url: `${t.accessTeamDomain}/cdn-cgi/access/certs` },
-    { method: "POST", url: `https://sts.${t.stsRegion}.amazonaws.com/` },
-    { method: "POST", url: "https://signin.aws.amazon.com/federation" },
+    { method: "GET", url: `${t.accessTeamDomain}/cdn-cgi/access/certs`, target: "access_certs" },
+    { method: "POST", url: `https://sts.${t.stsRegion}.amazonaws.com/`, target: "sts" },
+    { method: "POST", url: "https://signin.aws.amazon.com/federation", target: "federation" },
   ];
 }
 
-/** 外への通信の関数を作る。3 つの宛先のどれかに完全一致するときだけ送り、リダイレクトを追わない。 */
-export function createEgress(t: EgressTargets, base?: typeof fetch): typeof fetch {
+/**
+ * 外への通信の関数を作る。3 つの宛先のどれかに完全一致するときだけ送り、リダイレクトを追わない。
+ * 失敗（断った・3xx・通信の例外）は種別を内部ログ（event console_egress）に 1 行出す。出すのは種別・宛先の種類・3xx の状態コード
+ * だけで、URL・クエリ・本文・認証情報・例外の文言は出さない。発行記録（console_issue）の形は変えない。
+ */
+export function createEgress(
+  t: EgressTargets,
+  base?: typeof fetch,
+  log: (line: string) => void = (line) => console.log(line),
+): typeof fetch {
   const allowed = egressTargets(t);
+  const targetOf = (url: string): EgressTarget => {
+    let origin: string;
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      return "other";
+    }
+    return allowed.find((a) => new URL(a.url).origin === origin)?.target ?? "other";
+  };
+  const report = (result: string, target: EgressTarget, extra: Record<string, unknown> = {}) => {
+    try {
+      log(JSON.stringify({ event: "console_egress", result, target, ...extra }));
+    } catch {
+      // ログの失敗で発行の結果を変えない
+    }
+  };
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input;
     const method = (
       init?.method ?? (input instanceof Request ? input.method : "GET")
     ).toUpperCase();
-    if (!allowed.some((a) => a.url === url && a.method === method))
+    const hit = allowed.find((a) => a.url === url && a.method === method);
+    if (!hit) {
+      report("egress_denied", targetOf(url));
       throw new EgressError("egress_denied");
+    }
     const doFetch = base ?? globalThis.fetch;
-    const res = await doFetch(input, { ...init, method, redirect: "manual" });
+    let res: Response;
+    try {
+      res = await doFetch(input, { ...init, method, redirect: "manual" });
+    } catch (e) {
+      report("egress_network", hit.target);
+      throw e;
+    }
     // redirect: manual でも、Workers は 3xx をそのまま返す（ブラウザの opaqueredirect は status 0）。どちらも失敗
-    if ((res.status >= 300 && res.status < 400) || (res.type as string) === "opaqueredirect")
+    if ((res.status >= 300 && res.status < 400) || (res.type as string) === "opaqueredirect") {
+      report("egress_redirect", hit.target, { status: res.status });
       throw new EgressError("egress_redirect");
+    }
     return res;
   }) as typeof fetch;
 }
