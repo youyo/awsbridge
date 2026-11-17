@@ -353,4 +353,29 @@ describe("画面の JS: main()（DOM の偽物で動かす）", () => {
     // サーバーが描いた入口の行（表）は描き直さない
     expect(p.tbody.children).toHaveLength(0);
   });
+
+  it("最近使ったものの Admin のチームのリンクには role-admin のクラスを付ける（見た目の区別。Standard のリンクには付けない）", () => {
+    const seed = JSON.stringify([
+      {
+        team: "infra-elevated",
+        accountId: "333333333333",
+        role: "admin",
+        name: "svc-a-prod",
+        t: 2,
+      },
+      { team: "infra", accountId: "333333333333", role: "readonly", name: "svc-a-prod", t: 1 },
+    ]);
+    const p = fakePage(
+      {
+        teams: {
+          infra: "/t/infra",
+          "infra-elevated": "https://admin-portal.example.com/t/infra-elevated",
+        },
+        adminTeams: ["infra-elevated"],
+      },
+      { [STORAGE_KEYS.recent]: seed },
+    );
+    const links = p.recent.querySelectorAll("a.role");
+    expect(links.map((a) => a.className)).toEqual(["role role-admin", "role"]);
+  });
 });

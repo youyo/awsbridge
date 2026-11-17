@@ -332,6 +332,30 @@ describe("Admin の Worker（wrangler dev）: 通しの経路（鍵あり）", (
     );
   });
 
+  it("S2 の見た目: Admin の区別（body の tier-admin・管理者の帯と注意）。CSS はチームのパスから読み、JS と inline の style は使わない", async () => {
+    const jwt = await accessJwt(ADMIN_AUD);
+    const s2 = await send(normal, {
+      host: ADMIN_HOST,
+      path: `/t/${TEAM}/a/333333333333`,
+      headers: { "Cf-Access-Jwt-Assertion": jwt },
+    });
+    expect(s2.status).toBe(200);
+    expect(s2.body).toContain('<body class="tier-admin">');
+    expect(s2.body).toContain('<span class="pass-tier">[ADMIN] 管理者</span>');
+    expect(s2.body).toContain("管理者の権限で入ります");
+    expect(s2.body).toContain(`<link rel="stylesheet" href="/t/${TEAM}/assets/portal.css">`);
+    expect(s2.body).not.toMatch(/<script\b|<style\b|\sstyle=/);
+    const css = await send(normal, {
+      host: ADMIN_HOST,
+      path: `/t/${TEAM}/assets/portal.css`,
+      headers: { "Cf-Access-Jwt-Assertion": jwt },
+    });
+    expect(css.status).toBe(200);
+    expect(css.headers["content-type"]).toBe("text/css; charset=utf-8");
+    expect(css.body).toContain("--admin: #B5471A;");
+    expect(css.body).toContain('"BIZ UDPGothic"');
+  });
+
   it("STS に渡した JWT は Admin の issuer のホストの JWKS で検証でき、iss・aud・kid・exp=iat+300 を持つ。jti は発行ごとに違う", async () => {
     expect((await login()).status).toBe(302);
     expect((await login()).status).toBe(302);

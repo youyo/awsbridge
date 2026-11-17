@@ -44,6 +44,104 @@ const ERROR_TITLES: Record<
   payload_too_large: "もう一度選んでください",
 };
 
+/** 再び選び直す操作の案内（CSRF・送信の形の誤りなど、選び直せば通るもの）。 */
+const RESELECT =
+  "一覧からアカウントとロールを選び直し、もう一度「コンソールを開く」を押してください。";
+const RETRY_LATER =
+  "しばらく待ってから、もう一度お試しください。続くときは、下の情報を貼って問い合わせ先へ連絡してください。";
+const CONTACT = "下の情報を貼って、問い合わせ先へ連絡してください。";
+
+/**
+ * S4 の本文（§4.6 の「本文の要点」と「利用者の次の操作」）。what は何が起きたか、next はどうすればよいか。
+ * 見出し（ERROR_TITLES）と code の意味は変えない。内部の詳細（STS の本文など）は書かない。
+ */
+const ERROR_GUIDE: Record<
+  keyof typeof ERROR_TITLES,
+  { what: string; next: string; causes?: string[] }
+> = {
+  unauthorized: {
+    what: "ログイン（Cloudflare Access）を確かめられませんでした。ログインの期限が切れた可能性があります。",
+    next: "ページを読み込み直してログインし直し、一覧から選び直してください。",
+  },
+  unknown_audience: {
+    what: "このページは、いまログインしているアプリからは開けません。",
+    next: "入口の一覧から開き直してください。続くときは、下の情報を貼って問い合わせ先へ連絡してください。",
+  },
+  team_mismatch: {
+    what: "ログインしているチームと、このページのチームが違います。",
+    next: "一覧から、このチームのページを開き直してください。",
+  },
+  forbidden_origin: {
+    what: "送られた操作が、このポータルの画面からのものと確かめられなかったため、受け付けませんでした。",
+    next: RESELECT,
+  },
+  unsupported_media_type: {
+    what: "送られた内容の形が、このポータルの画面から送るものと違ったため、受け付けませんでした。",
+    next: RESELECT,
+  },
+  csrf_failed: {
+    what: "画面を開いてから時間がたったか、別のタブで操作されたため、この操作を受け付けられませんでした。",
+    next: RESELECT,
+  },
+  login_disabled: {
+    what: "運用者がログインを一時的に止めています。",
+    next: "運用者の案内に従ってください。急ぐときは問い合わせ先へ連絡してください。",
+  },
+  rate_limited: {
+    what: "短い時間に送った回数が多すぎたため、受け付けませんでした。",
+    next: "少し待ってから、もう一度お試しください。",
+  },
+  not_listed: {
+    what: "このチームの一覧に、このアカウントとロールの組み合わせがありません。古いページやブックマークから開いた可能性があります。",
+    next: "一覧を開き直して、アカウントとロールを選び直してください。",
+  },
+  identity_unsupported: {
+    what: "あなたの利用者名が、AWS に渡せる形（長さと使える文字）に合いませんでした。",
+    next: CONTACT,
+  },
+  sts_denied: {
+    what: "一覧には出ていましたが、AWS がこのロールへの切り替えを断りました。",
+    next: CONTACT,
+    causes: [
+      "一覧に、権限の変更がまだ反映されていない",
+      "先方のアカウントの設定が、まだ更新されていない",
+      "このチームの権限が外された",
+    ],
+  },
+  upstream_auth_failed: {
+    what: "AWS が、このポータルからのログインを受け付けませんでした。設定が合っていないか、緊急に止めている可能性があります。",
+    next: CONTACT,
+  },
+  temporarily_unavailable: {
+    what: "AWS などの接続先に一時的につながらず、処理を続けられませんでした。",
+    next: RETRY_LATER,
+  },
+  signin_failed: {
+    what: "AWS のサインインの準備に失敗しました。",
+    next: RETRY_LATER,
+  },
+  server_misconfigured: {
+    what: "ポータルの設定に問題があり、処理を続けられませんでした。利用者の側で直せることはありません。",
+    next: CONTACT,
+  },
+  signing_unavailable: {
+    what: "ログインに使う署名の仕組みが、いまは使えません。",
+    next: RETRY_LATER,
+  },
+  method_not_allowed: {
+    what: "このページは、この方法の操作を受け付けていません。",
+    next: "一覧から開き直してください。",
+  },
+  not_found: {
+    what: "指定されたページはありません。URL が古いか、間違っている可能性があります。",
+    next: "一覧から開き直してください。",
+  },
+  payload_too_large: {
+    what: "送られた内容が大きすぎたため、受け付けませんでした。",
+    next: RESELECT,
+  },
+};
+
 /** Admin の画面の印（見出しとタブのタイトルの先頭に付ける）。区別を残すかは人の確認待ち（§12.1）で、既定は残す案。 */
 export const ADMIN_MARK = "[ADMIN]";
 
@@ -51,27 +149,53 @@ export const ADMIN_MARK = "[ADMIN]";
 export const tierMark = (tier: Tier): string | undefined =>
   tier === "admin" ? ADMIN_MARK : undefined;
 
+/** ヘッダーの印（Standard）。inline の SVG（style の属性を使わない。色は CSS の currentColor）。 */
+const LOGO_SVG =
+  '<svg class="logo" width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true" focusable="false"><rect x="4" y="2.5" width="18" height="21" rx="2.5"></rect><path d="M4 8.5h18"></path><circle cx="13" cy="14" r="2.6"></circle><path d="M8.5 20c1-2.2 2.6-3.2 4.5-3.2s3.5 1 4.5 3.2"></path></svg>';
+
+/** エラーの印（S4）。 */
+const ERROR_SVG =
+  '<svg class="icon" width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="9"></circle><path d="M7.5 7.5l7 7M14.5 7.5l-7 7"></path></svg>';
+
+export type LayoutOptions = {
+  /** false なら CSS だけを読み、画面の JS は読まない（JS の要らない画面）。既定 true。 */
+  js?: boolean;
+};
+
 /**
- * @param assetBase 静的なファイルを読む起点（入口は ""、チームのページは <team-base>）。渡したときだけ CSS と JS を読む
+ * 画面の枠。Admin（mark あり）は body のクラス tier-admin とヘッダーの文字の印で区別する（CSS が読めなくても文字は残る）。
+ * Standard は tier-standard で、Admin の印・語を出さない。
+ * @param assetBase 静的なファイルを読む起点（入口は ""、チームのページは <team-base>）。渡したときだけ CSS（と JS）を読む
  */
-export function layout(title: string, body: string, mark?: string, assetBase?: string): string {
+export function layout(
+  title: string,
+  body: string,
+  mark?: string,
+  assetBase?: string,
+  o: LayoutOptions = {},
+): string {
   const prefix = mark !== undefined ? `${mark} ` : "";
-  const assets =
+  const css =
     assetBase !== undefined
-      ? `\n<link rel="stylesheet" href="${esc(assetBase)}/assets/portal.css">\n<script src="${esc(
-          assetBase,
-        )}/assets/portal.js" defer></script>`
+      ? `\n<link rel="stylesheet" href="${esc(assetBase)}/assets/portal.css">`
       : "";
+  const js =
+    assetBase !== undefined && o.js !== false
+      ? `\n<script src="${esc(assetBase)}/assets/portal.js" defer></script>`
+      : "";
+  const tier = mark !== undefined ? "tier-admin" : "tier-standard";
+  const brand = mark !== undefined ? "AWS ログイン（管理者）" : "AWS ログイン";
+  const lead = mark !== undefined ? esc(prefix) : LOGO_SVG;
   return `<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="same-origin">
-<title>${esc(prefix)}${esc(title)} - awsbridge</title>${assets}
+<title>${esc(prefix)}${esc(title)} - awsbridge</title>${css}${js}
 </head>
-<body>
-<header><p>${esc(prefix)}awsbridge AWS ログイン</p></header>
+<body class="${tier}">
+<header><p>${lead}<span class="brand">${brand}</span><span class="sub">awsbridge</span></p></header>
 <main>
 ${body}
 </main>
@@ -98,23 +222,49 @@ export type ErrorPageOptions = {
   supportUrl?: string | undefined;
   /** 階層の印（Admin は `[ADMIN]`）。 */
   mark?: string | undefined;
+  /** CSS を読む起点。省けば teamBase（チームが分からなければ CSS を読まない）。入口は ""。 */
+  assetBase?: string | undefined;
 };
 
-/** S4 エラー。内部の詳細（STS の本文・例外の文）は出さない。 */
+/**
+ * S4 エラー。何が起きたか・どうすればよいか・問い合わせに貼る情報。内部の詳細（STS の本文・例外の文）は出さない。
+ * 貼る情報の行（`code <code>…</code> 要求 ID <code>…</code>`）の形は G2 の測定の道具（poc の issue-lib）が読むので変えない。
+ */
 export function errorPage(code: keyof typeof ERROR_TITLES, o: ErrorPageOptions = {}): string {
   const title = ERROR_TITLES[code];
-  const links = [
-    ...(o.teamBase !== undefined ? [`<a href="${esc(o.teamBase)}/">一覧へ戻る</a>`] : []),
-    ...(o.supportUrl !== undefined ? [`<a href="${esc(o.supportUrl)}">問い合わせ先</a>`] : []),
+  const guide = ERROR_GUIDE[code];
+  const causes =
+    guide.causes !== undefined
+      ? `\n<section class="card"><h2>考えられる原因</h2>
+<ul class="causes">
+${guide.causes.map((c) => `<li>${esc(c)}</li>`).join("\n")}
+</ul>
+<p class="note">どれに当たるかは、ポータルからは区別できません。</p></section>`
+      : "";
+  const support = o.supportUrl !== undefined;
+  const actions = [
+    ...(support
+      ? [`<a class="button primary" href="${esc(o.supportUrl as string)}">問い合わせ先を開く</a>`]
+      : []),
+    ...(o.teamBase !== undefined
+      ? [`<a class="button${support ? "" : " primary"}" href="${esc(o.teamBase)}/">一覧へ戻る</a>`]
+      : []),
   ];
   return layout(
     title,
-    `<h1>${esc(title)}</h1>
-<p>問い合わせるときに貼る情報: code <code>${esc(code)}</code>${
+    `<p class="error-head">${ERROR_SVG}<span>エラー</span></p>
+<h1>${esc(title)}</h1>
+<p class="error-what">${esc(guide.what)}</p>${causes}
+<section class="card"><h2>次にすること</h2>
+<p class="error-next">${esc(guide.next)}</p></section>
+<section class="card"><h2>問い合わせるときに貼る情報</h2>
+<p class="paste">code <code>${esc(code)}</code>${
       o.requestId ? ` 要求 ID <code>${esc(o.requestId)}</code>` : ""
-    }</p>
-${links.length > 0 ? `<p>${links.join(" ")}</p>` : ""}`,
+    }</p></section>
+${actions.length > 0 ? `<p class="actions">${actions.join("\n")}</p>` : ""}`,
     o.mark,
+    o.assetBase ?? o.teamBase,
+    { js: false },
   );
 }
 
@@ -123,9 +273,13 @@ export function loginGetPage(teamBase: string, mark?: string): string {
   return layout(
     "もう一度選んでください",
     `<h1>もう一度選んでください</h1>
+<section class="card">
 <p>ログインはアカウントの画面のボタンからだけ行えます。一覧からアカウントとロールを選び直してください。</p>
-<p><a href="${esc(teamBase)}/">一覧へ</a></p>`,
+</section>
+<p class="actions"><a class="button primary" href="${esc(teamBase)}/">一覧へ</a></p>`,
     mark,
+    teamBase,
+    { js: false },
   );
 }
 
@@ -134,9 +288,13 @@ export function expiredPage(teamBase: string, mark?: string): string {
   return layout(
     "コンソールのセッションが切れました",
     `<h1>コンソールのセッションが切れました</h1>
+<section class="card">
 <p>もう一度アカウントとロールを選んでください。</p>
-<p><a href="${esc(teamBase)}/">一覧へ</a></p>`,
+</section>
+<p class="actions"><a class="button primary" href="${esc(teamBase)}/">一覧へ</a></p>`,
     mark,
+    teamBase,
+    { js: false },
   );
 }
 
@@ -164,6 +322,7 @@ export type LoginFormOptions = {
  */
 export function loginFormPage(o: LoginFormOptions): string {
   const team = o.config.teams.find((t) => t.name === o.team);
+  const admin = o.mark !== undefined;
   const selected =
     o.roles.find((r) => r.role.name === o.selectedRole)?.role.name ??
     (o.roles.length === 1 ? o.roles[0]?.role.name : undefined);
@@ -171,14 +330,16 @@ export function loginFormPage(o: LoginFormOptions): string {
     .map(({ role, sessionSeconds }) => {
       const value = `${o.account.accountId}:${role.name}`;
       const checked = role.name === selected ? " checked" : "";
-      return `<li><label><input type="radio" name="entry" value="${esc(value)}" required${checked}> ${esc(
+      return `<li><label><input type="radio" name="entry" value="${esc(value)}" required${checked}> <span class="role-text"><span class="role-name">${esc(
         role.displayName,
-      )}（${esc(role.roleName)}）セッション: ${esc(hours(sessionSeconds))}</label></li>`;
+      )}</span><span class="role-iam">（${esc(role.roleName)}）</span></span><span class="session">セッション: ${esc(
+        hours(sessionSeconds),
+      )}</span></label></li>`;
     })
     .join("\n");
   const regions = o.config.portal.regions;
   const regionField = regions
-    ? `<p><label>リージョン: <select name="region">${regions.allowed
+    ? `<p><label class="field">リージョン <select name="region">${regions.allowed
         .map(
           (r) =>
             `<option value="${esc(r)}"${r === regions.default ? " selected" : ""}>${esc(r)}</option>`,
@@ -189,24 +350,48 @@ export function loginFormPage(o: LoginFormOptions): string {
     ? `<p role="alert">ログインを一時停止しています。案内に従ってください。</p>\n`
     : "";
   const title = `${o.account.name}（${o.account.accountId}）`;
+  const org =
+    o.config.organizations.find((x) => x.name === o.account.orgLabel)?.displayName ||
+    o.account.orgLabel;
+  const teamLabel = `${team?.displayName || o.team} (${o.team})`;
+  // Admin は帯・注意・ボタンの文で、管理者の権限で入ることを示す（U-18 の既定の案。Standard には出さない）
+  const adminNotes = admin
+    ? `\n<ul class="admin-notes">
+<li>管理者の権限で入ります。開く先のアカウントを確かめてから開いてください。</li>
+<li>入ったことは、チームの名前とともに記録されます（CloudTrail）。</li>
+<li>aws login は同じ端末だけです（--remote は使えません）。</li>
+</ul>`
+    : "";
+  const cliHref = `${o.teamBase}/a/${o.account.accountId}/cli${
+    selected !== undefined ? `?role=${encodeURIComponent(selected)}` : ""
+  }`;
   return layout(
     title,
-    `${notice}<p><a href="${esc(o.teamBase)}/">← 一覧へ</a></p>
-<h1>${esc(title)}</h1>
-<p>チーム: ${esc(team?.displayName ?? o.team)}</p>
+    `${notice}<p class="back"><a href="${esc(o.teamBase)}/">← 一覧へ</a></p>
 <form method="post" action="${esc(o.teamBase)}/login" target="_blank" rel="noopener">
+<section class="pass" aria-label="開く先">
+<div class="pass-head"><span class="pass-tier">${admin ? `${esc(o.mark as string)} 管理者` : "Standard"}</span><span>チーム: ${esc(teamLabel)}</span></div>
+<div class="pass-body">
+<h1>${esc(o.account.name)}</h1>
+<dl class="facts"><dt>アカウント ID</dt><dd class="mono">${esc(o.account.accountId)}</dd><dt>Organization</dt><dd>${esc(org)}</dd></dl>${adminNotes}
 <fieldset>
 <legend>ロール（このチームで入れるもの）</legend>
-<ul>
+<ul class="roles">
 ${roleItems}
 </ul>
 </fieldset>
 ${regionField}
+</div>
+</section>
 <input type="hidden" name="csrf" value="${esc(o.csrf)}">
-<p><button type="submit">コンソールを開く（新しいタブ）</button></p>
+<p class="submit"><button type="submit">${admin ? "管理者のロールで" : ""}コンソールを開く（新しいタブ）</button></p>
 </form>
-<p>開いたコンソールが別のアカウント・ロールのままのとき（または Credentials invalid になるとき）は、開いているコンソールでサインアウトしてから、もう一度「コンソールを開く」を押してください。</p>`,
+<p class="links"><a href="${esc(cliHref)}">CLI で使う（aws login）</a></p>
+<section class="card"><h2>切り替わらないとき</h2>
+<p>開いたコンソールが別のアカウント・ロールのままのとき（または Credentials invalid になるとき）は、開いているコンソールでサインアウトしてから、もう一度「コンソールを開く」を押してください。</p></section>`,
     o.mark,
+    o.teamBase,
+    { js: false },
   );
 }
 
@@ -336,9 +521,9 @@ ${tr}
   return layout(
     `一覧: ${teamLabel}`,
     `<h1>一覧: ${esc(teamLabel)}</h1>
-${entry !== undefined ? `<p><a href="${esc(entry)}">入口の一覧へ</a></p>` : ""}
+${entry !== undefined ? `<p class="back"><a href="${esc(entry)}">← 入口の一覧へ</a></p>` : ""}
 <form method="get" action="${esc(o.teamBase)}/" role="search">
-<label>検索 <input type="search" id="q" name="q" value="${esc(o.q)}" maxlength="${QUERY_MAX}" placeholder="アカウント名・ID・email・Organization"></label>
+<label class="field">検索 <input type="search" id="q" name="q" value="${esc(o.q)}" maxlength="${QUERY_MAX}" placeholder="アカウント名・ID・email・Organization"></label>
 <button type="submit">絞り込む</button>
 </form>
 ${o.q !== "" ? `<p class="hint" id="q-hint">email で探すには JavaScript が要ります（JavaScript なしの検索は名前・ID・Organization・種類・ロールが対象）。</p>\n` : ""}<section id="favorites" hidden><h2>お気に入り</h2><ul></ul></section>
@@ -382,7 +567,7 @@ export type CliPageOptions = {
 /** S3 aws login の手順（§4.4・§6.5）。表示するのは行の情報から作った文字列だけで、認証情報・URL・トークン・email を含まない。 */
 export function cliPage(o: CliPageOptions): string {
   const a = o.account;
-  const back = `<p><a href="${esc(o.teamBase)}/a/${esc(a.accountId)}">← 戻る</a></p>`;
+  const back = `<p class="back"><a href="${esc(o.teamBase)}/a/${esc(a.accountId)}">← 戻る</a></p>`;
   if (!o.selected) {
     const items = o.roles
       .map(
@@ -397,7 +582,7 @@ export function cliPage(o: CliPageOptions): string {
       `${back}
 <h1>CLI で使う: ${esc(a.name)}（${esc(a.accountId)}）</h1>
 <p>ロールを選んでください。</p>
-<ul>
+<ul class="choices">
 ${items}
 </ul>`,
       o.mark,
@@ -416,7 +601,7 @@ ${items}
     `${back}
 <h1>CLI で使う: ${esc(a.name)} / ${esc(role.displayName)}</h1>
 <p>前提: AWS CLI 2.32.0 以降。このロールのコンソールを、既定のブラウザで開いてあること。</p>
-<ol>
+<ol class="steps">
 <li>コンソールを開く（まだなら）
 <form method="post" action="${esc(o.teamBase)}/login" target="_blank" rel="noopener">
 <input type="hidden" name="entry" value="${esc(`${a.accountId}:${role.name}`)}">

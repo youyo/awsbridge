@@ -144,8 +144,10 @@ function renderEntries(section, entries, bases, adminTeams) {
     var base = bases[e.team];
     if (typeof base !== "string") return;
     var li = el("li");
-    var mark = adminTeams.indexOf(e.team) >= 0 ? " [ADMIN]" : "";
-    li.appendChild(roleLink(base, e, e.name + " (" + e.accountId + ") " + e.role + " · " + e.team + mark));
+    var admin = adminTeams.indexOf(e.team) >= 0;
+    var link = roleLink(base, e, e.name + " (" + e.accountId + ") " + e.role + " · " + e.team + (admin ? " [ADMIN]" : ""));
+    if (admin) link.className = "role role-admin";
+    li.appendChild(link);
     ul.appendChild(li);
     shown++;
   });
@@ -306,21 +308,129 @@ if (typeof document !== "undefined") {
 }
 `;
 
-export const PORTAL_CSS = `body { font-family: system-ui, sans-serif; margin: 0 auto; max-width: 72rem; padding: 0 1rem 2rem; color: #1f2328; background: #ffffff; }
-header { border-bottom: 1px solid #d0d7de; margin-bottom: 1rem; }
-table.list { border-collapse: collapse; width: 100%; }
-table.list th, table.list td { border-bottom: 1px solid #d0d7de; padding: 0.4rem; text-align: left; vertical-align: top; }
-small.email { color: #57606a; }
-a.role { display: inline-block; margin: 0.1rem 0.3rem 0.1rem 0; }
-button.star { background: none; border: none; cursor: pointer; font-size: 1rem; padding: 0 0.2rem; }
-pre { background: #f6f8fa; padding: 0.6rem; overflow-x: auto; }
-.note, .hint { color: #57606a; font-size: 0.9rem; }
+// 画面の CSS（デザイン案 A「通行証」）。色は変数で持ち、Admin の画面（body.tier-admin）は差し色を朱（--admin）に替える。
+// 書体は Web フォントを同梱せず、スタックで指定する（外部の URL・@import・@font-face を使わない。CSP の style-src 'self'・img-src 'self'）。
+// 表（table.list）は、どの幅でもカードとして並べる（行は PORTAL_JS が描き直すので、クラスではなく要素の位置で当てる）。
+export const PORTAL_CSS = `:root {
+  --bg: #ECEFF2; --surface: #FFFFFF; --text: #1B2430; --muted: #556070; --line: #CBD3DC; --line-strong: #A9B4C0;
+  --accent: #2C5C8F; --accent-strong: #1E4470; --accent-soft: #F2F6FA; --on-accent: #FFFFFF;
+  --admin: #B5471A; --admin-strong: #9A3B12; --on-admin: #FFFFFF; --danger: #9A3B12; --code-bg: #F2F4F7;
+  --radius: 10px;
+  --mono: "BIZ UDGothic", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+.tier-admin { --bg: #F4ECE8; --line: #E2C9BE; --accent: var(--admin); --accent-strong: var(--admin-strong); --accent-soft: #FBF1EC; --on-accent: var(--on-admin); --radius: 4px; }
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font-family: "BIZ UDPGothic", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", system-ui, sans-serif; font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; }
+a { color: var(--accent); }
+a:hover { color: var(--accent-strong); }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+header { background: var(--surface); border-bottom: 1px solid var(--line); }
+header p { max-width: 48rem; min-height: 60px; margin: 0 auto; padding: 8px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-weight: 700; }
+header .logo { flex: none; color: var(--accent); }
+header .brand { font-size: 16px; }
+header .sub { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--muted); }
+.tier-admin header { background: var(--accent); color: var(--on-accent); border-bottom: 0; }
+.tier-admin header p { letter-spacing: 0.06em; }
+.tier-admin header .sub { color: inherit; }
+main { display: block; max-width: 48rem; margin: 0 auto; padding: 20px 16px 40px; }
+h1 { margin: 0; font-size: 22px; line-height: 1.4; letter-spacing: 0.02em; }
+h2 { margin: 0 0 8px; font-size: 13px; font-weight: 700; color: var(--muted); }
+p { margin: 0; }
+main > * { margin-top: 0; margin-bottom: 0; }
+main > * + * { margin-top: 16px; }
+main > h1 + h2, main > .back + * { margin-top: 4px; }
+code, pre, .mono { font-family: var(--mono); }
+.back a, .links a { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; font-weight: 700; text-decoration: none; }
+.card { padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.card p + p { margin-top: 8px; }
+.note, .hint { color: var(--muted); font-size: 12px; }
+ul.note { padding-left: 1.2em; }
+p[role="alert"] { padding: 12px 14px; border: 1.5px solid var(--danger); border-radius: 8px; background: var(--surface); color: var(--danger); font-weight: 700; }
+p[role="status"] { color: var(--muted); }
+button, select, input { font: inherit; color: inherit; }
+button { min-height: 44px; padding: 0 14px; border: 1.5px solid var(--accent); border-radius: 8px; background: var(--surface); color: var(--accent); font-weight: 700; cursor: pointer; }
+button:hover { background: var(--accent-soft); }
+.button { display: flex; align-items: center; justify-content: center; min-height: 52px; padding: 0 16px; border: 1.5px solid var(--accent); border-radius: var(--radius); font-size: 16px; font-weight: 700; text-decoration: none; text-align: center; }
+.button.primary, .submit button { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.button.primary:hover, .submit button:hover { background: var(--accent-strong); color: var(--on-accent); }
+.actions { display: flex; flex-direction: column; gap: 8px; }
+.submit button { width: 100%; min-height: 56px; border-radius: var(--radius); font-size: 17px; }
+label.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 700; color: var(--muted); }
+select, input[type="search"] { width: 100%; min-height: 48px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 16px; font-weight: 400; }
+dl.facts { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: 6px 12px; margin: 0; font-size: 13px; }
+dl.facts dt { color: var(--muted); }
+dl.facts dd { margin: 0; }
+dd.mono { letter-spacing: 0.04em; }
+/* S2 発行の確認（通行証） */
+.submit { margin-top: 16px; }
+.pass { overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.pass-head { min-height: 44px; padding: 8px 18px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; background: var(--accent); color: var(--on-accent); font-size: 12px; }
+.pass-tier { font-size: 13px; font-weight: 700; letter-spacing: 0.04em; }
+.pass-body { padding: 18px; }
+.pass-body > * + * { margin-top: 14px; }
+.pass h1 { font-size: 26px; letter-spacing: 0.01em; }
+.pass dl.facts { padding-bottom: 14px; border-bottom: 1.5px dashed var(--line); }
+.tier-admin .pass { border: 2px solid var(--accent); border-radius: 4px; }
+.tier-admin .pass-head { min-height: 52px; background: repeating-linear-gradient(135deg, var(--accent) 0 14px, var(--accent-strong) 14px 28px); }
+.tier-admin .pass-tier { font-size: 16px; }
+ul.admin-notes { margin: 0; padding: 12px 14px 12px 2em; border-left: 4px solid var(--accent); background: var(--accent-soft); font-size: 14px; }
+ul.admin-notes li + li { margin-top: 6px; }
+fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+legend { margin-bottom: 8px; padding: 0; font-size: 13px; font-weight: 700; color: var(--muted); }
+ul.roles { margin: 0; padding: 0; list-style: none; }
+ul.roles li + li { margin-top: 8px; }
+ul.roles label { min-height: 56px; padding: 8px 14px; display: flex; align-items: center; gap: 12px; border: 1.5px solid var(--line-strong); border-radius: 8px; background: var(--surface); cursor: pointer; }
+ul.roles label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+ul.roles input { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+.role-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.role-name { font-size: 16px; font-weight: 700; }
+.role-iam { font-size: 12px; color: var(--muted); }
+.session { flex: none; font-size: 13px; font-weight: 700; }
+/* S4 エラー */
+.error-head { display: flex; align-items: center; gap: 8px; color: var(--danger); font-size: 13px; font-weight: 700; }
+main > .error-head + h1 { margin-top: 8px; }
+.error-what { font-size: 14px; line-height: 1.7; }
+ul.causes { margin: 0; padding-left: 1.2em; font-size: 13px; line-height: 1.7; }
+ul.causes + .note { margin-top: 6px; }
+.error-next { font-size: 14px; }
+.paste { font-size: 13px; }
+.paste code { display: inline-block; margin-right: 8px; font-weight: 700; }
+/* S0・S1 の一覧（表をカードにする） */
+table.list, table.list tbody, table.list tr, table.list td { display: block; }
+table.list { width: 100%; border-collapse: collapse; }
+table.list thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+table.list tr { padding: 14px 16px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+table.list tr + tr { margin-top: 10px; }
+table.list td { padding: 0; font-size: 13px; color: var(--muted); }
+table.list td:first-child { flex: 1 0 100%; font-size: 17px; font-weight: 700; color: var(--text); }
+table.list td:nth-child(2) { font-family: var(--mono); letter-spacing: 0.04em; }
+table.list td:last-child { flex: 1 0 100%; margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+table.list td:first-child br { display: none; }
+small.email { display: block; font-size: 12px; font-weight: 400; color: var(--muted); }
+a.role { display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px; border: 1.5px solid var(--accent); border-radius: 8px; background: var(--surface); color: var(--accent); font-size: 14px; font-weight: 700; text-decoration: none; }
+a.role:hover { background: var(--accent-soft); }
+.tier-admin a.role, a.role.role-admin { border-color: var(--admin); border-radius: 2px; background: var(--admin); color: var(--on-admin); }
+.tier-admin a.role:hover, a.role.role-admin:hover { background: var(--admin-strong); color: var(--on-admin); }
+#clear-local { min-height: 36px; border-color: var(--line-strong); color: var(--muted); font-size: 12px; font-weight: 400; }
+button.star { min-height: 44px; min-width: 32px; padding: 0 4px; border: 0; background: none; color: var(--accent); font-size: 18px; }
+#count { font-size: 13px; font-weight: 700; color: var(--muted); }
+#favorites ul, #recent ul, ul.teams, ul.choices { margin: 0; padding: 0; list-style: none; }
+#favorites li + li, #recent li + li, ul.teams li + li, ul.choices li + li { margin-top: 8px; }
+#favorites a.role, #recent a.role { width: 100%; min-height: 52px; }
+ul.teams a, ul.choices a { display: flex; align-items: center; min-height: 52px; padding: 0 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); font-weight: 700; text-decoration: none; }
+form[role="search"] { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+form[role="search"] label { flex: 1 1 14rem; }
+form[role="search"] button { min-height: 48px; }
+details summary { min-height: 44px; display: flex; align-items: center; font-weight: 700; cursor: pointer; }
+/* S3 aws login の手順 */
+ol.steps { padding: 14px 16px 14px 2.2em; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+ol.steps > li + li { margin-top: 14px; }
+ol.steps form { margin-top: 8px; }
+pre { margin: 8px 0 0; padding: 10px 12px; overflow-x: auto; overflow-wrap: normal; background: var(--code-bg); border-radius: 8px; font-size: 13px; }
 @media (prefers-color-scheme: dark) {
-  body { color: #e6edf3; background: #0d1117; }
-  header, table.list th, table.list td { border-color: #30363d; }
-  small.email, .note, .hint { color: #8b949e; }
-  pre { background: #161b22; }
-  a { color: #58a6ff; }
+  :root { --bg: #11161C; --surface: #1A2129; --text: #E6EBF0; --muted: #9DA9B5; --line: #2F3944; --line-strong: #4A5662; --accent: #8DB4DC; --accent-strong: #B5CFEA; --accent-soft: #1F2B38; --on-accent: #0E1620; --admin: #E2865E; --admin-strong: #EFA584; --on-admin: #1A0F0A; --danger: #F0A27E; --code-bg: #10161D; }
+  .tier-admin { --bg: #1B1411; --surface: #241B17; --line: #4A3329; --accent-soft: #33221B; }
 }
 `;
 

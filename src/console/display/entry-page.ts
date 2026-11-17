@@ -130,7 +130,7 @@ ${teamLinks(display)}`;
 <td>${r.links
           .map(
             (l) =>
-              `<a class="role" href="${esc(l.href)}" data-team="${esc(l.team)}" data-account="${esc(
+              `<a class="${r.tier === "admin" ? "role role-admin" : "role"}" href="${esc(l.href)}" data-team="${esc(l.team)}" data-account="${esc(
                 r.accountId,
               )}" data-role="${esc(l.role)}" data-name="${esc(r.name)}">${esc(
                 `${l.roleDisplayName} · ${l.team}`,
@@ -144,7 +144,7 @@ ${teamLinks(display)}`;
 <h2>あなたが入れるもの（所属: ${esc(teamNames.join("・"))}）</h2>
 ${
   rows.length > 0
-    ? `<table class="list">
+    ? `<table class="list entry">
 <thead><tr><th>アカウント</th><th>ID</th><th>Organization</th><th>ロール</th></tr></thead>
 <tbody>
 ${tr}

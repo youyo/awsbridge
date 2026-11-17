@@ -474,6 +474,23 @@ describe("Standard の Worker（wrangler dev）: S1・S3・静的なファイル
     expect(q.body).not.toContain('href="/t/infra/a/333333333333?role=readonly"');
   });
 
+  it("S2・S4 の見た目: Standard の帯（Admin の印は無い）と自前の CSS。JS と inline の style は使わない", async () => {
+    const s2 = await page(normal, "/t/infra/a/333333333333?role=readonly", INFRA);
+    expect(s2.status, s2.body).toBe(200);
+    expect(s2.body).toContain('<body class="tier-standard">');
+    expect(s2.body).toContain('<span class="pass-tier">Standard</span>');
+    expect(s2.body).not.toContain("ADMIN");
+    expect(s2.body).toContain('<link rel="stylesheet" href="/t/infra/assets/portal.css">');
+    expect(s2.body).not.toMatch(/<script\b|<style\b|\sstyle=/);
+    const s4 = await page(normal, "/t/infra/a/555555555555", INFRA);
+    expect(s4.status).toBe(404);
+    expect(s4.body).toContain('<p class="error-what">');
+    expect(s4.body).toContain('<p class="error-next">');
+    expect(s4.body).toContain("code <code>not_listed</code>");
+    expect(s4.body).toContain('<link rel="stylesheet" href="/t/infra/assets/portal.css">');
+    expect(s4.body).not.toMatch(/<script\b|<style\b|\sstyle=/);
+  });
+
   it("S3 は aws login の手順（Viewer は --remote も）と、CSRF つきの「コンソールを開く」", async () => {
     const r = await page(normal, "/t/infra/a/333333333333/cli?role=readonly", INFRA);
     expect(r.status, r.body).toBe(200);

@@ -37,7 +37,8 @@ export function createEntryHandler(rawDisplay: unknown, o: EntryOptions = {}): E
 
   return async (req, ctx) => {
     const { config, requestId } = ctx;
-    const errOpts = { requestId, supportUrl: config.portal.supportUrl };
+    // 入口のエラーも入口の CSS（/assets）を読む（JS は読まない）
+    const errOpts = { requestId, supportUrl: config.portal.supportUrl, assetBase: "" };
     const misconfigured = (kind: string) => {
       console.error(`config: invalid console display: ${kind}`);
       return htmlResponse(errorPage("server_misconfigured", errOpts), 500);
