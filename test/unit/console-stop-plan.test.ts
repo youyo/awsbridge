@@ -22,8 +22,8 @@ import {
   goodSnapshot,
   inspectConfig,
   inventory,
+  PROVIDER,
   role,
-  STD_PROVIDER,
 } from "./console-inspect-fixtures";
 
 const A = "user1@example.com";
@@ -65,7 +65,7 @@ function handmade(name = "HandmadeConsoleRole"): RoleSnapshot {
       Statement: [
         {
           Effect: "Allow",
-          Principal: { Federated: STD_PROVIDER },
+          Principal: { Federated: PROVIDER },
           Action: "sts:AssumeRoleWithWebIdentity",
         },
       ],

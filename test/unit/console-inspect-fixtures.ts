@@ -15,10 +15,10 @@ export const ACCOUNT = "333333333333";
 /** 署名を置くアカウント（signing.accountIds）。どの種類の OU にも入っていない。 */
 export const SIGNING_ACCOUNT = "666666666666";
 export const HOST = "id.example.com";
-/** Admin の issuer のホスト（Standard とは別のホスト。設定の boundaries[].issuers.admin = https://admin-id.example.com/admin）。 */
-export const ADMIN_HOST = "admin-id.example.com";
-export const STD_PROVIDER = `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/standard`;
-export const ADMIN_PROVIDER = `arn:aws:iam::${ACCOUNT}:oidc-provider/${ADMIN_HOST}/admin`;
+/** コンソールのプロバイダー（P2: Standard と Admin の階層で同じ。設定の boundaries[].issuer = https://id.example.com/console）。 */
+export const PROVIDER = `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/console`;
+/** P2 より前の Admin のプロバイダー（今は無い。残っていれば棚卸しで見つける試験に使う）。 */
+export const OLD_ADMIN_PROVIDER = `arn:aws:iam::${ACCOUNT}:oidc-provider/admin-id.example.com/admin`;
 export const STD_GUARD = `arn:aws:iam::${ACCOUNT}:policy/awsbridge-console/AwsbridgeConsoleGuardStandard`;
 export const ADMIN_GUARD = `arn:aws:iam::${ACCOUNT}:policy/awsbridge-console/AwsbridgeConsoleGuardAdmin`;
 /** MCP 用のプロバイダー（コンソールログイン用ではない）。 */
@@ -39,21 +39,9 @@ const BASE: Json = parse(
 
 const PSEUDO = { "AWS::Partition": "aws", "AWS::AccountId": ACCOUNT };
 
-/**
- * base.yaml の部品の文書を、このアカウントの値で評価する。admin = false は Admin の階層の無いアカウント
- * （base に AdminIssuerHost を渡さない）の形。
- */
-export function guardDocument(
-  logicalId: "StandardGuardPolicy" | "AdminGuardPolicy",
-  admin = true,
-): Json {
-  const params = {
-    ...PSEUDO,
-    IssuerHost: HOST,
-    StandardPath: "standard",
-    AdminIssuerHost: admin ? ADMIN_HOST : "",
-    AdminPath: "admin",
-  };
+/** base.yaml の部品の文書を、このアカウントの値で評価する（P2: どちらの部品もプロバイダーの Deny は 1 つのホスト）。 */
+export function guardDocument(logicalId: "StandardGuardPolicy" | "AdminGuardPolicy"): Json {
+  const params = { ...PSEUDO, IssuerHost: HOST, IssuerPath: "console" };
   return evaluate(BASE.Resources[logicalId].Properties.PolicyDocument, {
     ...params,
     ...conditionValues(BASE, params),
@@ -65,9 +53,7 @@ function roleFromTemplate(logicalId: string, params: Record<string, string>): Ro
   const p = evaluate(tpl.Resources[logicalId].Properties, {
     ...PSEUDO,
     IssuerHost: HOST,
-    StandardPath: "standard",
-    AdminIssuerHost: ADMIN_HOST,
-    AdminPath: "admin",
+    IssuerPath: "console",
     ...params,
   });
   const managed = (p.ManagedPolicyArns as Json[]).map((x) =>
@@ -95,7 +81,7 @@ export function goodSnapshot(): AccountSnapshot {
   return {
     accountId: ACCOUNT,
     partition: "aws",
-    providers: [STD_PROVIDER, ADMIN_PROVIDER, MCP_PROVIDER],
+    providers: [PROVIDER, MCP_PROVIDER],
     roles: [
       roleFromTemplate("ReadonlyRole", { ReadonlyTeams: "sa,infra", AdminTeams: "" }),
       roleFromTemplate("AdminRole", { ReadonlyTeams: "", AdminTeams: "infra-elevated" }),

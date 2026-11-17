@@ -130,14 +130,17 @@ describe("console:inspect（偽の aws で実プロセス）", () => {
     NO_SECRETS(r.out);
   });
 
-  it("穴の回帰: Admin のホストの Deny が無い古い部品は、Admin の階層のアカウントで終了コード 1（guard_version_mismatch）", () => {
+  it("穴の回帰: プロバイダーの Deny が P2 より前の 2 つのホストの形（Admin のホストつき）の古い部品は、終了コード 1（guard_version_mismatch）", () => {
     const s = goodSnapshot();
     for (const p of s.managedPolicies) {
       const st = (p.document as Json).Statement.find(
         (x: Json) => x.Sid === "DenyConsoleProviderWrites",
       );
-      // 前の版の部品: プロバイダーの Deny が Standard のホストだけ
-      st.Resource = (st.Resource as string[])[0];
+      // 前の版の部品: プロバイダーの Deny がコンソールのホストと P2 より前の Admin のホスト
+      st.Resource = [
+        (st.Resource as string[])[0],
+        "arn:aws:iam::333333333333:oidc-provider/admin-id.example.com/*",
+      ];
     }
     const r = inspect(s);
     expect(r.status, r.out).toBe(1);

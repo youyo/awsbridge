@@ -35,7 +35,8 @@
 // 該当の発行と引き受けを調べ、技術の判断者に上げる（README の突き合わせの節）。
 // 所見にしない表示（同じ決裁）: 対の発行からの時間差（秒）の階層ごとの最小・最大・件数（Q1 の記録）、コンソール以外として除外した
 // 引き受けの件数（Q2。期待値は手順で確かめる）、Administrator の階層の発行の件数と各時刻（Q4）。
-// 「Administrator の階層」は admin の階層（記録の tier・ロールのパス /awsbridge-console/admin/・設定の Admin の issuer のどれか）。
+// 「Administrator の階層」は admin の階層（記録の tier・記録のチームの階層・ロールのパス /awsbridge-console/admin/ のどれか。
+// P2（B）の設計メモ §9.1: プロバイダーは階層を持たない（Standard と Admin の階層で同じ issuer）ので、プロバイダーで階層を決めない）。
 // 突き合わせの入力にはロールごとの区別が無いので、Admin の階層のロールすべて（Administrator のロールに限らない）を含む。
 
 import { ROLE_PATH_PREFIX, rolePath, TIERS, type Tier } from "./constants";
@@ -77,8 +78,10 @@ export type ReconcileInput = {
   now: number;
   /** プロファイルのアカウント（12 桁）。 */
   accountId: string;
-  /** 設定の issuer（境界 × 階層）。 */
-  issuers: readonly { url: string; tier: Tier }[];
+  /** 設定の issuer（境界ごとに 1 つ。階層で分けない）。 */
+  issuers: readonly { url: string }[];
+  /** 設定のチーム（名前 → 階層）。記録のチームの階層を、記録の tier とロールのパスの階層と比べる（§9.1）。 */
+  teams: readonly { name: string; tier: Tier }[];
   regions: { read: readonly string[]; unread: readonly string[] };
   lines: { truncated: readonly string[]; unreadable: readonly string[]; total: number };
   /** 発行記録の API の読み取りで、件数（別の経路）まで読み切れなかった窓（1 件 1 行の説明）。 */
@@ -177,10 +180,10 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
   const findings: ReconFinding[] = [];
   const add = (f: ReconFinding) => findings.push(f);
 
-  // 設定の issuer（ホスト/パス → 階層）とホスト
-  const configured = new Map<string, Tier>();
-  for (const x of i.issuers) configured.set(providerId(x.url), x.tier);
-  const consoleHosts = new Set([...configured.keys()].map(hostOf));
+  // 設定の issuer（ホスト/パス）とホスト、チーム → 階層
+  const configured = new Set(i.issuers.map((x) => providerId(x.url)));
+  const consoleHosts = new Set([...configured].map(hostOf));
+  const teamTier = new Map(i.teams.map((t) => [t.name, t.tier]));
 
   const isConsole = (e: AssumeEvent) =>
     (roleParts(e.roleArn)?.path.startsWith(ROLE_PATH_PREFIX) ?? false) ||
@@ -215,22 +218,14 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
     const at = `${e.region} ${when(e.time)}`;
     const roleTier = pathTier(role?.path);
 
-    // プロバイダー: 設定に無ければ誤り（同じホストの別のパスも別の IAM のプロバイダー）
+    // プロバイダー: 設定に無ければ誤り（同じホストの別のパスも別の IAM のプロバイダー）。プロバイダーは階層を持たない
     const pid = e.provider !== undefined ? providerId(e.provider) : undefined;
-    const providerTier = pid !== undefined ? configured.get(pid) : undefined;
-    if (pid === undefined || providerTier === undefined)
+    if (pid === undefined || !configured.has(pid))
       add({
         severity: "error",
         code: "provider_not_in_config",
         ...base,
         detail: `${at} provider=${pid ?? "-"}`,
-      });
-    else if (roleTier !== undefined && providerTier !== roleTier)
-      add({
-        severity: "error",
-        code: "tier_mismatch",
-        ...base,
-        detail: `${at} provider=${providerTier} role=${roleTier}`,
       });
 
     if (e.errorCode !== undefined) {
@@ -270,9 +265,21 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
     // 時間: 引き受けの時刻 − 発行の時刻（iat。無い記録は記録の時刻 at。at は STS の応答のあとに書くので、前向きの差は少し小さく出る）。
     // 後ろに寿命＋ずれを超える（JWT の寿命の外での引き受け、同じ jti の使い回し）か、前にずれを超える（発行の前の引き受け。
     // 時計の異常か、作られた JWT に記録を合わせた形）なら、向きを detail に出す同じ所見にする。どちらも誤り（c5 の Q1）。
-    // 対の階層: 記録の tier・ロールのパス・プロバイダーのどれかが admin なら admin（食い違いで Admin の比べ漏れを隠さない）
+    // 記録のチームの階層（設定に無いチームは記録の側で team_not_in_config）: 記録の tier・ロールのパスの階層と違えば誤り
+    const recTeamTier = teamTier.get(r.team);
+    if (
+      recTeamTier !== undefined &&
+      (recTeamTier !== r.tier || (roleTier !== undefined && recTeamTier !== roleTier))
+    )
+      add({
+        severity: "error",
+        code: "team_tier_mismatch",
+        ...base,
+        detail: `${at} team=${recTeamTier} record=${r.tier} role=${roleTier ?? "-"} (${r.pos})`,
+      });
+    // 対の階層: 記録の tier・記録のチームの階層・ロールのパスのどれかが admin なら admin（食い違いで Admin の比べ漏れを隠さない）
     const pairTier: Tier =
-      r.tier === "admin" || roleTier === "admin" || providerTier === "admin" ? "admin" : "standard";
+      r.tier === "admin" || recTeamTier === "admin" || roleTier === "admin" ? "admin" : "standard";
     const issuedAt = r.iat !== undefined ? r.iat * 1000 : r.at;
     const deltaSeconds = Math.round((e.time - issuedAt) / 1000);
     deltas[pairTier].push(deltaSeconds);
@@ -347,6 +354,15 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
   // ---- 記録の側 ----
   const unread = new Set(i.regions.unread);
   const thisAccount = i.records.filter((r) => sameAccount(r.accountId, i.accountId));
+  // 設定に無いチームの記録（このアカウント・読んだ期間。引き受けの有無によらない）
+  for (const r of thisAccount)
+    if (r.at >= i.window.since && r.at <= i.window.until && !teamTier.has(r.team))
+      add({
+        severity: "error",
+        code: "team_not_in_config",
+        ...(r.jti !== undefined ? { jti: maskJti(r.jti) } : {}),
+        detail: `${when(r.at)} (${r.pos})`,
+      });
   let pending = 0;
   for (const r of thisAccount) {
     if (r.jti === undefined) continue;

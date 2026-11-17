@@ -15,18 +15,17 @@ import { companyConfig } from "./console-fixtures";
 import {
   ACCOUNT,
   ADMIN_GUARD,
-  ADMIN_HOST,
-  ADMIN_PROVIDER,
   goodSnapshot,
   guardDocument,
   HOST,
   inspectConfig,
   inventory,
   MCP_PROVIDER,
+  OLD_ADMIN_PROVIDER,
+  PROVIDER,
   role,
   SIGNING_ACCOUNT,
   STD_GUARD,
-  STD_PROVIDER,
 } from "./console-inspect-fixtures";
 
 function run(s: AccountSnapshot, stops?: string[]): Finding[] {
@@ -88,9 +87,9 @@ describe("信頼ポリシー（許可リスト方式）", () => {
       "trust_principal",
     ],
     [
-      "Federated が別の階層（Admin）のプロバイダー",
+      "Federated が P2 より前の Admin のプロバイダー（別のホスト）",
       (st) => {
-        st.Principal.Federated = ADMIN_PROVIDER;
+        st.Principal.Federated = OLD_ADMIN_PROVIDER;
       },
       "trust_principal",
     ],
@@ -175,16 +174,16 @@ describe("信頼ポリシー（許可リスト方式）", () => {
     [
       "aud の値を足す",
       (st) => {
-        st.Condition.StringEquals[`${HOST}/standard:aud`] = ["awsbridge-console", "awsbridge"];
+        st.Condition.StringEquals[`${HOST}/console:aud`] = ["awsbridge-console", "awsbridge"];
       },
       "trust_aud",
     ],
     [
-      "aud の条件キーが別の階層の issuer",
+      "aud の条件キーが P2 より前の Admin の issuer",
       (st) => {
         const e = st.Condition.StringEquals;
-        e[`${ADMIN_HOST}/admin:aud`] = e[`${HOST}/standard:aud`];
-        delete e[`${HOST}/standard:aud`];
+        e["admin-id.example.com/admin:aud"] = e[`${HOST}/console:aud`];
+        delete e[`${HOST}/console:aud`];
       },
       "trust_aud",
     ],
@@ -305,7 +304,7 @@ describe("信頼ポリシー（許可リスト方式）", () => {
     const doc = role(s, "FederatedViewer").trustPolicy as Json;
     doc.Statement.push({
       Effect: "Deny",
-      Principal: { Federated: STD_PROVIDER },
+      Principal: { Federated: PROVIDER },
       Action: "sts:AssumeRoleWithWebIdentity",
       Condition: { Null: { "sts:SourceIdentity": "false" } },
     });
@@ -341,18 +340,84 @@ describe("信頼ポリシー（許可リスト方式）", () => {
     expect(run(s).filter((x) => x.severity !== "note")).toEqual([]);
   });
 
-  it("Admin のロール: 設定の Admin の issuer 以外のプロバイダー（別のホスト）を信頼していれば違反", () => {
+  it("Admin のロール: コンソールのプロバイダー以外（別のホスト）を信頼していれば違反", () => {
     const s = goodSnapshot();
     const st = (role(s, "FederatedAdministrator").trustPolicy as Json).Statement[0];
     st.Principal.Federated = `arn:aws:iam::${ACCOUNT}:oidc-provider/other-admin.example.com/admin`;
     expect(codesOf(run(s), "FederatedAdministrator")).toContain("trust_principal");
   });
 
-  it("Admin のロール: Standard のプロバイダーを信頼していれば違反", () => {
+  it("Admin のロール: P2 より前の Admin のプロバイダーを信頼していれば違反（Principal は境界の 1 つのプロバイダー）", () => {
     const s = goodSnapshot();
     const st = (role(s, "FederatedAdministrator").trustPolicy as Json).Statement[0];
-    st.Principal.Federated = STD_PROVIDER;
+    st.Principal.Federated = OLD_ADMIN_PROVIDER;
     expect(codesOf(run(s), "FederatedAdministrator")).toContain("trust_principal");
+  });
+
+  it("陽性の対照: Viewer と Administrator のロールは同じプロバイダーを信頼し、誤りが無い", () => {
+    const s = goodSnapshot();
+    for (const name of ["FederatedViewer", "FederatedAdministrator"])
+      expect((role(s, name).trustPolicy as Json).Statement[0].Principal.Federated, name).toBe(
+        PROVIDER,
+      );
+    expect(errors(run(s))).toEqual([]);
+  });
+});
+
+// P2（B）の設計メモ §7.1・§9.2: Viewer と Administrator の JWT は同じ issuer・同じ鍵・同じ aud で、違いはタグのチームの値だけ。
+// 信頼ポリシーのチームの値が、そのロールの階層のチームであること（違えば trust_team_tier。手で足した値・階層を変えて
+// 使い直した名前を、階層の誤りとして名指しする）。退役したチーム名の台帳の名前が残っていれば trust_team_retired
+describe("信頼ポリシーのチームの階層（trust_team_tier）と退役したチーム名（trust_team_retired）", () => {
+  const teamsOf = (s: AccountSnapshot, name: string) =>
+    (role(s, name).trustPolicy as Json).Statement[0].Condition.StringEquals;
+
+  it("Admin のロールの信頼ポリシーに Standard のチームがあれば trust_team_tier（誤り）", () => {
+    const s = goodSnapshot();
+    teamsOf(s, "FederatedAdministrator")["aws:RequestTag/awsbridge_team"] = [
+      "infra-elevated",
+      "infra",
+    ];
+    const codes = codesOf(run(s), "FederatedAdministrator");
+    expect(codes).toContain("trust_team_tier");
+  });
+
+  it("逆向き: Viewer のロールの信頼ポリシーに Admin のチームがあれば trust_team_tier（誤り）", () => {
+    const s = goodSnapshot();
+    teamsOf(s, "FederatedViewer")["aws:RequestTag/awsbridge_team"] = ["sa", "infra-elevated"];
+    expect(codesOf(run(s), "FederatedViewer")).toContain("trust_team_tier");
+  });
+
+  it("どの階層のチームでもない名前（手で足した値）も trust_team_tier", () => {
+    const s = goodSnapshot();
+    teamsOf(s, "FederatedAdministrator")["aws:RequestTag/awsbridge_team"] = [
+      "infra-elevated",
+      "nobody",
+    ];
+    expect(codesOf(run(s), "FederatedAdministrator")).toContain("trust_team_tier");
+  });
+
+  it("退役したチーム名の台帳の名前が信頼ポリシーに残っていれば trust_team_retired（誤り）", () => {
+    const raw = companyConfig();
+    raw.signing = { accountIds: [SIGNING_ACCOUNT] };
+    raw.retiredTeams = [{ name: "old-elevated", tier: "admin" }];
+    const config = parseConsoleConfig(raw).config;
+    const s = goodSnapshot();
+    teamsOf(s, "FederatedAdministrator")["aws:RequestTag/awsbridge_team"] = [
+      "infra-elevated",
+      "old-elevated",
+    ];
+    const f = inspectAccount({ config, snapshot: s, inventory: inventory() }).findings;
+    expect(codesOf(f, "FederatedAdministrator")).toContain("trust_team_retired");
+    // 対照: 台帳に無ければ trust_team_retired は出ない（trust_team_tier は出る）
+    const g = run(s);
+    expect(codesOf(g, "FederatedAdministrator")).not.toContain("trust_team_retired");
+    expect(codesOf(g, "FederatedAdministrator")).toContain("trust_team_tier");
+  });
+
+  it("陽性の対照: 生成器の出力そのままなら trust_team_tier も trust_team_retired も出ない", () => {
+    const codes = errors(run(goodSnapshot())).map((x) => x.code);
+    expect(codes).not.toContain("trust_team_tier");
+    expect(codes).not.toContain("trust_team_retired");
   });
 });
 
@@ -369,53 +434,51 @@ describe("パス", () => {
 });
 
 describe("守りの部品", () => {
-  it("部品の守りの文書（src/console/guard.ts）は base.yaml の部品と同じ（Admin の階層の有り無しの両方）", () => {
-    // Admin の部品は Admin の階層があるときだけ作られる
-    for (const [tier, id, admin] of [
-      ["standard", "StandardGuardPolicy", true],
-      ["standard", "StandardGuardPolicy", false],
-      ["admin", "AdminGuardPolicy", true],
+  it("部品の守りの文書（src/console/guard.ts）は base.yaml の部品と同じ（P2: どちらの部品もプロバイダーの Deny は 1 つのホスト）", () => {
+    for (const [tier, id] of [
+      ["standard", "StandardGuardPolicy"],
+      ["admin", "AdminGuardPolicy"],
     ] as const) {
-      const issuerHosts = admin ? [HOST, ADMIN_HOST] : [HOST];
       expect(
-        guardPolicyDocument(tier, { partition: "aws", accountId: ACCOUNT, issuerHosts }),
-        `${tier} admin=${admin}`,
-      ).toEqual(guardDocument(id, admin));
+        guardPolicyDocument(tier, { partition: "aws", accountId: ACCOUNT, issuerHost: HOST }),
+        tier,
+      ).toEqual(guardDocument(id));
     }
   });
 
-  it("穴の回帰: Admin のホストの Deny が無い古い部品は、Admin の階層のアカウントで違反（両方の部品）", () => {
+  it("穴の回帰: プロバイダーの Deny が P2 より前の 2 つのホストの形（Admin のホストつき）の部品は違反（両方の部品）", () => {
     const s = goodSnapshot();
-    // 前の版の部品: プロバイダーの Deny が Standard のホストだけ
-    const old = `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/*`;
     for (const p of s.managedPolicies) {
       const st = (p.document as Json).Statement.find(
         (x: Json) => x.Sid === "DenyConsoleProviderWrites",
       );
-      st.Resource = old;
+      st.Resource = [
+        `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/*`,
+        `arn:aws:iam::${ACCOUNT}:oidc-provider/admin-id.example.com/*`,
+      ];
     }
     const f = run(s);
     expect(codesOf(f, "FederatedViewer")).toEqual(["guard_version_mismatch"]);
     expect(codesOf(f, "FederatedAdministrator")).toEqual(["guard_version_mismatch"]);
   });
 
-  it("Admin の階層のアカウントで、プロバイダーの Deny が Admin のホストだけ（Standard のホストが無い）でも違反", () => {
+  it("プロバイダーの Deny が別のホストだけ（コンソールのホストが無い）なら違反", () => {
     const s = goodSnapshot();
     const p = s.managedPolicies.find((x) => x.arn === STD_GUARD);
     const st = (p?.document as Json).Statement.find(
       (x: Json) => x.Sid === "DenyConsoleProviderWrites",
     );
-    st.Resource = [`arn:aws:iam::${ACCOUNT}:oidc-provider/${ADMIN_HOST}/*`];
+    st.Resource = [`arn:aws:iam::${ACCOUNT}:oidc-provider/admin-id.example.com/*`];
     expect(codesOf(run(s), "FederatedViewer")).toEqual(["guard_version_mismatch"]);
   });
 
-  it("Admin の部品のプロバイダーの Deny が Standard のホストだけなら、設定に無いアカウントでも違反", () => {
+  it("設定に無いアカウントでも、部品の形は 1 つ（違えば違反）", () => {
     const s = goodSnapshot();
     const p = s.managedPolicies.find((x) => x.arn === ADMIN_GUARD);
     const st = (p?.document as Json).Statement.find(
       (x: Json) => x.Sid === "DenyConsoleProviderWrites",
     );
-    st.Resource = [`arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/*`];
+    st.Resource = [`arn:aws:iam::${ACCOUNT}:oidc-provider/other.example.com/*`];
     const moved = JSON.parse(
       JSON.stringify(s).replaceAll(ACCOUNT, "777777777777"),
     ) as AccountSnapshot;
@@ -491,40 +554,21 @@ describe("守りの部品", () => {
   });
 });
 
-describe("守りの部品: Admin の階層の無いアカウント", () => {
-  // 種類 A から Admin の割り当てを外した設定（境界 managed には Admin の issuer があるが、このアカウントには Admin を配らない。
-  // base には AdminIssuerHost を渡さない）
+describe("守りの部品: Admin の階層の無いアカウント（Admin の部品はいつもある。P2 の §6.2）", () => {
+  // 種類 A から Admin の割り当てを外した設定（このアカウントには Admin のロールを配らない）
   const noAdminConfig = () => {
     const raw = companyConfig();
     raw.signing = { accountIds: [SIGNING_ACCOUNT] };
     delete raw.kinds[0].assign.admin;
     return parseConsoleConfig(raw).config;
   };
-  const noAdminSnapshot = (admin: boolean): AccountSnapshot => {
-    const s = goodSnapshot();
-    s.roles = s.roles.filter((r) => r.roleName !== "FederatedAdministrator");
-    s.providers = s.providers.filter((p) => p !== ADMIN_PROVIDER);
-    s.managedPolicies = [
-      {
-        arn: STD_GUARD,
-        defaultVersionId: "v1",
-        document: guardDocument("StandardGuardPolicy", admin),
-      },
-    ];
-    return s;
-  };
   const runNoAdmin = (s: AccountSnapshot) =>
     inspectAccount({ config: noAdminConfig(), snapshot: s, inventory: inventory() }).findings;
 
-  it("Standard のホストだけの部品なら誤りも警告もない", () => {
-    const f = runNoAdmin(noAdminSnapshot(false));
-    expect(f.filter((x) => x.severity !== "note")).toEqual([]);
-  });
-
-  it("Admin のホストも入った部品（AdminIssuerHost を配る先を誤った）は違反", () => {
-    expect(codesOf(runNoAdmin(noAdminSnapshot(true)), "FederatedViewer")).toEqual([
-      "guard_version_mismatch",
-    ]);
+  it("Admin のロールが無く、部品は 2 つとも同じ 1 つのホストの形なら誤りも警告もない", () => {
+    const s = goodSnapshot();
+    s.roles = s.roles.filter((r) => r.roleName !== "FederatedAdministrator");
+    expect(runNoAdmin(s).filter((x) => x.severity !== "note")).toEqual([]);
   });
 });
 
@@ -671,12 +715,18 @@ describe("正常性", () => {
     expect(errors(f)[0]?.role).toBe("FederatedAdministrator");
   });
 
-  it("その階層のプロバイダーが無ければ違反", () => {
+  it("境界のプロバイダー（両階層で 1 つ）が無ければ違反", () => {
     const s = goodSnapshot();
-    s.providers = s.providers.filter((p) => p !== ADMIN_PROVIDER);
+    s.providers = s.providers.filter((p) => p !== PROVIDER);
     expect(errors(run(s))).toEqual([
-      expect.objectContaining({ code: "provider_missing", detail: "admin" }),
+      expect.objectContaining({ code: "provider_missing", detail: "managed" }),
     ]);
+  });
+
+  it("P2 より前の Admin のプロバイダーが残っていても、コンソールのプロバイダーとしては数えない（ホストが設定に無い）", () => {
+    const s = goodSnapshot();
+    s.providers.push(OLD_ADMIN_PROVIDER);
+    expect(errors(run(s))).toEqual([]);
   });
 
   it("Admin のロールの MaxSessionDuration は 3600 を期待する（sessionSeconds が 3600 より短くても警告にしない）", () => {
@@ -722,8 +772,12 @@ const extraRole = (name: string, path: string, trust: unknown) => ({
 
 describe("棚卸し（設定に無いのにコンソール用のプロバイダーを信頼するロール）", () => {
   it.each([
-    ["Standard のプロバイダーを信頼", "/", consoleTrust({ Federated: STD_PROVIDER })],
-    ["Admin のプロバイダーを信頼", "/", consoleTrust({ Federated: ADMIN_PROVIDER })],
+    ["コンソールのプロバイダーを信頼", "/", consoleTrust({ Federated: PROVIDER })],
+    [
+      "P2 より前の Admin のプロバイダーを信頼し、コンソール用のパスにある",
+      "/awsbridge-console/admin/",
+      consoleTrust({ Federated: OLD_ADMIN_PROVIDER }),
+    ],
     ["Principal が *", "/", consoleTrust("*")],
     [
       "コンソール用のパスにある",
@@ -742,7 +796,7 @@ describe("棚卸し（設定に無いのにコンソール用のプロバイダ�
       extraRole(
         "FederatedDeveloper",
         "/awsbridge-console/std/",
-        consoleTrust({ Federated: STD_PROVIDER }),
+        consoleTrust({ Federated: PROVIDER }),
       ),
     );
     expect(codesOf(run(s), "FederatedDeveloper")).toEqual(["unlisted_role"]);
@@ -869,16 +923,6 @@ describe("警告と限界", () => {
     expect(f.filter((x) => x.severity === "warning")).toEqual([]);
   });
 
-  it("設定に無いアカウントは、Standard の部品の Admin の有り無しのどちらの形も受ける（誤りは account_not_in_config だけ）", () => {
-    const s = goodSnapshot();
-    const p = s.managedPolicies.find((x) => x.arn === STD_GUARD);
-    if (!p) throw new Error("no guard");
-    p.document = guardDocument("StandardGuardPolicy", false);
-    const other = "777777777777";
-    const moved = JSON.parse(JSON.stringify(s).replaceAll(ACCOUNT, other)) as AccountSnapshot;
-    expect(codesOf(run(moved))).toEqual(["account_not_in_config"]);
-  });
-
   it("顧客管理ポリシーの中身は評価しない、と限界に書く", () => {
     expect(run(goodSnapshot()).map((x) => x.code)).toContain(
       "limit_customer_managed_not_evaluated",
@@ -889,7 +933,7 @@ describe("警告と限界", () => {
 describe("出力（伏せ字）", () => {
   it("アカウント ID と email を出さない", () => {
     const s = goodSnapshot();
-    s.roles.push(extraRole("Handmade", "/", consoleTrust({ Federated: STD_PROVIDER })));
+    s.roles.push(extraRole("Handmade", "/", consoleTrust({ Federated: PROVIDER })));
     withStop(s, "FederatedViewer", {
       Version: "2012-10-17",
       Statement: [
