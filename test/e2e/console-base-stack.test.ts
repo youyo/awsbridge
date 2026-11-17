@@ -55,7 +55,7 @@ describe("必須のスタックのテンプレート（cfn-lint）", () => {
     const from = "iam:AddClientIDToOpenIDConnectProvider";
     const part = text.slice(at, to);
     expect(part).toContain(from);
-    expect(part).toContain("oidc-provider/${IssuerHost}/*");
+    expect(part).toContain(`oidc-provider/${"$"}{IssuerHost}/*`);
     expect(part).not.toContain("AdminIssuerHost");
     const path = join(dir, `bad-provider-${name.length}.yaml`);
     writeFileSync(path, text.slice(0, at) + part.replace(from, `${from}X`) + text.slice(to));

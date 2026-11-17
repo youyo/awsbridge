@@ -137,7 +137,12 @@ describe("Admin の階層のチーム: 同じ Worker・境界の鍵で発行す�
 
   it("回数の制限のキーはパスのチームの階層（admin:<sub>・standard:<sub>。Viewer の発行が Admin の枠を使い切らない）", async () => {
     const keys: string[] = [];
-    const limiter = { limit: async (o: { key: string }) => (keys.push(o.key), { success: true }) };
+    const limiter = {
+      limit: async (o: { key: string }) => {
+        keys.push(o.key);
+        return { success: true };
+      },
+    };
     expect((await post({}, baseEnv(h, { LOGIN_RATE_LIMITER: limiter }))).status).toBe(302);
     const std = await post(
       {

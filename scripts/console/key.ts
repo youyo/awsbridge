@@ -8,7 +8,7 @@
 //   AWSBRIDGE_CONSOLE_CF_API_TOKEN    Cloudflare API のトークン（コンソールの Worker の secret だけを書ける権限。利用者だけが持つ）。
 //                                              無ければ wrangler の OAuth（wrangler auth token）をメモリの中だけで使う
 //   AWSBRIDGE_CONSOLE_WRANGLER_CONFIG コンソールの Worker の wrangler の設定（既定 wrangler.console.jsonc）
-//   AWSBRIDGE_CONSOLE_OUT_DIR                  生成物の置き場所（既定 .generated/console。worker.standard.json で境界・issuer・ポータルを知る）
+//   AWSBRIDGE_CONSOLE_OUT_DIR                  生成物の置き場所（既定 .generated/console。worker.json で境界・issuer・ポータルを知る）
 //   AWSBRIDGE_CONSOLE_ACCESS_TOKEN    check の key-check に使う Access のトークン（任意。cloudflared access token の値）
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";

@@ -1,5 +1,5 @@
-// コンソールログインの Standard の署名鍵の運用の道具（scripts/console/key-lib.ts）。cto の決裁「Standard も secret_key に揃える」の
-// (d)・(e)・(g)。Admin の道具（admin-key-lib.ts）と同じ形で、境界ごとに鍵を持つ:
+// コンソールログインの署名鍵の運用の道具（scripts/console/key-lib.ts）。cto の決裁「Standard も secret_key に揃える」の
+// (d)・(e)・(g)。境界ごとに鍵を持つ（Viewer と Administrator で 1 つ。P2（B））:
 //   put     --boundary の鍵を道具の中でメモリ上に作り、Cloudflare API で secret_key（CONSOLE_KEY_<16 進>）として入れる（ファイルに書かない）。
 //           --yes が無ければ表示だけで、API を呼ばない。同じ名前への PUT は断る
 //   retire  旧い鍵のバインディングを消す。今の鍵・公開鍵の vars・デプロイ済みのどの境界の JWKS に残っている鍵も断る。CONSOLE_KEY_ の形以外は断る

@@ -18,7 +18,7 @@
   // 署名鍵: 境界ごとの Workers の secret_key 型のバインディング（取り出せない CryptoKey。RSASSA-PKCS1-v1_5 / SHA-256・usages sign）。
   //   名前は CONSOLE_KEY_<kid の先頭 8 バイトの大文字の 16 進>（kid から決まる。差し替えは必ず別の名前）。値はこのファイルにもどこにも書かない。
   //   wrangler には secret_key を入れるコマンドが無いので、手元で mise run console:key:put を人が実行して Cloudflare API で入れる
-  //   （鍵はメモリの中で作り、ファイル・CI・ログを通さない。README の「コンソールログインの Standard の署名鍵」）。
+  //   （鍵はメモリの中で作り、ファイル・CI・ログを通さない。README の「コンソールログインの署名鍵」）。
   //   バインディングは wrangler deploy・wrangler secret put・secret bulk のあとも残る（API 側が保つ。PoC X1-(h) で測定）。
   //   ダッシュボード・Terraform で Worker のバインディングを管理しない（全量で送る経路は測っていない）。
   //   鍵が無い・使えない・公開鍵と合わないときは、その境界の発行が 503 signing_unavailable（STS を呼ばない）。

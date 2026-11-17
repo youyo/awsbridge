@@ -345,7 +345,10 @@ describe("デプロイ後の確認: GET <team-base>/key-check（Access の検証
     const keys: string[] = [];
     const env = baseEnv(h, {
       LOGIN_RATE_LIMITER: {
-        limit: async (o: { key: string }) => (keys.push(o.key), { success: true }),
+        limit: async (o: { key: string }) => {
+          keys.push(o.key);
+          return { success: true };
+        },
       },
     });
     expect((await get(PORTAL_HOST, `${TEAM_PATH}/key-check`, env)).status).toBe(401);

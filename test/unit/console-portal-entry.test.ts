@@ -1,7 +1,7 @@
 // コンソールログインの入口（S0。Standard の / ）: 1 つの一覧（U2）と落とし方。
 // 設計: docs/specs/console-login-portal.md §4.1・§5.4・§5.6・§7、ADR の「一覧の統合（U2）」。
 // 入口のアプリの Access JWT を確かめてから描く。身元の Entra グループは差し込み口（identityGroups）からサーバー側で取り、
-// 表示用の対応表（display.standard.json の groups）と小文字で照合する。表示のためだけで、発行の認可には使わない。
+// 表示用の対応表（display.json の groups）と小文字で照合する。表示のためだけで、発行の認可には使わない。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IdentityGroupsSource } from "../../src/console/display/groups";
 import { createConsoleWorker } from "../../src/console/worker/worker";

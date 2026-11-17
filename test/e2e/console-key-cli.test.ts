@@ -1,4 +1,4 @@
-// コンソールログインの Standard の署名鍵の運用の CLI（scripts/console/key.ts。mise タスク console:key:*）と
+// コンソールログインの署名鍵の運用の CLI（scripts/console/key.ts。mise タスク console:key:*）と
 // CSRF の鍵の投入（scripts/console/secrets.ts。console:secrets）を実プロセスで動かす。
 // Cloudflare API は手元（127.0.0.1）の擬似サーバー（AWSBRIDGE_CONSOLE_CF_API_BASE は 127.0.0.1 だけ受け付ける）。実 API は呼ばない。
 // 確かめること: --yes が無ければ API を呼ばない、put は境界の secret_key の本文で PUT し、鍵の値とトークンを出力にもファイルにも残さない、

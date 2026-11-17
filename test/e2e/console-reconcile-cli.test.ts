@@ -184,7 +184,6 @@ function trail(
   r: ReturnType<typeof issue>,
   o: { afterIssueSeconds?: number; sourceIdentity?: string | null } = {},
 ) {
-  const admin = r.tier === "admin";
   return {
     EventId: `ev-${r.jwt.jti}`,
     EventName: "AssumeRoleWithWebIdentity",
