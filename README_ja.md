@@ -323,7 +323,7 @@ issuer の URL（issuer のホスト）も変えるなら、新しいスタッ�
 - プロバイダーは境界ごとに 1 つで、Standard と Admin の階層のロールの両方が同じプロバイダーを信頼します。Viewer と Administrator を分けるのは、ロールの信頼ポリシーのチームの条件（`aws:RequestTag/awsbridge_team`）だけです（受容 d）。
 - Admin の守りの部品（`AwsbridgeConsoleGuardAdmin`。`aws login --remote` の Deny を含む）と、その Export は、どのアカウントでもいつも作ります。Administrator を配るかどうかは、Administrator のロールのスタック（別スタック）を作るかどうかだけで決まります。
 - 両方の部品が、コンソール用のプロバイダー（`<IssuerHost>` の下のすべてのパス）への書き込み（作成・削除・ClientID の追加など）を Deny します。1 つのホストにした Deny の文は、まだ実物で測っていません（未検証。下流の本番の導入で測ります）。検査の道具（`mise run console:inspect`）は、この形の部品を期待します（違えば `guard_version_mismatch`）。
-- **`mise run console:inspect` は、Administrator のロールを作った直後と、チームかロールの設定を変えたあとに必ず回します**（下流の本番の導入では、Admin の階層を入れる段でも回します）。信頼ポリシーのチームの値がロールの階層のチームでなければ `trust_team_tier`、退役したチーム名が残っていれば `trust_team_retired`（どちらも誤り）です。
+- **`mise run console:inspect` は、Administrator のロールを作った直後と、チームかロールの設定を変えたあとに必ず回します**（下流の本番の導入では、段 4（Admin の階層を入れる段）でも回します）。信頼ポリシーのチームの値がロールの階層のチームでなければ `trust_team_tier`、退役したチーム名が残っていれば `trust_team_retired`（どちらも誤り）です。
 - 配布と更新は、コンソール用のロール以外の主体（StackSets の実行ロールなど）で行います。部品が付いたコンソール用のロールのセッションからは、このスタックを更新できません。
 - プロバイダーの ARN は Output に出しますが Export しません。ロールのテンプレートは `IssuerHost`・`IssuerPath` とアカウント ID（`AWS::AccountId`）から ARN を組むので、ロールのスタックのパラメーターにアカウント ID は入りません。
 

@@ -187,6 +187,19 @@ describe("X14: 行の境界の鍵が無い・使えなければ 503 signing_unav
     noIssue();
   });
 
+  it("503 の発行記録は tier admin・result signing_unavailable・team は Admin のチーム。email は出ない", async () => {
+    const res = await post(baseEnv(h, { [managed().binding]: undefined }));
+    expect(res.status).toBe(503);
+    const line = logs.find((l) => l.includes('"console_issue"'));
+    expect(line).toBeDefined();
+    const rec = JSON.parse(line as string);
+    expect(rec.tier).toBe("admin");
+    expect(rec.result).toBe("signing_unavailable");
+    expect(rec.team).toBe(ADMIN_TEAM);
+    expect(rec.target.accountId).toBe("333333333333");
+    expect(logs.join("\n")).not.toContain(EMAIL);
+  });
+
   it.each([
     ["バインディングが無い", undefined],
     ["バインディングが文字列（secret_text の JWK）", JSON.stringify({ kty: "RSA", d: "x" })],

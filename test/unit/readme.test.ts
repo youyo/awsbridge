@@ -145,13 +145,15 @@ describe("README の受容する限界（P2（B）の設計メモ §8.2。cto �
         expect(text, s).not.toContain(s);
     });
   }
-  it("README_ja.md / README.md: inspect を回す時点（c1）。Administrator のロールを作った直後と、チームかロールの設定を変えたあと", () => {
+  it("README_ja.md / README.md: inspect を回す時点（c1）。Administrator のロールを作った直後・チームかロールの設定を変えたあと・段 4", () => {
     expect(read("README_ja.md")).toContain(
       "**`mise run console:inspect` は、Administrator のロールを作った直後と、チームかロールの設定を変えたあとに必ず回します**",
     );
     expect(read("README.md")).toContain(
       "**Always run `mise run console:inspect` right after creating the Administrator role and after changing the team or role settings**",
     );
+    expect(read("README_ja.md")).toContain("段 4（Admin の階層を入れる段）でも回します");
+    expect(read("README.md")).toContain("also at stage 4 (the stage that adds the Admin tier)");
   });
 });
 
