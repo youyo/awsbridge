@@ -9,10 +9,9 @@ export const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart
 /** 会社用を想定した設定（設計書 §11.3 の例に合わせる。Standard 3 チーム・Admin 2 チーム、管理外の先方 1 つ）。 */
 export function companyConfig(): Raw {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     portal: {
-      standardOrigin: "https://portal.example.com",
-      adminOrigin: "https://admin-portal.example.com",
+      origin: "https://portal.example.com",
       routing: "path",
       regions: { allowed: ["ap-northeast-1", "us-east-1"], default: "ap-northeast-1" },
       supportUrl: "https://support.example.com/aws",
@@ -63,14 +62,8 @@ export function companyConfig(): Raw {
       },
     ],
     boundaries: [
-      {
-        name: "managed",
-        issuers: {
-          standard: "https://id.example.com/standard",
-          admin: "https://admin-id.example.com/admin",
-        },
-      },
-      { name: "partner:partner-x", issuers: { standard: "https://id.example.com/partner-x" } },
+      { name: "managed", issuer: "https://id.example.com/console" },
+      { name: "partner:partner-x", issuer: "https://id.example.com/p/partner-x/console" },
     ],
     organizations: [
       {
@@ -106,8 +99,8 @@ export function companyConfig(): Raw {
 /** 個人用の最小構成（設計書 §11.7）。 */
 export function personalConfig(): Raw {
   return {
-    schemaVersion: 1,
-    portal: { standardOrigin: "https://aws.example.com" },
+    schemaVersion: 2,
+    portal: { origin: "https://aws.example.com" },
     teams: [{ name: "me", displayName: "自分", access: { aud: "a".repeat(64) } }],
     roles: [
       {
@@ -124,7 +117,7 @@ export function personalConfig(): Raw {
       },
     ],
     kinds: [{ name: "default", assign: { readonly: ["me"], developer: ["me"] } }],
-    boundaries: [{ name: "managed", issuers: { standard: "https://id.example.com/standard" } }],
+    boundaries: [{ name: "managed", issuer: "https://id.example.com/console" }],
     organizations: [
       {
         name: "personal",
@@ -143,7 +136,7 @@ export function personalConfig(): Raw {
   };
 }
 
-/** 会社用の設定に対応する Terraform の出力（チーム → AUD）と入口の AUD。 */
+/** 会社用の設定に対応する Terraform の出力（チーム → AUD）と入口の AUD（1 つ）。 */
 export function companyAuds(): Raw {
   return {
     teams: {
@@ -153,7 +146,7 @@ export function companyAuds(): Raw {
       "infra-elevated": "4".repeat(64),
       "dev-elevated": "5".repeat(64),
     },
-    entry: { standard: "6".repeat(64), admin: "7".repeat(64) },
+    entry: "6".repeat(64),
   };
 }
 

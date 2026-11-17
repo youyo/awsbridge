@@ -1,9 +1,8 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "identity": { "sourceIdentity": "email" },
   "portal": {
-    "standardOrigin": "https://awsbridge-console.example.com",
-    "adminOrigin": "https://awsbridge-admin-console.example.com",
+    "origin": "https://awsbridge-console.example.com",
     "routing": "path",
     "regions": { "allowed": ["ap-northeast-1", "us-east-1"], "default": "ap-northeast-1" },
     "supportUrl": "https://support.example.com/aws"
@@ -72,14 +71,11 @@
   "boundaries": [
     {
       "name": "managed",
-      "issuers": {
-        "standard": "https://awsbridge-oidc-console.example.com/standard",
-        "admin": "https://awsbridge-oidc-admin-console.example.com/admin"
-      }
+      "issuer": "https://awsbridge-oidc-console.example.com/console"
     },
     {
       "name": "partner:partner-x",
-      "issuers": { "standard": "https://awsbridge-oidc-console.example.com/p/p01/standard" }
+      "issuer": "https://awsbridge-oidc-console.example.com/p/p01/console"
     }
   ],
   "organizations": [

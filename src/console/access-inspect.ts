@@ -2,14 +2,14 @@
 // 読み取り（Cloudflare API）は scripts/console/access-inspect*.ts。node の API を使わない。
 // どの Worker のエントリからも import しない（Worker は Cookie Path を強制しない。cto の決裁。test/unit/console-layout.test.ts で確かめる）。
 //
-// 要件: R-P（routing: path）では、Standard も Admin も、入口のアプリとすべてのチームのアプリで Cookie Path
+// 要件: R-P（routing: path）では、入口のアプリと（Standard も Admin も）すべてのチームのアプリで Cookie Path
 // （path_cookie_attribute）が有効であること。無効（false か欠落）だと、同じホストの別のアプリの AUD が JWT の aud に混ざり、
 // Worker の「aud はちょうど 1 つ」の検査で断られる（ログインができなくなる。破れるのは可用性）。
 // R-H（routing: host）ではチームごとにホストが分かれ、Cookie もホストで分かれるので、警告に下げる。
 //
-// 結果（AccessFinding）は種別のコードと、対象（team:<名前> / entry:<階層>）だけを持つ。AUD の値は入れない。
+// P2: ポータルのホストは 1 つで、入口のアプリも 1 つ。両階層のチームのアプリは同じホストの /t/<チーム>（R-H では <チーム>.<ホスト>）。
+// 結果（AccessFinding）は種別のコードと、対象（team:<名前> / entry）だけを持つ。AUD の値は入れない。
 
-import type { Tier } from "./constants";
 import type { AccessSummary } from "./generate";
 
 /** Cloudflare から読んだ Access アプリのうち、検査に使う項目。 */
@@ -26,7 +26,7 @@ export type AccessSeverity = "error" | "warning";
 export type AccessFinding = {
   severity: AccessSeverity;
   code: string;
-  /** team:<名前> / entry:<階層>。設定に無いアプリは "-"。 */
+  /** team:<名前> / entry。設定に無いアプリは "-"。 */
   subject: string;
   detail?: string;
 };
@@ -52,27 +52,16 @@ type Subject = { subject: string; aud: string | undefined; expected: string | un
 
 /** 検査する対象（入口と、チーム）と、あるべき対象の場所。 */
 function subjectsOf(summary: AccessSummary): Subject[] {
-  const out: Subject[] = [];
   const byPath = summary.routing === "path";
-  const hostOf = (tier: Tier): string | undefined => {
-    const o = tier === "standard" ? summary.origins.standard : summary.origins.admin;
-    return o === undefined ? undefined : originHost(o);
-  };
-  const tiersInUse = new Set<Tier>(["standard", ...summary.teams.map((t) => t.tier)]);
-  for (const tier of ["standard", "admin"] as const) {
-    if (!tiersInUse.has(tier)) continue;
-    out.push({ subject: `entry:${tier}`, aud: summary.entryAud[tier], expected: hostOf(tier) });
-  }
-  for (const t of summary.teams) {
-    const host = hostOf(t.tier);
-    out.push({
+  const host = originHost(summary.origin);
+  return [
+    { subject: "entry", aud: summary.entryAud, expected: host },
+    ...summary.teams.map((t) => ({
       subject: `team:${t.name}`,
       aud: t.aud,
-      expected:
-        host === undefined ? undefined : byPath ? `${host}/t/${t.name}` : `${t.name}.${host}`,
-    });
-  }
-  return out;
+      expected: byPath ? `${host}/t/${t.name}` : `${t.name}.${host}`,
+    })),
+  ];
 }
 
 /** コンソールのホストの下の、チーム用の場所か（R-P: ホストの /t/ の下。R-H: ホストのサブドメイン）。 */
@@ -122,9 +111,7 @@ export function inspectAccessApps(input: AccessInspectInput): AccessFinding[] {
   }
 
   // 設定に無い AUD のアプリが、コンソールのホストのチーム用の場所にある
-  const hosts = [summary.origins.standard, summary.origins.admin]
-    .filter((o): o is string => o !== undefined)
-    .map(originHost);
+  const hosts = [originHost(summary.origin)];
   for (const a of apps) {
     if (known.has(a.aud)) continue;
     for (const d of new Set(a.destinations.map(normalizeDestination)))

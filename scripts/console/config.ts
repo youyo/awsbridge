@@ -4,6 +4,8 @@
 // 出力にはキーのパスと誤りの種別、ファイルのパスだけを出し、AUD・email・アカウント ID は出さない。
 // generate は、種類ごとのロールのテンプレート（kind.<kind>.yaml。src/console/template.ts）も書く。下流のポリシー文書
 // （roles[].permissions.inlinePolicyFiles）は作業ディレクトリからの相対パスで読む。
+// 退役したチーム名の台帳（P2 の設計メモ §7.1）: 書く前に、出力先の前回の stacksets.json を読んで生成器に渡す
+// （台帳から名前を消していないか・消したチームを台帳へ移したか）。前回が無ければ警告だけ（ledger_previous_missing）。
 import {
   chmodSync,
   existsSync,
@@ -20,6 +22,7 @@ import {
   type ConsoleConfigIssue,
   formatIssue,
   parseConsoleConfig,
+  SCHEMA_VERSION_HINT,
 } from "../../src/console/config";
 import { type GenerateMode, generateConsoleArtifacts } from "../../src/console/generate";
 import { buildKindTemplates, type KindTemplate } from "../../src/console/template";
@@ -95,6 +98,16 @@ function main(cmd: string): void {
   const { config, warnings } = parseConsoleConfig(readFileSync(configPath, "utf8"));
   const auds = readOptionalJson(env.AWSBRIDGE_CONSOLE_AUD_FILE, "auds");
   const inventory = readOptionalJson(env.AWSBRIDGE_CONSOLE_INVENTORY_FILE, "inventory");
+  // 前回の生成物の台帳（上書きの前に読む。読めなければ生成器が ledger_previous の誤りにする）
+  const previousPath = join(outDir, "stacksets.json");
+  let previous: unknown;
+  if (existsSync(previousPath)) {
+    try {
+      previous = JSON.parse(readFileSync(previousPath, "utf8"));
+    } catch {
+      previous = null;
+    }
+  }
   const artifacts = generateConsoleArtifacts(config, {
     mode,
     generatedAt: new Date().toISOString(),
@@ -103,6 +116,7 @@ function main(cmd: string): void {
       : {}),
     ...(auds !== undefined ? { auds } : {}),
     ...(inventory !== undefined ? { inventory } : {}),
+    ...(previous !== undefined ? { previous } : {}),
   });
   // ロールのテンプレート（種類の StackSet。参考の形）。check でも作って、下流のポリシー文書の欠落などを誤りにする
   const kinds = kindTemplates(config);
@@ -114,15 +128,16 @@ function main(cmd: string): void {
   }
   mkdirSync(outDir, { recursive: true, mode: 0o700 });
   const files: [string, unknown][] = [
-    ["worker.standard.json", artifacts.worker.standard],
-    ["display.standard.json", artifacts.display],
+    ["worker.json", artifacts.worker],
+    ["display.json", artifacts.display],
     ["stacksets.json", artifacts.stacksets],
     ["access.json", artifacts.access],
   ];
-  const adminFile = join(outDir, "worker.admin.json");
-  if (artifacts.worker.admin) files.push(["worker.admin.json", artifacts.worker.admin]);
-  // Admin の階層がなくなったら、前回の Admin の生成物を残さない（別のデプロイに古い値が渡らないように）
-  else if (existsSync(adminFile)) rmSync(adminFile);
+  // P2 より前の階層ごとの生成物を残さない（旧い Worker の設定に古い値が渡らないように）
+  for (const old of ["worker.standard.json", "worker.admin.json", "display.standard.json"]) {
+    const path = join(outDir, old);
+    if (existsSync(path)) rmSync(path);
+  }
   for (const [name, value] of files) {
     writePrivate(join(outDir, name), value);
     console.log(`書きました: ${join(outDir, name)}`);
@@ -148,6 +163,8 @@ try {
 } catch (e) {
   if (e instanceof ConsoleConfigError) {
     for (const i of e.issues) console.error(`error: ${formatIssue(i)}`);
+    // schemaVersion 1 の設定は黙って読み替えない。新しいキーを案内する（値を含めない固定の文）
+    if (e.issues.some((i) => i.code === "schema_version")) console.error(SCHEMA_VERSION_HINT);
     console.error(`設定に誤りがあります（${e.issues.length} 件）: ${configPath}`);
   } else if (e instanceof CliError) {
     console.error(e.message);

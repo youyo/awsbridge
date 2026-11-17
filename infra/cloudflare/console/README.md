@@ -10,8 +10,8 @@
 
 | リソース | 役割 |
 |---|---|
-| `cloudflare_zero_trust_access_application.entry` | 入口のアプリ。階層（`standard`、Admin のチームがあれば `admin`）ごとに 1 つ。ホスト全体（`standard_host` / `admin_host`）を守る |
-| `cloudflare_zero_trust_access_application.team` | チームのアプリ。`teams` のキー（設定ファイルのチーム名）ごとに 1 つ。`<ホスト>/t/<チーム>` を守る。階層が `admin` のチームは `admin_host` の下に置く |
+| `cloudflare_zero_trust_access_application.entry` | 入口のアプリ。1 つ。ホスト全体（`host`）を守る |
+| `cloudflare_zero_trust_access_application.team` | チームのアプリ。`teams` のキー（設定ファイルのチーム名）ごとに 1 つ。`<host>/t/<チーム>` を守る。Standard と Admin の階層のチームは同じホストに並び、セッションの長さだけが階層で違う |
 
 どのアプリも `type = "self_hosted"`、`enable_binding_cookie = true`、`same_site_cookie_attribute = "lax"`、**`path_cookie_attribute = true`**（変数にしない）です。適用後の値が true でなければ、`lifecycle.postcondition` で失敗します。
 
@@ -24,13 +24,12 @@
 | 変数 | 必須 | 説明 |
 |---|---|---|
 | `account_id` | はい | Cloudflare アカウント ID |
-| `standard_host` | はい | Standard の入口のホスト名（スキーム・パスなし。例 `awsbridge-console.example.com`）。設定ファイルの `portal.standardOrigin` のホスト |
-| `admin_host` | Admin のチームがあるとき | Admin の入口のホスト名（例 `awsbridge-admin-console.example.com`）。Standard とは別のホスト |
+| `host` | はい | ポータルのホスト名（スキーム・パスなし。例 `awsbridge-console.example.com`）。設定ファイルの `portal.origin` のホスト |
 | `allowed_idp_ids` | はい | 許可する IdP の ID 一覧 |
 | `teams` | はい | チーム名 → `{ tier, policy_ids }`。チーム名は設定ファイルと同じにする。`policy_ids` はそのチームの利用者だけを許可する既存の reusable policy |
-| `entry_policy_ids` | はい | 階層（`standard` / `admin`）→ 入口に付ける reusable policy の ID（その階層のチームの利用者をすべて含む範囲） |
+| `entry_policy_ids` | はい | 入口に付ける reusable policy の ID の一覧（全チームの利用者をすべて含む範囲） |
 | `name` | いいえ | アプリ名の接頭辞（既定 `awsbridge-console`） |
-| `standard_session_duration` / `admin_session_duration` | いいえ | セッション期間（既定 `24h` / `15m`）。Admin は Admin の Worker の `ACCESS_MAX_AGE_SECONDS`（既定 900 秒）に揃える |
+| `standard_session_duration` / `admin_session_duration` | いいえ | セッション期間（既定 `24h` / `15m`）。入口と Standard のチームは前者、Admin の階層のチームは後者。後者はコンソールの Worker の `ADMIN_ACCESS_MAX_AGE_SECONDS`（既定 900 秒）に揃える |
 
 `terraform.tfvars.example` をコピーして `terraform.tfvars` を作ります（`terraform.tfvars` と state は gitignore 済み）。実在のアカウント ID・ドメイン・ポリシー ID はコミットしません。
 
@@ -47,7 +46,7 @@ terraform apply
 
 ## apply 後にやること
 
-1. AUD を設定ファイルの検査・生成に渡す。`terraform output -json console_aud > "$AWSBRIDGE_CONSOLE_AUD_FILE"`（`{ "teams": {…}, "entry": {…} }`。AUD は端末に出さずにファイルへ。ファイルはコミットしない）。そのあと `mise run console:config:generate`。
+1. AUD を設定ファイルの検査・生成に渡す。`terraform output -json console_aud > "$AWSBRIDGE_CONSOLE_AUD_FILE"`（`{ "teams": {…}, "entry": "…" }`。AUD は端末に出さずにファイルへ。ファイルはコミットしない）。そのあと `mise run console:config:generate`。
 2. 実物を確かめる: `mise run console:access:inspect`（Cloudflare API を GET だけで読む）。入口とチームのアプリが在ること、対象の場所、Cookie Path が有効なことを見る。トークンは Access: Apps and Policies の Read だけを `AWSBRIDGE_CONSOLE_ACCESS_READ_TOKEN` に、アカウント ID を `AWSBRIDGE_CONSOLE_ACCESS_CF_ACCOUNT_ID` に与える（`mise.local.toml`）。手でアプリを変えたあとにも回す。
 3. issuer のホスト（例 `awsbridge-oidc-console.example.com`）にはこの Access のアプリを作らない（AWS IAM / STS が認証なしで取りに来る）。
 

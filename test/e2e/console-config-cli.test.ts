@@ -69,13 +69,13 @@ describe("console:config:check", () => {
   it("誤りがあれば終了コード 1 で、キーのパスと種別だけを出す（値を出さない）", () => {
     const d = tmp();
     const c = companyConfig();
-    c.portal.standardOrigin = "https://secret-portal.example.workers.dev";
+    c.portal.origin = "https://secret-portal.example.workers.dev";
     c.kinds[0].assign.admin.push("infra");
     c.organizations[1].accounts[0].email = "leak@example.org";
     c.organizations[1].accounts.push({ ...c.organizations[1].accounts[0] });
     const r = run("check", { AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", c) });
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain("portal.standardOrigin: workers_dev");
+    expect(r.stderr).toContain("portal.origin: workers_dev");
     expect(r.stderr).toContain("kinds[0].assign.admin[1]: tier_mismatch");
     expect(r.stderr).toContain("organizations[1].accounts[1].accountId: duplicate");
     expect(r.stderr + r.stdout).not.toContain("secret-portal");
@@ -86,13 +86,13 @@ describe("console:config:check", () => {
   it("issuer のホストがポータルのホストと同じ・入れ子なら終了コード 1（G-8）。generate も何も書かない", () => {
     const d = tmp();
     const c = companyConfig();
-    c.boundaries[0].issuers.standard = "https://portal.example.com/standard";
-    c.boundaries[0].issuers.admin = "https://id.admin-portal.example.com/admin";
+    c.boundaries[0].issuer = "https://portal.example.com/console";
+    c.boundaries[1].issuer = "https://id.portal.example.com/p/partner-x/console";
     const file = write(d, "console.json", c);
     const r = run("check", { AWSBRIDGE_CONSOLE_CONFIG: file });
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain("boundaries[0].issuers.standard: issuer_host_overlaps_portal");
-    expect(r.stderr).toContain("boundaries[0].issuers.admin: issuer_host_overlaps_portal");
+    expect(r.stderr).toContain("boundaries[0].issuer: issuer_host_overlaps_portal");
+    expect(r.stderr).toContain("boundaries[1].issuer: issuer_host_overlaps_portal");
     expect(r.stderr + r.stdout).not.toContain("portal.example.com");
     const out = join(d, "out");
     const g = run("generate", {
@@ -160,7 +160,7 @@ describe("console:config:check", () => {
 });
 
 describe("設定の例（config/console*.example.json）を CLI に通す", () => {
-  it("個人用の例から、Standard の Worker 用の生成物に FederatedAwsBridgeViewer の行だけが出る", () => {
+  it("個人用の例から、発行用の生成物（worker.json）に FederatedAwsBridgeViewer の行だけが出る", () => {
     const d = tmp();
     const out = join(d, "out");
     const r = run("generate", {
@@ -168,18 +168,26 @@ describe("設定の例（config/console*.example.json）を CLI に通す", () =
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
     });
     expect(r.status, r.stderr).toBe(0);
-    expect(r.stderr).not.toContain("warning");
-    const standard = JSON.parse(readFileSync(join(out, "worker.standard.json"), "utf8"));
-    const arns = standard.accounts.flatMap((a: { roles: { roleArn: string }[] }) =>
+    // 初回は前回の生成物が無いので、台帳を比べられない旨の警告だけ
+    expect(r.stderr.trim().split("\n")).toEqual(["warning: previous: ledger_previous_missing"]);
+    const worker = JSON.parse(readFileSync(join(out, "worker.json"), "utf8"));
+    const arns = worker.accounts.flatMap((a: { roles: { roleArn: string }[] }) =>
       a.roles.map((x) => x.roleArn),
     );
     expect(arns).toEqual([
       "arn:aws:iam::111111111111:role/awsbridge-console/std/FederatedAwsBridgeViewer",
     ]);
     expect(existsSync(join(out, "worker.admin.json"))).toBe(false);
+    // 2 回目は前回の台帳と比べるので警告なし
+    const again = run("generate", {
+      AWSBRIDGE_CONSOLE_CONFIG: join(root, "config/console.example.json"),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
+    });
+    expect(again.status, again.stderr).toBe(0);
+    expect(again.stderr).not.toContain("warning");
   });
 
-  it("会社用の例（Admin のチームが 2 つ）を、admin の入口の AUD なしで deploy 生成できる（G-6 が決まるまで要求しない）", () => {
+  it("会社用の例（Admin のチームが 2 つ）を deploy 生成できる。1 つの発行用の生成物に両階層があり、表示用に AUD が無い", () => {
     const d = tmp();
     const out = join(d, "out");
     const teamAuds = Object.fromEntries(
@@ -191,10 +199,7 @@ describe("設定の例（config/console*.example.json）を CLI に通す", () =
     const r = run("generate", {
       AWSBRIDGE_CONSOLE_CONFIG: join(root, "config/console.company.example.json"),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
-      AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", {
-        teams: teamAuds,
-        entry: { standard: "a".repeat(64) },
-      }),
+      AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", { teams: teamAuds, entry: "a".repeat(64) }),
       // org-main は placement: ou なので、種類 A の OU（Administrator と Viewer を割り当てた種類）にアカウントを 1 つ置く
       AWSBRIDGE_CONSOLE_INVENTORY_FILE: write(d, "inventory.json", {
         "org-main": [
@@ -215,9 +220,13 @@ describe("設定の例（config/console*.example.json）を CLI に通す", () =
       ["FederatedAwsBridgeAdministrator", "/awsbridge-console/admin/"],
       ["FederatedAwsBridgeViewer", "/awsbridge-console/std/"],
     ]);
+    expect(stacksets.providers.map((x: { issuer: string }) => x.issuer)).toEqual([
+      "https://awsbridge-oidc-console.example.com/console",
+      "https://awsbridge-oidc-console.example.com/p/p01/console",
+    ]);
 
     // 表示用: Administrator の行と Object ID の対応がある
-    const display = JSON.parse(readFileSync(join(out, "display.standard.json"), "utf8"));
+    const display = JSON.parse(readFileSync(join(out, "display.json"), "utf8"));
     expect(display.purpose).toBe("display");
     expect(display.accounts.filter((a: { tier: string }) => a.tier === "admin")).not.toHaveLength(
       0,
@@ -226,25 +235,26 @@ describe("設定の例（config/console*.example.json）を CLI に通す", () =
       objectId: "00000000-0000-0000-0000-000000000004",
       teams: ["infra-elevated"],
     });
-    // 発行用と表示用のどちらにも Admin のチームの AUD がない
-    const worker = readFileSync(join(out, "worker.standard.json"), "utf8");
-    const shown = readFileSync(join(out, "display.standard.json"), "utf8");
-    for (const aud of [teamAuds["infra-elevated"], teamAuds["dev-elevated"]] as string[]) {
-      expect(worker, "worker.standard.json").not.toContain(aud);
-      expect(shown, "display.standard.json").not.toContain(aud);
+    // 表示用には AUD が無い。発行用には両階層のチームの AUD があり、Object ID は無い
+    const worker = readFileSync(join(out, "worker.json"), "utf8");
+    const shown = readFileSync(join(out, "display.json"), "utf8");
+    for (const aud of Object.values(teamAuds)) {
+      expect(shown, "display.json").not.toContain(aud);
+      expect(worker, "worker.json").toContain(aud);
     }
-    // 発行用には Administrator の行も Object ID もない
-    expect(worker).not.toContain("FederatedAwsBridgeAdministrator");
+    expect(worker).toContain("FederatedAwsBridgeAdministrator");
     expect(worker).not.toContain("00000000-0000-0000-0000-");
-    // Admin の発行用には Standard の行がない
-    const admin = readFileSync(join(out, "worker.admin.json"), "utf8");
-    expect(admin).not.toContain("FederatedAwsBridgeViewer");
-    expect(JSON.parse(admin).identity).toEqual({ sourceIdentity: "email" });
+    const w = JSON.parse(worker);
+    expect(w.identity).toEqual({ sourceIdentity: "email" });
+    expect(w.teams.map((t: { name: string; tier: string }) => [t.name, t.tier])).toContainEqual([
+      "infra-elevated",
+      "admin",
+    ]);
   });
 });
 
 describe("console:config:generate", () => {
-  it("会社用: 階層ごとの Worker 用・StackSets 用・Access の検査用を書く（他人に読めない権限で）", () => {
+  it("会社用: 発行用（worker.json）・表示用（display.json）・StackSets 用・Access の検査用を書く（他人に読めない権限で）", () => {
     const d = tmp();
     const out = join(d, "out");
     const r = run("generate", {
@@ -257,52 +267,60 @@ describe("console:config:generate", () => {
     expect(r.status, r.stderr).toBe(0);
     expect(readdirSync(out).sort()).toEqual([
       "access.json",
-      "display.standard.json",
+      "display.json",
       "kind.A.yaml",
       "kind.B.yaml",
       "kind.C.yaml",
       "kind.P.yaml",
       "stacksets.json",
-      "worker.admin.json",
-      "worker.standard.json",
+      "worker.json",
     ]);
     for (const f of readdirSync(out)) expect(statSync(join(out, f)).mode & 0o077, f).toBe(0);
-    const standard = JSON.parse(readFileSync(join(out, "worker.standard.json"), "utf8"));
-    expect(standard.tier).toBe("standard");
-    expect(standard.sourceRevision).toBe("deadbeef");
-    expect(standard.teams.map((t: { name: string }) => t.name)).toEqual(["infra", "dev", "sa"]);
-    expect(standard.accounts.length).toBe(3);
-    expect(standard.purpose).toBe("issue");
-    expect(standard.identity).toEqual({ sourceIdentity: "email" });
-    const display = JSON.parse(readFileSync(join(out, "display.standard.json"), "utf8"));
+    const worker = JSON.parse(readFileSync(join(out, "worker.json"), "utf8"));
+    expect(worker.schemaVersion).toBe(2);
+    expect(worker).not.toHaveProperty("tier");
+    expect(worker.sourceRevision).toBe("deadbeef");
+    expect(worker.teams.map((t: { name: string }) => t.name)).toEqual([
+      "infra",
+      "dev",
+      "sa",
+      "infra-elevated",
+      "dev-elevated",
+    ]);
+    expect(worker.accounts.length).toBe(3);
+    expect(worker.purpose).toBe("issue");
+    expect(worker.identity).toEqual({ sourceIdentity: "email" });
+    const display = JSON.parse(readFileSync(join(out, "display.json"), "utf8"));
     expect(display.purpose).toBe("display");
     expect(display.sourceRevision).toBe("deadbeef");
     expect(display.accounts.some((a: { tier: string }) => a.tier === "admin")).toBe(true);
-    expect(JSON.stringify(standard)).not.toContain("infra-elevated");
-    const admin = JSON.parse(readFileSync(join(out, "worker.admin.json"), "utf8"));
-    expect(admin.tier).toBe("admin");
-    // ロールの ARN は階層ごとのパス（P-2）
-    type Rows = { accounts: { roles: { roleArn: string }[] }[] };
-    const arns = (w: Rows) => w.accounts.flatMap((a) => a.roles.map((r) => r.roleArn));
-    for (const [w, seg] of [
-      [standard, "std"],
-      [admin, "admin"],
-    ] as const) {
-      const re = new RegExp(`^arn:aws:iam::\\d{12}:role/awsbridge-console/${seg}/[^/]+$`);
-      expect(arns(w).length).toBeGreaterThan(0);
-      expect(arns(w).filter((a) => !re.test(a))).toEqual([]);
+    // ロールの ARN はロールの階層のパス（P-2）
+    type Row = { role: string; roleArn: string };
+    const rows: Row[] = worker.accounts.flatMap((a: { roles: Row[] }) => a.roles);
+    const tierOf = new Map(
+      worker.roles.map((x: { name: string; tier: string }) => [x.name, x.tier]),
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      const seg = tierOf.get(row.role) === "admin" ? "admin" : "std";
+      expect(row.roleArn).toMatch(
+        new RegExp(`^arn:aws:iam::\\d{12}:role/awsbridge-console/${seg}/[^/]+$`),
+      );
     }
     const stacksets = JSON.parse(readFileSync(join(out, "stacksets.json"), "utf8"));
     expect(stacksets.assignments).toHaveLength(4);
     expect(stacksets.audience).toBe("awsbridge-console");
     expect(stacksets.rolePathPrefix).toBe("/awsbridge-console/");
+    const access = JSON.parse(readFileSync(join(out, "access.json"), "utf8"));
+    expect(access.origin).toBe("https://portal.example.com");
+    expect(access.entryAud).toBe("6".repeat(64));
     // 出力にパスは出してよいが、AUD・email は出さない
-    expect(r.stdout).toContain("worker.standard.json");
+    expect(r.stdout).toContain("worker.json");
     expect(r.stdout).not.toContain("1".repeat(64));
     expect(r.stdout).not.toContain("@example");
   });
 
-  it("個人用: Standard だけを書き、Admin の生成物は作らない", () => {
+  it("個人用: 同じ 4 つの生成物を書く（階層ごとのファイルは作らない）", () => {
     const d = tmp();
     const out = join(d, "out");
     const r = run("generate", {
@@ -312,29 +330,69 @@ describe("console:config:generate", () => {
     expect(r.status, r.stderr).toBe(0);
     expect(readdirSync(out).sort()).toEqual([
       "access.json",
-      "display.standard.json",
+      "display.json",
       "kind.default.yaml",
       "stacksets.json",
-      "worker.standard.json",
+      "worker.json",
     ]);
   });
 
-  it("前回の Admin の生成物が残っていても、Admin の階層がなくなれば消す", () => {
+  it("前回の階層ごとの生成物（worker.standard.json・worker.admin.json・display.standard.json）が残っていれば消す", () => {
     const d = tmp();
     const out = join(d, "out");
-    const env = {
+    mkdirSync(out, { recursive: true });
+    for (const old of ["worker.standard.json", "worker.admin.json", "display.standard.json"])
+      writeFileSync(join(out, old), "{}");
+    const r = run("generate", {
       AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", companyConfig()),
       AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
-    };
-    expect(run("generate", env).status).toBe(0);
-    expect(existsSync(join(out, "worker.admin.json"))).toBe(true);
-    const r = run("generate", {
-      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console2.json", personalConfig()),
-      AWSBRIDGE_CONSOLE_OUT_DIR: out,
     });
     expect(r.status, r.stderr).toBe(0);
-    expect(existsSync(join(out, "worker.admin.json"))).toBe(false);
+    for (const old of ["worker.standard.json", "worker.admin.json", "display.standard.json"])
+      expect(existsSync(join(out, old)), old).toBe(false);
+    expect(existsSync(join(out, "worker.json"))).toBe(true);
+  });
+
+  it("schemaVersion 1 の設定は終了コード 1 で、新しいキーを案内する（黙って読み替えない）。何も書かない", () => {
+    const d = tmp();
+    const out = join(d, "out");
+    const c = companyConfig();
+    c.schemaVersion = 1;
+    const r = run("generate", {
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", c),
+      AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("schemaVersion: schema_version");
+    expect(r.stderr).toContain("portal.origin");
+    expect(r.stderr).toContain("boundaries[].issuer");
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it("退役したチーム名の台帳: 前回の台帳から名前を消すと終了コード 1（retired_team_removed）で、何も書き換えない", () => {
+    const d = tmp();
+    const out = join(d, "out");
+    const c = companyConfig();
+    c.retiredTeams = [{ name: "ops", tier: "standard" }];
+    const base = {
+      AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
+    };
+    expect(
+      run("generate", { ...base, AWSBRIDGE_CONSOLE_CONFIG: write(d, "c1.json", c) }).status,
+    ).toBe(0);
+    const before = readFileSync(join(out, "stacksets.json"), "utf8");
+    c.retiredTeams = [];
+    const r = run("generate", { ...base, AWSBRIDGE_CONSOLE_CONFIG: write(d, "c2.json", c) });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("retiredTeams: retired_team_removed");
+    expect(readFileSync(join(out, "stacksets.json"), "utf8")).toBe(before);
+    // check も同じ前回の生成物と比べる
+    const chk = run("check", { ...base, AWSBRIDGE_CONSOLE_CONFIG: join(d, "c2.json") });
+    expect(chk.status).toBe(1);
+    expect(chk.stderr).toContain("retired_team_removed");
   });
 
   it("AUD が足りなければ終了コード 1 で、何も書かない", () => {
@@ -394,7 +452,7 @@ describe("console:config:generate: ロールのテンプレート（種類の St
     const tpl = parse(readFileSync(join(out, "kind.C.yaml"), "utf8"), { customTags: [] });
     expect(tpl.Resources.AdminRole.Properties.MaxSessionDuration).toBe(3600);
     expect(tpl.Resources.ReadonlyRole.Properties.MaxSessionDuration).toBe(43200);
-    const worker = JSON.parse(readFileSync(join(out, "worker.admin.json"), "utf8"));
+    const worker = JSON.parse(readFileSync(join(out, "worker.json"), "utf8"));
     expect(worker.roles.find((x: { name: string }) => x.name === "admin").sessionSeconds).toBe(
       1800,
     );
@@ -409,8 +467,14 @@ describe("console:config:generate: ロールのテンプレート（種類の St
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
     };
     expect(run("generate", env).status).toBe(0);
+    // 消したチームは台帳へ移す（移さなければ team_removed_not_retired で止まる）
+    const personal = personalConfig();
+    personal.retiredTeams = companyConfig().teams.map((t: { name: string; tier?: string }) => ({
+      name: t.name,
+      tier: t.tier ?? "standard",
+    }));
     const r = run("generate", {
-      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console2.json", personalConfig()),
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console2.json", personal),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
     });
     expect(r.status, r.stderr).toBe(0);

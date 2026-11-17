@@ -27,7 +27,7 @@ const withApp = (audValue: string, patch: Partial<ReturnType<typeof app>>) =>
   goodApps().map((a) => (a.aud === audValue ? { ...a, ...patch } : a));
 
 describe("inspectAccessApps（R-P）", () => {
-  it("正しい形（入口 2 つ・Standard のチーム 2 つ（手書き AUD を含む）・Admin のチーム 1 つ）は、指摘が 0 件", () => {
+  it("正しい形（入口 1 つ・Standard のチーム 2 つ（手書き AUD を含む）・Admin のチーム 1 つ。どれも同じホスト）は、指摘が 0 件", () => {
     expect(run()).toEqual([]);
   });
 
@@ -44,8 +44,7 @@ describe("inspectAccessApps（R-P）", () => {
       ["Standard のチーム", AUDS.dev, "team:dev"],
       ["手書き AUD のチーム", AUDS.legacy, "team:legacy"],
       ["Admin のチーム", AUDS.sec, "team:sec"],
-      ["Standard の入口", AUDS.entryStandard, "entry:standard"],
-      ["Admin の入口", AUDS.entryAdmin, "entry:admin"],
+      ["入口", AUDS.entry, "entry"],
     ])("%s のアプリで false なら誤り（path_cookie_disabled）", (_n, a, subject) => {
       const f = run(accessSummary(), withApp(a, { pathCookie: false }));
       expect(codes(f)).toEqual([`error:path_cookie_disabled:${subject}`]);
@@ -63,15 +62,15 @@ describe("inspectAccessApps（R-P）", () => {
         errors(f)
           .map((x) => x.subject)
           .sort(),
-      ).toEqual(["entry:admin", "entry:standard", "team:dev", "team:legacy", "team:sec"]);
+      ).toEqual(["entry", "team:dev", "team:legacy", "team:sec"]);
     });
   });
 
   describe("アプリの有無・種類・対象", () => {
     it("AUD に当たるアプリが無ければ誤り（access_app_missing）。入口もチームも", () => {
-      const apps = goodApps().filter((a) => a.aud !== AUDS.dev && a.aud !== AUDS.entryAdmin);
+      const apps = goodApps().filter((a) => a.aud !== AUDS.dev && a.aud !== AUDS.entry);
       expect(codes(run(accessSummary(), apps)).sort()).toEqual([
-        "error:access_app_missing:entry:admin",
+        "error:access_app_missing:entry",
         "error:access_app_missing:team:dev",
       ]);
     });
@@ -89,10 +88,10 @@ describe("inspectAccessApps（R-P）", () => {
       expect(codes(f)).toEqual(["error:access_app_destination_mismatch:team:dev"]);
     });
 
-    it("Admin のチームが Standard のホストにあれば誤り（階層のホストを取り違えない）", () => {
+    it("Admin のチームがポータルと別のホスト（P2 より前の Admin のホスト）にあれば誤り（ホストは 1 つ）", () => {
       const f = run(
         accessSummary(),
-        withApp(AUDS.sec, { destinations: ["awsbridge-console.example.com/t/sec"] }),
+        withApp(AUDS.sec, { destinations: ["awsbridge-admin-console.example.com/t/sec"] }),
       );
       expect(codes(f)).toEqual(["error:access_app_destination_mismatch:team:sec"]);
     });
@@ -100,27 +99,26 @@ describe("inspectAccessApps（R-P）", () => {
     it("対象が複数（余分な対象つき）なら誤り。入口がチームのパスを含んでも誤り", () => {
       const f = run(
         accessSummary(),
-        withApp(AUDS.entryStandard, {
+        withApp(AUDS.entry, {
           destinations: ["awsbridge-console.example.com", "awsbridge-console.example.com/t/dev"],
         }),
       );
-      expect(codes(f)).toEqual(["error:access_app_destination_mismatch:entry:standard"]);
+      expect(codes(f)).toEqual(["error:access_app_destination_mismatch:entry"]);
     });
 
     it("入口の対象がホスト全体でなければ誤り", () => {
       const f = run(
         accessSummary(),
-        withApp(AUDS.entryStandard, { destinations: ["awsbridge-console.example.com/portal"] }),
+        withApp(AUDS.entry, { destinations: ["awsbridge-console.example.com/portal"] }),
       );
-      expect(codes(f)).toEqual(["error:access_app_destination_mismatch:entry:standard"]);
+      expect(codes(f)).toEqual(["error:access_app_destination_mismatch:entry"]);
     });
 
     it("対象の表記の揺れ（スキーム・末尾の / と /*・ホストの大文字）は同じとみなす", () => {
       const apps = goodApps().map((a) => {
         if (a.aud === AUDS.dev)
           return { ...a, destinations: ["https://AwsBridge-Console.example.com/t/dev/*"] };
-        if (a.aud === AUDS.entryStandard)
-          return { ...a, destinations: ["awsbridge-console.example.com/"] };
+        if (a.aud === AUDS.entry) return { ...a, destinations: ["awsbridge-console.example.com/"] };
         return a;
       });
       expect(run(accessSummary(), apps)).toEqual([]);
@@ -144,11 +142,6 @@ describe("inspectAccessApps（R-P）", () => {
   describe("設定に無いアプリ（access_app_extra。警告）", () => {
     it("コンソールのホストの /t/ の下に、設定に無い AUD のアプリがあれば警告", () => {
       const apps = [...goodApps(), app(aud("f6"), "awsbridge-console.example.com/t/ghost")];
-      expect(codes(run(accessSummary(), apps))).toEqual(["warning:access_app_extra:-"]);
-    });
-
-    it("Admin のホストの /t/ の下も見る", () => {
-      const apps = [...goodApps(), app(aud("f6"), "awsbridge-admin-console.example.com/t/ghost")];
       expect(codes(run(accessSummary(), apps))).toEqual(["warning:access_app_extra:-"]);
     });
 
@@ -185,26 +178,17 @@ describe("inspectAccessApps（R-P）", () => {
       ).toEqual(["warning:access_aud_unset:team:dev"]);
     });
 
-    it("入口の AUD が無ければ警告（Admin の入口の AUD は生成に要らない）", () => {
-      const s = accessSummary({ entryAud: { standard: AUDS.entryStandard } });
+    it("入口の AUD が無ければ警告（Standard のチームが 1 つなら入口の AUD は生成に要らない）", () => {
+      const s = accessSummary();
+      delete s.entryAud;
       expect(
         codes(
           run(
             s,
-            goodApps().filter((a) => a.aud !== AUDS.entryAdmin),
+            goodApps().filter((a) => a.aud !== AUDS.entry),
           ),
         ),
-      ).toEqual(["warning:access_aud_unset:entry:admin"]);
-    });
-
-    it("Admin の階層が無い構成では、Admin の入口を検査対象にしない", () => {
-      const s = accessSummary({
-        origins: { standard: STD_ORIGIN },
-        entryAud: { standard: AUDS.entryStandard },
-        teams: accessSummary().teams.filter((t) => t.tier === "standard"),
-      });
-      const apps = goodApps().filter((a) => a.aud !== AUDS.entryAdmin && a.aud !== AUDS.sec);
-      expect(run(s, apps)).toEqual([]);
+      ).toEqual(["warning:access_aud_unset:entry"]);
     });
   });
 });
@@ -212,11 +196,10 @@ describe("inspectAccessApps（R-P）", () => {
 describe("inspectAccessApps（R-H。ホストで分ける）", () => {
   const hostSummary = () => accessSummary({ routing: "host" });
   const hostApps = () => [
-    app(AUDS.entryStandard, "awsbridge-console.example.com"),
-    app(AUDS.entryAdmin, "awsbridge-admin-console.example.com"),
+    app(AUDS.entry, "awsbridge-console.example.com"),
     app(AUDS.dev, "dev.awsbridge-console.example.com"),
     app(AUDS.legacy, "legacy.awsbridge-console.example.com"),
-    app(AUDS.sec, "sec.awsbridge-admin-console.example.com"),
+    app(AUDS.sec, "sec.awsbridge-console.example.com"),
   ];
 
   it("正しい形（チームは <team>.<origin のホスト>）は、指摘が 0 件", () => {
@@ -228,7 +211,7 @@ describe("inspectAccessApps（R-H。ホストで分ける）", () => {
     const f = run(hostSummary(), apps);
     expect(errors(f)).toEqual([]);
     expect(f.map((x) => `${x.severity}:${x.code}`)).toEqual(
-      Array(5).fill("warning:path_cookie_disabled"),
+      Array(4).fill("warning:path_cookie_disabled"),
     );
   });
 

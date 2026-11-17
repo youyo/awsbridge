@@ -4,10 +4,14 @@
 // 設計: docs/specs/console-login-portal.md §11.1（固定の約束）・console-login.md §3.4（SourceIdentity）。
 // MCP 用 Worker（src/index.ts）からは import しない（test/unit/console-layout.test.ts と test/e2e/console-isolation.test.ts で確かめる）。
 
-export const CONSOLE_SCHEMA_VERSION = 1;
+/**
+ * 設定と生成物のスキーマの版。2 は P2（B）: Worker・issuer・鍵・プロバイダーを 1 つにした形
+ * （portal.origin・portal.entryAud は 1 つ、boundaries[].issuer は境界ごとに 1 つ、生成物は worker.json・display.json）。
+ */
+export const CONSOLE_SCHEMA_VERSION = 2;
 /** セッションタグのキー（チーム）。cto の D9 で名前空間つきに決めた。 */
 export const TEAM_TAG_KEY = "awsbridge_team";
-/** OIDC の audience（全階層・全境界で 1 つ。MCP 用の awsbridge と重ならない）。 */
+/** OIDC の audience（全階層・全境界で 1 つ。MCP 用の awsbridge と重ならない。P2 でも 1 つのまま）。 */
 export const AUDIENCE = "awsbridge-console";
 /** コンソールログイン用のロールの IAM パスの接頭辞（SCP・aws:PrincipalArn で「すべて」を止めるときに使う）。 */
 export const ROLE_PATH_PREFIX = "/awsbridge-console/";
@@ -21,7 +25,7 @@ export const ADMIN_MAX_SESSION_SECONDS = 3600;
 
 export type Tier = "standard" | "admin";
 export const TIERS: readonly Tier[] = ["standard", "admin"];
-/** ロールの IAM パスに書く階層名（/awsbridge-console/std/・/admin/）。issuer のパス（/standard・/admin）とは別。 */
+/** ロールの IAM パスに書く階層名（/awsbridge-console/std/・/admin/）。issuer（境界ごと。階層で分けない）とは別。 */
 const TIER_SEGMENT: Record<Tier, string> = { standard: "std", admin: "admin" };
 /** ロールの IAM パス（P-2: /awsbridge-console/<tier>/）。階層だけを止める SCP の条件に使える。 */
 export const rolePath = (tier: Tier): string => `${ROLE_PATH_PREFIX}${TIER_SEGMENT[tier]}/`;

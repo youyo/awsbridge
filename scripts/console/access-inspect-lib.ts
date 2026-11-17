@@ -31,16 +31,9 @@ export function parseAccessSummary(raw: unknown): AccessSummary {
   const o = expectObj(raw, "(root)");
   const routing = o.routing;
   if (routing !== "path" && routing !== "host") throw new InputError("access.json: routing: enum");
-  const origins = expectObj(o.origins, "origins");
-  const standard = optionalStr(origins, "standard", "origins");
-  if (standard === undefined) throw new InputError("access.json: origins.standard: required");
-  const admin = optionalStr(origins, "admin", "origins");
-  const entry = expectObj(o.entryAud, "entryAud");
-  const entryAud: AccessSummary["entryAud"] = {};
-  for (const t of TIERS) {
-    const v = optionalStr(entry, t, "entryAud");
-    if (v !== undefined) entryAud[t] = v;
-  }
+  const origin = optionalStr(o, "origin", "(root)");
+  if (origin === undefined) throw new InputError("access.json: origin: required");
+  const entryAud = optionalStr(o, "entryAud", "(root)");
   if (!Array.isArray(o.teams)) throw new InputError("access.json: teams: type");
   const teams = o.teams.map((t, i): AccessSummary["teams"][number] => {
     const where = `teams[${i}]`;
@@ -54,11 +47,11 @@ export function parseAccessSummary(raw: unknown): AccessSummary {
     return { name, tier, ...(aud !== undefined ? { aud } : {}) };
   });
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: "",
     routing,
-    origins: { standard, ...(admin !== undefined ? { admin } : {}) },
-    entryAud,
+    origin,
+    ...(entryAud !== undefined ? { entryAud } : {}),
     teams,
   };
 }

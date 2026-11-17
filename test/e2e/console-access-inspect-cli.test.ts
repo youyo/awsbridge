@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { AccessAppSnapshot } from "../../src/console/access-inspect";
-import { AUDS, accessSummary, goodApps } from "../unit/console-access-fixtures";
+import { AUDS, accessSummary, app, aud, goodApps } from "../unit/console-access-fixtures";
 import { freePort, root } from "./console-e2e-kit";
 
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
@@ -120,10 +120,11 @@ function expectNoSecrets(out: string): void {
 
 describe("console:access:inspect", () => {
   it("正しい形なら終了コード 0。呼ぶのは GET だけで、ページを最後まで読み、Authorization にトークンを載せる", async () => {
+    apps = [...goodApps(), app(aud("f6"), "other.example.com")];
     const r = await exec(baseEnv());
     expect(r.status, r.out).toBe(0);
     expect(r.out).toContain("errors: 0, warnings: 0");
-    // 5 件のアプリを 2 件ずつ → 3 ページ
+    // 4 件のアプリ（入口 1・チーム 3）と関係のないアプリ 1 件を 2 件ずつ → 3 ページ
     expect(reqs.map((x) => x.method)).toEqual(["GET", "GET", "GET"]);
     for (const x of reqs) {
       expect(x.url.startsWith(`/accounts/${ACCOUNT}/access/apps?`)).toBe(true);
@@ -134,12 +135,12 @@ describe("console:access:inspect", () => {
 
   it("R-P で Cookie Path が無効なアプリ（チームと入口）があれば終了コード 1。AUD を出さずに、対象の名前を出す", async () => {
     apps = goodApps().map((a) =>
-      a.aud === AUDS.dev || a.aud === AUDS.entryAdmin ? { ...a, pathCookie: false } : a,
+      a.aud === AUDS.dev || a.aud === AUDS.entry ? { ...a, pathCookie: false } : a,
     );
     const r = await exec(baseEnv());
     expect(r.status, r.out).toBe(1);
     expect(r.out).toMatch(/ERROR\s+path_cookie_disabled\s+team:dev/);
-    expect(r.out).toMatch(/ERROR\s+path_cookie_disabled\s+entry:admin/);
+    expect(r.out).toMatch(/ERROR\s+path_cookie_disabled\s+entry\b/);
     expect(r.out).toContain("errors: 2, warnings: 0");
     expect(reqs.every((x) => x.method === "GET")).toBe(true);
     expectNoSecrets(r.out);
@@ -169,10 +170,9 @@ describe("console:access:inspect", () => {
     writeSummary(accessSummary({ routing: "host" }));
     apps = [
       { ...goodApps()[0], pathCookie: false },
-      goodApps()[1],
-      { ...goodApps()[2], destinations: ["dev.awsbridge-console.example.com"], pathCookie: false },
-      { ...goodApps()[3], destinations: ["legacy.awsbridge-console.example.com"] },
-      { ...goodApps()[4], destinations: ["sec.awsbridge-admin-console.example.com"] },
+      { ...goodApps()[1], destinations: ["dev.awsbridge-console.example.com"], pathCookie: false },
+      { ...goodApps()[2], destinations: ["legacy.awsbridge-console.example.com"] },
+      { ...goodApps()[3], destinations: ["sec.awsbridge-console.example.com"] },
     ] as AccessAppSnapshot[];
     const r = await exec(baseEnv());
     expect(r.status, r.out).toBe(0);

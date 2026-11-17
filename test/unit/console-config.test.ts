@@ -49,7 +49,7 @@ describe("parseConsoleConfig: 正しい設定", () => {
   it("個人用の最小構成を受け付ける（Admin なし・Terraform なし・Organization なし）", () => {
     const { config, warnings } = parseConsoleConfig(personalConfig());
     expect(warnings).toEqual([]);
-    expect(config.portal.adminOrigin).toBeUndefined();
+    expect(config.portal.origin).toBe("https://aws.example.com");
     expect(config.portal.routing).toBe("path");
   });
 
@@ -96,11 +96,28 @@ describe("parseConsoleConfig: 構文・型・未知のキー", () => {
     expect(issuesOf([])).toEqual([issue("$", "type")]);
   });
 
-  it("schemaVersion が 1 でなければ schema_version", () => {
+  it("schemaVersion が 2 でなければ schema_version（1 の設定は止め、エラーの文で新しいキーを案内する）", () => {
     const c = withChange(personalConfig, (x) => {
-      x.schemaVersion = 2;
+      x.schemaVersion = 1;
     });
     expect(issuesOf(c)).toContainEqual(issue("schemaVersion", "schema_version"));
+    let message = "";
+    try {
+      parseConsoleConfig(c);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    for (const k of ["schemaVersion 2", "portal.origin", "portal.entryAud", "boundaries[].issuer"])
+      expect(message, k).toContain(k);
+    // 誤りが schemaVersion でなければ、案内は出さない
+    const other = withChange(personalConfig, (x) => {
+      x.teams[0].name = "Bad Name";
+    });
+    try {
+      parseConsoleConfig(other);
+    } catch (e) {
+      expect((e as Error).message).not.toContain("schemaVersion 2");
+    }
   });
 
   it.each([
@@ -114,9 +131,9 @@ describe("parseConsoleConfig: 構文・型・未知のキー", () => {
     [
       "portal",
       (x: Raw) => {
-        x.portal.standardOrign = "https://x.example.com";
+        x.portal.orign = "https://x.example.com";
       },
-      "standardOrign",
+      "orign",
     ],
     [
       "teams[0]",
@@ -154,11 +171,11 @@ describe("parseConsoleConfig: 構文・型・未知のキー", () => {
       "assing",
     ],
     [
-      "boundaries[0].issuers",
+      "boundaries[0]",
       (x: Raw) => {
-        x.boundaries[0].issuers.adm = "x";
+        x.boundaries[0].issuers = { standard: "https://id.example.com/console" };
       },
-      "adm",
+      "issuers",
     ],
     [
       "organizations[0]",
@@ -189,13 +206,13 @@ describe("parseConsoleConfig: 構文・型・未知のキー", () => {
 
   it.each([
     ["portal", (x: Raw) => delete x.portal],
-    ["portal.standardOrigin", (x: Raw) => delete x.portal.standardOrigin],
+    ["portal.origin", (x: Raw) => delete x.portal.origin],
     ["teams[0].access", (x: Raw) => delete x.teams[0].access],
     ["roles[0].roleName", (x: Raw) => delete x.roles[0].roleName],
     ["roles[0].sessionSeconds", (x: Raw) => delete x.roles[0].sessionSeconds],
     ["roles[0].permissions", (x: Raw) => delete x.roles[0].permissions],
     ["kinds[0].assign", (x: Raw) => delete x.kinds[0].assign],
-    ["boundaries[0].issuers.standard", (x: Raw) => delete x.boundaries[0].issuers.standard],
+    ["boundaries[0].issuer", (x: Raw) => delete x.boundaries[0].issuer],
     ["organizations[0].placement", (x: Raw) => delete x.organizations[0].placement],
     ["organizations[0].accounts", (x: Raw) => delete x.organizations[0].accounts],
   ])("必須の欠落は required（%s）", (path, change) => {
@@ -358,16 +375,16 @@ describe("parseConsoleConfig: 値の形", () => {
       "pattern",
     ],
     [
-      "boundaries[0].issuers.standard",
+      "boundaries[0].issuer",
       (x: Raw) => {
-        x.boundaries[0].issuers.standard = "http://id.example.com/standard";
+        x.boundaries[0].issuer = "http://id.example.com/console";
       },
       "url",
     ],
     [
-      "boundaries[0].issuers.standard",
+      "boundaries[0].issuer",
       (x: Raw) => {
-        x.boundaries[0].issuers.standard = "https://id.example.com/standard/";
+        x.boundaries[0].issuer = "https://id.example.com/console/";
       },
       "url",
     ],
@@ -440,7 +457,7 @@ describe("parseConsoleConfig: 値の形", () => {
   });
 });
 
-describe("parseConsoleConfig: ポータルのオリジン", () => {
+describe("parseConsoleConfig: ポータルのオリジン（P2: 1 つ）", () => {
   it.each([
     ["https://portal.example.workers.dev", "workers_dev"],
     ["https://PORTAL.Example.Workers.Dev", "workers_dev"],
@@ -451,90 +468,64 @@ describe("parseConsoleConfig: ポータルのオリジン", () => {
     ["https://portal.example.com/t/dev", "origin"],
     ["https://user@portal.example.com", "origin"],
     ["portal.example.com", "origin"],
-  ])("standardOrigin %s は %s", (origin, code) => {
+  ])("origin %s は %s", (origin, code) => {
     const c = withChange(personalConfig, (x) => {
-      x.portal.standardOrigin = origin;
+      x.portal.origin = origin;
     });
-    expect(issuesOf(c)).toContainEqual(issue("portal.standardOrigin", code));
+    expect(issuesOf(c)).toContainEqual(issue("portal.origin", code));
   });
 
-  it("adminOrigin の workers.dev も拒否する", () => {
+  it("Admin の階層があっても、ポータルのオリジンは 1 つ（Admin のオリジンを求めない）", () => {
+    const { config } = parseConsoleConfig(companyConfig());
+    expect(config.portal.origin).toBe("https://portal.example.com");
+    expect(Object.keys(config.portal)).not.toContain("adminOrigin");
+  });
+
+  it("旧い形のキー（standardOrigin・adminOrigin）は unknown_key（黙って読み替えない）", () => {
     const c = withChange(companyConfig, (x) => {
-      x.portal.adminOrigin = "https://admin.example.workers.dev";
+      x.portal.standardOrigin = "https://portal.example.com";
+      x.portal.adminOrigin = "https://admin-portal.example.com";
     });
-    expect(issuesOf(c)).toContainEqual(issue("portal.adminOrigin", "workers_dev"));
+    const found = issuesOf(c);
+    expect(found).toContainEqual(issue("portal.standardOrigin", "unknown_key"));
+    expect(found).toContainEqual(issue("portal.adminOrigin", "unknown_key"));
   });
 
-  it("Admin の階層があるのに adminOrigin がなければ admin_origin_missing", () => {
-    const c = withChange(companyConfig, (x) => {
-      delete x.portal.adminOrigin;
+  it("入口の AUD（portal.entryAud）は 1 つの文字列（階層ごとのオブジェクトは type）", () => {
+    const ok = withChange(companyConfig, (x) => {
+      x.portal.entryAud = "e".repeat(64);
     });
-    expect(issuesOf(c)).toContainEqual(issue("portal.adminOrigin", "admin_origin_missing"));
-  });
-
-  it("Admin のロールだけがある場合も adminOrigin が要る", () => {
-    const c = withChange(personalConfig, (x) => {
-      x.roles[0].tier = "admin";
-      // Admin のロールの sessionSeconds は 3600 以下（admin_session_seconds にならない値にして、adminOrigin の検査だけを見る）
-      x.roles[0].sessionSeconds = 3600;
-      x.kinds[0].assign = { developer: ["me"] };
+    expect(parseConsoleConfig(ok).config.portal.entryAud).toBe("e".repeat(64));
+    const old = withChange(companyConfig, (x) => {
+      x.portal.entryAud = { standard: "e".repeat(64) };
     });
-    expect(issuesOf(c)).toContainEqual(issue("portal.adminOrigin", "admin_origin_missing"));
-  });
-
-  it("standardOrigin と adminOrigin が同じなら origin_same", () => {
-    const c = withChange(companyConfig, (x) => {
-      x.portal.adminOrigin = x.portal.standardOrigin;
+    expect(issuesOf(old)).toContainEqual(issue("portal.entryAud", "type"));
+    const bad = withChange(companyConfig, (x) => {
+      x.portal.entryAud = "short";
     });
-    expect(issuesOf(c)).toContainEqual(issue("portal.adminOrigin", "origin_same"));
+    expect(issuesOf(bad)).toContainEqual(issue("portal.entryAud", "pattern"));
   });
 });
 
-// X1 の決裁 (a)・(h): Admin は Standard と別の issuer・別のホスト。Admin の issuer の文書は Admin の Worker が
-// Cloudflare の別のホストの /admin で出す（A-3 = I-B）。Admin の鍵は 1 組なので、Admin の issuer は 1 つだけ。
-describe("parseConsoleConfig: Admin の issuer（X1 の決裁）", () => {
-  it.each([
-    ["https://admin-id.example.com", "パスなし"],
-    ["https://admin-id.example.com/standard", "別のパス"],
-    ["https://admin-id.example.com/admin/x", "深いパス"],
-    ["https://admin-id.example.com/Admin", "大文字"],
-  ])("パスが /admin でない %s（%s）は admin_issuer_path", (url) => {
-    const c = withChange(companyConfig, (x) => {
-      x.boundaries[0].issuers.admin = url;
-    });
-    expect(issuesOf(c)).toContainEqual(issue("boundaries[0].issuers.admin", "admin_issuer_path"));
+describe("parseConsoleConfig: 境界の issuer（P2: 境界ごとに 1 つ）", () => {
+  it("boundaries[].issuer は境界ごとに 1 つの URL", () => {
+    const { config } = parseConsoleConfig(companyConfig());
+    expect(config.boundaries).toEqual([
+      { name: "managed", issuer: "https://id.example.com/console" },
+      { name: "partner:partner-x", issuer: "https://id.example.com/p/partner-x/console" },
+    ]);
   });
 
-  it("Admin の issuer を持つ境界が 2 つ以上なら admin_issuer_multiple（Admin の鍵と JWKS は 1 組）", () => {
+  it("旧い形（issuers: { standard, admin }）は unknown_key と required（黙って読み替えない）", () => {
     const c = withChange(companyConfig, (x) => {
-      x.boundaries[1].issuers.admin = "https://admin-id2.example.com/admin";
+      x.boundaries[0] = {
+        name: "managed",
+        issuers: { standard: "https://id.example.com/standard" },
+      };
     });
-    expect(issuesOf(c)).toContainEqual(
-      issue("boundaries[1].issuers.admin", "admin_issuer_multiple"),
-    );
-  });
-
-  it.each([
-    ["Standard の issuer と同じホスト", "https://id.example.com/admin"],
-    ["管理外の先方の Standard の issuer と同じホスト", "https://id.example.com/admin"],
-    ["Standard の issuer のホストのサブドメイン", "https://a.id.example.com/admin"],
-    ["Standard の issuer のホストがサブドメイン", "https://example.com/admin"],
-  ])("Admin の issuer が %s は admin_issuer_host_shared", (_name, url) => {
-    const c = withChange(companyConfig, (x) => {
-      x.boundaries[0].issuers.admin = url;
-    });
-    expect(issuesOf(c)).toContainEqual(
-      issue("boundaries[0].issuers.admin", "admin_issuer_host_shared"),
-    );
-  });
-
-  it("別の境界の Standard の issuer のホストと重なっても admin_issuer_host_shared", () => {
-    const c = withChange(companyConfig, (x) => {
-      x.boundaries[1].issuers.standard = "https://admin-id.example.com/partner-x";
-    });
-    expect(issuesOf(c)).toContainEqual(
-      issue("boundaries[0].issuers.admin", "admin_issuer_host_shared"),
-    );
+    const found = issuesOf(c);
+    expect(found).toContainEqual(issue("boundaries[0].issuers", "unknown_key"));
+    expect(found).toContainEqual(issue("boundaries[0].issuer", "required"));
   });
 });
 
@@ -543,104 +534,73 @@ describe("parseConsoleConfig: Admin の issuer（X1 の決裁）", () => {
 describe("parseConsoleConfig: issuer のホストとポータルのホストの重なり（G-8）", () => {
   const overlap = (path: string) => issue(path, "issuer_host_overlaps_portal");
 
-  it("会社用の設定（issuer は id.*、ポータルは portal.*・admin-portal.*）は兄弟のホストなので受け付ける", () => {
+  it("会社用の設定（issuer は id.*、ポータルは portal.*）は兄弟のホストなので受け付ける", () => {
     expect(issuesOf(companyConfig())).toEqual([]);
     expect(issuesOf(personalConfig())).toEqual([]);
   });
 
-  it("会社用の設定の Admin の issuer は、Standard の issuer と別のホスト（admin-id.*）の /admin", () => {
-    const c = companyConfig();
-    expect(c.boundaries[0].issuers.standard).toBe("https://id.example.com/standard");
-    expect(c.boundaries[0].issuers.admin).toBe("https://admin-id.example.com/admin");
-    expect(issuesOf(c)).toEqual([]);
-  });
-
   it.each([
-    [
-      "Standard の issuer が Standard のポータルと同じホスト",
-      "standard",
-      "https://portal.example.com/standard",
-    ],
-    [
-      "Standard の issuer が Admin のポータルと同じホスト",
-      "standard",
-      "https://admin-portal.example.com/standard",
-    ],
-    [
-      "Admin の issuer が Standard のポータルと同じホスト",
-      "admin",
-      "https://portal.example.com/admin",
-    ],
-    [
-      "Admin の issuer が Admin のポータルと同じホスト",
-      "admin",
-      "https://admin-portal.example.com/admin",
-    ],
-    ["ポートだけ違う同じホスト名", "standard", "https://portal.example.com:8443/standard"],
+    ["issuer がポータルと同じホスト", "https://portal.example.com/console"],
+    ["ポートだけ違う同じホスト名", "https://portal.example.com:8443/console"],
     [
       "issuer のホストがポータルのサブドメイン（ホスト方式のチームのホストと重なる）",
-      "standard",
-      "https://id.portal.example.com/standard",
+      "https://id.portal.example.com/console",
     ],
-    [
-      "issuer のホストがポータルの深いサブドメイン",
-      "admin",
-      "https://a.b.admin-portal.example.com/admin",
-    ],
-    ["ポータルのホストが issuer のサブドメイン", "standard", "https://example.com/standard"],
-  ])("%s は issuer_host_overlaps_portal", (_name, tier, url) => {
+    ["issuer のホストがポータルの深いサブドメイン", "https://a.b.portal.example.com/console"],
+    ["ポータルのホストが issuer のサブドメイン", "https://example.com/console"],
+  ])("%s は issuer_host_overlaps_portal", (_name, url) => {
     const c = withChange(companyConfig, (x) => {
-      x.boundaries[0].issuers[tier] = url;
+      x.boundaries[0].issuer = url;
     });
-    expect(issuesOf(c)).toContainEqual(overlap(`boundaries[0].issuers.${tier}`));
+    expect(issuesOf(c)).toContainEqual(overlap("boundaries[0].issuer"));
   });
 
   it("ホスト方式（routing: host）でも、チームのホスト（<team>.<ポータル>）と重なる issuer を弾く", () => {
     const c = withChange(companyConfig, (x) => {
       x.portal.routing = "host";
-      x.boundaries[0].issuers.standard = "https://infra.portal.example.com/standard";
+      x.boundaries[0].issuer = "https://infra.portal.example.com/console";
     });
-    expect(issuesOf(c)).toContainEqual(overlap("boundaries[0].issuers.standard"));
+    expect(issuesOf(c)).toContainEqual(overlap("boundaries[0].issuer"));
   });
 
   it("管理外の先方の境界（2 つ目）の issuer も検査する。位置は境界の添字で示す", () => {
     const c = withChange(companyConfig, (x) => {
-      x.boundaries[1].issuers.standard = "https://portal.example.com/partner-x";
+      x.boundaries[1].issuer = "https://portal.example.com/p/partner-x/console";
     });
-    expect(issuesOf(c)).toContainEqual(overlap("boundaries[1].issuers.standard"));
+    expect(issuesOf(c)).toContainEqual(overlap("boundaries[1].issuer"));
   });
 
   it("ホストの末尾のドット（FQDN の形）は同じホストとして扱う。issuer の形の検査（url）が先に弾く場合も、重なりは見逃さない", () => {
     // ポータルのオリジンの末尾のドット（checkOrigin は許す）と同じホストの issuer
     const c = withChange(companyConfig, (x) => {
-      x.portal.standardOrigin = "https://portal.example.com.";
-      x.boundaries[0].issuers.standard = "https://portal.example.com/standard";
+      x.portal.origin = "https://portal.example.com.";
+      x.boundaries[0].issuer = "https://portal.example.com/console";
     });
-    expect(issuesOf(c)).toContainEqual(overlap("boundaries[0].issuers.standard"));
+    expect(issuesOf(c)).toContainEqual(overlap("boundaries[0].issuer"));
   });
 
   it("大文字小文字だけが違うホストは、重なりを検査する前に形の検査（origin・url）で弾かれ、すり抜けない", () => {
     const upperOrigin = withChange(companyConfig, (x) => {
-      x.portal.standardOrigin = "https://Portal.Example.com";
-      x.boundaries[0].issuers.standard = "https://portal.example.com/standard";
+      x.portal.origin = "https://Portal.Example.com";
+      x.boundaries[0].issuer = "https://portal.example.com/console";
     });
-    expect(issuesOf(upperOrigin)).toContainEqual(issue("portal.standardOrigin", "origin"));
+    expect(issuesOf(upperOrigin)).toContainEqual(issue("portal.origin", "origin"));
     const upperIssuer = withChange(companyConfig, (x) => {
-      x.boundaries[0].issuers.standard = "https://PORTAL.example.com/standard";
+      x.boundaries[0].issuer = "https://PORTAL.example.com/console";
     });
-    expect(issuesOf(upperIssuer)).toContainEqual(issue("boundaries[0].issuers.standard", "url"));
+    expect(issuesOf(upperIssuer)).toContainEqual(issue("boundaries[0].issuer", "url"));
   });
 
   it("名前だけが似ているホスト（portal.example.com と myportal.example.com）は重ならない", () => {
     const c = withChange(companyConfig, (x) => {
-      x.boundaries[0].issuers.standard = "https://myportal.example.com/standard";
+      x.boundaries[0].issuer = "https://myportal.example.com/console";
     });
     expect(issuesOf(c)).toEqual([]);
   });
 
   it("誤りの出力には URL の値を含めず、パスと種別だけを持つ", () => {
     const c = withChange(companyConfig, (x) => {
-      x.boundaries[0].issuers.standard = "https://portal.example.com/standard";
+      x.boundaries[0].issuer = "https://portal.example.com/console";
     });
     const found = issuesOf(c).filter((i) => i.code === "issuer_host_overlaps_portal");
     expect(found).toHaveLength(1);
@@ -721,18 +681,18 @@ describe("parseConsoleConfig: 参照と重複", () => {
     const c = withChange(personalConfig, (x) => {
       x.teams[0].access = { aud };
       x.teams.push({ name: "you", access: { aud } });
-      x.portal.entryAud = { standard: aud };
+      x.portal.entryAud = aud;
     });
     const found = issuesOf(c);
     expect(found).toContainEqual(issue("teams[1].access.aud", "duplicate"));
-    expect(found).toContainEqual(issue("portal.entryAud.standard", "duplicate"));
+    expect(found).toContainEqual(issue("portal.entryAud", "duplicate"));
   });
 
-  it("issuer の URL の重複（階層・境界をまたいでも）は duplicate", () => {
+  it("issuer の URL の重複（境界をまたいで）は duplicate（鍵と issuer は境界ごと）", () => {
     const c = withChange(companyConfig, (x) => {
-      x.boundaries[1].issuers.standard = x.boundaries[0].issuers.admin;
+      x.boundaries[1].issuer = x.boundaries[0].issuer;
     });
-    expect(issuesOf(c)).toContainEqual(issue("boundaries[1].issuers.standard", "duplicate"));
+    expect(issuesOf(c)).toContainEqual(issue("boundaries[1].issuer", "duplicate"));
   });
 
   it("ロールの name から作る StackSets のパラメーター名が衝突すれば param_collision", () => {
@@ -820,11 +780,31 @@ describe("parseConsoleConfig: 階層の一致", () => {
     expect(issuesOf(c)).toContainEqual(issue("kinds[2].assign.developer[1]", "tier_mismatch"));
   });
 
-  it("境界に Admin の issuer がないのに Admin のロールが届く割り当ては boundary_tier_missing", () => {
+  // P2（B）の設計メモ §2.3: boundary_tier_missing（境界に Admin の issuer が無ければ Admin を届けない）の置き換え。
+  // 保証は「Admin の階層に分類したロール」についてだけ（Standard に分類した強いロールを管理外へ配ることは止めない）。
+  it("Admin の階層のロールが管理外の境界（partner:<id>）に届く割り当ては admin_boundary", () => {
     const c = withChange(companyConfig, (x) => {
       x.kinds[3].assign.admin = ["infra-elevated"];
     });
-    expect(issuesOf(c)).toContainEqual(issue("organizations[1]", "boundary_tier_missing"));
+    expect(issuesOf(c)).toContainEqual(issue("organizations[1]", "admin_boundary"));
+  });
+
+  it("Admin の階層のロールは managed の境界にだけ届けられる（会社用の設定は誤りなし）。Standard のロールは管理外に届けてよい", () => {
+    expect(issuesOf(companyConfig())).toEqual([]);
+    const c = withChange(companyConfig, (x) => {
+      // 管理外の先方に Standard の強いロール（developer）を届けるのは止めない（tier は権限の強さを保証しない）
+      x.kinds[3].assign.developer = ["dev", "sa"];
+    });
+    expect(issuesOf(c).filter((i) => i.code === "admin_boundary")).toEqual([]);
+  });
+
+  it("管理外の境界の placement: ou の Organization も、Admin のロールが届けば admin_boundary（placement の誤りと別に出す）", () => {
+    const c = withChange(companyConfig, (x) => {
+      x.organizations[0].boundary = "partner:partner-x";
+    });
+    const found = issuesOf(c);
+    expect(found).toContainEqual(issue("organizations[0]", "admin_boundary"));
+    expect(found).toContainEqual(issue("organizations[0].placement", "placement"));
   });
 
   it("管理外の境界は placement: ou にできない（ListAccounts を読めない）", () => {
@@ -832,6 +812,57 @@ describe("parseConsoleConfig: 階層の一致", () => {
       x.organizations[0].boundary = "partner:partner-x";
     });
     expect(issuesOf(c)).toContainEqual(issue("organizations[0].placement", "placement"));
+  });
+});
+
+// P2（B）の設計メモ §7.1: 退役したチーム名の台帳。同じ名前を（同じ階層でも別の階層でも）使い直さない。
+// 台帳から名前を消せないことは生成器（前回の生成物と比べる）で守る（console-generate.test.ts）。
+describe("parseConsoleConfig: 退役したチーム名の台帳（retiredTeams）", () => {
+  it("省略できる（既定は空）。書けば { name, tier } の一覧として受け付ける", () => {
+    expect(parseConsoleConfig(companyConfig()).config.retiredTeams).toEqual([]);
+    const c = withChange(companyConfig, (x) => {
+      x.retiredTeams = [
+        { name: "ops", tier: "standard" },
+        { name: "ops-elevated", tier: "admin" },
+      ];
+    });
+    expect(parseConsoleConfig(c).config.retiredTeams).toEqual([
+      { name: "ops", tier: "standard" },
+      { name: "ops-elevated", tier: "admin" },
+    ]);
+  });
+
+  it.each([
+    ["同じ階層", "standard"],
+    ["別の階層", "admin"],
+  ])("今のチームの名前が台帳にあれば team_retired（%s）", (_name, tier) => {
+    const c = withChange(companyConfig, (x) => {
+      x.retiredTeams = [{ name: "dev", tier }];
+    });
+    expect(issuesOf(c)).toContainEqual(issue("teams[1].name", "team_retired"));
+  });
+
+  it("形の誤り（名前の形・階層の値・tier の欠落・未知のキー・重複・配列でない）は誤り", () => {
+    const c = withChange(companyConfig, (x) => {
+      x.retiredTeams = [
+        { name: "Bad Name", tier: "standard" },
+        { name: "ok", tier: "root" },
+        { name: "ok2" },
+        { name: "ok3", tier: "standard", extra: 1 },
+        { name: "ok4", tier: "standard" },
+        { name: "ok4", tier: "admin" },
+      ];
+    });
+    const found = issuesOf(c);
+    expect(found).toContainEqual(issue("retiredTeams[0].name", "pattern"));
+    expect(found).toContainEqual(issue("retiredTeams[1].tier", "enum"));
+    expect(found).toContainEqual(issue("retiredTeams[2].tier", "required"));
+    expect(found).toContainEqual(issue("retiredTeams[3].extra", "unknown_key"));
+    expect(found).toContainEqual(issue("retiredTeams[5].name", "duplicate"));
+    const notArray = withChange(companyConfig, (x) => {
+      x.retiredTeams = { name: "ops" };
+    });
+    expect(issuesOf(notArray)).toContainEqual(issue("retiredTeams", "type"));
   });
 });
 

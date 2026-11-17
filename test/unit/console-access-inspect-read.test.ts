@@ -57,13 +57,13 @@ describe("parseAccessSummary", () => {
   it("access.json（生成物）の形を読む", () => {
     const s = accessSummary();
     const got = parseAccessSummary(JSON.parse(JSON.stringify(s)));
-    expect(got).toMatchObject({ routing: s.routing, origins: s.origins, entryAud: s.entryAud });
+    expect(got).toMatchObject({ routing: s.routing, origin: s.origin, entryAud: s.entryAud });
     expect(got.teams).toEqual(s.teams.map((t) => ({ name: t.name, tier: t.tier, aud: t.aud })));
   });
 
   it.each([
     ["routing", { routing: "x" }],
-    ["origins", { origins: {} }],
+    ["origin", { origin: undefined }],
     ["entryAud", { entryAud: 1 }],
     ["teams", { teams: "x" }],
   ])("形の誤り（%s）は、位置だけの InputError。値を出さない", (path, patch) => {

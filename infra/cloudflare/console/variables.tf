@@ -3,24 +3,13 @@ variable "account_id" {
   type        = string
 }
 
-variable "standard_host" {
-  description = "Standard の入口のホスト名（スキーム・パスなし。例 awsbridge-console.example.com。設定ファイルの portal.standardOrigin のホスト）"
+variable "host" {
+  description = "ポータルのホスト名（スキーム・パスなし。例 awsbridge-console.example.com。設定ファイルの portal.origin のホスト）。入口と、両階層のチームのアプリ（/t/<チーム>）を置く"
   type        = string
 
   validation {
-    condition     = can(regex("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", var.standard_host))
-    error_message = "standard_host はホスト名だけ（スキーム・パス・大文字なし）。"
-  }
-}
-
-variable "admin_host" {
-  description = "Admin の入口のホスト名（例 awsbridge-admin-console.example.com。portal.adminOrigin のホスト）。Admin の階層のチームがあるときだけ指定する。Standard とは別のホストにする"
-  type        = string
-  default     = null
-
-  validation {
-    condition     = var.admin_host == null ? true : (can(regex("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", var.admin_host)) && var.admin_host != var.standard_host)
-    error_message = "admin_host はホスト名だけで、standard_host と別のホストにする。"
+    condition     = can(regex("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", var.host))
+    error_message = "host はホスト名だけ（スキーム・パス・大文字なし）。"
   }
 }
 
@@ -57,34 +46,26 @@ variable "teams" {
     condition     = alltrue([for t in values(var.teams) : length(t.policy_ids) > 0])
     error_message = "各チームに policy_ids を 1 つ以上（空だと誰も入れない／全員入れる設定の取り違えを避ける）。"
   }
-  validation {
-    condition     = var.admin_host != null || alltrue([for t in values(var.teams) : t.tier != "admin"])
-    error_message = "Admin の階層のチームがあるときは admin_host を指定する。"
-  }
 }
 
 variable "entry_policy_ids" {
-  description = "入口のアプリ（ホスト全体）に付ける既存の reusable policy の ID。キーは standard / admin（その階層のチームの利用者をすべて含む範囲）"
-  type        = map(list(string))
+  description = "入口のアプリ（ホスト全体）に付ける既存の reusable policy の ID（全チームの利用者をすべて含む範囲。先頭ほど優先）"
+  type        = list(string)
 
   validation {
-    condition     = alltrue([for k in keys(var.entry_policy_ids) : contains(["standard", "admin"], k)])
-    error_message = "entry_policy_ids のキーは standard か admin。"
-  }
-  validation {
-    condition     = alltrue([for t in distinct(concat(["standard"], [for t in values(var.teams) : t.tier])) : length(lookup(var.entry_policy_ids, t, [])) > 0])
-    error_message = "使う階層（standard と、Admin のチームがあれば admin）の入口に policy_ids を 1 つ以上渡す。"
+    condition     = length(var.entry_policy_ids) > 0
+    error_message = "入口に policy_ids を 1 つ以上渡す。"
   }
 }
 
 variable "standard_session_duration" {
-  description = "Standard の階層のアプリ（入口とチーム）のセッション期間"
+  description = "入口と Standard の階層のチームのアプリのセッション期間"
   type        = string
   default     = "24h"
 }
 
 variable "admin_session_duration" {
-  description = "Admin の階層のアプリ（入口とチーム）のセッション期間。Admin の Worker の ACCESS_MAX_AGE_SECONDS（既定 900 秒）に揃える"
+  description = "Admin の階層のチームのアプリのセッション期間。コンソールの Worker の ADMIN_ACCESS_MAX_AGE_SECONDS（既定 900 秒）に揃える"
   type        = string
   default     = "15m"
 }
