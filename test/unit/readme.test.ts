@@ -195,12 +195,12 @@ describe("README の突き合わせの間隔（毎日回す。利用者の判断
 });
 
 describe("突き合わせの運用と検査の文面（cto の決裁 G2 の途中経過 2026-11-13）", () => {
-  it("README_ja.md: 時間・利用者・確認済みの区間の検査と仮のしきい値を書く", () => {
+  it("README_ja.md: 時間・利用者・確認済みの区間の検査を書く（時間の検査は c5 で誤り）", () => {
     const text = read("README_ja.md");
     for (const s of [
       "assume_time_gap",
       "--clock-skew-seconds",
-      "しきい値は仮です",
+      "`assume_time_gap`（誤り",
       "identity_mismatch",
       "identity_not_compared",
       "coverage_gap",
@@ -210,12 +210,12 @@ describe("突き合わせの運用と検査の文面（cto の決裁 G2 の途�
     ])
       expect(text, s).toContain(s);
   });
-  it("README.md: time, identity and confirmed-interval checks with provisional thresholds", () => {
+  it("README.md: time, identity and confirmed-interval checks (the time check is an error since c5)", () => {
     const text = read("README.md");
     for (const s of [
       "assume_time_gap",
       "--clock-skew-seconds",
-      "The thresholds are provisional",
+      "`assume_time_gap` (error",
       "identity_mismatch",
       "identity_not_compared",
       "coverage_gap",
@@ -272,5 +272,132 @@ describe("突き合わせの運用: 誤りのあとの回し直しと --since �
       "if you run it every day, keep the default of 6 days",
     ])
       expect(text, s).toContain(s);
+  });
+});
+
+// cto の決裁 G2-A 条件 c5（2026-11-17）: 照合の Q1・Q2・Q4・Q5、L2 と信頼ポリシーの拒否、Administrator の別スタック
+describe("cto の決裁 G2-A 条件 c5 の文面", () => {
+  const section = (text: string, heading: string, next = "\n## ") => {
+    const i = text.indexOf(heading);
+    expect(i, heading).toBeGreaterThanOrEqual(0);
+    const j = text.indexOf(next, i + heading.length);
+    return text.slice(i, j < 0 ? undefined : j);
+  };
+
+  it("README_ja.md: 照合（時間・利用者は誤り、Admin の比べ漏れは誤り、除外の件数、Admin の発行、受容、当たったときの扱い）", () => {
+    const text = section(read("README_ja.md"), "## コンソールログインの突き合わせ");
+    for (const s of [
+      "`assume_time_gap`（誤り",
+      "`identity_mismatch`（誤り",
+      "`identity_not_compared_admin`（誤り",
+      "見つかるのは別のドメインか別の頭文字だけ",
+      "time from issue:",
+      "excluded assumes (not console): <n>",
+      "MCP を同じアカウントで使っていなければ 0",
+      "admin issues: <n>",
+      "発行記録は Admin の Worker 自身が書きます。Admin の Worker に書ける者に対しては、照合は独立の検知ではありません",
+      "`LOGIN_DISABLED`",
+      "技術の判断者に上げます",
+      "誤りが残る間、区間は進みません",
+    ])
+      expect(text, s).toContain(s);
+    expect(text).not.toContain("しきい値は仮です");
+    expect(text).not.toContain("誤りに上げる予定");
+  });
+  it("README.md: reconciliation (same points in English)", () => {
+    const text = section(read("README.md"), "## Reconciling console logins");
+    for (const s of [
+      "`assume_time_gap` (error",
+      "`identity_mismatch` (error",
+      "`identity_not_compared_admin` (error",
+      "it can only catch a different domain or a different first letter",
+      "time from issue:",
+      "excluded assumes (not console): <n>",
+      "0 if you do not use MCP in the same account",
+      "admin issues: <n>",
+      "The issue records are written by the Admin Worker itself. Against anyone who can write to the Admin Worker, the reconciliation is not independent detection",
+      "`LOGIN_DISABLED`",
+      "escalate to your technical decision maker",
+      "While an error remains, the interval does not advance",
+    ])
+      expect(text, s).toContain(s);
+    expect(text).not.toContain("The thresholds are provisional");
+    expect(text).not.toContain("then raised to errors");
+  });
+
+  it("README_ja.md: L2 は G2-A で実測済み。信頼ポリシーの拒否は CloudFormation の外で、止めている間はロールのスタックを更新しない", () => {
+    const text = section(read("README_ja.md"), "### Admin のプロバイダーだけを止める（L2）");
+    for (const s of [
+      "G2-A",
+      "`upstream_auth_failed`",
+      "`sts_denied`",
+      "作り直したプロバイダーはドリフトが残りません",
+      "信頼ポリシーの Deny は CloudFormation の管理の外にあります",
+      "止めている間はロールのスタックを更新しません",
+      "戻しは手で行い、発行 1 回とドリフト検出で確かめます",
+      "信頼ポリシー自体が変わる更新で Deny が消えるかは未測定",
+    ])
+      expect(text, s).toContain(s);
+    expect(text).not.toContain("まだ実行していない例");
+  });
+  it("README.md: L2 measured in G2-A; the trust policy Deny is outside CloudFormation", () => {
+    const text = section(read("README.md"), "### Stopping only the Admin provider (L2)");
+    for (const s of [
+      "G2-A",
+      "`upstream_auth_failed`",
+      "`sts_denied`",
+      "the recreated provider leaves no drift",
+      "The trust policy Deny is outside CloudFormation's management",
+      "While it is stopped, do not update the role stack",
+      "Restore it by hand, and confirm with one issuance and drift detection",
+      "whether an update that changes the trust policy itself removes the Deny has not been measured",
+    ])
+      expect(text, s).toContain(s);
+    expect(text).not.toContain("have not been run yet");
+  });
+
+  it("README_ja.md / README.md: Administrator を別のスタックで置くときの条件（change set・作成直後の確認・kind-default・中断・スタック名）", () => {
+    const ja = section(read("README_ja.md"), "## コンソールログインの Admin の署名鍵");
+    for (const s of [
+      "`AdministratorRole` の `Add` だけ",
+      "aws iam get-role",
+      "aws iam list-attached-role-policies",
+      "`AdministratorTeams` は空のまま",
+      "`AdministratorRole` が出たら実行しません",
+      "Admin のスタックを消し、かつ設定から Administrator を外して生成し直します",
+      "awsbridge-console-admin-default",
+      "`awsbridge-console-kind-<kind>`",
+    ])
+      expect(ja, s).toContain(s);
+    const en = section(read("README.md"), "## Admin signing key for console login");
+    for (const s of [
+      "only an `Add` of `AdministratorRole`",
+      "aws iam get-role",
+      "aws iam list-attached-role-policies",
+      "keep `AdministratorTeams` empty",
+      "if `AdministratorRole` appears, do not execute it",
+      "delete the Admin stack, and remove Administrator from the config and regenerate",
+      "awsbridge-console-admin-default",
+      "`awsbridge-console-kind-<kind>`",
+    ])
+      expect(en, s).toContain(s);
+  });
+
+  it("docs/specs: 信頼ポリシーの Deny は「スタックの更新で戻る」と書かない（測った 2 通りでは戻らない）。受容の文と新しい所見", () => {
+    for (const f of ["docs/specs/console-login.md", "docs/specs/console-login-admin.md"]) {
+      const text = read(f);
+      expect(text, f).not.toContain("スタックの更新で戻る");
+      expect(text, f).toContain("信頼ポリシー自体が変わる更新は未測定");
+    }
+    const spec = read("docs/specs/console-login.md");
+    for (const s of [
+      "発行記録は Admin の Worker 自身が書く。Admin の Worker に書ける者に対しては、照合は独立の検知ではない",
+      "`identity_not_compared_admin`",
+      "`assume_time_gap`（誤り",
+      "`identity_mismatch`（誤り",
+      "awsbridge-console-admin-default",
+    ])
+      expect(spec, s).toContain(s);
+    expect(spec).not.toContain("**まず警告**");
   });
 });

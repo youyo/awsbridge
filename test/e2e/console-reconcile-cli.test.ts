@@ -606,20 +606,23 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
   });
 });
 
-describe("console:reconcile: 時間の検査と SourceIdentity の一致（警告。終了コードは変えない）", () => {
+describe("console:reconcile: 時間の検査と SourceIdentity の一致（誤り。終了コード 1。cto の決裁 G2-A 条件 c5 の Q1）", () => {
   const prof = ["--profile", "reconcile-test"];
 
-  it("引き受けが発行から 300 秒＋時計ずれ（既定 60 秒）を超えて後なら assume_time_gap の警告。終了コードは 0。--clock-skew-seconds で許容を広げられる", async () => {
+  it("引き受けが発行から 300 秒＋時計ずれ（既定 60 秒）を超えて後なら assume_time_gap の誤り。終了コード 1・状態は進めない。--clock-skew-seconds で許容を広げられる", async () => {
     const a = issue({ jti: newJti(), at: now() - 60 * MIN });
-    const { env, records } = setup({
+    const { env, records, state } = setup({
       records: [a],
       trails: [{ region: "us-east-1", events: [trail(a, { afterIssueSeconds: 400 })] }],
     });
     let r = await run([...prof, "--records", records], env);
-    expect(r.out).toContain("assume_time_gap");
+    expect(r.out).toMatch(/^ERROR\s+assume_time_gap/m);
     expect(r.out).toContain("+400s");
-    expect(r.out).toMatch(/errors: 0, warnings: 1/);
-    expect(r.status, r.out).toBe(0);
+    expect(r.out).toMatch(/errors: 1, warnings: 0/);
+    expect(r.out).toContain("time from issue: standard n=1 min 400s max 400s, admin n=0");
+    expect(r.out).toContain("state: not advanced");
+    expect(existsSync(state)).toBe(false);
+    expect(r.status, r.out).toBe(1);
     noSecrets(r.out, [a.jwt.jti]);
     r = await run([...prof, "--records", records, "--clock-skew-seconds", "120"], env);
     expect(r.out).not.toContain("assume_time_gap");
@@ -634,9 +637,9 @@ describe("console:reconcile: 時間の検査と SourceIdentity の一致（警�
       trails: [{ region: "us-east-1", events: [trail(a, { afterIssueSeconds: -120 })] }],
     });
     const r = await run([...prof, "--records", records], env);
-    expect(r.out).toContain("assume_time_gap");
+    expect(r.out).toMatch(/^ERROR\s+assume_time_gap/m);
     expect(r.out).toContain("-120s");
-    expect(r.status, r.out).toBe(0);
+    expect(r.status, r.out).toBe(1);
   });
 
   it("--clock-skew-seconds が整数でなければ実行できない（終了コード 2）", async () => {
@@ -647,16 +650,16 @@ describe("console:reconcile: 時間の検査と SourceIdentity の一致（警�
       ).toBe(2);
   });
 
-  it("記録の利用者と CloudTrail の SourceIdentity（どちらも伏せ字にして比べる）が違えば identity_mismatch の警告。値は出さない。終了コードは 0", async () => {
+  it("記録の利用者と CloudTrail の SourceIdentity（どちらも伏せ字にして比べる）が違えば identity_mismatch の誤り。値は出さない。終了コード 1", async () => {
     const a = issue({ jti: newJti(), at: now() - 60 * MIN });
     const { env, records } = setup({
       records: [a],
       trails: [{ region: "us-east-1", events: [trail(a, { sourceIdentity: "bob@example.org" })] }],
     });
     const r = await run([...prof, "--records", records], env);
-    expect(r.out).toContain("identity_mismatch");
-    expect(r.out).toContain("identity: compared 1, not compared 0");
-    expect(r.status, r.out).toBe(0);
+    expect(r.out).toMatch(/^ERROR\s+identity_mismatch/m);
+    expect(r.out).toContain("identity: compared 1, not compared 0 (admin 0)");
+    expect(r.status, r.out).toBe(1);
     noSecrets(r.out, [a.jwt.jti]);
     expect(r.out).not.toContain("bob");
   });
@@ -817,5 +820,82 @@ describe("console:reconcile: 確認済みの区間（状態のファイル）", 
     const body = JSON.parse(readFileSync(state, "utf8"));
     expect(Object.keys(body.accounts).sort()).toEqual([ACCOUNT, other]);
     expect(body.accounts[other].coveredUntil).toBe("2026-01-01T00:00:00.000Z");
+  });
+});
+
+/** MCP の Worker の引き受け（コンソールのロールのパスの外・コンソールの issuer でないプロバイダー）。照合の対象から外れる。 */
+function mcpTrail(at: number) {
+  const id = newJti();
+  return {
+    EventId: `ev-mcp-${id}`,
+    EventName: "AssumeRoleWithWebIdentity",
+    CloudTrailEvent: JSON.stringify({
+      eventVersion: "1.08",
+      userIdentity: {
+        type: "WebIdentityUser",
+        userName: EMAIL,
+        identityProvider: `arn:aws:iam::${ACCOUNT}:oidc-provider/awsbridge-oidc-mcp.example.com`,
+      },
+      eventTime: new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z"),
+      eventSource: "sts.amazonaws.com",
+      eventName: "AssumeRoleWithWebIdentity",
+      awsRegion: "us-east-1",
+      eventID: `ev-mcp-${id}`,
+      recipientAccountId: ACCOUNT,
+      requestParameters: {
+        roleArn: `arn:aws:iam::${ACCOUNT}:role/FederatedAwsBridgeMcpViewer`,
+        roleSessionName: "mcp",
+        webIdentityTokenId: id,
+      },
+    }),
+  };
+}
+
+describe("console:reconcile: cto の決裁 G2-A 条件 c5（Administrator の比べ漏れ・時間差の記録・除外の件数・Admin の発行）", () => {
+  const prof = ["--profile", "reconcile-test"];
+
+  it("Administrator の階層の対で SourceIdentity を比べられなければ identity_not_compared_admin の誤り（終了コード 1・状態は進めない）", async () => {
+    const a = issue({ jti: newJti(), at: now() - 60 * MIN, tier: "admin" });
+    const s = setup({
+      records: [a],
+      trails: [{ region: "us-east-1", events: [trail(a, { sourceIdentity: null })] }],
+    });
+    const r = await run([...prof, "--records", s.records], s.env);
+    expect(r.out).toMatch(/^ERROR\s+identity_not_compared_admin/m);
+    expect(r.out).toContain("identity: compared 0, not compared 1 (admin 1)");
+    expect(r.out).toContain("state: not advanced");
+    expect(r.status, r.out).toBe(1);
+    noSecrets(r.out, [a.jwt.jti]);
+  });
+
+  it("毎日の出力に、時間差の階層ごとの最小・最大・件数、除外した引き受けの件数、Admin の発行の件数と時刻（UTC）を出す。除外は所見にしない", async () => {
+    const t = now() - 60 * MIN;
+    const s1 = issue({ jti: newJti(), at: t });
+    const a1 = issue({ jti: newJti(), at: t - 30 * MIN, tier: "admin" });
+    const a2 = issue({ jti: newJti(), at: t - 10 * MIN, tier: "admin" });
+    const s = setup({
+      records: [s1, a1, a2],
+      trails: [
+        {
+          region: "us-east-1",
+          events: [
+            trail(s1, { afterIssueSeconds: 1 }),
+            trail(a1, { afterIssueSeconds: 0 }),
+            trail(a2, { afterIssueSeconds: 2 }),
+            mcpTrail(t),
+            mcpTrail(t + MIN),
+          ],
+        },
+      ],
+    });
+    const r = await run([...prof, "--records", s.records], s.env);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain("console assumes: 3 (failed 0), matched: 3");
+    expect(r.out).toContain("excluded assumes (not console): 2");
+    expect(r.out).toContain("time from issue: standard n=1 min 1s max 1s, admin n=2 min 0s max 2s");
+    // 時刻は発行記録の時刻（UTC の ISO 8601）
+    expect(r.out).toContain(`admin issues: 2 (${a1.at} ok, ${a2.at} ok)`);
+    expect(r.out).toMatch(/errors: 0, warnings: 0/);
+    noSecrets(r.out, [s1.jwt.jti, a1.jwt.jti, a2.jwt.jti]);
   });
 });

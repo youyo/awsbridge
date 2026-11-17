@@ -309,7 +309,7 @@ issuer の URL（issuer のホスト）も変えるなら、新しいスタッ�
 
 ### Admin のプロバイダーだけを止める（L2）
 
-Administrator の新しい引き受けを、Cloudflare に頼らずに止める手段です（`docs/specs/console-login-admin.md` §7）。発行済みの AWS のセッションは止まらないので、revoke（L3）と合わせます。**CloudFormation の外で行います。** 下のコマンドと戻す手順はまだ実行していない例で、② で確かめます。
+Administrator の新しい引き受けを、Cloudflare に頼らずに止める手段です（`docs/specs/console-login-admin.md` §7）。発行済みの AWS のセッションは止まらないので、revoke（L3）と合わせます。**CloudFormation の外で行います。** 下の削除と戻す手順は、② の G2-A で Admin の階層のロールを使って実行しました: 消したあとの発行はポータルで `upstream_auth_failed`（「このアカウントは現在ログインを受け付けていません」）になり、消す前の CLI のセッションは続きました。同じ URL・client ID・タグで作り直すと ARN も同じで、作り直しのあとに届いた最初の発行（約 2 分後）は通りました。
 
 1. コンソール用のロール以外の主体で、対象のアカウントの Admin のプロバイダーを削除します（部品の Deny は、コンソール用のロールからの書き込みだけを塞ぎます）。
 
@@ -328,9 +328,16 @@ Administrator の新しい引き受けを、Cloudflare に頼らずに止める�
      --tags Key=project,Value=awsbridge Key=awsbridge-console-tier,Value=admin
    ```
 
-4. 作り直したら、スタックのドリフトの検出で差が無いことを確かめてから、スタックの更新を再開します（作り直したプロバイダーがドリフトなしと判定されるかは未確認。② で確かめます）。
+4. 作り直したら、発行を 1 回通し、スタックのドリフトの検出で差が無いことを確かめてから、スタックの更新を再開します。作り直したプロバイダーはドリフトが残りません（G2-A では、作り直したプロバイダーの指紋も元と同じで、base のドリフトの検出が IN_SYNC）。
 
-② で次を測り、この手順に書き足します: 消してから引き受けが止まるまでの時間、止めている間のスタックの更新の挙動、作り直して戻す手順と、戻したあとに引き受けが通るまでの時間。
+未測定のまま: 止めている間の base のスタックの更新の挙動（G2-A では行っていません）。消してから引き受けが止まるまでの時間は、Standard の形で約 12 秒の測定（`docs/specs/console-login.md` §6.1）だけです。
+
+#### ロールの信頼ポリシーでの拒否
+
+Cloudflare に頼らないもう 1 つの発行の停止です。止めたいロールの信頼ポリシーに、`sts:AssumeRoleWithWebIdentity` の `Deny` の文を足します（コンソール用のロール以外の主体で、手で行います）。G2-A（Admin の階層のロール）では、足したあとの発行はポータルで `sts_denied`（「このロールに入れませんでした」。CloudTrail は `AccessDenied`）になり、プロバイダーの削除（`upstream_auth_failed`）と区別できました。既存の CLI のセッションは続きました（止めるのは revoke）。
+
+- **信頼ポリシーの Deny は CloudFormation の管理の外にあります。止めている間はロールのスタックを更新しません。戻しは手で行い、発行 1 回とドリフト検出で確かめます。**
+- 測った 2 通りの更新（変更なしの更新、スタックのタグだけを変える更新）では、Deny は消えませんでした（CloudFormation はテンプレートの信頼ポリシーを書き戻しませんでした）。信頼ポリシー自体が変わる更新で Deny が消えるかは未測定です（チームの割り当ての変更など）。未測定なので、止めている間は更新しません。
 
 ## コンソールログインの Access アプリ（Cookie Path）
 
@@ -405,7 +412,13 @@ mise run console:standard-key:retire -- --binding STANDARD_KEY_<旧い鍵> --yes
 3. CSRF の鍵と署名鍵を入れます（下のコマンド）。
 4. `put` が表示した `ADMIN_PUBLIC_JWKS` と `ADMIN_CURRENT_KEY` を wrangler の設定の vars に書いて、もう一度デプロイします。
 5. `mise run console:admin-key:check` で、バインディングの型、Admin の issuer の discovery と JWKS、key-check を確かめます。IAM はプロバイダーを作るときに discovery を読むので、Admin の issuer のホストに Access を掛けている環境では、discovery と JWKS の 2 つのパスを Access の Bypass にしておきます（`wrangler.console-admin.jsonc` の注記）。
-6. Admin の issuer が公開されたのを確かめてから、base のスタックに `AdminIssuerHost` を渡して Admin のプロバイダーを配り（base の節）、Administrator のロールを配ります。
+6. Admin の issuer が公開されたのを確かめてから、base のスタックに `AdminIssuerHost` を渡して Admin のプロバイダーを配り（base の節）、Administrator のロールを配ります。② の個人の環境では、Administrator のロールを Viewer のスタック（`awsbridge-console-kind-default` など）と**別のスタック**で、同じ種類のテンプレート（生成の `kind.<kind>.yaml`）から作ります（G2-A と同じ形。止めている間も Viewer のスタックを更新でき、中断はスタックの削除 1 回で済みます）。条件:
+   - スタック名は型 `awsbridge-console-kind-<kind>` に当たらない名前にします（例 `awsbridge-console-admin-default`）。偽の種類の名前は、SCP と CI の条件（種類のスタックの名前の型）に当たりうるためです。
+   - パラメーターは、Admin のスタックでは `AdministratorTeams` だけに値を入れ、ほかのチームのパラメーターは空にします。**Viewer のスタックの `AdministratorTeams` は空のまま**にします（同じ名前のロールを 2 つのスタックで作らない）。
+   - 作成の change set を見て、変更が **`AdministratorRole` の `Add` だけ**であることを確かめてから実行します。
+   - 作成の直後・最初の発行の前に、`aws iam get-role` で信頼ポリシーのプロバイダーが Admin のプロバイダーだけであること、`aws iam list-attached-role-policies` で Admin の守りの部品が付いていることを確かめます（Administrator の棚卸しの節のコマンド）。
+   - Viewer のスタックを更新するときは、必ず change set を見ます。**`AdministratorRole` が出たら実行しません**（Viewer のスタックの `AdministratorTeams` が空でなくなっている）。
+   - 中断するときは、**Admin のスタックを消し、かつ設定から Administrator を外して生成し直します**（生成物とポータルの一覧に Administrator を残さない）。
 
 ```bash
 # 2. デプロイは承認したあと手で行う（routes と vars を先に確かめる）
@@ -458,19 +471,21 @@ mise run console:inspect -- --profile=<p> --stops=.secrets/console-stops.json   
 
 ## コンソールログインの突き合わせ（発行記録 × CloudTrail）
 
-`mise run console:reconcile` は、コンソールの Worker の発行記録（構造化ログ `console_issue`）と、プロファイルのアカウントの CloudTrail の `AssumeRoleWithWebIdentity` を、JWT の `jti`（= `requestParameters.webIdentityTokenId`）で突き合わせます。**記録に無い引き受け**（作られた JWT か、Worker の外からの発行）を誤りとして知らせます。突き合わせは検知の材料で、完全性の証明ではありません（侵害された Worker は偽の記録も書けます）。
+`mise run console:reconcile` は、コンソールの Worker の発行記録（構造化ログ `console_issue`）と、プロファイルのアカウントの CloudTrail の `AssumeRoleWithWebIdentity` を、JWT の `jti`（= `requestParameters.webIdentityTokenId`）で突き合わせます。**記録に無い引き受け**（作られた JWT か、Worker の外からの発行）を誤りとして知らせます。突き合わせは検知の材料で、完全性の証明ではありません（侵害された Worker は偽の記録も書けます）。**発行記録は Admin の Worker 自身が書きます。Admin の Worker に書ける者に対しては、照合は独立の検知ではありません**（受容した限界です）。
 
 - 1 回で 1 アカウント（`--profile` が要る）。CloudTrail は、そのアカウントの**有効な全リージョン**を読みます（`account list-regions`。使えなければ `ec2 describe-regions`）。読めなかったリージョンは誤りです。
 - 呼ぶ aws のコマンドは照会の 4 種類だけです: `sts get-caller-identity`・`account list-regions`・`ec2 describe-regions`・`cloudtrail lookup-events`。プロファイルに要る権限は `sts:GetCallerIdentity`・`account:ListRegions`（または `ec2:DescribeRegions`）・`cloudtrail:LookupEvents` です。
 - コンソールの引き受けだけを見ます（ロールのパスが `/awsbridge-console/`、またはプロバイダーのホストが設定の issuer のホスト）。MCP の引き受けは数えません。コンソールのロールを設定に無いプロバイダーで引き受けたものは誤りです。
+- 除外した引き受け: どちらにも当たらず照合の対象から外した `AssumeRoleWithWebIdentity` の件数を `excluded assumes (not console): <n>` に出します（所見にはせず、終了コードは変わりません）。期待値は、MCP を同じアカウントで使っていなければ 0 です。初回と、0 でない日は次を確かめます: CloudTrail でそのイベントのロール ARN とプロバイダー（`userIdentity.identityProvider`）を見て、MCP 用のロール（`FederatedAwsBridgeMcpViewer` など）と MCP の issuer のものか。そうでなければ、パスの外のロールを設定に無いプロバイダーで引き受けたもの（たとえば Administrator が残した入口。Administrator の棚卸しの節）でないかを調べ、技術の判断者に上げます。
 - 発行記録の入力は 2 つです。どちらか 1 つを渡します。
   - `--records <file|dir>`: NDJSON（生の行・Logpush の Trace Events の包み・Workers Logs のイベント。`.gz` も読みます）。
   - `--logs-api`: Cloudflare の API（`POST /accounts/{account_id}/workers/observability/telemetry/query`）から Workers Logs を読みます。道具が呼ぶ Cloudflare の API はこの照会だけです。窓ごとに、まず一致するイベントの件数（`calculations` の view。`abr_level` が 1 で `sampleInterval` が 1 のときだけ信用する）を得てから、イベントを読みます。長い窓では読み取りが間引かれる（`abr_level` が 1 より大きい）ことがあるので、読んだ行が件数に届かないときや間引かれたときは、窓を半分に割って読み直します。1 分の窓でも届かなければ `record_read_incomplete`（誤り）を出し、終了コード 1 で、state を進めません。
 - 発行記録の置き場所（② の個人の環境）は Workers Logs です（保持は Workers Paid で 7 日）。コンソールの 2 つの Worker の wrangler の設定は、間引きで記録が落ちないよう `observability.head_sampling_rate` を `1` に固定しています。
 - 保持の窓: 既定のさかのぼりは 6 日です（保持の 7 日より短く）。記録の保持より古く記録の無い引き受けは「検証できない（`unverifiable`）」として別に数えます。さかのぼりを保持より長くすると警告です（`--retention-days` で保持の日数を変えられます）。
 - 切られた記録の行（`$cloudflare.truncated` など）と読めない行は、位置だけを出して誤りにします。
-- 時間の検査: 対になった引き受けの時刻が、発行の時刻（`jwt.iat`。無ければ記録の時刻）から「JWT の寿命 300 秒＋時計ずれ」を超えて後なら `assume_time_gap`（警告。終了コードは変わりません）。引き受けが発行より時計ずれを超えて前でも同じ所見です（時計の異常か、作られた JWT に記録を合わせた形。向きは詳細の `+NNNs` / `-NNNs` で見分けます）。時計ずれの既定は 60 秒で、`--clock-skew-seconds <n>` で変えられます。**しきい値は仮です。② で正規の時間差を実測してから決め直し、誤りに上げる予定です**。
-- 利用者の検査: 発行記録の利用者（SourceIdentity に使った値）と、CloudTrail の SourceIdentity が**両方あるとき**だけ、伏せ字（`a***@***.com`）どうしで比べ、食い違えば `identity_mismatch`（警告）です。発行記録は email を伏せて残すため、一致は弱い証拠です（先頭 1 文字と末尾のドメインだけ。食い違いは確実に違いますが、一致は同じ人を証明しません）。どちらかが無い対は、黙って飛ばさず `identity: compared <n>, not compared <m>` と `identity_not_compared`（注記）に件数を出します。SourceIdentity がイベントのどこに出るかは ② の最初に実物で確かめます。
+- 時間の検査: 対になった引き受けの時刻が、発行の時刻（`jwt.iat`。無ければ記録の時刻）から「JWT の寿命 300 秒＋時計ずれ」を超えて後なら `assume_time_gap`（誤り。終了コード 1）。引き受けが発行より時計ずれを超えて前でも同じ所見です（時計の異常か、作られた JWT に記録を合わせた形。向きは詳細の `+NNNs` / `-NNNs` で見分けます）。時計ずれの既定は 60 秒で、`--clock-skew-seconds <n>` で変えられます。② の実測で正規の差がこの範囲に収まったので、警告から誤りに上げました（cto の決裁 G2-A 条件 c5）。出力の `time from issue: standard n=<件数> min <秒>s max <秒>s, admin …` に、対になった引き受けの発行からの時間差の、階層ごとの件数・最小・最大を出します（しきい値を見直すときの記録に使います）。
+- 利用者の検査: 発行記録の利用者（SourceIdentity に使った値）と、CloudTrail の SourceIdentity が**両方あるとき**だけ、伏せ字（`a***@***.com`）どうしで比べ、食い違えば `identity_mismatch`（誤り。終了コード 1）です。発行記録は email を伏せて残すため、比較は弱い一致です（先頭 1 文字と末尾のドメインだけ）。**見つかるのは別のドメインか別の頭文字だけ**で、同じ頭文字・同じドメインの別の人は見分けられません（一致は同じ人を証明しません）。どちらかが無い対は、黙って飛ばさず `identity: compared <n>, not compared <m> (admin <k>)` と `identity_not_compared`（注記）に件数を出します。Administrator の階層（Admin の階層のロール。記録の階層・ロールのパス `/awsbridge-console/admin/`・Admin の issuer のどれかが Admin の対）で比べられなかった対は、対ごとに `identity_not_compared_admin`（誤り。終了コード 1）です。この階層は Administrator だけでなく Admin の階層のロール全部を含むので、弱い Admin のロールの引き受けでも、比べられなければ誤りになります。
+- Administrator の階層の発行: `admin issues: <n> (<時刻> <結果>, …)` に、読んだ期間の Admin の階層の発行記録の件数と、各時刻（UTC）と結果を出します。毎日の照合で、覚えのない発行が無いかを見ます。Admin の発行の即時の通知はありません（③ で扱います）。
 - 確認済みの区間: アカウントごとに「確認済みの区間の終わり」を状態のファイル（`--state <file>`。既定 `.secrets/console-reconcile-state.json`。`.secrets/` は gitignore 済み）に残します。今回の読み始めがそれより後（間に読んでいない区間がある）なら `coverage_gap`（誤り。終了コード 1）です。ファイルが無い初回は穴なしとして扱い、出力に `coverage: first run` と出します。ファイルにはアカウント ID と時刻だけを書き、トークン・email・`jti` は書きません。**区間を進めるのは終了コード 0 の実行だけ**です（終わりは「今回の終わり − 反映の遅れ」）。誤りや検証できない引き受けのある実行で進めると、次の実行の範囲の外に出て誤りが埋もれるためです。壊れた状態のファイルは初回として扱わず、実行しません（終了コード 2）。穴の誤りを直すには、調べたうえで `--since` を前回の終わり以前に戻して回します（状態のファイルを手で消すのは、穴を受け入れると決めたときだけです）。
 - 出力は伏せ字です（`jti` は先頭 8 文字、email は出さない、アカウント ID は末尾 4 桁）。要約に、読んだ期間・リージョン数・検証できない件数・切られた行・記録をどこから読んだか（`source: api` か `file`）を出します。
 - 終了コード: `0` 誤りなし / `1` 誤りあり、または検証できない引き受けが 1 件以上（誤りが 0 でも 0 で終わらせない）/ `2` 実行できない（入力・aws・API の失敗）。
@@ -487,6 +502,7 @@ mise run console:reconcile -- --profile <プロファイル> --logs-api --since 
 
 - **突き合わせは毎日回します。Administrator の発行の有無に関係なく回します**。回せない日があっても、6 日以内に回せば検証の穴はできません。発行記録の保持は 7 日なので、**7 日以内に突き合わせなかった発行は、あとから検証できません**。回さなかった区間は、道具が `coverage_gap`（誤り。終了コード 1）で知らせます。
 - **誤りが出た実行は区間を進めません**。誤りを調べて決着したら、`--since` を前回の終わり以前に戻して回し直し、区間を進めます。ただし記録の保持の 7 日を過ぎた分は検証できません。放置すると、次の実行から `coverage_gap` が重なって出ます。
+- **`assume_time_gap`・`identity_mismatch`・`identity_not_compared_admin` が出たら**: 停止スイッチ（vars `LOGIN_DISABLED` を `true`。Admin の発行なら Admin の Worker、Standard なら Standard の Worker）で発行を止め、該当の発行と引き受け（発行記録と CloudTrail のイベント）を調べ、技術の判断者に上げます。誤りが残る間、区間は進みません。発行記録（Workers Logs）の保持は 7 日で、過ぎると該当の発行を調べられなくなるので、放置しません。
 - **`--since` は回す間隔より 5 分以上長くします**（確認済みの区間の終わりが「今回の終わり − 反映の遅れ（既定 300 秒）」になるため、ちょうどの長さでは穴が出ます）。例: 毎日回すなら既定の 6 日のままにします。
 - 毎日の実行は awsbridge の外（MCP 経由のエージェントなど）で行います。awsbridge には定期の実行の仕組みを入れません。通知も awsbridge の外で、仕組みは利用者が決めます。
 - ② の最初に、実物で次を確かめます: Cloudflare の API の応答の形（`events`・`$metadata.id` のカーソル・`count` の意味・切られた印が `$workers.truncated` か `$cloudflare.truncated` か）、CloudTrail の `AssumeRoleWithWebIdentity` のフィールド名（`requestParameters.webIdentityTokenId`・`userIdentity.identityProvider` など）。違えば `scripts/console/reconcile-cf.ts`・`src/console/reconcile-input.ts` とフィクスチャを直します。
