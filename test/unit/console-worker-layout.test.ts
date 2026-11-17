@@ -40,6 +40,7 @@ const ISSUE = [
   "src/console/issue/access.ts",
   "src/console/issue/claims.ts",
   "src/console/issue/csrf.ts",
+  "src/console/issue/egress.ts",
   "src/console/issue/errors.ts",
   "src/console/issue/federation.ts",
   "src/console/issue/identity.ts",

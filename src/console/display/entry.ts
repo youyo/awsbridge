@@ -54,6 +54,7 @@ export function createEntryHandler(rawDisplay: unknown, o: EntryOptions = {}): E
       { teamDomain: ctx.accessTeamDomain, teams: [{ name: ENTRY, aud: entryAud }] },
       {
         ...(ctx.getAccessKey ? { getKey: ctx.getAccessKey } : {}),
+        fetch: ctx.fetch,
         now: Math.floor(ctx.now() / 1000),
       },
     );

@@ -69,8 +69,12 @@ const CSRF_SECRET = ["e2e", "csrf", "n".repeat(40)].join("-");
 const ACCESS_KEY_ID = ["ASIA", "N".repeat(16)].join("");
 const SIGNIN_TOKEN = ["signin", "n".repeat(24)].join("-");
 
-// P2: Worker は 1 つ。std は Standard のチームと Admin の階層のチームの両方の送り先
+// P2: Worker は 1 つ。std は Standard のチームの送り先、stdAdmin は同じ設定の別のプロセスで、Admin の階層のチームの送り先
+// （1 つのプロセスに両階層の負の試験を送ると、「Content-Length つきの大きな本文 → 413」が wrangler dev のプロキシの 503
+//  （Your worker restarted mid-request）でときどき落ちた。P2 より前は 2 つの Worker に分かれていた負荷の形に戻す回避策。
+//  同じ Worker の両階層をまたぐ試験（X2 など）は、どちらのプロセスでも同じ設定・同じコードなので結果は変わらない）
 let std: Instance;
+let stdAdmin: Instance;
 /** LOGIN_DISABLED=true（全体の停止）。 */
 let stdStopped: Instance;
 /** ADMIN_LOGIN_DISABLED=true（Admin の階層だけの停止。X10）。 */
@@ -215,7 +219,7 @@ const stdT: Target = {
 
 const adminT: Target = {
   label: "Admin の階層のチーム",
-  inst: () => std,
+  inst: () => stdAdmin,
   stopped: () => stdStopped,
   host: PORTAL_HOST,
   origin: PORTAL,
@@ -391,6 +395,7 @@ beforeAll(async () => {
     (await send(i, { host: ISSUER_HOST, path: "/console/.well-known/jwks.json" })).status === 500;
   [
     std,
+    stdAdmin,
     stdStopped,
     adminStopped,
     stdBroken,
@@ -402,6 +407,7 @@ beforeAll(async () => {
     stdHost,
   ] = await Promise.all([
     startWrangler({ name: "std", configPath: stdConfig, stateDir: tmp, ready: stdReady }),
+    startWrangler({ name: "std-admin", configPath: stdConfig, stateDir: tmp, ready: stdReady }),
     startWrangler({
       name: "std-stopped",
       configPath: stdConfig,
@@ -465,6 +471,7 @@ beforeAll(async () => {
 afterAll(() => {
   for (const i of [
     std,
+    stdAdmin,
     stdStopped,
     adminStopped,
     stdBroken,

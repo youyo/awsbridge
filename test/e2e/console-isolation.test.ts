@@ -343,6 +343,38 @@ describe("2. コンソールの Worker（1 つ）のバンドル", () => {
     expect(pkg.dependencies.jose).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
+  it("補助の検査: 本文に現れる URL のホストは許可リストだけ（通信先の制限ではない。宛先の制限は issue/egress.ts と console-egress.test.ts）", () => {
+    // 文字列の結合・vars の値・リダイレクトは見えないので補助。amazonaws.com 全体は許さず、STS は地域の endpoint の形だけ
+    const allowed = [
+      /^sts\.\$\{[A-Za-z.]+\}\.amazonaws\.com$/, // STS の地域の endpoint（テンプレート）
+      /^signin\.aws\.amazon\.com$/, // getSigninToken・ログイン URL
+      /^\*\.signin\.aws\.amazon\.com$/, // CSP の form-action
+      /^console\.aws\.amazon\.com$/, // CSP・コンソールの行き先
+      /^\*\.console\.aws\.amazon\.com$/,
+      /^\$\{region\}\.console\.aws\.amazon\.com$/,
+      /^aws\.amazon\.com$/, // STS の JWT の claim の名前（https://aws.amazon.com/tags など。通信しない）
+    ];
+    const configHosts = new Set(
+      [
+        workerConfig.portal.origin,
+        ...(workerConfig.portal.supportUrl ? [workerConfig.portal.supportUrl] : []),
+        ...workerConfig.boundaries.map((b) => b.issuer),
+      ].map((u) => new URL(u).host),
+    );
+    const hosts = [
+      ...new Set(
+        [...standard.bundle.matchAll(/https?:\/\/([A-Za-z0-9.*{}$_-]+)/g)].map((m) => m[1] ?? ""),
+      ),
+    ];
+    // 陽性の対照: STS の宛先と設定のホストは見つかっている（取り出しが空振りしていない）
+    expect(hosts.some((h) => /^sts\./.test(h))).toBe(true);
+    expect(hosts.some((h) => configHosts.has(h))).toBe(true);
+    const unexpected = hosts.filter(
+      (h) => !configHosts.has(h) && !allowed.some((re) => re.test(h)),
+    );
+    expect(unexpected).toEqual([]);
+  });
+
   it("MCP のコード・設定の解析器と生成器・scripts/ を読み込まない", () => {
     for (const p of [...MCP_FILES, "src/console/config.ts", "src/console/generate.ts"])
       expect(standard.inputs, p).not.toContain(p);

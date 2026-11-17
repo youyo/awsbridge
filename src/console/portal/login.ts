@@ -45,6 +45,7 @@ export type LoginContext = {
   signer: TokenSigner;
   rateLimiter: LoginRateLimiter | undefined;
   stsRegion: string;
+  /** 外への通信を集めた関数（issue/egress.ts。宛先は Access の certs・STS・getSigninToken の 3 つだけ）。 */
   fetch: typeof fetch;
   /** epoch ミリ秒。 */
   now: () => number;
@@ -181,6 +182,7 @@ export async function handleLogin(req: Request, ctx: LoginContext): Promise<Logi
     },
     {
       ...(ctx.getAccessKey ? { getKey: ctx.getAccessKey } : {}),
+      fetch: ctx.fetch,
       now: Math.floor(ctx.now() / 1000),
       ...(ctx.accessMaxAgeSeconds !== undefined ? { maxAgeSeconds: ctx.accessMaxAgeSeconds } : {}),
     },
@@ -343,6 +345,8 @@ async function issue(ctx: LoginContext, s: IssueState): Promise<LoginOutcome> {
         region: ctx.stsRegion,
         endpoint: stsEndpoint(ctx.stsRegion),
         fetch: ctx.fetch,
+        // リダイレクトを追わない（コンソールの呼び出しからだけ渡す。MCP の中継の振る舞いは変えない。c2）
+        redirect: "manual",
       });
     } catch (e) {
       const code = e instanceof StsError ? stsErrorKindToCode(e.kind) : "temporarily_unavailable";

@@ -20,6 +20,7 @@ import type { Tier } from "../constants";
 import { withSecurityHeaders } from "../http/headers";
 import { verifyConsoleAccess } from "../issue/access";
 import { createCsrfToken, importCsrfKey } from "../issue/csrf";
+import { createEgress } from "../issue/egress";
 import { stsEndpoint } from "../issue/federation";
 import type { TokenSigner } from "../issue/signer";
 import type { WorkerConfig } from "../types";
@@ -67,7 +68,10 @@ function workerVersionId(env: PortalEnv): string | undefined {
 export type PortalOverrides = {
   /** Access の certs の代わり（試験用）。 */
   getAccessKey?: JWTVerifyGetKey;
-  /** STS・getSigninToken を呼ぶ fetch（試験用）。 */
+  /**
+   * 外への通信の下の fetch（試験用）。渡しても、Access の certs・STS・getSigninToken の 3 つの宛先の検査と
+   * redirect: manual は外への通信を集めた関数（issue/egress.ts）が掛ける。渡さなければ、呼ぶ時点の globalThis.fetch。
+   */
   fetch?: typeof fetch;
   /** epoch ミリ秒（試験用）。 */
   now?: () => number;
@@ -96,6 +100,8 @@ export type EntryContext = {
   config: WorkerConfig;
   accessTeamDomain: string;
   getAccessKey?: JWTVerifyGetKey | undefined;
+  /** 外への通信を集めた関数（Access の certs を取るのに使う）。 */
+  fetch: typeof fetch;
   now: () => number;
   requestId: string | undefined;
   /** 入口の静的なファイル（/assets/<name>）の名前。無ければ入口の画面（/）。 */
@@ -144,6 +150,8 @@ type Runtime = {
   stsRegion: string;
   csrfKey: CryptoKey;
   part: PortalPart;
+  /** 外への通信を集めた関数（宛先は Access の certs・STS・getSigninToken の 3 つだけ。§4.2）。 */
+  egress: typeof fetch;
 };
 
 /** パスのチームの階層（生成物の teams[].tier）。生成物の検査を通ったので、既知のチームには必ずある。 */
@@ -200,7 +208,6 @@ export function createPortalWorker<Env extends PortalEnv>(
   o: PortalOverrides = {},
 ) {
   const now = o.now ?? (() => Date.now());
-  const doFetch: typeof fetch = o.fetch ?? ((input, init) => fetch(input, init));
   let configResult: { ok: true; config: WorkerConfig } | { ok: false; kind: string } | undefined;
   const runtimes = new WeakMap<object, Promise<Runtime | EnvError>>();
 
@@ -231,7 +238,8 @@ export function createPortalWorker<Env extends PortalEnv>(
     } catch {
       throw new EnvError("csrf_key");
     }
-    return { config, accessTeamDomain, stsRegion, csrfKey, part };
+    const egress = createEgress({ accessTeamDomain, stsRegion }, o.fetch);
+    return { config, accessTeamDomain, stsRegion, csrfKey, part, egress };
   }
 
   const loadRuntime = (config: WorkerConfig, env: Env): Promise<Runtime | EnvError> => {
@@ -302,6 +310,7 @@ export function createPortalWorker<Env extends PortalEnv>(
         config,
         accessTeamDomain: rt.accessTeamDomain,
         getAccessKey: o.getAccessKey,
+        fetch: rt.egress,
         now,
         requestId,
         asset: portal.asset,
@@ -332,7 +341,7 @@ export function createPortalWorker<Env extends PortalEnv>(
         signer: rt.part.signer,
         rateLimiter: env.LOGIN_RATE_LIMITER,
         stsRegion: rt.stsRegion,
-        fetch: doFetch,
+        fetch: rt.egress,
         now,
         log: (line) => console.log(line),
         getAccessKey: o.getAccessKey,
@@ -358,6 +367,7 @@ export function createPortalWorker<Env extends PortalEnv>(
       { teamDomain: rt.accessTeamDomain, teams: config.teams, entryAud: config.portal.entryAud },
       {
         ...(o.getAccessKey ? { getKey: o.getAccessKey } : {}),
+        fetch: rt.egress,
         now: Math.floor(now() / 1000),
         ...(accessMaxAgeSeconds !== undefined ? { maxAgeSeconds: accessMaxAgeSeconds } : {}),
       },

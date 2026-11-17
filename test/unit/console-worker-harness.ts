@@ -93,6 +93,8 @@ export type Harness = {
   /** 境界ごとの署名鍵（取り出せない CryptoKey。本番の secret_key と同じ形。両階層で同じ鍵）。 */
   stdKeys: Record<string, TestKey>;
   getAccessKey: ReturnType<typeof createLocalJWKSet>;
+  /** 擬似の Access の certs（公開鍵の JWKS）。getAccessKey を差し替えずに certs を取りにいく試験で返す。 */
+  accessJwks: { keys: Record<string, unknown>[] };
   fetch: typeof fetch;
 };
 
@@ -108,6 +110,7 @@ export async function createHarness(): Promise<Harness> {
     sts: { status: 200, body: stsXml(ACCESS_KEY_ID) },
     stdKeys,
     getAccessKey,
+    accessJwks: { keys: [accessPub as Record<string, unknown>] },
     async accessJwt(p = {}) {
       return new SignJWT({ email: p.email ?? EMAIL, type: p.type ?? "app" })
         .setProtectedHeader({ alg: "RS256", kid: "unit-access" })
