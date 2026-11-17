@@ -285,7 +285,7 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
   };
 
   it("README_ja.md: 照合（時間・利用者は誤り、Admin の比べ漏れは誤り、除外の件数、Admin の発行、受容、当たったときの扱い）", () => {
-    const text = section(read("README_ja.md"), "## コンソールログインの突き合わせ");
+    const text = section(read("README_ja.md"), "### コンソールログインの突き合わせ", "\n### ");
     for (const s of [
       "`assume_time_gap`（誤り",
       "`identity_mismatch`（誤り",
@@ -305,7 +305,7 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
     expect(text).not.toContain("誤りに上げる予定");
   });
   it("README.md: reconciliation (same points in English)", () => {
-    const text = section(read("README.md"), "## Reconciling console logins");
+    const text = section(read("README.md"), "### Reconciling console logins", "\n### ");
     for (const s of [
       "`assume_time_gap` (error",
       "`identity_mismatch` (error",
@@ -357,7 +357,7 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
   });
 
   it("README_ja.md / README.md: Administrator を別のスタックで置くときの条件（change set・作成直後の確認・kind-default・中断・スタック名）", () => {
-    const ja = section(read("README_ja.md"), "## コンソールログインの Admin の署名鍵");
+    const ja = section(read("README_ja.md"), "### コンソールログインの Admin の署名鍵");
     for (const s of [
       "`AdministratorRole` の `Add` だけ",
       "aws iam get-role",
@@ -369,7 +369,7 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
       "`awsbridge-console-kind-<kind>`",
     ])
       expect(ja, s).toContain(s);
-    const en = section(read("README.md"), "## Admin signing key for console login");
+    const en = section(read("README.md"), "### Admin signing key for console login");
     for (const s of [
       "only an `Add` of `AdministratorRole`",
       "aws iam get-role",

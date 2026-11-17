@@ -9,7 +9,7 @@ disable-model-invocation: true
 
 下流リポジトリ名: $ARGUMENTS
 
-awsbridge（public）を `upstream` とする下流の private リポジトリを作り、デプロイまで進めます。以下の `<name>` は下流リポジトリ名（環境名）です。下流は上流のファイルを編集せず、3 つのファイル（`wrangler.<name>.jsonc` / `mise.<name>.toml` / `.miserc.toml`）を足すだけで動きます。このスキルは awsbridge を clone した作業ツリー（これが下流リポジトリになる）の中で実行する前提です。詳しくは README_ja.md「デプロイ」「下流リポジトリでの運用」「マルチアカウント」を参照してください。
+awsbridge（public）を `upstream` とする下流の private リポジトリを作り、デプロイまで進めます。以下の `<name>` は下流リポジトリ名（環境名）です。下流は上流のファイルを編集せず、3 つのファイル（`wrangler.<name>.jsonc` / `mise.<name>.toml` / `.miserc.toml`）を足すだけで動きます。このスキルは awsbridge を clone した作業ツリー（これが下流リポジトリになる）の中で実行する前提です。詳しくは README_ja.md「下流リポジトリでの運用」「MCP の中継のセットアップ」「マルチアカウント」「Worker のデプロイの経路（既定と明示）」を参照してください。
 
 ## 手順
 
@@ -36,7 +36,7 @@ awsbridge（public）を `upstream` とする下流の private リポジトリ�
    - `mise install`（初回は `mise trust` が必要なことがある）→ `mise run install`（clone 直後は依存パッケージが無い）
    - `mise run keygen`（`AWSBRIDGE_KEY_FILE` に署名鍵を生成する。環境ごとに別の鍵にする。既存なら上書きされない）
    - `deploy:worker` は `AWSBRIDGE_ISSUER`（issuer の URL）が必須。独自ドメインなら手順 1 で決めた `https://awsbridge-oidc-mcp.<domain>`（パスなし）。workers.dev の試用では URL が Cloudflare アカウントの workers.dev サブドメインで決まり、名前からは推測できないので、利用者にサブドメイン（Cloudflare ダッシュボードの Workers & Pages で確認できる）を聞く。`wrangler login` 済みであることも確認する。
-   - `mise.local.toml` に `AWSBRIDGE_ISSUER = "https://awsbridge-oidc-mcp.<domain>"` を設定し（workers.dev の試用なら `"https://<Worker 名>.<サブドメイン>.workers.dev"`）、`mise run deploy:worker`（wrangler deploy → secrets 登録）を実行する。この時点では Access アプリがまだ無く AUD が決まっていない。`secrets` は `AWSBRIDGE_ACCESS_AUD` が空だと止まるので、利用者に断ったうえで仮の値（`pending` など）を `mise.local.toml` に置く。仮の値のままでは `/mcp` は 401 になるだけで、手順 6 で本物に差し替える。
+   - `mise.local.toml` に `AWSBRIDGE_ISSUER = "https://awsbridge-oidc-mcp.<domain>"` を設定し（workers.dev の試用なら `"https://<Worker 名>.<サブドメイン>.workers.dev"`）、`AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy mise run deploy:worker`（wrangler deploy → secrets 登録）を実行する。初回は Worker がまだ無く、既定の versions の経路（versions upload → versions deploy）は失敗するので、明示の deploy の経路で作る。Custom Domain・Route を足す・変えるときも同じ。それ以外の 2 回目以降は既定の経路でよい。この時点では Access アプリがまだ無く AUD が決まっていない。`secrets` は `AWSBRIDGE_ACCESS_AUD` が空だと止まるので、利用者に断ったうえで仮の値（`pending` など）を `mise.local.toml` に置く。仮の値のままでは `/mcp` は 401 になるだけで、手順 6 で本物に差し替える。
    - workers.dev の試用で、デプロイ出力の URL が `AWSBRIDGE_ISSUER` と違っていたら、出力の URL に直してもう一度 `mise run deploy:worker` する。独自ドメインでは Custom Domain が 2 つ付いたこと（DNS と証明書は Cloudflare が作る）を確認する。
    - この時点で `/mcp` が 500（プロファイル未登録）か 401 になるのは正常。
 5. AWS 側を、対象アカウントごとに流す。CloudFormation の実行は外部に影響するので、アカウントごとに利用者に確認する。

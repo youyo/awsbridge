@@ -3,7 +3,7 @@
 # 値は wrangler の標準入力に JSON で渡し、コマンドライン引数には載せない。
 # 値はすべて環境変数（mise.toml / mise.local.toml）から読む。AWS は呼ばない
 # プロファイル一覧（aws_profile で選べるアカウント）は secret / 環境変数では持たない（Workers の環境変数は 1 つ 5 KB 上限）。
-# wrangler の alias でバンドルする JSON（config/profiles.json など）に置く。README.md の "Profiles" 参照。
+# wrangler の alias でバンドルする JSON（config/profiles.json など）に置く。README.md の "Multi-account" 参照。
 # wrangler の設定と環境は scripts/wrangler.sh が
 # AWSBRIDGE_WRANGLER_CONFIG（既定 wrangler.jsonc）/ AWSBRIDGE_WRANGLER_ENV（既定 dev、空なら --env なし）で決める。
 # AWSBRIDGE_KEY_FILE の既定はリポジトリルートの .secrets/dev-signing-key.json。
