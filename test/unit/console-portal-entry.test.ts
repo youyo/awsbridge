@@ -2,9 +2,11 @@
 // 設計: docs/specs/console-login-portal.md §4.1・§5.4・§5.6・§7、ADR の「一覧の統合（U2）」。
 // 入口のアプリの Access JWT を確かめてから描く。身元の Entra グループは差し込み口（identityGroups）からサーバー側で取り、
 // 表示用の対応表（display.json の groups）と小文字で照合する。表示のためだけで、発行の認可には使わない。
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IdentityGroupsSource } from "../../src/console/display/groups";
 import { createConsoleWorker } from "../../src/console/worker/worker";
+import { issueEgressCalls, resetEgressCalls } from "./console-egress-spy";
 import { uuid } from "./console-fixtures";
 import {
   AUDS,
@@ -18,10 +20,18 @@ import {
   workerConfig,
 } from "./console-worker-harness";
 
+// egress への呼び出しを数える（「STS を呼ばない」を egress の spy で確かめる。console-egress-spy.ts）
+vi.mock("../../src/console/issue/egress", async (orig) =>
+  (await import("./console-egress-spy")).spyEgressModule(
+    await orig<typeof import("../../src/console/issue/egress")>(),
+  ),
+);
+
 let h: Harness;
 let logs: string[];
 
 beforeEach(async () => {
+  resetEgressCalls();
   h = await createHarness();
   logs = [];
   for (const m of ["log", "error", "warn"] as const) {
@@ -291,6 +301,7 @@ describe("U2 の条件: 表示用の照合は発行の認可に使わない", ()
     expect(res.status).toBe(403);
     expect(await res.text()).toContain("unknown_audience");
     expect(h.seen.sts).toHaveLength(0);
+    expect(issueEgressCalls()).toEqual({ sts: 0, federation: 0 });
   });
 
   it("表示では infra に所属していても、チームのアプリの JWT が別のチーム（dev）なら /t/infra/login は 403 team_mismatch", async () => {
@@ -306,6 +317,7 @@ describe("U2 の条件: 表示用の照合は発行の認可に使わない", ()
     expect(res.status).toBe(403);
     expect(await res.text()).toContain("team_mismatch");
     expect(h.seen.sts).toHaveLength(0);
+    expect(issueEgressCalls()).toEqual({ sts: 0, federation: 0 });
   });
 });
 

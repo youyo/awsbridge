@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AUDIENCE } from "../../src/console/constants";
 import type { WorkerConfig } from "../../src/console/types";
 import { createConsoleWorker } from "../../src/console/worker/worker";
+import { issueEgressCalls, resetEgressCalls } from "./console-egress-spy";
 import {
   ACCESS_KEY_ID,
   AUDS,
@@ -28,10 +29,18 @@ import {
   workerConfig,
 } from "./console-worker-harness";
 
+// egress への呼び出しを数える（「STS を呼ばない」を egress の spy で確かめる。console-egress-spy.ts）
+vi.mock("../../src/console/issue/egress", async (orig) =>
+  (await import("./console-egress-spy")).spyEgressModule(
+    await orig<typeof import("../../src/console/issue/egress")>(),
+  ),
+);
+
 let h: Harness;
 let logs: string[];
 
 beforeEach(async () => {
+  resetEgressCalls();
   h = await createHarness();
   logs = [];
   vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
@@ -90,6 +99,11 @@ async function get(
 }
 
 const noIssue = () => {
+  // egress への呼び出しそのもの（断られた試みも数える）で、STS と getSigninToken を呼ばないことを確かめる
+  expect(issueEgressCalls(), "egress への STS・getSigninToken の呼び出し").toEqual({
+    sts: 0,
+    federation: 0,
+  });
   expect(h.seen.sts).toHaveLength(0);
   expect(h.seen.signin).toHaveLength(0);
 };
@@ -110,6 +124,8 @@ describe("POST /t/<team>/login: Access JWT の aud（最初の Red）", () => {
     expect(loc.searchParams.get("Action")).toBe("login");
     expect(h.seen.sts).toHaveLength(1);
     expect(h.seen.signin).toHaveLength(1);
+    // 陽性の対照: egress の spy が発行の経路の呼び出しを数えている（noIssue の確認が空振りしない）
+    expect(issueEgressCalls()).toEqual({ sts: 1, federation: 1 });
   });
 });
 

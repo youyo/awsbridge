@@ -7,6 +7,7 @@ import { createLocalJWKSet, decodeProtectedHeader, type JSONWebKeySet, jwtVerify
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { AUDIENCE } from "../../src/console/constants";
 import { createConsoleWorker } from "../../src/console/worker/worker";
+import { issueEgressCalls, resetEgressCalls } from "./console-egress-spy";
 import {
   AUDS,
   baseEnv,
@@ -24,6 +25,13 @@ import {
   workerConfig,
 } from "./console-worker-harness";
 
+// egress への呼び出しを数える（「STS を呼ばない」を egress の spy で確かめる。console-egress-spy.ts）
+vi.mock("../../src/console/issue/egress", async (orig) =>
+  (await import("./console-egress-spy")).spyEgressModule(
+    await orig<typeof import("../../src/console/issue/egress")>(),
+  ),
+);
+
 const INFRA = AUDS.teams.infra as string;
 /** infra のチームが Viewer で入れる、partner:partner-x の境界の行。 */
 const PARTNER_ENTRY = "222222222222:readonly";
@@ -38,6 +46,7 @@ beforeAll(async () => {
   next = await makeStandardKey();
 });
 beforeEach(async () => {
+  resetEgressCalls();
   h = await createHarness();
   managed = h.stdKeys.managed as TestKey;
   partner = h.stdKeys["partner:partner-x"] as TestKey;
@@ -79,6 +88,11 @@ async function get(
 }
 
 const noIssue = () => {
+  // egress への呼び出しそのもの（断られた試みも数える）で、STS と getSigninToken を呼ばないことを確かめる
+  expect(issueEgressCalls(), "egress への STS・getSigninToken の呼び出し").toEqual({
+    sts: 0,
+    federation: 0,
+  });
   expect(h.seen.sts).toHaveLength(0);
   expect(h.seen.signin).toHaveLength(0);
 };

@@ -11,6 +11,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { AUDIENCE, TEAM_TAG_KEY } from "../../src/console/constants";
 import { AWS_SOURCE_IDENTITY_CLAIM, AWS_TAGS_CLAIM } from "../../src/console/issue/claims";
 import { createConsoleWorker } from "../../src/console/worker/worker";
+import { issueEgressCalls, resetEgressCalls } from "./console-egress-spy";
 import {
   ADMIN_ENTRY,
   ADMIN_TEAM,
@@ -31,6 +32,13 @@ import {
   workerConfig,
 } from "./console-worker-harness";
 
+// egress への呼び出しを数える（「STS を呼ばない」を egress の spy で確かめる。console-egress-spy.ts）
+vi.mock("../../src/console/issue/egress", async (orig) =>
+  (await import("./console-egress-spy")).spyEgressModule(
+    await orig<typeof import("../../src/console/issue/egress")>(),
+  ),
+);
+
 const ADMIN_AUD = AUDS.teams[ADMIN_TEAM] as string;
 const INFRA = AUDS.teams.infra as string;
 const TEAM_PATH = `/t/${ADMIN_TEAM}`;
@@ -43,6 +51,7 @@ beforeAll(async () => {
 let h: Harness;
 let logs: string[];
 beforeEach(async () => {
+  resetEgressCalls();
   h = await createHarness();
   logs = [];
   const sink = (...x: unknown[]) => {
@@ -102,6 +111,11 @@ async function get(
 }
 
 const noIssue = () => {
+  // egress への呼び出しそのもの（断られた試みも数える）で、STS と getSigninToken を呼ばないことを確かめる
+  expect(issueEgressCalls(), "egress への STS・getSigninToken の呼び出し").toEqual({
+    sts: 0,
+    federation: 0,
+  });
   expect(h.seen.sts).toHaveLength(0);
   expect(h.seen.signin).toHaveLength(0);
 };

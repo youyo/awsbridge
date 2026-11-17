@@ -5,9 +5,11 @@
 // 鍵があるときの署名の中身・iat の上限（X6）・key-check（X11）・境界の鍵の食い違い（X14）は console-worker-admin-key.test.ts。
 // 設計: docs/specs/console-login-portal.md §3・§8・§9、X1 の決裁、G-6、P2（B）の設計メモ §5・§7。
 // 偽の Access（手元の鍵）・STS・getSigninToken を相手に、Worker の fetch を直接呼ぶ。
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkerConfig } from "../../src/console/types";
 import { createConsoleWorker } from "../../src/console/worker/worker";
+import { issueEgressCalls, resetEgressCalls } from "./console-egress-spy";
 import {
   ADMIN_ENTRY,
   ADMIN_TEAM,
@@ -26,10 +28,18 @@ import {
   workerConfig,
 } from "./console-worker-harness";
 
+// egress への呼び出しを数える（「STS を呼ばない」を egress の spy で確かめる。console-egress-spy.ts）
+vi.mock("../../src/console/issue/egress", async (orig) =>
+  (await import("./console-egress-spy")).spyEgressModule(
+    await orig<typeof import("../../src/console/issue/egress")>(),
+  ),
+);
+
 let h: Harness;
 let logs: string[];
 
 beforeEach(async () => {
+  resetEgressCalls();
   h = await createHarness();
   logs = [];
   const sink = (...a: unknown[]) => {
@@ -90,6 +100,11 @@ async function get(
 }
 
 const noIssue = () => {
+  // egress への呼び出しそのもの（断られた試みも数える）で、STS と getSigninToken を呼ばないことを確かめる
+  expect(issueEgressCalls(), "egress への STS・getSigninToken の呼び出し").toEqual({
+    sts: 0,
+    federation: 0,
+  });
   expect(h.seen.sts).toHaveLength(0);
   expect(h.seen.signin).toHaveLength(0);
   expect(h.seen.other).toHaveLength(0);
@@ -109,6 +124,8 @@ describe("Admin の階層のチーム: 同じ Worker・境界の鍵で発行す�
       /^https:\/\/signin\.aws\.amazon\.com\/federation\?/,
     );
     expect(h.seen.sts).toHaveLength(1);
+    // 陽性の対照: egress の spy が Admin の階層の発行の呼び出しを数えている
+    expect(issueEgressCalls()).toEqual({ sts: 1, federation: 1 });
     expect(h.seen.sts[0]?.get("RoleArn")).toBe(ADMIN_ARN);
     // Administrator の MaxSessionDuration はちょうど 3600 なので、Worker が求める長さも 3600
     expect(h.seen.sts[0]?.get("DurationSeconds")).toBe("3600");
