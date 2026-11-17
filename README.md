@@ -413,6 +413,8 @@ A downstream repository does not edit the upstream `wrangler.jsonc`; its own `wr
 
 ## Console login setup
 
+For production, follow the order of the steps, the checks with their expected results, and the checklist before adding an Administrator in [Rolling out console login in production](docs/console-production-rollout.md).
+
 ### Order of the first setup (console login)
 
 Each step is described in the sections below. A person runs the key and CSRF key tools from a local machine, never from CI.
