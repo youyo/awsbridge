@@ -1156,7 +1156,7 @@ MCP 用のバンドルの検査（`test/e2e/console-isolation.test.ts`。`wrangl
 
 1. PR: スキーマと参照の検査（AUD なしの生成。`mise run console:config:check`。`terraform plan` は差分の確認とレビューのために出すだけ）
 2. マージ → `terraform apply`（Access アプリができ、AUD が出力に出る）
-3. AUD を要る生成（Worker 用の生成物。`AWSBRIDGE_CONSOLE_AUD_FILE` に Terraform の出力を渡して `mise run console:config:generate`）→ Worker のデプロイ
+3. AUD を要る生成（Worker 用の生成物。`AWSBRIDGE_CONSOLE_AUD_FILE` に Terraform の出力を渡して `mise run console:config:generate`）→ Worker のデプロイ。生成は、出力先の前回の `stacksets.json`（と `--ledger-baseline <path>` で渡した保管の台帳）と退役したチーム名の台帳を比べ、比べる台帳が無ければ誤りにする（cto の決裁 2026-11-17）。初めての生成と P2 より前の形からの移行だけ `-- --ledger-init` で通し、そのときはデプロイの前に `mise run console:inspect` を回す。前回の生成物か baseline を保管する
 4. 適用のあとと定期: `terraform plan` に差分がないこと、AUD の対応の一致（`AWSBRIDGE_CONSOLE_AUD_FILE` を渡した `mise run console:config:check` は、AUD の欠落・食い違い・重複・設定にないチームまで検査する）
 
 | 検査 | 内容 | 時機 |

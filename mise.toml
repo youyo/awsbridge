@@ -122,7 +122,7 @@ description = "コンソールログインの設定ファイルを検査する�
 run = "pnpm tsx scripts/console/config.ts check"
 
 [tasks."console:config:generate"]
-description = "コンソールログインの設定ファイルから、Worker 用（worker.json。Viewer と Administrator で 1 つ）・表示用（display.json）・StackSets 用・Access の検査用の生成物と、種類ごとのロールのテンプレート（kind.<kind>.yaml。参考の形）を書く（入口とチームの AUD が要る。退役したチーム名の台帳を前回の生成物と比べる）"
+description = "コンソールログインの設定ファイルから、Worker 用（worker.json。Viewer と Administrator で 1 つ）・表示用（display.json）・StackSets 用・Access の検査用の生成物と、種類ごとのロールのテンプレート（kind.<kind>.yaml。参考の形）を書く（入口とチームの AUD が要る。退役したチーム名の台帳を前回の生成物と -- --ledger-baseline <path> と比べ、比べる台帳が無ければ誤り。初回と P2 より前の形からの移行だけ -- --ledger-init で通し、デプロイの前に console:inspect を回す）"
 run = "pnpm tsx scripts/console/config.ts generate"
 
 [tasks."console:template:example"]

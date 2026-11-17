@@ -145,6 +145,44 @@ describe("README の受容する限界（P2（B）の設計メモ §8.2。cto �
         expect(text, s).not.toContain(s);
     });
   }
+  it("README_ja.md / README.md: 台帳の限界（cto の決裁 2026-11-17 の c8）を受容の節（デプロイの節より前）に書く", () => {
+    const ja = top("README_ja.md", "\n## デプロイ");
+    for (const x of [
+      "台帳は運用者の取り違えを止める守りで、設定を書ける者への守りではありません",
+      "生成物を消して初回の指定（`--ledger-init`）を付ければ外せます",
+      "管理外に出たアカウントの古いロールは `mise run console:inspect` でも見えず、守りは台帳だけです",
+    ])
+      expect(ja, x).toContain(x);
+    const en = top("README.md", "\n## Deployment");
+    for (const x of [
+      "The ledger guards against operator mistakes, not against anyone who can write the config",
+      "deleting the artifacts and passing the first-run flag (`--ledger-init`) removes it",
+      "old roles in an account that has left management are not visible to `mise run console:inspect` either; the ledger is the only guard",
+    ])
+      expect(en, x).toContain(x);
+  });
+
+  it("README_ja.md / README.md: 台帳の手順（c7）。--ledger-init のあとはデプロイの前に inspect、前回の生成物か baseline を保管する", () => {
+    const ja = read("README_ja.md");
+    for (const x of [
+      "`mise run console:config:generate -- --ledger-init`",
+      "`--ledger-init` を使ったら、デプロイの前に `mise run console:inspect` を回します",
+      "`--ledger-baseline <path>`",
+      "前回の生成物（`.generated/console/stacksets.json`）か baseline を保管します",
+    ])
+      expect(ja, x).toContain(x);
+    expect(ja).not.toContain("前回が無いときは警告");
+    const en = read("README.md");
+    for (const x of [
+      "`mise run console:config:generate -- --ledger-init`",
+      "After using `--ledger-init`, run `mise run console:inspect` before you deploy",
+      "`--ledger-baseline <path>`",
+      "Keep the previous artifacts (`.generated/console/stacksets.json`) or a baseline",
+    ])
+      expect(en, x).toContain(x);
+    expect(en).not.toContain("without previous artifacts it warns");
+  });
+
   it("README_ja.md / README.md: inspect を回す時点（c1）。Administrator のロールを作った直後・チームかロールの設定を変えたあと・段 4", () => {
     expect(read("README_ja.md")).toContain(
       "**`mise run console:inspect` は、Administrator のロールを作った直後と、チームかロールの設定を変えたあとに必ず回します**",

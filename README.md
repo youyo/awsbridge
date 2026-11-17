@@ -29,8 +29,16 @@ Predecessor: [youyo/aws-mcp-gateway](https://github.com/youyo/aws-mcp-gateway)
 > The age limit of the Access JWT for Admin teams (default 15 minutes) is the time since the JWT was issued, not the time since the user authenticated. Whether re-authentication is required is decided by the Access and IdP settings.
 >
 > Anyone who can read Workers Logs can read the issue records (masked). Treat permission to read the logs with the same weight as permission on this Worker.
+>
+> The ledger of retired team names (below): The ledger guards against operator mistakes, not against anyone who can write the config; deleting the artifacts and passing the first-run flag (`--ledger-init`) removes it. The old roles in an account that has left management are not visible to `mise run console:inspect` either; the ledger is the only guard there.
 
-When you change a team's tier, use a new name (do not reuse a name in another tier: a name left in an old stack's trust policy would let people of another tier in). When you remove a team, move it to `retiredTeams` (the ledger of retired team names) in the config. `mise run console:config:generate` treats as an error using a ledger name for a current team, removing a name from the ledger, and removing a team without moving it to the ledger (it compares with the previous artifacts; without previous artifacts it warns).
+When you change a team's tier, use a new name (do not reuse a name in another tier: a name left in an old stack's trust policy would let people of another tier in). When you remove a team, move it to `retiredTeams` (the ledger of retired team names) in the config. `mise run console:config:generate` treats as an error using a ledger name for a current team, removing a name from the ledger, removing a team without moving it to the ledger, and changing the tier of a team with the same name.
+
+- It compares with the previous artifacts in the output directory (`stacksets.json`) and, when given, with `--ledger-baseline <path>` (a `stacksets.json` you kept). With both, it must pass both. A baseline that cannot be read or has the wrong shape is an error.
+- Generating with no ledger to compare with (no previous artifacts and no baseline, or previous artifacts from before P2) is an error. Only the first generation and the migration from the pre-P2 shape pass, with `mise run console:config:generate -- --ledger-init` (the first-run flag). Passing it while the previous artifacts or the baseline have a ledger is an error. It is recorded on standard output and in the meta of `stacksets.json` (`ledgerInit`; gone after the next generation).
+- After using `--ledger-init`, run `mise run console:inspect` before you deploy (to see that no old or retired team name is left in a trust policy).
+- Keep the previous artifacts (`.generated/console/stacksets.json`) or a baseline (the artifacts are gitignored; in a new checkout, pass it with `--ledger-baseline <path>`).
+- `mise run console:config:check` is unchanged: without previous artifacts it says nothing, and with them it compares.
 
 ## Deployment
 
