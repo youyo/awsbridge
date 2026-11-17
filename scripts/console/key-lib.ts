@@ -390,6 +390,11 @@ export async function runCheck(
     bad("生成物にチームが無い");
     return 1;
   }
+  // --team は生成物にあるチームの名前だけ（Access のトークンを、設定に無いパスへ送らない）
+  if (!config.teams.some((t) => t.name === team)) {
+    bad(`--team ${JSON.stringify(team)} は生成物（worker.json）のチームに無い`);
+    return 1;
+  }
   const url = keyCheckUrl(config, team);
   if (!o.accessToken) {
     d.print(

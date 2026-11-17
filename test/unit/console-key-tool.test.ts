@@ -19,7 +19,7 @@ import {
 } from "../../scripts/console/key-lib";
 import type { PublicJwk } from "../../src/console/signing/key";
 import { consoleBindingName } from "../../src/console/worker/key";
-import { workerConfig } from "./console-worker-harness";
+import { ADMIN_TEAM, workerConfig } from "./console-worker-harness";
 
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
 const SCRIPT = "awsbridge-console";
@@ -451,7 +451,10 @@ describe("check: デプロイ後の確認（境界ごと）", () => {
           ),
         });
       if (call.url === `${P_ISSUER}/.well-known/jwks.json`) return cfJson({ keys: [p.publicJwk] });
-      if (call.url === `${PORTAL}/t/infra/key-check`) {
+      if (
+        call.url === `${PORTAL}/t/infra/key-check` ||
+        call.url === `${PORTAL}/t/${ADMIN_TEAM}/key-check`
+      ) {
         expect(call.headers.get("cf-access-token")).toBe(ACCESS_TOKEN);
         expect(call.headers.get("authorization")).toBeNull();
         return cfJson(o.keyCheck ?? goodCheck());
@@ -538,6 +541,55 @@ describe("check: デプロイ後の確認（境界ごと）", () => {
     ],
   ])("%s なら 1", async (_n, o) => {
     expect(await runCheck(await s(), checkDeps(o()), { accessToken: ACCESS_TOKEN })).toBe(1);
+  });
+
+  it.each([
+    ["key-check", (u: string) => u.endsWith("/key-check")],
+    ["JWKS", (u: string) => u.endsWith("/jwks.json")],
+    ["discovery", (u: string) => u.endsWith("/openid-configuration")],
+  ])(
+    "%s が 3xx（Access のログインへのリダイレクト・トークン切れ・Bypass の漏れ）なら追わずに 1。Location の先に届かない",
+    async (_n, hit) => {
+      for (const st of [301, 302, 303, 307, 308]) {
+        const ok = checkDeps();
+        const d = fakeDeps((call) => {
+          if (hit(call.url))
+            return new Response(null, {
+              status: st,
+              headers: { location: "https://team.cloudflareaccess.com/cdn-cgi/access/login" },
+            });
+          return ok.fetch(call.url, {
+            method: call.method,
+            headers: call.headers,
+            redirect: "manual",
+          });
+        });
+        expect(await runCheck(await s(), d, { accessToken: ACCESS_TOKEN }), String(st)).toBe(1);
+        const text = d.out.join("\n");
+        expect(text).toContain(String(st));
+        expect(text).not.toContain(ACCESS_TOKEN);
+        expect(d.calls.some((x) => x.url.includes("cloudflareaccess.com"))).toBe(false);
+      }
+    },
+  );
+
+  it("--team で Admin の階層のチームのパスの key-check を開く（トークンはそのパスにだけ送る）", async () => {
+    const d = checkDeps();
+    expect(await runCheck(await s(), d, { accessToken: ACCESS_TOKEN, team: ADMIN_TEAM })).toBe(0);
+    const kc = d.calls.filter((x) => x.url.endsWith("/key-check"));
+    expect(kc.map((x) => x.url)).toEqual([`${PORTAL}/t/${ADMIN_TEAM}/key-check`]);
+    for (const x of d.calls.filter((c) => !c.url.endsWith("/key-check")))
+      expect(x.headers.get("cf-access-token")).toBeNull();
+  });
+
+  it.each([
+    ["設定に無いチーム", "nosuch"],
+    ["パスを含む値", "infra/../x"],
+    ["空", ""],
+  ])("--team が %s なら 1 で、key-check に Access のトークンを送らない", async (_n, team) => {
+    const d = checkDeps();
+    expect(await runCheck(await s(), d, { accessToken: ACCESS_TOKEN, team })).toBe(1);
+    expect(d.calls.some((x) => x.headers.get("cf-access-token") !== null)).toBe(false);
   });
 
   it("今の鍵の vars が無ければ 1", async () => {
