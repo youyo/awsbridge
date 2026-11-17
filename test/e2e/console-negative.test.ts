@@ -24,9 +24,11 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { decodeJwt, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { TEAM_TAG_KEY } from "../../src/console/constants";
 import { ACCESS_JWT_MAX_LENGTH } from "../../src/console/issue/access";
+import { AWS_TAGS_CLAIM } from "../../src/console/issue/claims";
 import { createCsrfToken, importCsrfKey } from "../../src/console/issue/csrf";
 import { MAX_BODY_BYTES } from "../../src/console/portal/login";
 import type { WorkerConfig } from "../../src/console/types";
@@ -546,6 +548,86 @@ describe("陽性の対照（同じ道具で正しい要求を送ると、発行�
 
   it("両階層: 擬似の Access の certs を実際に取りにきている（JWT の検証まで進む）", () => {
     expect(fake.certsHits()).toBeGreaterThan(0);
+  });
+});
+
+// ---- 1b. 同じプロセスで両階層（交互・並行・Admin だけの停止） ----
+
+/** 擬似 STS が受けた要求の（ロールのパスの階層, タグのチーム）。同じプロセスで階層が混ざらないことを見る。 */
+const issuedPairs = () =>
+  fake.seen.sts.map((p) => {
+    const arn = p.get("RoleArn") ?? "";
+    const tags = decodeJwt(p.get("WebIdentityToken") ?? "")[AWS_TAGS_CLAIM] as {
+      principal_tags: Record<string, string[]>;
+    };
+    return {
+      tier: arn.includes(":role/awsbridge-console/admin/") ? "admin" : "standard",
+      team: tags.principal_tags[TEAM_TAG_KEY]?.join(","),
+    };
+  });
+
+describe("同じ wrangler dev のプロセス（std）で、Standard と Admin の階層のチームを交互・並行に送る", () => {
+  const onStd = (t: Target) => ({ ...t, inst: () => std });
+  const S = onStd(stdT);
+  const A = onStd(adminT);
+
+  it("交互: Standard・Admin・階層をまたぐ誤り（403 team_mismatch）を交互に送っても、発行は送った順に正しい階層とチームで行う", async () => {
+    const expected: { tier: string; team: string }[] = [];
+    for (let i = 0; i < 3; i++) {
+      const s = await post(S);
+      expect(s.status, s.body).toBe(302);
+      expected.push({ tier: "standard", team: S.team });
+      denied(await post(A, { jwt: await accessJwt(S.aud) }), 403, "team_mismatch");
+      const a = await post(A);
+      expect(a.status, a.body).toBe(302);
+      expected.push({ tier: "admin", team: A.team });
+      denied(await post(S, { jwt: await accessJwt(A.aud) }), 403, "team_mismatch");
+    }
+    expect(issuedPairs()).toEqual(expected);
+    expect(fake.seen.signin).toHaveLength(expected.length);
+  });
+
+  it("並行（Promise.all）: 両階層の正しい要求と階層をまたぐ誤りを同時に送っても、結果と発行の階層・チームが混ざらない", async () => {
+    const plan: { t: Target; cross: boolean }[] = [];
+    for (let i = 0; i < 4; i++) plan.push({ t: S, cross: false }, { t: A, cross: false });
+    plan.push({ t: A, cross: true }, { t: S, cross: true });
+    const results = await Promise.all(
+      plan.map(async ({ t, cross }) =>
+        post(t, cross ? { jwt: await accessJwt(t === A ? S.aud : A.aud) } : {}),
+      ),
+    );
+    results.forEach((r, i) => {
+      if (plan[i]?.cross) denied(r, 403, "team_mismatch");
+      else expect(r.status, r.body).toBe(302);
+    });
+    const pairs = issuedPairs();
+    expect(pairs).toHaveLength(8);
+    expect(fake.seen.signin).toHaveLength(8);
+    // 階層とタグのチームは必ず対になる（Standard のロールに Admin のチーム、またはその逆が無い）
+    for (const p of pairs)
+      expect(p, JSON.stringify(p)).toEqual(
+        p.tier === "admin" ? { tier: "admin", team: A.team } : { tier: "standard", team: S.team },
+      );
+    expect(pairs.filter((p) => p.tier === "admin")).toHaveLength(4);
+  });
+
+  it("ADMIN_LOGIN_DISABLED の同じプロセス（admin-stopped）: 交互と並行のどちらでも、Admin だけが 503 login_disabled で、Standard は発行する", async () => {
+    const SS = { ...stdT, inst: () => adminStopped };
+    const AS = { ...adminT, inst: () => adminStopped };
+    for (let i = 0; i < 2; i++) {
+      const s = await post(SS);
+      expect(s.status, s.body).toBe(302);
+      denied(await post(AS), 503, "login_disabled");
+    }
+    const results = await Promise.all([post(AS), post(SS), post(AS), post(SS), post(AS), post(SS)]);
+    results.forEach((r, i) => {
+      if (i % 2 === 0) denied(r, 503, "login_disabled");
+      else expect(r.status, r.body).toBe(302);
+    });
+    const pairs = issuedPairs();
+    expect(pairs).toHaveLength(5);
+    for (const p of pairs) expect(p).toEqual({ tier: "standard", team: SS.team });
+    expect(fake.seen.signin).toHaveLength(5);
   });
 });
 
