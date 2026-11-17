@@ -14,9 +14,16 @@
 // 静的な import の分離（node の API・MCP 用の本体を読まない）は test/unit/console-layout.test.ts・console-standard-layout.test.ts。
 // wrangler の設定の例は console-wrangler-config.test.ts。設計: docs/specs/console-login-portal.md §9.10。
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseConsoleConfig } from "../../src/console/config";
 import { AUDIENCE, ROLE_PATH_PREFIX, rolePath, TEAM_TAG_KEY } from "../../src/console/constants";
@@ -113,8 +120,13 @@ function bundleOf(name: string, config: Record<string, unknown>): Built {
   const meta = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")) as {
     inputs: Record<string, unknown>;
   };
-  // inputs のパスは cwd（リポジトリのルート）からの相対。チェックアウト先のパスに左右されないよう、ルートからの相対パスで照合する
-  const inputs = Object.keys(meta.inputs).map((p) => relative(root, resolve(root, p)));
+  // inputs のパスは wrangler の設定ファイルのあるディレクトリからの相対（tmpdir が symlink のとき wrangler は実体のパスを基点にする）。
+  // チェックアウト先のパスに左右されないよう、実体のパスに直してルートからの相対パスで照合する
+  const base = realpathSync(dirname(wranglerConfig));
+  const realRoot = realpathSync(root);
+  const inputs = Object.keys(meta.inputs).map((p) =>
+    relative(realRoot, realpathSync(resolve(base, p))),
+  );
   const bundle = readdirSync(join(dir, "dist"))
     .filter((f) => f.endsWith(".js"))
     .map((f) => readFileSync(join(dir, "dist", f), "utf8"))
