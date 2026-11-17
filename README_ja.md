@@ -448,7 +448,7 @@ mise run console:inspect -- --profile=<p> --stops=.secrets/console-stops.json   
 - コンソールの引き受けだけを見ます（ロールのパスが `/awsbridge-console/`、またはプロバイダーのホストが設定の issuer のホスト）。MCP の引き受けは数えません。コンソールのロールを設定に無いプロバイダーで引き受けたものは誤りです。
 - 発行記録の入力は 2 つです。どちらか 1 つを渡します。
   - `--records <file|dir>`: NDJSON（生の行・Logpush の Trace Events の包み・Workers Logs のイベント。`.gz` も読みます）。
-  - `--logs-api`: Cloudflare の API（`POST /accounts/{account_id}/workers/observability/telemetry/query`）から Workers Logs を読みます。道具が呼ぶ Cloudflare の API はこの照会だけです。
+  - `--logs-api`: Cloudflare の API（`POST /accounts/{account_id}/workers/observability/telemetry/query`）から Workers Logs を読みます。道具が呼ぶ Cloudflare の API はこの照会だけです。窓ごとに、まず一致するイベントの件数（`calculations` の view。`abr_level` が 1 で `sampleInterval` が 1 のときだけ信用する）を得てから、イベントを読みます。長い窓では読み取りが間引かれる（`abr_level` が 1 より大きい）ことがあるので、読んだ行が件数に届かないときや間引かれたときは、窓を半分に割って読み直します。1 分の窓でも届かなければ `record_read_incomplete`（誤り）を出し、終了コード 1 で、state を進めません。
 - 発行記録の置き場所（② の個人の環境）は Workers Logs です（保持は Workers Paid で 7 日）。コンソールの 2 つの Worker の wrangler の設定は、間引きで記録が落ちないよう `observability.head_sampling_rate` を `1` に固定しています。
 - 保持の窓: 既定のさかのぼりは 6 日です（保持の 7 日より短く）。記録の保持より古く記録の無い引き受けは「検証できない（`unverifiable`）」として別に数えます。さかのぼりを保持より長くすると警告です（`--retention-days` で保持の日数を変えられます）。
 - 切られた記録の行（`$cloudflare.truncated` など）と読めない行は、位置だけを出して誤りにします。

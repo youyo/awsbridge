@@ -43,8 +43,56 @@ type Req = { method: string; url: string; auth: string | undefined; body: string
 let server: Server;
 let base = "";
 const reqs: Req[] = [];
-let apiEvents: unknown[] = [];
+let apiEvents: { timestamp: number; $metadata: { id: string }; [k: string]: unknown }[] = [];
 let apiFail = false;
+/** 実物の読み取りの間引き（abr_level 10）をまねる: 幅がこれを超える events の照会は 10 行に 1 行だけ返す。 */
+let apiSampleAboveMs: number | undefined;
+/** events の照会がいつも 1 行少なく返す（割っても件数に届かない場合）。 */
+let apiDropOne = false;
+
+/**
+ * 偽の telemetry/query（実物の振る舞いをまねる）: timeframe の両端は含まない。calculations の view は count、
+ * events の view は新しい順で、幅が apiSampleAboveMs を超えると間引く。events.count はそのページの行数。
+ */
+function telemetry(body: {
+  view: string;
+  timeframe: { from: number; to: number };
+  limit?: number;
+  offset?: string;
+}) {
+  const { from, to } = body.timeframe;
+  const inside = apiEvents
+    .filter((e) => e.timestamp > from && e.timestamp < to)
+    .sort((a, b) => b.timestamp - a.timestamp);
+  if (body.view === "calculations")
+    return {
+      success: true,
+      result: {
+        calculations: [
+          {
+            alias: "n",
+            calculation: "count",
+            aggregates: [{ count: inside.length, sampleInterval: inside.length > 0 ? 1 : 0 }],
+            series: [],
+          },
+        ],
+        statistics: { abr_level: 1 },
+      },
+    };
+  const sampled = apiSampleAboveMs !== undefined && to - from > apiSampleAboveMs;
+  let list = sampled ? inside.filter((_, i) => i % 10 === 9) : inside;
+  if (apiDropOne) list = list.slice(1);
+  if (body.offset !== undefined)
+    list = list.slice(list.findIndex((e) => e.$metadata.id === body.offset) + 1);
+  const events = list.slice(0, body.limit ?? 2000);
+  return {
+    success: true,
+    result: {
+      events: { events, count: events.length },
+      statistics: { abr_level: sampled ? 10 : 1 },
+    },
+  };
+}
 
 beforeAll(async () => {
   server = createServer((req, res) => {
@@ -67,12 +115,7 @@ beforeAll(async () => {
         req.method === "POST" &&
         req.url?.endsWith("/workers/observability/telemetry/query")
       )
-        res.end(
-          JSON.stringify({
-            success: true,
-            result: { events: { events: apiEvents, count: apiEvents.length } },
-          }),
-        );
+        res.end(JSON.stringify(telemetry(JSON.parse(body))));
       else {
         res.statusCode = 404;
         res.end(JSON.stringify({ success: false, errors: [{ code: 7003, message: "no route" }] }));
@@ -88,6 +131,8 @@ beforeEach(() => {
   reqs.length = 0;
   apiEvents = [];
   apiFail = false;
+  apiSampleAboveMs = undefined;
+  apiDropOne = false;
 });
 
 // ---- 材料 ----
@@ -405,14 +450,75 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
     expect(r.out).toMatch(/matched: 1/);
     noSecrets(r.out, [a.jwt.jti]);
     expect(reqs.length).toBeGreaterThan(0);
+    const views = new Set<string>();
     for (const q of reqs) {
       expect(q.method).toBe("POST");
       expect(q.url).toBe(`/accounts/${CF_ACCOUNT}/workers/observability/telemetry/query`);
       expect(q.auth).toBe(`Bearer ${TOKEN}`);
       const body = JSON.parse(q.body);
-      expect(body.view).toBe("events");
+      views.add(body.view);
       expect(body.timeframe.from).toBeLessThan(body.timeframe.to);
     }
+    // 行（events）と、別の経路の件数（calculations の count）の 2 つの view だけ
+    expect([...views].sort()).toEqual(["calculations", "events"]);
+  });
+
+  const apiEnv = (env: NodeJS.ProcessEnv) => ({
+    ...env,
+    AWSBRIDGE_CONSOLE_LOGS_API_BASE: base,
+    AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID: CF_ACCOUNT,
+    AWSBRIDGE_CONSOLE_LOGS_TOKEN: TOKEN,
+  });
+  const logEvent = (r: ReturnType<typeof issue>, id: string) => ({
+    $metadata: { id },
+    $workers: { scriptName: "awsbridge-console-standard", eventType: "fetch" },
+    dataset: "cloudflare-workers",
+    timestamp: Date.parse(r.at),
+    source: r,
+  });
+
+  it("--logs-api: 長い窓の読み取りが間引かれて limit より少なく返っても、件数（calculations の count）まで窓を割って全件を読む（c2 の読み落とし）", async () => {
+    const recs = Array.from({ length: 12 }, (_, i) =>
+      issue({ jti: newJti(), at: now() - (5 * 24 * 60 - i * 7 * 60) * MIN }),
+    );
+    // 記録でない行（他のログ）も混ぜる。同じ $metadata.id の行もある（実物でも一意でない）
+    const noise = Array.from({ length: 30 }, (_, i) => ({
+      $metadata: { id: `n${i % 20}` },
+      $workers: { scriptName: "awsbridge-console-standard", eventType: "fetch" },
+      dataset: "cloudflare-workers",
+      timestamp: now() - (4 * 24 * 60 - i * 13) * MIN,
+      source: { message: "GET /" },
+    }));
+    apiEvents = [...recs.map((r, i) => logEvent(r, `e${i}`)), ...noise];
+    apiSampleAboveMs = 2 * 3_600_000;
+    const { env, state } = setup({
+      trails: [{ region: "us-east-1", events: recs.map((r) => trail(r)) }],
+    });
+    const r = await run(["--profile", "reconcile-test", "--logs-api"], apiEnv(env));
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toMatch(/matched: 12/);
+    expect(r.out).toContain(`api count ${apiEvents.length}`);
+    expect(r.out).toMatch(new RegExp(`lines ${apiEvents.length}\\)`));
+    expect(r.out).not.toContain("assume_without_record");
+    expect(r.out).toContain("state: confirmed until");
+    expect(existsSync(state)).toBe(true);
+  });
+
+  it("--logs-api: 割っても件数に届かなければ record_read_incomplete（誤り）で終了コード 1。状態は進めない", async () => {
+    const a = issue({ jti: newJti(), at: now() - 60 * MIN });
+    const b = issue({ jti: newJti(), at: now() - 50 * MIN });
+    apiEvents = [logEvent(a, "e1"), logEvent(b, "e2")];
+    apiDropOne = true;
+    const { env, state } = setup({
+      trails: [{ region: "us-east-1", events: [trail(a), trail(b)] }],
+    });
+    const r = await run(["--profile", "reconcile-test", "--logs-api"], apiEnv(env));
+    expect(r.status, r.out).toBe(1);
+    expect(r.out).toContain("record_read_incomplete");
+    expect(r.out).toMatch(/read \d+ of \d+/);
+    expect(r.out).toContain("state: not advanced");
+    expect(existsSync(state)).toBe(false);
+    noSecrets(r.out, [a.jwt.jti, b.jwt.jti]);
   });
 
   it("--logs-api: 宛先を 127.0.0.1 以外に向けられない・トークンが無ければ実行できない（終了コード 2。API を呼ばない）", async () => {
