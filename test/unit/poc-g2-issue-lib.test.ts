@@ -13,7 +13,7 @@ import {
   portalHostPrefixes,
 } from "../../scripts/poc/g2/issue-lib";
 import { loginFormPage, errorPage as realErrorPage } from "../../src/console/portal/pages";
-import { standardConfig } from "./console-standard-harness";
+import { standardConfig } from "./console-worker-harness";
 
 // CSRF の形の文字列は実行時に組む
 const CSRF = ["v1", "1800000000", "A".repeat(43)].join(".");

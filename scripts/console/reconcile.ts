@@ -12,7 +12,7 @@
 //   --logs-api                            発行記録を Cloudflare の API（Workers Logs。保持 7 日）から読む:
 //     AWSBRIDGE_CONSOLE_LOGS_TOKEN        API のトークン（環境変数だけ。wrangler の OAuth は使わない）
 //     AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID   Cloudflare のアカウント ID（32 桁の 16 進）
-//     AWSBRIDGE_CONSOLE_LOGS_WORKERS      Worker の名前（カンマ区切り。既定 awsbridge-console-standard,awsbridge-console-admin）
+//     AWSBRIDGE_CONSOLE_LOGS_WORKERS      Worker の名前（カンマ区切り。既定 awsbridge-console,awsbridge-console-admin）
 //     AWSBRIDGE_CONSOLE_LOGS_API_BASE     試験用（http://127.0.0.1:<port> だけ）
 //     窓ごとに件数（calculations の count）を先に数え、行数が届くまで窓を割って読む（長い窓は読み取りの時点で間引かれるため。
 //     reconcile-cf.ts の冒頭）。届かない窓は誤り record_read_incomplete（終了コード 1）。api count は件数の合計
@@ -78,7 +78,7 @@ const ACCOUNT_RE = /^\d{12}$/;
 const WORKER_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 /** 確認済みの区間の状態ファイルの既定（.secrets/ は gitignore）。 */
 const DEFAULT_STATE_FILE = ".secrets/console-reconcile-state.json";
-const DEFAULT_WORKERS = ["awsbridge-console-standard", "awsbridge-console-admin"];
+const DEFAULT_WORKERS = ["awsbridge-console", "awsbridge-console-admin"];
 /** 記録は CloudTrail の期間より少し広く読む（期間の端の発行と引き受けを取りこぼさない）。 */
 const RECORD_MARGIN_MS = 15 * 60_000;
 

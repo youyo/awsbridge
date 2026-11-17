@@ -1,6 +1,6 @@
 // コンソールログインの Admin の署名の部品（X1 の決裁）。処理は Standard と共通の src/console/signing/signer.ts で、
 // ここは Admin のログの名前（イベント console_admin_signer、種別 admin_*）だけを決める。
-// Standard の署名（standard/sign-standard.ts）とは鍵も vars も共有しない。node:* を import しない。
+// Standard の署名（standard/sign-boundary.ts）とは鍵も vars も共有しない。node:* を import しない。
 import {
   createKeySigner,
   type KeySigner,

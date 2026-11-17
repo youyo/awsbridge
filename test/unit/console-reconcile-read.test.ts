@@ -161,7 +161,7 @@ describe("Cloudflare の API（POST /accounts/{id}/workers/observability/telemet
     const b = telemetryQueryBody({
       from: 1000,
       to: 2000,
-      workers: ["awsbridge-console-standard", "awsbridge-console-admin"],
+      workers: ["awsbridge-console", "awsbridge-console-admin"],
     });
     expect(b).toMatchObject({
       queryId: expect.any(String),
@@ -175,7 +175,7 @@ describe("Cloudflare の API（POST /accounts/{id}/workers/observability/telemet
             key: "$workers.scriptName",
             operation: "eq",
             type: "string",
-            value: "awsbridge-console-standard",
+            value: "awsbridge-console",
           },
           {
             key: "$workers.scriptName",
@@ -396,7 +396,7 @@ describe("Cloudflare の API（POST /accounts/{id}/workers/observability/telemet
     base: "http://127.0.0.1:9",
     accountId: CF_ACCOUNT,
     token: TOKEN,
-    workers: ["awsbridge-console-standard", "awsbridge-console-admin"],
+    workers: ["awsbridge-console", "awsbridge-console-admin"],
     from,
     to,
   });
@@ -421,7 +421,7 @@ describe("Cloudflare の API（POST /accounts/{id}/workers/observability/telemet
       parameters: {
         filterCombination: "or",
         filters: [
-          { key: "$workers.scriptName", operation: "eq", value: "awsbridge-console-standard" },
+          { key: "$workers.scriptName", operation: "eq", value: "awsbridge-console" },
           { key: "$workers.scriptName", operation: "eq", value: "awsbridge-console-admin" },
         ],
         calculations: [{ operator: "count" }],

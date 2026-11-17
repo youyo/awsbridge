@@ -17,7 +17,7 @@ import {
   type Settings,
 } from "../../scripts/console/admin-key-lib";
 import { bindingNameForKid, type PublicJwk } from "../../src/console/admin/key";
-import { adminConfig } from "./console-standard-harness";
+import { adminConfig } from "./console-worker-harness";
 
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
 const SCRIPT = "awsbridge-console-admin";

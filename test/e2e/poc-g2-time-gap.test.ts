@@ -22,7 +22,7 @@ function record(n: number, tier: "standard" | "admin" = "standard") {
   const at = T0 + n * 60_000;
   return {
     $workers: {
-      scriptName: tier === "admin" ? "awsbridge-console-admin" : "awsbridge-console-standard",
+      scriptName: tier === "admin" ? "awsbridge-console-admin" : "awsbridge-console",
     },
     source: {
       event: "console_issue",

@@ -42,7 +42,7 @@ import {
   PORTAL_HOST,
   standardConfig,
   stsXml,
-} from "../unit/console-standard-harness";
+} from "../unit/console-worker-harness";
 import {
   type FakeServer,
   type HttpResult,
@@ -348,8 +348,13 @@ beforeAll(async () => {
   const displayJson = write("display.standard.json", displayConfig());
   const adminJson = write("worker.admin.json", withNoappTeam(adminConfig()));
 
-  const wranglerConfig = (kind: "standard" | "admin", entry = `console-${kind}-entry.ts`) => {
-    const config = readJsonc(join(root, `wrangler.console-${kind}.jsonc`));
+  const wranglerConfig = (
+    kind: "standard" | "admin",
+    entry = kind === "standard" ? "console-entry.ts" : `console-${kind}-entry.ts`,
+  ) => {
+    const config = readJsonc(
+      join(root, kind === "standard" ? "wrangler.console.jsonc" : `wrangler.console-${kind}.jsonc`),
+    );
     expect(config.workers_dev).toBe(false);
     expect(config.preview_urls).toBe(false);
     delete config.routes; // 手元では Host ヘッダーで振り分ける（routes があると wrangler dev が Host を書き換える）

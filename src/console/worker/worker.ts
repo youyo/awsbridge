@@ -8,7 +8,7 @@
 //   それ以外のホスト  404
 //
 // 署名鍵（cto の決裁「Standard も secret_key に揃える」）: 境界ごとの Workers の secret_key 型のバインディング（取り出せない CryptoKey）。
-//   vars STANDARD_CURRENT_KEYS（境界 → 今の鍵 {binding, kid}）と STANDARD_PUBLIC_JWKS（境界 → 公開鍵。新旧 2 つまで）が指す（standard/key.ts）。
+//   vars CONSOLE_CURRENT_KEYS（境界 → 今の鍵 {binding, kid}）と CONSOLE_PUBLIC_JWKS（境界 → 公開鍵。新旧 2 つまで）が指す（standard/key.ts）。
 //   vars が無い・壊れている → どの経路も 500 server_misconfigured（従来の「署名鍵の secret が無い・壊れている」と同じ）。
 //   その境界の今の鍵が無い・バインディングが無い・使えない（取り出せる・用途が違う）・vars の公開鍵で自己検証が通らない → 503 signing_unavailable。
 //   JWKS はその境界の vars の公開鍵だけ（無ければ 500）。文字列の秘密鍵の secret は読まない。
@@ -16,10 +16,10 @@
 //   （取り出せない・exportKey が失敗する・自己検証）と kid だけを返す。
 //
 // 生成物と env は最初の要求で検査し、壊れていればどの経路も 500 server_misconfigured（ログは種別だけ）。
-// 試験用の差し替え（StandardOverrides）は E2E・unit のためのもので、本番のエントリは何も渡さない。
+// 試験用の差し替え（ConsoleOverrides）は E2E・unit のためのもので、本番のエントリは何も渡さない。
 import { createEntryHandler } from "../display/entry";
 import type { IdentityGroupsSource } from "../display/groups";
-import { createStandardSigner, type StandardBoundaryKey } from "../issue/sign-standard";
+import { type BoundaryKey, createBoundarySigner } from "../issue/sign-boundary";
 import {
   createPortalWorker,
   EnvError,
@@ -32,19 +32,19 @@ import {
 import type { PublicJwk } from "../signing/key";
 import type { WorkerConfig } from "../types";
 import { discoveryDocument, jwksDocument, matchIssuerDoc } from "./issuer";
-import { parseStandardKeys, type StandardKeys } from "./key";
+import { type ConsoleKeys, parseConsoleKeys } from "./key";
 
 export { DEFAULT_STS_REGION, isLoginDisabled } from "../portal/worker";
 
-/** Standard の Worker の変数・secret・binding（wrangler.console-standard.jsonc）。 */
-export type StandardEnv = PortalEnv & {
-  /** vars: 境界の名前 → 今の署名鍵（{"binding": "STANDARD_KEY_…", "kid": "…"}）の JSON。 */
-  STANDARD_CURRENT_KEYS?: string;
+/** Standard の Worker の変数・secret・binding（wrangler.console.jsonc）。 */
+export type ConsoleEnv = PortalEnv & {
+  /** vars: 境界の名前 → 今の署名鍵（{"binding": "CONSOLE_KEY_…", "kid": "…"}）の JSON。 */
+  CONSOLE_CURRENT_KEYS?: string;
   /** vars: 境界の名前 → 公開鍵 JWK の配列（新旧 2 つまで）の JSON。 */
-  STANDARD_PUBLIC_JWKS?: string;
+  CONSOLE_PUBLIC_JWKS?: string;
 };
 
-export type StandardOverrides = PortalOverrides & {
+export type ConsoleOverrides = PortalOverrides & {
   /**
    * 入口の一覧（S0。U2）の身元の Entra グループの取り方。取り方（Access の get-identity など）は未確定で、
    * 本番のエントリは渡さない（そのときは「分からない」→ 全チームの S1 へのリンクに落とす）。
@@ -78,9 +78,9 @@ function issuerHandler(
 function boundaryKeys(
   env: Record<string, unknown>,
   config: WorkerConfig,
-  keys: StandardKeys,
-): Record<string, StandardBoundaryKey> {
-  const out: Record<string, StandardBoundaryKey> = {};
+  keys: ConsoleKeys,
+): Record<string, BoundaryKey> {
+  const out: Record<string, BoundaryKey> = {};
   for (const b of config.boundaries) {
     const current = Object.hasOwn(keys.current, b.name) ? keys.current[b.name] : undefined;
     if (!current) continue;
@@ -95,26 +95,26 @@ function boundaryKeys(
  * @param rawConfig 発行用の生成物（worker.standard.json）
  * @param rawDisplay 表示用の生成物（display.standard.json）。入口（S0）の画面だけが読む。壊れていれば入口だけが 500
  */
-export function createStandardWorker(
+export function createConsoleWorker(
   rawConfig: unknown,
-  o: StandardOverrides = {},
+  o: ConsoleOverrides = {},
   rawDisplay?: unknown,
 ) {
   const { identityGroups, ...portalOverrides } = o;
-  return createPortalWorker<StandardEnv>(
+  return createPortalWorker<ConsoleEnv>(
     rawConfig,
     {
       tier: "standard",
       serveEntry: createEntryHandler(rawDisplay, { identityGroups }),
       async buildTier(env, config) {
-        let keys: StandardKeys;
+        let keys: ConsoleKeys;
         try {
-          keys = await parseStandardKeys(env.STANDARD_CURRENT_KEYS, env.STANDARD_PUBLIC_JWKS);
+          keys = await parseConsoleKeys(env.CONSOLE_CURRENT_KEYS, env.CONSOLE_PUBLIC_JWKS);
         } catch {
           throw new EnvError("signing_keys");
         }
         const boundaries = boundaryKeys(env as Record<string, unknown>, config, keys);
-        const signer = createStandardSigner({ boundaries, log: (line) => console.log(line) });
+        const signer = createBoundarySigner({ boundaries, log: (line) => console.log(line) });
         return {
           signer,
           serveIssuer: issuerHandler(config, keys.publicJwks),

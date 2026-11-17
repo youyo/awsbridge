@@ -7,11 +7,11 @@
 //                              表示用の Admin の情報（チーム名・Object ID）だけは入る（ADR の P1'・U2）。MCP のコード・設定の解析器と生成器・scripts/ も入らない。
 //                              文字列の秘密鍵を読む経路（旧 parseSigningKeys・CONSOLE_SIGNING_KEYS・src/keys.ts・src/oidc.ts）と試験用の鍵を作るエントリも入らず、
 //                              境界ごとの secret_key の署名（共通の signing/ と Standard の鍵の参照）は入る（cto の決裁「Standard も secret_key に揃える」）
-//   3. Admin                   Standard の行・Standard の AUD・issuer・署名の実装（sign-standard・oidc・keys）・Standard の鍵の参照・
+//   3. Admin                   Standard の行・Standard の AUD・issuer・署名の実装（sign-boundary・oidc・keys）・Standard の鍵の参照・
 //                              文字列の鍵を読み込む経路・表示用（display）・試験用の鍵を作るエントリ（fixtures）が入らない。
 //                              Admin の署名（secret_key の CryptoKey と WebCrypto）と Admin の issuer の文書は入る（X1 の決裁）
 //
-// 静的な import の分離（node の API・MCP 用の本体を読まない）は test/unit/console-layout.test.ts・console-standard-layout.test.ts。
+// 静的な import の分離（node の API・MCP 用の本体を読まない）は test/unit/console-layout.test.ts・console-worker-layout.test.ts。
 // wrangler の設定の例は console-wrangler-config.test.ts。設計: docs/specs/console-login-portal.md §9.10。
 import { spawnSync } from "node:child_process";
 import {
@@ -64,9 +64,9 @@ const ADMIN_KEY_REFS = ["ADMIN_KEY_", "ADMIN_CURRENT_KEY", "ADMIN_PUBLIC_JWKS"];
 const TEST_KEY_ENTRY = "test/e2e/fixtures/console-admin-key-entry.ts";
 const TEST_KEY_MARKERS = ["E2E_KEY_MODE", "generateKey"];
 /** Standard の鍵の参照（バインディングの名前の接頭辞と vars の名前）。Standard のバンドルにだけ入る。 */
-const STANDARD_KEY_REFS = ["STANDARD_KEY_", "STANDARD_CURRENT_KEYS", "STANDARD_PUBLIC_JWKS"];
+const CONSOLE_KEY_REFS = ["CONSOLE_KEY_", "CONSOLE_CURRENT_KEYS", "CONSOLE_PUBLIC_JWKS"];
 /** Standard の試験用の鍵を作るエントリ（E2E。本物のエントリも含む）。 */
-const STD_TEST_KEY_ENTRY = "test/e2e/fixtures/console-standard-entry.ts";
+const STD_TEST_KEY_ENTRY = "test/e2e/fixtures/console-entry.ts";
 /** 文字列の秘密鍵（JWK）を署名鍵に読み込む経路の印（MCP 用の Worker だけが持つ）。 */
 const STRING_KEY_PATHS = ["src/keys.ts", "src/oidc.ts"];
 const STRING_KEY_MARKERS = [
@@ -209,7 +209,7 @@ beforeAll(() => {
     alias: { "awsbridge:profiles": join(root, "config/profiles.example.json") },
   });
 
-  const stdWrangler = readJsonc(join(root, "wrangler.console-standard.jsonc"));
+  const stdWrangler = readJsonc(join(root, "wrangler.console.jsonc"));
   standard = bundleOf("standard", {
     ...stdWrangler,
     main: join(root, stdWrangler.main as string),
@@ -319,9 +319,9 @@ describe("1. MCP 用 Worker（src/index.ts）のバンドルにコンソール�
 
 describe("2. Standard の Worker のバンドルに Admin の固有値が入らない", () => {
   it("陽性の対照: エントリ・発行の経路・Standard の署名・Standard の生成物（Standard の AUD・issuer）は入っている", () => {
-    expect(standard.inputs).toContain("src/console/standard/index.ts");
+    expect(standard.inputs).toContain("src/console/worker/index.ts");
     expect(standard.inputs).toContain("src/console/portal/login.ts");
-    expect(standard.inputs).toContain("src/console/issue/sign-standard.ts");
+    expect(standard.inputs).toContain("src/console/issue/sign-boundary.ts");
     // 生成物のパスは wrangler の設定のディレクトリからの相対で記録されるので、名前で照合する
     expect(has(standard.inputs, "worker.standard.json")).toHaveLength(1);
     for (const s of STANDARD_ONLY) expect(standard.bundle, s).toContain(s);
@@ -357,10 +357,10 @@ describe("2. Standard の Worker のバンドルに Admin の固有値が入ら�
       "src/console/signing/key.ts",
       "src/console/signing/jws.ts",
       "src/console/signing/signer.ts",
-      "src/console/standard/key.ts",
+      "src/console/worker/key.ts",
     ])
       expect(standard.inputs, p).toContain(p);
-    for (const s of STANDARD_KEY_REFS) expect(standard.bundle, s).toContain(s);
+    for (const s of CONSOLE_KEY_REFS) expect(standard.bundle, s).toContain(s);
   });
 
   it("文字列の秘密鍵（JWK）を署名鍵に読み込む経路が入らない（陽性の対照: MCP 用の Worker のバンドルにはある）", () => {
@@ -448,11 +448,11 @@ describe("3. Admin の Worker のバンドルに Standard の行・署名の実�
   });
 
   it("Standard の鍵の参照（バインディングの名前・vars）が入らない（陽性の対照: Standard のバンドルにはある）", () => {
-    for (const s of STANDARD_KEY_REFS) {
+    for (const s of CONSOLE_KEY_REFS) {
       expect(standard.bundle, s).toContain(s);
       expect(admin.bundle, s).not.toContain(s);
     }
-    expect(admin.inputs).not.toContain("src/console/standard/key.ts");
+    expect(admin.inputs).not.toContain("src/console/worker/key.ts");
   });
 
   it("実行時の外部の依存物は jose だけで、版は package.json で固定している", () => {
@@ -490,12 +490,12 @@ describe("3. Admin の Worker のバンドルに Standard の行・署名の実�
 
   it("Standard の署名の実装・OIDC・鍵の生成・旧い CONSOLE_SIGNING_KEYS の参照・Standard の issuer の文書が入らない", () => {
     for (const p of [
-      "src/console/issue/sign-standard.ts",
+      "src/console/issue/sign-boundary.ts",
       "src/oidc.ts",
       "src/keys.ts",
-      "src/console/standard/index.ts",
-      "src/console/standard/worker.ts",
-      "src/console/standard/issuer.ts",
+      "src/console/worker/index.ts",
+      "src/console/worker/worker.ts",
+      "src/console/worker/issuer.ts",
     ])
       expect(admin.inputs, p).not.toContain(p);
     expect(admin.bundle).not.toContain("CONSOLE_SIGNING_KEYS");

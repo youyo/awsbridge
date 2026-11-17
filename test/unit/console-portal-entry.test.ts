@@ -4,7 +4,7 @@
 // 表示用の対応表（display.standard.json の groups）と小文字で照合する。表示のためだけで、発行の認可には使わない。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IdentityGroupsSource } from "../../src/console/display/groups";
-import { createStandardWorker } from "../../src/console/standard/worker";
+import { createConsoleWorker } from "../../src/console/worker/worker";
 import { uuid } from "./console-fixtures";
 import {
   AUDS,
@@ -16,7 +16,7 @@ import {
   loginRequest,
   PORTAL_HOST,
   standardConfig,
-} from "./console-standard-harness";
+} from "./console-worker-harness";
 
 let h: Harness;
 let logs: string[];
@@ -41,7 +41,7 @@ const failing: IdentityGroupsSource = async () => ({ ok: false, reason: "unavail
 
 /** 表示用の生成物は、引数を省いたときだけ既定（undefined を渡せば「無い」）。 */
 function worker(identityGroups?: IdentityGroupsSource, ...display: [unknown?]) {
-  return createStandardWorker(
+  return createConsoleWorker(
     standardConfig(),
     { getAccessKey: h.getAccessKey, fetch: h.fetch, identityGroups },
     display.length > 0 ? display[0] : displayConfig(),
@@ -221,7 +221,7 @@ describe("S0 入口: 入口のアプリの Access JWT を確かめてから描�
   it("入口の AUD が発行用の生成物に無ければ 500 server_misconfigured", async () => {
     const config = standardConfig();
     delete config.portal.entryAud;
-    const w = createStandardWorker(
+    const w = createConsoleWorker(
       config,
       { getAccessKey: h.getAccessKey, fetch: h.fetch, identityGroups: failing },
       displayConfig(),

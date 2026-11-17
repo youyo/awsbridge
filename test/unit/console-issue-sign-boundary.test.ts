@@ -1,21 +1,18 @@
 // コンソールログイン: Standard の署名（境界ごとの secret_key の取り出せない鍵。cto の決裁「Standard も secret_key に揃える」）と署名の差し込み口。
-// 旧い形（境界 → 秘密鍵 JWK の文字列の secret を parseSigningKeys で読む）は外した。鍵の vars の検査は parseStandardKeys。
+// 旧い形（境界 → 秘密鍵 JWK の文字列の secret を parseSigningKeys で読む）は外した。鍵の vars の検査は parseConsoleKeys。
 import { decodeProtectedHeader, importJWK, jwtVerify } from "jose";
 import { beforeAll, describe, expect, it } from "vitest";
 import { AUDIENCE, UUID_RE } from "../../src/console/constants";
 import { resolveIdentity } from "../../src/console/issue/identity";
-import {
-  createStandardSigner,
-  type StandardBoundaryKey,
-} from "../../src/console/issue/sign-standard";
+import { type BoundaryKey, createBoundarySigner } from "../../src/console/issue/sign-boundary";
 import {
   type IssueRow,
   type SigningRequest,
   type TokenSigner,
   unavailableSigner,
 } from "../../src/console/issue/signer";
-import { parseStandardKeys, standardBindingName } from "../../src/console/standard/key";
-import { makeStandardKey, type TestKey } from "./console-standard-harness";
+import { consoleBindingName, parseConsoleKeys } from "../../src/console/worker/key";
+import { makeStandardKey, type TestKey } from "./console-worker-harness";
 
 const NOW = 1_700_000_000;
 const ISSUER = "https://idp.example.test/standard";
@@ -45,22 +42,18 @@ const request = (over: Partial<SigningRequest> = {}): SigningRequest => {
   if (!r.ok) throw new Error("fixture");
   return { identity, resolved: r.value, row: row(), now: NOW, ...over };
 };
-const material = (
-  k: TestKey,
-  issuer: string,
-  key: unknown = k.privateKey,
-): StandardBoundaryKey => ({
+const material = (k: TestKey, issuer: string, key: unknown = k.privateKey): BoundaryKey => ({
   issuer,
   current: { binding: k.binding, kid: k.kid },
   publicJwk: k.publicJwk,
   key,
 });
-const signerOf = (boundaries: Record<string, StandardBoundaryKey>) => {
+const signerOf = (boundaries: Record<string, BoundaryKey>) => {
   logs = [];
-  return createStandardSigner({ boundaries, log: (l) => logs.push(l) });
+  return createBoundarySigner({ boundaries, log: (l) => logs.push(l) });
 };
 
-describe("createStandardSigner", () => {
+describe("createBoundarySigner", () => {
   it("境界の鍵で RS256 の JWT に署名し、公開鍵で検証できる（kid は vars の今の鍵）", async () => {
     const signer = signerOf({ managed: material(managed, ISSUER) });
     const r = await signer.sign(request());
@@ -119,7 +112,7 @@ describe("createStandardSigner", () => {
       ok: false,
       code: "signing_unavailable",
     });
-    expect(logs.join("\n")).toContain("standard_issuer_mismatch");
+    expect(logs.join("\n")).toContain("console_issuer_mismatch");
   });
 
   it.each([
@@ -130,7 +123,7 @@ describe("createStandardSigner", () => {
     async (_n, v) => {
       const signer = signerOf({ managed: material(managed, ISSUER, await v()) });
       expect(await signer.sign(request())).toEqual({ ok: false, code: "signing_unavailable" });
-      expect(logs.join("\n")).toContain("standard_key_unusable");
+      expect(logs.join("\n")).toContain("console_key_unusable");
     },
   );
 
@@ -143,7 +136,7 @@ describe("createStandardSigner", () => {
   it("公開鍵と合わない鍵（自己検証の失敗）は signing_unavailable", async () => {
     const signer = signerOf({ managed: material(managed, ISSUER, partner.privateKey) });
     expect(await signer.sign(request())).toEqual({ ok: false, code: "signing_unavailable" });
-    expect(logs.join("\n")).toContain("standard_key_self_verify_failed");
+    expect(logs.join("\n")).toContain("console_key_self_verify_failed");
   });
 
   it("入力が JWT の claim として不正（チーム名が規則に合わない）なら signing_unavailable に倒す", async () => {
@@ -186,7 +179,7 @@ describe("createStandardSigner", () => {
   });
 });
 
-describe("parseStandardKeys（境界 → 今の鍵・境界 → 公開鍵の 2 つの vars）", () => {
+describe("parseConsoleKeys（境界 → 今の鍵・境界 → 公開鍵の 2 つの vars）", () => {
   const cur = (m: Record<string, TestKey>) =>
     JSON.stringify(
       Object.fromEntries(
@@ -198,19 +191,19 @@ describe("parseStandardKeys（境界 → 今の鍵・境界 → 公開鍵の 2 �
       Object.fromEntries(Object.entries(m).map(([b, ks]) => [b, ks.map((k) => k.publicJwk)])),
     );
 
-  it("読める。名前は STANDARD_KEY_<kid の 16 進>", async () => {
-    const r = await parseStandardKeys(
+  it("読める。名前は CONSOLE_KEY_<kid の 16 進>", async () => {
+    const r = await parseConsoleKeys(
       cur({ managed, "partner:acme": partner }),
       pub({ managed: [managed], "partner:acme": [partner] }),
     );
     expect(r.current.managed).toEqual({ binding: managed.binding, kid: managed.kid });
     expect(r.publicJwks["partner:acme"]).toEqual([partner.publicJwk]);
-    expect(standardBindingName(managed.kid)).toBe(managed.binding);
-    expect(managed.binding).toMatch(/^STANDARD_KEY_[0-9A-F]{16}$/);
+    expect(consoleBindingName(managed.kid)).toBe(managed.binding);
+    expect(managed.binding).toMatch(/^CONSOLE_KEY_[0-9A-F]{16}$/);
   });
 
   it("公開鍵だけの境界（今の鍵なし）は読める", async () => {
-    const r = await parseStandardKeys(
+    const r = await parseConsoleKeys(
       cur({ managed }),
       pub({ managed: [managed], "partner:acme": [partner] }),
     );
@@ -240,12 +233,12 @@ describe("parseStandardKeys（境界 → 今の鍵・境界 → 公開鍵の 2 �
     ],
   ])("%s は例外", async (_n, f) => {
     const [c, p] = f();
-    await expect(parseStandardKeys(c, p)).rejects.toThrow();
+    await expect(parseConsoleKeys(c, p)).rejects.toThrow();
   });
 
   it("例外の文に鍵の値を含めない", async () => {
     try {
-      await parseStandardKeys(
+      await parseConsoleKeys(
         cur({ managed }),
         JSON.stringify({ managed: [{ ...managed.publicJwk, d: "secret-d" }] }),
       );

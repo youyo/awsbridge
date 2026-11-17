@@ -1,12 +1,12 @@
-// コンソールログインの Standard の Worker（src/console/standard/worker.ts）の試験用の道具。
+// コンソールログインの Standard の Worker（src/console/worker/worker.ts）の試験用の道具。
 // 偽の Access（手元の鍵と JWKS）・STS・getSigninToken を用意し、Worker を直接呼ぶ。値はすべてダミー。
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { parseConsoleConfig } from "../../src/console/config";
 import { generateConsoleArtifacts } from "../../src/console/generate";
 import { createCsrfToken, importCsrfKey } from "../../src/console/issue/csrf";
 import { bindingNameFor, jwkThumbprint, type PublicJwk } from "../../src/console/signing/key";
-import { STANDARD_KEY_BINDING_PREFIX } from "../../src/console/standard/key";
 import type { DisplayConfig, WorkerConfig } from "../../src/console/types";
+import { CONSOLE_KEY_BINDING_PREFIX } from "../../src/console/worker/key";
 import { companyAuds, companyConfig, companyInventory } from "./console-fixtures";
 
 export const TEAM_DOMAIN = "https://unit-team.cloudflareaccess.com";
@@ -178,7 +178,7 @@ export async function makeStandardKey(extractable = false): Promise<TestKey> {
     privateKey: pair.privateKey,
     publicJwk: { kty: "RSA", n, e: "AQAB", kid, alg: "RS256", use: "sig" },
     kid,
-    binding: bindingNameFor(STANDARD_KEY_BINDING_PREFIX, kid),
+    binding: bindingNameFor(CONSOLE_KEY_BINDING_PREFIX, kid),
   };
 }
 
@@ -193,7 +193,7 @@ function standardTestKeys(): Promise<Record<string, TestKey>> {
 }
 
 /**
- * Standard の署名鍵の vars とバインディング。境界 → 今の鍵（STANDARD_CURRENT_KEYS）、境界 → 公開鍵（STANDARD_PUBLIC_JWKS。
+ * Standard の署名鍵の vars とバインディング。境界 → 今の鍵（CONSOLE_CURRENT_KEYS）、境界 → 公開鍵（CONSOLE_PUBLIC_JWKS。
  * 既定は今の鍵だけ）、バインディング（名前 → CryptoKey）。
  */
 export function standardKeyEnv(
@@ -203,12 +203,12 @@ export function standardKeyEnv(
   ),
 ): Record<string, unknown> {
   const env: Record<string, unknown> = {
-    STANDARD_CURRENT_KEYS: JSON.stringify(
+    CONSOLE_CURRENT_KEYS: JSON.stringify(
       Object.fromEntries(
         Object.entries(current).map(([b, k]) => [b, { binding: k.binding, kid: k.kid }]),
       ),
     ),
-    STANDARD_PUBLIC_JWKS: JSON.stringify(
+    CONSOLE_PUBLIC_JWKS: JSON.stringify(
       Object.fromEntries(
         Object.entries(publicKeys).map(([b, ks]) => [b, ks.map((k) => k.publicJwk)]),
       ),

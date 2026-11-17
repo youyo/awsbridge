@@ -1,5 +1,5 @@
 // コンソールログインの issuer の「外からの比較」の判定（純粋な関数）。scripts/console/exposure-check*.ts が使う。
-// 外から取った issuer の discovery と JWKS が、設定の公開鍵（vars の STANDARD_PUBLIC_JWKS / ADMIN_PUBLIC_JWKS）と一致するかを確かめる。
+// 外から取った issuer の discovery と JWKS が、設定の公開鍵（vars の CONSOLE_PUBLIC_JWKS / ADMIN_PUBLIC_JWKS）と一致するかを確かめる。
 // 目的: issuer のホストの応答を、Route などで差し替えられていないことの検知（AWS の OIDC プロバイダーはこの JWKS を信頼する）。
 //
 // 誤りにするもの（一致のときだけ ok）:

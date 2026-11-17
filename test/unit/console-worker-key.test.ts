@@ -1,12 +1,12 @@
 // コンソールログインの Standard の Worker の署名鍵（cto の決裁「Standard も secret_key に揃える」）:
 // 境界ごとの Workers の secret_key 型のバインディング（取り出せない CryptoKey）で署名し、vars の公開鍵で JWKS を出して自己検証する。
-//   STANDARD_CURRENT_KEYS  境界 → 今の署名鍵 {binding: STANDARD_KEY_<16 進>, kid}
-//   STANDARD_PUBLIC_JWKS   境界 → 公開鍵 JWK の配列（新旧 2 つまで）
+//   CONSOLE_CURRENT_KEYS  境界 → 今の署名鍵 {binding: CONSOLE_KEY_<16 進>, kid}
+//   CONSOLE_PUBLIC_JWKS   境界 → 公開鍵 JWK の配列（新旧 2 つまで）
 // 振る舞い（9 段・エラーコード）は従来どおり: vars が無い・壊れている → 500、その境界の鍵が無い・使えない → 503 signing_unavailable。
 import { createLocalJWKSet, decodeProtectedHeader, type JSONWebKeySet, jwtVerify } from "jose";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { AUDIENCE } from "../../src/console/constants";
-import { createStandardWorker } from "../../src/console/standard/worker";
+import { createConsoleWorker } from "../../src/console/worker/worker";
 import {
   AUDS,
   baseEnv,
@@ -22,7 +22,7 @@ import {
   standardConfig,
   standardKeyEnv,
   type TestKey,
-} from "./console-standard-harness";
+} from "./console-worker-harness";
 
 const INFRA = AUDS.teams.infra as string;
 /** infra のチームが Viewer で入れる、partner:partner-x の境界の行。 */
@@ -53,7 +53,7 @@ afterEach(() => {
 });
 
 const worker = () =>
-  createStandardWorker(standardConfig(), { getAccessKey: h.getAccessKey, fetch: h.fetch });
+  createConsoleWorker(standardConfig(), { getAccessKey: h.getAccessKey, fetch: h.fetch });
 
 async function post(env: Record<string, unknown>, entry = ENTRY) {
   const jwt = await h.accessJwt({ aud: INFRA, email: EMAIL });
@@ -158,7 +158,7 @@ describe("Standard の Worker: その境界の鍵が使えなければ 503 signi
     expect(res.status).toBe(503);
     expect(await res.text()).toContain("signing_unavailable");
     noIssue();
-    expect(logs.join("\n")).toContain("standard_key_unusable");
+    expect(logs.join("\n")).toContain("console_key_unusable");
     // ほかの境界は影響を受けない
     expect((await post(env, PARTNER_ENTRY)).status).toBe(302);
   });
@@ -174,25 +174,25 @@ describe("Standard の Worker: その境界の鍵が使えなければ 503 signi
     const res = await post(baseEnv(h, { [managed.binding]: partner.privateKey }));
     expect(res.status).toBe(503);
     noIssue();
-    expect(logs.join("\n")).toContain("standard_key_self_verify_failed");
+    expect(logs.join("\n")).toContain("console_key_self_verify_failed");
   });
 });
 
 describe("Standard の Worker: vars の形の誤りは 500 server_misconfigured", () => {
   const cur = (m: Record<string, { binding: string; kid: string }>) => JSON.stringify(m);
   it.each([
-    ["STANDARD_CURRENT_KEYS が配列", () => ({ STANDARD_CURRENT_KEYS: "[]" })],
-    ["STANDARD_CURRENT_KEYS が空のオブジェクト", () => ({ STANDARD_CURRENT_KEYS: "{}" })],
+    ["CONSOLE_CURRENT_KEYS が配列", () => ({ CONSOLE_CURRENT_KEYS: "[]" })],
+    ["CONSOLE_CURRENT_KEYS が空のオブジェクト", () => ({ CONSOLE_CURRENT_KEYS: "{}" })],
     [
       "名前が kid の規則と違う",
       () => ({
-        STANDARD_CURRENT_KEYS: cur({ managed: { binding: partner.binding, kid: managed.kid } }),
+        CONSOLE_CURRENT_KEYS: cur({ managed: { binding: partner.binding, kid: managed.kid } }),
       }),
     ],
     [
       "名前が Admin の接頭辞",
       () => ({
-        STANDARD_CURRENT_KEYS: cur({
+        CONSOLE_CURRENT_KEYS: cur({
           managed: { binding: `ADMIN_KEY_${managed.binding.slice(-16)}`, kid: managed.kid },
         }),
       }),
@@ -216,7 +216,7 @@ describe("Standard の Worker: vars の形の誤りは 500 server_misconfigured"
     [
       "公開鍵に秘密の成分",
       () => ({
-        STANDARD_PUBLIC_JWKS: JSON.stringify({
+        CONSOLE_PUBLIC_JWKS: JSON.stringify({
           managed: [{ ...managed.publicJwk, d: "x" }],
           "partner:partner-x": [partner.publicJwk],
         }),
@@ -233,8 +233,8 @@ describe("Standard の Worker: vars の形の誤りは 500 server_misconfigured"
     [
       "文字列の秘密鍵の secret（旧い CONSOLE_SIGNING_KEYS）だけがある",
       () => ({
-        STANDARD_CURRENT_KEYS: undefined,
-        STANDARD_PUBLIC_JWKS: undefined,
+        CONSOLE_CURRENT_KEYS: undefined,
+        CONSOLE_PUBLIC_JWKS: undefined,
         CONSOLE_SIGNING_KEYS: JSON.stringify({ managed: { kty: "RSA" } }),
       }),
     ],
@@ -290,7 +290,7 @@ describe("デプロイ後の確認: GET <team-base>/key-check（Access の検証
         a.roles = a.roles
           .map((r) => ({ ...r, teams: r.teams.filter((t) => t !== "dev") }))
           .filter((r) => r.teams.length > 0);
-    const w = createStandardWorker(config, { getAccessKey: h.getAccessKey, fetch: h.fetch });
+    const w = createConsoleWorker(config, { getAccessKey: h.getAccessKey, fetch: h.fetch });
     const dev = AUDS.teams.dev as string;
     const res = await w.fetch(
       new Request(`https://${PORTAL_HOST}/t/dev/key-check`, {
@@ -346,9 +346,7 @@ describe("デプロイ後の確認: GET <team-base>/key-check（Access の検証
       { jwt },
     );
     expect(limited.status).toBe(429);
-    expect(keys).toEqual([
-      `standard-key-check:${(await import("./console-standard-harness")).SUB}`,
-    ]);
+    expect(keys).toEqual([`standard-key-check:${(await import("./console-worker-harness")).SUB}`]);
   });
 
   it("POST は 405", async () => {

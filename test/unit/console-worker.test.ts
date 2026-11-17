@@ -4,8 +4,8 @@
 import { createLocalJWKSet, decodeJwt, decodeProtectedHeader, jwtVerify } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AUDIENCE } from "../../src/console/constants";
-import { createStandardWorker } from "../../src/console/standard/worker";
 import type { WorkerConfig } from "../../src/console/types";
+import { createConsoleWorker } from "../../src/console/worker/worker";
 import {
   ACCESS_KEY_ID,
   AUDS,
@@ -27,7 +27,7 @@ import {
   standardKeyEnv,
   stsErrorXml,
   type TestKey,
-} from "./console-standard-harness";
+} from "./console-worker-harness";
 
 let h: Harness;
 let logs: string[];
@@ -54,7 +54,7 @@ const INFRA = AUDS.teams.infra as string;
 const DEV = AUDS.teams.dev as string;
 
 function worker(config: unknown = standardConfig()) {
-  return createStandardWorker(config, { getAccessKey: h.getAccessKey, fetch: h.fetch });
+  return createConsoleWorker(config, { getAccessKey: h.getAccessKey, fetch: h.fetch });
 }
 
 type PostOpts = Partial<Parameters<typeof loginRequest>[0]> & {
@@ -488,10 +488,10 @@ describe("生成物と secret の検査（fail-closed）", () => {
   });
 
   it.each([
-    ["今の署名鍵の vars の JSON が壊れている", { STANDARD_CURRENT_KEYS: "{" }],
-    ["今の署名鍵の vars がない", { STANDARD_CURRENT_KEYS: undefined }],
-    ["公開鍵の vars がない", { STANDARD_PUBLIC_JWKS: undefined }],
-    ["公開鍵の vars の JSON が壊れている", { STANDARD_PUBLIC_JWKS: "[" }],
+    ["今の署名鍵の vars の JSON が壊れている", { CONSOLE_CURRENT_KEYS: "{" }],
+    ["今の署名鍵の vars がない", { CONSOLE_CURRENT_KEYS: undefined }],
+    ["公開鍵の vars がない", { CONSOLE_PUBLIC_JWKS: undefined }],
+    ["公開鍵の vars の JSON が壊れている", { CONSOLE_PUBLIC_JWKS: "[" }],
     ["CSRF の鍵が短い", { CONSOLE_CSRF_KEY: "short" }],
     ["チームドメインがない", { ACCESS_TEAM_DOMAIN: undefined }],
     ["チームドメインが https でない", { ACCESS_TEAM_DOMAIN: "http://unit.cloudflareaccess.com" }],
@@ -524,7 +524,7 @@ describe("生成物と secret の検査（fail-closed）", () => {
   it("STS のリージョンは設定（STS_REGION）で地域の endpoint を選べる", async () => {
     const seen: string[] = [];
     const inner = h.fetch;
-    const w = createStandardWorker(standardConfig(), {
+    const w = createConsoleWorker(standardConfig(), {
       getAccessKey: h.getAccessKey,
       fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input instanceof Request ? input.url : input);

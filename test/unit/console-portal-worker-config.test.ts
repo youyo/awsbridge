@@ -8,7 +8,7 @@ import { generateConsoleArtifacts } from "../../src/console/generate";
 import { readWorkerConfig, WorkerConfigError } from "../../src/console/portal/worker-config";
 import type { WorkerConfig } from "../../src/console/types";
 import { personalConfig } from "./console-fixtures";
-import { adminConfig, standardConfig } from "./console-standard-harness";
+import { adminConfig, standardConfig } from "./console-worker-harness";
 
 function kindOf(raw: unknown, tier: "standard" | "admin" = "standard"): string | undefined {
   try {

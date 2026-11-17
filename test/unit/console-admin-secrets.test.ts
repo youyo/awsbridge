@@ -1,7 +1,7 @@
 // コンソールログイン（Admin）の CSRF の鍵の投入（scripts/console/secrets-lib.ts の runCsrfPut を Admin の宛先で。mise タスク console:secrets:admin）。
 // 道具の中で 32 バイトの乱数を作り、Cloudflare API の PUT .../secrets（secret_text）で Admin の Worker に入れる。ファイルに書かない・出力しない。
 // --yes が無ければ表示だけ。同じ名前が secret_text 以外（secret_key など）なら入れない。署名鍵は入れない（console:admin-key:put）。
-// cto の決裁 G2 の論点 5（Admin の CSRF の鍵の道具）。Standard の道具（console:secrets:standard）の表示は変えない。
+// cto の決裁 G2 の論点 5（Admin の CSRF の鍵の道具）。Standard の道具（console:secrets）の表示は変えない。
 import { describe, expect, it } from "vitest";
 import type { Deps } from "../../scripts/console/admin-key-lib";
 import { CSRF_SECRET_NAME, type CsrfTarget, runCsrfPut } from "../../scripts/console/secrets-lib";
@@ -57,8 +57,8 @@ describe("console:secrets:admin（Admin の Worker の CONSOLE_CSRF_KEY だけ�
     expect(text).toContain("--yes");
     expect(text).toContain("console:admin-key:put");
     expect(text).toContain("Standard");
-    expect(text).not.toContain("console:secrets:standard");
-    expect(text).not.toContain("console:standard-key:put");
+    expect(text).not.toMatch(/console:secrets(?!:admin)/);
+    expect(text).not.toContain("console:key:put");
   });
 
   it("--yes: Admin の Worker の一覧を確かめてから PUT（secret_text・32 バイトの乱数）。値とトークンは出力しない", async () => {
@@ -87,12 +87,12 @@ describe("console:secrets:admin（Admin の Worker の CONSOLE_CSRF_KEY だけ�
     expect(f.calls.map((c) => c.method)).toEqual(["GET"]);
   });
 
-  it("tier を省くと Standard の表示のまま（console:secrets:standard の出力を変えない）", async () => {
+  it("tier を省くと Standard の表示のまま（console:secrets の出力を変えない）", async () => {
     const f = fakeDeps(() => cfJson({}));
     expect(await runCsrfPut(s, f.d, { yes: false })).toBe(0);
     const text = f.out.join("\n");
-    expect(text).toContain("console:secrets:standard");
-    expect(text).toContain("console:standard-key:put");
+    expect(text).toContain("console:secrets");
+    expect(text).toContain("console:key:put");
     expect(text).not.toContain("console:secrets:admin");
   });
 });

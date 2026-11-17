@@ -1,9 +1,9 @@
-// console:secrets:standard と console:secrets:admin の本体（CLI は secrets.ts と secrets-admin.ts）。コンソールログインの
+// console:secrets と console:secrets:admin の本体（CLI は secrets.ts と secrets-admin.ts）。コンソールログインの
 // Standard / Admin の Worker の CSRF の鍵（CONSOLE_CSRF_KEY）を入れる。Admin の分は cto の決裁 G2 の論点 5 で足した。
-// 署名鍵は境界ごとの secret_key（console:standard-key:put）に移した（cto の決裁「Standard も secret_key に揃える」）。CSRF の鍵は secret_text のまま。
+// 署名鍵は境界ごとの secret_key（console:key:put）に移した（cto の決裁「Standard も secret_key に揃える」）。CSRF の鍵は secret_text のまま。
 // 鍵はこの道具の中で作り（32 バイトの乱数を 16 進 64 文字に）、Cloudflare API の PUT .../secrets（secret_text）で入れる。
 // ファイルに書かない・出力しない。--yes が無ければ表示だけ（API・トークンを使わない）。同じ名前が secret_text 以外なら入れない。
-// トークンと宛先は、その階層の署名鍵の道具と同じ（Standard は AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN、Admin は
+// トークンと宛先は、その階層の署名鍵の道具と同じ（Standard は AWSBRIDGE_CONSOLE_CF_API_TOKEN、Admin は
 // AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN）。どちらの CLI も、もう一方の階層の変数を読まない。値は実行のたびに新しく作るので、
 // Standard と Admin の Worker の CSRF の鍵は別の値になる。
 import { cfApi, cfErrors, isObj, type ToolDeps } from "./key-tool-common";
@@ -24,8 +24,7 @@ const CSRF_BYTES = 32;
 
 /** 署名鍵を入れる道具の案内（階層ごと）。 */
 const SIGNING_KEY_HINT: Record<CsrfTier, string> = {
-  standard:
-    "署名鍵はこの道具では入れない。境界ごとに mise run console:standard-key:put（secret_key）",
+  standard: "署名鍵はこの道具では入れない。境界ごとに mise run console:key:put（secret_key）",
   admin: "署名鍵はこの道具では入れない。mise run console:admin-key:put（secret_key）",
 };
 

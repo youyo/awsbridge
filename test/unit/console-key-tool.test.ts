@@ -1,10 +1,10 @@
-// コンソールログインの Standard の署名鍵の運用の道具（scripts/console/standard-key-lib.ts）。cto の決裁「Standard も secret_key に揃える」の
+// コンソールログインの Standard の署名鍵の運用の道具（scripts/console/key-lib.ts）。cto の決裁「Standard も secret_key に揃える」の
 // (d)・(e)・(g)。Admin の道具（admin-key-lib.ts）と同じ形で、境界ごとに鍵を持つ:
-//   put     --boundary の鍵を道具の中でメモリ上に作り、Cloudflare API で secret_key（STANDARD_KEY_<16 進>）として入れる（ファイルに書かない）。
+//   put     --boundary の鍵を道具の中でメモリ上に作り、Cloudflare API で secret_key（CONSOLE_KEY_<16 進>）として入れる（ファイルに書かない）。
 //           --yes が無ければ表示だけで、API を呼ばない。同じ名前への PUT は断る
-//   retire  旧い鍵のバインディングを消す。今の鍵・公開鍵の vars・デプロイ済みのどの境界の JWKS に残っている鍵も断る。STANDARD_KEY_ の形以外は断る
+//   retire  旧い鍵のバインディングを消す。今の鍵・公開鍵の vars・デプロイ済みのどの境界の JWKS に残っている鍵も断る。CONSOLE_KEY_ の形以外は断る
 //   check   デプロイ後の確認: 境界ごとのバインディングの型、境界ごとの issuer の discovery と JWKS、key-check
-// トークンは Standard 用の変数（AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN）だけを読み、Admin 用を読まない。トークン・鍵の値は出力しない。
+// トークンは Standard 用の変数（AWSBRIDGE_CONSOLE_CF_API_TOKEN）だけを読み、Admin 用を読まない。トークン・鍵の値は出力しない。
 import { calculateJwkThumbprint } from "jose";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
@@ -16,13 +16,13 @@ import {
   standardApiBaseFrom,
   standardKeySettings,
   standardToken,
-} from "../../scripts/console/standard-key-lib";
+} from "../../scripts/console/key-lib";
 import type { PublicJwk } from "../../src/console/signing/key";
-import { standardBindingName } from "../../src/console/standard/key";
-import { standardConfig } from "./console-standard-harness";
+import { consoleBindingName } from "../../src/console/worker/key";
+import { standardConfig } from "./console-worker-harness";
 
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
-const SCRIPT = "awsbridge-console-standard";
+const SCRIPT = "awsbridge-console";
 const TOKEN = ["cf", "token", "s".repeat(32)].join("-");
 const ACCESS_TOKEN = ["access", "token", "a".repeat(32)].join("-");
 const ISSUER = "https://id.example.com/standard";
@@ -48,7 +48,7 @@ async function makeKey(): Promise<Key> {
     pair,
     publicJwk: { kty: "RSA", n: pub.n as string, e: "AQAB", kid, alg: "RS256", use: "sig" },
     kid,
-    binding: standardBindingName(kid),
+    binding: consoleBindingName(kid),
   };
 }
 
@@ -64,11 +64,11 @@ function wranglerText(vars: Record<string, string> = {}, extra: Record<string, u
   return `{
   // コメント
   "name": "${SCRIPT}",
-  "main": "src/console/standard/index.ts",
+  "main": "src/console/worker/index.ts",
   ${Object.entries(extra)
     .map(([k, v]) => `"${k}": ${JSON.stringify(v)},`)
     .join("\n")}
-  "vars": ${JSON.stringify({ STANDARD_CURRENT_KEYS: "", STANDARD_PUBLIC_JWKS: "", ...vars })}
+  "vars": ${JSON.stringify({ CONSOLE_CURRENT_KEYS: "", CONSOLE_PUBLIC_JWKS: "", ...vars })}
 }`;
 }
 
@@ -76,7 +76,7 @@ async function settings(
   vars: Record<string, string> = {},
   env: Record<string, string> = {},
 ): Promise<Settings> {
-  return standardKeySettings({ AWSBRIDGE_CONSOLE_STANDARD_CF_ACCOUNT_ID: ACCOUNT, ...env }, (f) => {
+  return standardKeySettings({ AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID: ACCOUNT, ...env }, (f) => {
     if (f.endsWith(".jsonc")) return wranglerText(vars);
     if (f.endsWith("worker.standard.json")) return JSON.stringify(standardConfig());
     throw new Error(`unexpected read ${f}`);
@@ -85,11 +85,11 @@ async function settings(
 
 /** managed の今の鍵と公開鍵、partner の今の鍵 p。 */
 const keyed = (current: Key, jwks: Key[], partner: Key | undefined = p) => ({
-  STANDARD_CURRENT_KEYS: JSON.stringify({
+  CONSOLE_CURRENT_KEYS: JSON.stringify({
     managed: { binding: current.binding, kid: current.kid },
     ...(partner ? { [PARTNER]: { binding: partner.binding, kid: partner.kid } } : {}),
   }),
-  STANDARD_PUBLIC_JWKS: JSON.stringify({
+  CONSOLE_PUBLIC_JWKS: JSON.stringify({
     managed: jwks.map((k) => k.publicJwk),
     ...(partner ? { [PARTNER]: [partner.publicJwk] } : {}),
   }),
@@ -135,11 +135,11 @@ const API = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/workers/sc
 describe("設定", () => {
   it("Cloudflare API の宛先の上書きは手元（127.0.0.1）の http だけ。Standard 用の変数だけを読む", () => {
     expect(standardApiBaseFrom({})).toBe("https://api.cloudflare.com/client/v4");
-    expect(
-      standardApiBaseFrom({ AWSBRIDGE_CONSOLE_STANDARD_CF_API_BASE: "http://127.0.0.1:8787" }),
-    ).toBe("http://127.0.0.1:8787");
+    expect(standardApiBaseFrom({ AWSBRIDGE_CONSOLE_CF_API_BASE: "http://127.0.0.1:8787" })).toBe(
+      "http://127.0.0.1:8787",
+    );
     expect(() =>
-      standardApiBaseFrom({ AWSBRIDGE_CONSOLE_STANDARD_CF_API_BASE: "https://evil.example.com" }),
+      standardApiBaseFrom({ AWSBRIDGE_CONSOLE_CF_API_BASE: "https://evil.example.com" }),
     ).toThrow();
     // Admin 用の宛先は見ない
     expect(standardApiBaseFrom({ AWSBRIDGE_CONSOLE_ADMIN_CF_API_BASE: "http://127.0.0.1:1" })).toBe(
@@ -147,8 +147,8 @@ describe("設定", () => {
     );
   });
 
-  it("トークンは AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN だけを読み、Admin 用のトークンは使わない（無ければ wrangler の OAuth）", () => {
-    expect(standardToken({ AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN: "std" })).toBe("std");
+  it("トークンは AWSBRIDGE_CONSOLE_CF_API_TOKEN だけを読み、Admin 用のトークンは使わない（無ければ wrangler の OAuth）", () => {
+    expect(standardToken({ AWSBRIDGE_CONSOLE_CF_API_TOKEN: "std" })).toBe("std");
     expect(standardToken({ AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN: "admin" })).toBeUndefined();
     expect(standardToken({ CLOUDFLARE_API_TOKEN: "other" })).toBeUndefined();
   });
@@ -166,7 +166,7 @@ describe("設定", () => {
       standardKeySettings({ AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID: ACCOUNT }, (f) =>
         f.endsWith(".jsonc") ? wranglerText() : "{}",
       ),
-    ).rejects.toThrow(/AWSBRIDGE_CONSOLE_STANDARD_CF_ACCOUNT_ID/);
+    ).rejects.toThrow(/AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID/);
     const s = await standardKeySettings({}, (f) =>
       f.endsWith(".jsonc") ? wranglerText({}, { account_id: ACCOUNT }) : "{}",
     );
@@ -176,12 +176,12 @@ describe("設定", () => {
   it("vars が空なら鍵なし。片方だけ・壊れていれば例外", async () => {
     expect((await settings()).keys).toBeUndefined();
     await expect(
-      settings({ STANDARD_CURRENT_KEYS: keyed(a, [a]).STANDARD_CURRENT_KEYS }),
+      settings({ CONSOLE_CURRENT_KEYS: keyed(a, [a]).CONSOLE_CURRENT_KEYS }),
     ).rejects.toThrow();
     await expect(
       settings({
         ...keyed(a, [a]),
-        STANDARD_CURRENT_KEYS: JSON.stringify({ managed: { binding: b.binding, kid: a.kid } }),
+        CONSOLE_CURRENT_KEYS: JSON.stringify({ managed: { binding: b.binding, kid: a.kid } }),
       }),
     ).rejects.toThrow();
   });
@@ -196,10 +196,10 @@ describe("put: 境界の鍵をメモリの中で作り、Cloudflare API で secr
     const text = d.out.join("\n");
     expect(text).toContain(SCRIPT);
     expect(text).toContain("secret_key");
-    expect(text).toContain("STANDARD_KEY_");
+    expect(text).toContain("CONSOLE_KEY_");
     expect(text).toContain("managed");
     expect(text).toContain("--yes");
-    expect(text).toContain("AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN");
+    expect(text).toContain("AWSBRIDGE_CONSOLE_CF_API_TOKEN");
   });
 
   it("--yes: 同じ名前が無いことを確かめてから PUT。出力は名前・kid・公開鍵と、その境界を入れ替えた vars（秘密の成分・トークンは出さない）", async () => {
@@ -267,7 +267,7 @@ describe("put: 境界の鍵をメモリの中で作り、Cloudflare API で secr
 
   it("生成物（worker.standard.json）が無ければ、境界の名前を確かめられないので断る（API・トークンを使わない）", async () => {
     const noConfig = await standardKeySettings(
-      { AWSBRIDGE_CONSOLE_STANDARD_CF_ACCOUNT_ID: ACCOUNT },
+      { AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID: ACCOUNT },
       (f) => {
         if (f.endsWith(".jsonc")) return wranglerText();
         throw new Error("no file");
@@ -370,13 +370,10 @@ describe("retire: 旧い鍵のバインディングを消す（どの境界の J
   });
 
   it("生成物（worker.standard.json）が無ければ断る", async () => {
-    const s = await standardKeySettings(
-      { AWSBRIDGE_CONSOLE_STANDARD_CF_ACCOUNT_ID: ACCOUNT },
-      (f) => {
-        if (f.endsWith(".jsonc")) return wranglerText(keyed(b, [b]));
-        throw new Error("no file");
-      },
-    );
+    const s = await standardKeySettings({ AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID: ACCOUNT }, (f) => {
+      if (f.endsWith(".jsonc")) return wranglerText(keyed(b, [b]));
+      throw new Error("no file");
+    });
     const d = fakeDeps(() => cfJson({ success: true }));
     expect(await runRetire(s, d, { yes: true, binding: a.binding })).toBe(1);
     expect(d.calls).toHaveLength(0);
@@ -401,10 +398,10 @@ describe("retire: 旧い鍵のバインディングを消す（どの境界の J
   it.each([
     "",
     "CONSOLE_CSRF_KEY",
-    "STANDARD_KEY_xyz",
-    "STANDARD_CURRENT_KEYS",
+    "CONSOLE_KEY_xyz",
+    "CONSOLE_CURRENT_KEYS",
     "ADMIN_KEY_0123456789ABCDEF",
-  ])("STANDARD_KEY_<16 進> の形でない名前（%s）は断る", async (name) => {
+  ])("CONSOLE_KEY_<16 進> の形でない名前（%s）は断る", async (name) => {
     const d = fakeDeps(() => cfJson({ success: true }));
     expect(await runRetire(await settings(keyed(b, [b])), d, { yes: true, binding: name })).toBe(1);
     expect(d.calls).toHaveLength(0);
@@ -547,7 +544,7 @@ describe("check: デプロイ後の確認（境界ごと）", () => {
     expect(await runCheck(await settings(), checkDeps(), {})).toBe(1);
   });
 
-  it("使われていない STANDARD_KEY_ のバインディングがあれば知らせる（失敗にはしない）", async () => {
+  it("使われていない CONSOLE_KEY_ のバインディングがあれば知らせる（失敗にはしない）", async () => {
     const d = checkDeps({
       secrets: [
         { name: b.binding, type: "secret_key" },

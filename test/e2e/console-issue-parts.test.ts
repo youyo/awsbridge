@@ -17,10 +17,10 @@ import {
 } from "../../src/console/issue/federation";
 import { resolveIdentity } from "../../src/console/issue/identity";
 import { createIssueRecord, maskIssueRecord } from "../../src/console/issue/record";
-import { createStandardSigner } from "../../src/console/issue/sign-standard";
+import { createBoundarySigner } from "../../src/console/issue/sign-boundary";
 import { type IssueRow, unavailableSigner } from "../../src/console/issue/signer";
 import { assumeRoleWithWebIdentityDetailed, StsError } from "../../src/sts";
-import { makeStandardKey, type TestKey } from "../unit/console-standard-harness";
+import { makeStandardKey, type TestKey } from "../unit/console-worker-harness";
 
 const ISSUER = "https://idp.example.test/standard";
 const ACCESS_KEY_ID = ["ASIA", "E".repeat(16)].join("");
@@ -116,7 +116,7 @@ describe("発行の部品を通しで（擬似の STS・サインイン）", () 
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
 
-    const signer = createStandardSigner({
+    const signer = createBoundarySigner({
       boundaries: { managed: standardKeyOf(key) },
       log: () => {},
     });
@@ -240,7 +240,7 @@ describe("発行の部品を通しで（擬似の STS・サインイン）", () 
 
   it("STS が AccessDenied のときは StsError（forbidden）→ sts_denied（403）", async () => {
     stsMode = "denied";
-    const signer = createStandardSigner({
+    const signer = createBoundarySigner({
       boundaries: { managed: standardKeyOf(key) },
       log: () => {},
     });

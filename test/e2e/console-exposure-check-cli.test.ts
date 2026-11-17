@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { calculateJwkThumbprint } from "jose";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PublicJwk } from "../../src/console/signing/key";
-import { adminConfig, standardConfig } from "../unit/console-standard-harness";
+import { adminConfig, standardConfig } from "../unit/console-worker-harness";
 import { freePort, root } from "./console-e2e-kit";
 
 type Doc = { status?: number; location?: string; body?: unknown; raw?: string };
@@ -65,7 +65,7 @@ function bindingOf(kid: string): string {
   const bytes = Uint8Array.from(atob(t + "=".repeat((4 - (t.length % 4)) % 4)), (c) =>
     c.charCodeAt(0),
   );
-  return `STANDARD_KEY_${[...bytes.slice(0, 8)]
+  return `CONSOLE_KEY_${[...bytes.slice(0, 8)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("")
     .toUpperCase()}`;
@@ -121,9 +121,9 @@ beforeAll(async () => {
     boundaries.map((b) => [b.name, keys[b.issuer] as PublicJwk[]]),
   );
   writeFileSync(
-    join(dir, "wrangler.console-standard.jsonc"),
+    join(dir, "wrangler.console.jsonc"),
     `{\n  // 試験用\n  "name": "std",\n  "vars": ${JSON.stringify({
-      STANDARD_CURRENT_KEYS: JSON.stringify(
+      CONSOLE_CURRENT_KEYS: JSON.stringify(
         Object.fromEntries(
           Object.entries(byBoundary).map(([b, ks]) => [
             b,
@@ -131,7 +131,7 @@ beforeAll(async () => {
           ]),
         ),
       ),
-      STANDARD_PUBLIC_JWKS: JSON.stringify(byBoundary),
+      CONSOLE_PUBLIC_JWKS: JSON.stringify(byBoundary),
     })}\n}\n`,
   );
   writeFileSync(
@@ -344,15 +344,13 @@ describe("console:exposure-check", () => {
   });
 
   it("設定が読めなければ 2（wrangler の設定なし・vars が空）。要求は 1 つも送らない", async () => {
-    const r = await exec({ AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG: "nope.jsonc" });
+    const r = await exec({ AWSBRIDGE_CONSOLE_WRANGLER_CONFIG: "nope.jsonc" });
     expect(r.status).toBe(2);
     expect(r.out).toContain("error:");
     expect(seen).toHaveLength(0);
     expect(dohSeen).toHaveLength(0);
     writeFileSync(join(dir, "empty.jsonc"), '{ "name": "x", "vars": {} }');
-    expect((await exec({ AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG: "empty.jsonc" })).status).toBe(
-      2,
-    );
+    expect((await exec({ AWSBRIDGE_CONSOLE_WRANGLER_CONFIG: "empty.jsonc" })).status).toBe(2);
   });
 
   it("DoH の宛先の上書きは手元（127.0.0.1）の http だけ。それ以外は 2", async () => {

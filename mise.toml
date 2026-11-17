@@ -159,7 +159,7 @@ run = "pnpm tsx scripts/console/reconcile.ts"
 
 # ---- コンソールログイン: issuer の外からの比較（README の「コンソールログインの issuer の外からの確認」）----
 # 毎日の確認の 1 つ（もう 1 つは console:reconcile）。公開の HTTP の GET だけ（Cloudflare・AWS のトークンを使わない・書き込まない）。
-# 変数（鍵の道具と同じ。mise.local.toml に置く）: AWSBRIDGE_CONSOLE_OUT_DIR、AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG、AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG
+# 変数（鍵の道具と同じ。mise.local.toml に置く）: AWSBRIDGE_CONSOLE_OUT_DIR、AWSBRIDGE_CONSOLE_WRANGLER_CONFIG、AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG
 [tasks."console:exposure-check"]
 description = "コンソールログインの issuer の外からの比較: 公開の DNS（DoH）で引いた IP に TLS で接続し、Standard の境界ごと・Admin の discovery と JWKS が設定の公開鍵（vars）と一致するかを確かめる（kid だけでなく鍵の中身・issuer・jwks_uri・HTTP 200・リダイレクトなし。トークン不要。終了コード 0 一致 / 1 不一致 / 2 実行できない。毎日回す。検知であって予防ではない）"
 run = "pnpm tsx scripts/console/exposure-check.ts"
@@ -188,35 +188,35 @@ run = "pnpm tsx scripts/console/secrets-admin.ts"
 # ---- コンソールログイン: Standard の署名鍵（境界ごとの Workers の secret_key 型。cto の決裁「Standard も secret_key に揃える」）----
 # 手順は README の「コンソールログインの Standard の署名鍵」。人が手元で実行する（CI から実行しない）。
 # put・retire・secrets は -- --yes を付けたときだけ Cloudflare API を書き換える（既定は表示だけ）。Admin の道具と別のトークンを使う。
-# 変数（[env] に置かず mise.local.toml に置く）: AWSBRIDGE_CONSOLE_STANDARD_CF_ACCOUNT_ID、AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN（任意。無ければ wrangler の OAuth）、
-#   AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG（既定 wrangler.console-standard.jsonc）、AWSBRIDGE_CONSOLE_STANDARD_ACCESS_TOKEN（check の key-check 用。任意）
+# 変数（[env] に置かず mise.local.toml に置く）: AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID、AWSBRIDGE_CONSOLE_CF_API_TOKEN（任意。無ければ wrangler の OAuth）、
+#   AWSBRIDGE_CONSOLE_WRANGLER_CONFIG（既定 wrangler.console.jsonc）、AWSBRIDGE_CONSOLE_ACCESS_TOKEN（check の key-check 用。任意）
 
-[tasks."console:standard-key:put"]
-description = "Standard の境界の署名鍵を手元のメモリの中で作り、Cloudflare API で secret_key（STANDARD_KEY_<kid の 16 進>）として入れる。同じ名前があれば止める。-- --boundary <境界> --yes で実行（既定は表示だけ）"
-run = "pnpm tsx scripts/console/standard-key.ts put"
+[tasks."console:key:put"]
+description = "Standard の境界の署名鍵を手元のメモリの中で作り、Cloudflare API で secret_key（CONSOLE_KEY_<kid の 16 進>）として入れる。同じ名前があれば止める。-- --boundary <境界> --yes で実行（既定は表示だけ）"
+run = "pnpm tsx scripts/console/key.ts put"
 
-[tasks."console:standard-key:retire"]
-description = "旧い Standard の署名鍵のバインディングを消す（どれかの境界の今の鍵・vars とデプロイ済みの JWKS に残る鍵・STANDARD_KEY_ 以外の名前は断る）。-- --binding STANDARD_KEY_… --yes で実行"
-run = "pnpm tsx scripts/console/standard-key.ts retire"
+[tasks."console:key:retire"]
+description = "旧い Standard の署名鍵のバインディングを消す（どれかの境界の今の鍵・vars とデプロイ済みの JWKS に残る鍵・CONSOLE_KEY_ 以外の名前は断る）。-- --binding CONSOLE_KEY_… --yes で実行"
+run = "pnpm tsx scripts/console/key.ts retire"
 
-[tasks."console:standard-key:check"]
+[tasks."console:key:check"]
 description = "デプロイ後の確認: 境界ごとに今の鍵が secret_key か、issuer の discovery と JWKS が vars と合うか、key-check（取り出せない・exportKey が失敗する・自己検証）"
-run = "pnpm tsx scripts/console/standard-key.ts check"
+run = "pnpm tsx scripts/console/key.ts check"
 
-[tasks."console:secrets:standard"]
+[tasks."console:secrets"]
 description = "Standard の Worker の CSRF の鍵 CONSOLE_CSRF_KEY（secret_text）を、手元で作った 32 バイトの乱数で Cloudflare API から入れる（ファイルに書かない・表示しない）。署名鍵は入れない。-- --yes で実行"
 run = "pnpm tsx scripts/console/secrets.ts"
 
 # ---- コンソールログイン（Standard）: ビルド確認と手元の起動（デプロイは利用者が承認して手で行う）----
-# wrangler の設定は AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG（既定 wrangler.console-standard.jsonc）。MCP 用の AWSBRIDGE_WRANGLER_CONFIG / AWSBRIDGE_WRANGLER_ENV には左右されない（--env は付けない）。
+# wrangler の設定は AWSBRIDGE_CONSOLE_WRANGLER_CONFIG（既定 wrangler.console.jsonc）。MCP 用の AWSBRIDGE_WRANGLER_CONFIG / AWSBRIDGE_WRANGLER_ENV には左右されない（--env は付けない）。
 
-[tasks."console:build:standard"]
+[tasks."console:build"]
 description = "コンソールログイン（Standard）: wrangler deploy --dry-run でバンドルだけ確かめる（デプロイしない。先に console:config:generate が要る。鍵の vars が空でもよい）"
-run = 'env AWSBRIDGE_WRANGLER_CONFIG="${AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG:-wrangler.console-standard.jsonc}" AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy --dry-run --outdir dist/console-standard'
+run = 'env AWSBRIDGE_WRANGLER_CONFIG="${AWSBRIDGE_CONSOLE_WRANGLER_CONFIG:-wrangler.console.jsonc}" AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy --dry-run --outdir dist/console'
 
 [tasks."console:dev"]
 description = "コンソールログイン（Standard）: wrangler dev で手元に起動（手元用。先に console:config:generate が要る）"
-run = 'env AWSBRIDGE_WRANGLER_CONFIG="${AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG:-wrangler.console-standard.jsonc}" AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh dev'
+run = 'env AWSBRIDGE_WRANGLER_CONFIG="${AWSBRIDGE_CONSOLE_WRANGLER_CONFIG:-wrangler.console.jsonc}" AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh dev'
 
 [tasks."secrets:scan"]
 description = "gitleaks で秘密の漏れを検査する（コミットの履歴と、未コミットを含む作業ツリー）"

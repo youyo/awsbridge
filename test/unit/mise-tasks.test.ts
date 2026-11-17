@@ -98,16 +98,16 @@ describe("mise.toml: コンソールログインの Admin の署名鍵（X1 の�
 });
 
 describe("mise.toml: コンソールログインの Standard の署名鍵（cto の決裁「Standard も secret_key に揃える」）", () => {
-  it("console:standard-key:put / retire / check は scripts/console/standard-key.ts を呼び、--yes を既定で付けない。wrangler deploy・aws を呼ばない", () => {
+  it("console:key:put / retire / check は scripts/console/key.ts を呼び、--yes を既定で付けない。wrangler deploy・aws を呼ばない", () => {
     for (const cmd of ["put", "retire", "check"]) {
-      const sec = section(`tasks."console:standard-key:${cmd}"`);
+      const sec = section(`tasks."console:key:${cmd}"`);
       const run = /^run\s*=.*$/m.exec(sec)?.[0] ?? "";
-      expect(run, cmd).toContain(`scripts/console/standard-key.ts ${cmd}`);
+      expect(run, cmd).toContain(`scripts/console/key.ts ${cmd}`);
       expect(run, cmd).not.toMatch(/--yes|wrangler|\baws\b|deploy/);
     }
   });
-  it("console:secrets:standard は CSRF の鍵だけを入れる道具（scripts/console/secrets.ts）で、--yes を既定で付けない", () => {
-    const sec = section('tasks."console:secrets:standard"');
+  it("console:secrets は CSRF の鍵だけを入れる道具（scripts/console/secrets.ts）で、--yes を既定で付けない", () => {
+    const sec = section('tasks."console:secrets"');
     const run = /^run\s*=.*$/m.exec(sec)?.[0] ?? "";
     expect(run).toContain("scripts/console/secrets.ts");
     expect(run).not.toMatch(/--yes|wrangler|\baws\b|deploy/);
@@ -122,36 +122,36 @@ describe("mise.toml: コンソールログインの Standard の署名鍵（cto 
   });
   it("文字列の秘密鍵を作る console:keygen は無い。鍵の道具の変数（トークン・アカウント ID）を [env] に置かない", () => {
     expect(toml).not.toMatch(/^\[tasks\."console:keygen"\]/m);
-    expect(section("env")).not.toMatch(/^AWSBRIDGE_CONSOLE_STANDARD_/m);
+    expect(section("env")).not.toMatch(/^AWSBRIDGE_CONSOLE_/m);
   });
 });
 
 describe("mise.toml のコンソールログインの運用タスク（ビルドと手元の起動。PR11 から）", () => {
-  it("console:build:standard / console:dev がある", () => {
-    for (const n of ["build:standard", "dev"]) {
+  it("console:build / console:dev がある", () => {
+    for (const n of ["build", "dev"]) {
       expect(section(`tasks."console:${n}"`), n).not.toBe("");
     }
   });
-  it("console:build:standard は wrangler deploy --dry-run をコンソール用の設定で呼び、デプロイしない", () => {
-    const s = section('tasks."console:build:standard"');
+  it("console:build は wrangler deploy --dry-run をコンソール用の設定で呼び、デプロイしない", () => {
+    const s = section('tasks."console:build"');
     expect(s).toContain("scripts/wrangler.sh");
     expect(s).toContain("deploy --dry-run");
-    expect(s).toContain("wrangler.console-standard.jsonc");
+    expect(s).toContain("wrangler.console.jsonc");
   });
   it("console:dev は wrangler dev をコンソール用の設定で呼ぶ", () => {
     const s = section('tasks."console:dev"');
     expect(s).toContain("scripts/wrangler.sh dev");
-    expect(s).toContain("wrangler.console-standard.jsonc");
+    expect(s).toContain("wrangler.console.jsonc");
   });
-  it("Standard の wrangler の設定の変数は AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG の 1 つだけ（旧名 AWSBRIDGE_CONSOLE_WRANGLER_CONFIG を読まない）", () => {
-    for (const n of ["build:standard", "dev"])
+  it("Standard の wrangler の設定の変数は AWSBRIDGE_CONSOLE_WRANGLER_CONFIG の 1 つだけ（旧名 AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG を読まない）", () => {
+    for (const n of ["build", "dev"])
       expect(section(`tasks."console:${n}"`), n).toContain(
-        "${AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG:-wrangler.console-standard.jsonc}",
+        "${AWSBRIDGE_CONSOLE_WRANGLER_CONFIG:-wrangler.console.jsonc}",
       );
-    expect(toml).not.toContain("AWSBRIDGE_CONSOLE_WRANGLER_CONFIG");
+    expect(toml).not.toContain("AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG");
   });
   it("コンソール用のタスクは MCP 用の AWSBRIDGE_WRANGLER_CONFIG / ENV に左右されない", () => {
-    for (const n of ["build:standard", "dev"]) {
+    for (const n of ["build", "dev"]) {
       const s = section(`tasks."console:${n}"`);
       expect(s, n).toMatch(/AWSBRIDGE_WRANGLER_CONFIG=/);
       expect(s, n).toMatch(/AWSBRIDGE_WRANGLER_ENV=(\s|")/);

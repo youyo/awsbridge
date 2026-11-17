@@ -349,50 +349,50 @@ The console-login portal (the entry screen) sits behind Cloudflare Access applic
 
 ## Standard signing keys for console login
 
-The Standard Worker for console login (`wrangler.console-standard.jsonc`) signs the JWT it passes to STS with a Workers binding of type `secret_key` (a non-extractable `CryptoKey`; RSASSA-PKCS1-v1_5 / SHA-256, usages `sign` only), one per boundary (`managed`, `partner:<id>`). It works like the Admin signing key, with separate keys, tokens, and Worker. A private JWK stored as a string secret is not used.
+The Standard Worker for console login (`wrangler.console.jsonc`) signs the JWT it passes to STS with a Workers binding of type `secret_key` (a non-extractable `CryptoKey`; RSASSA-PKCS1-v1_5 / SHA-256, usages `sign` only), one per boundary (`managed`, `partner:<id>`). It works like the Admin signing key, with separate keys, tokens, and Worker. A private JWK stored as a string secret is not used.
 
-- `mise run console:standard-key:put -- --boundary <boundary>` creates the key in its own memory and uploads it with the Cloudflare API. It does not write the key to a file or print it, and the key never passes through CI or logs. A person runs it, only from a local machine.
-- The binding name is `STANDARD_KEY_<first 8 bytes of the kid in hex>`, derived from the kid (the boundary name is not part of it). The tool refuses an existing name. A new key always gets a different name.
-- The Worker reads the vars `STANDARD_CURRENT_KEYS` (boundary -> name and kid of the current key) and `STANDARD_PUBLIC_JWKS` (boundary -> public keys, at most old and new). If either is empty or broken, if a current kid is missing from its boundary's public keys, or if one key appears in two boundaries, every route returns `500 server_misconfigured`. Before signing it checks the boundary's binding (a `CryptoKey`, non-extractable, `sign` only, `exportKey` fails), and it verifies each signed JWT with the public key in the vars. If anything does not match, issuing for that boundary returns `503 signing_unavailable`. Each boundary's issuer JWKS serves only that boundary's public keys from the vars.
+- `mise run console:key:put -- --boundary <boundary>` creates the key in its own memory and uploads it with the Cloudflare API. It does not write the key to a file or print it, and the key never passes through CI or logs. A person runs it, only from a local machine.
+- The binding name is `CONSOLE_KEY_<first 8 bytes of the kid in hex>`, derived from the kid (the boundary name is not part of it). The tool refuses an existing name. A new key always gets a different name.
+- The Worker reads the vars `CONSOLE_CURRENT_KEYS` (boundary -> name and kid of the current key) and `CONSOLE_PUBLIC_JWKS` (boundary -> public keys, at most old and new). If either is empty or broken, if a current kid is missing from its boundary's public keys, or if one key appears in two boundaries, every route returns `500 server_misconfigured`. Before signing it checks the boundary's binding (a `CryptoKey`, non-extractable, `sign` only, `exportKey` fails), and it verifies each signed JWT with the public key in the vars. If anything does not match, issuing for that boundary returns `503 signing_unavailable`. Each boundary's issuer JWKS serves only that boundary's public keys from the vars.
 - Until the keys are uploaded (while the vars are empty), every route returns `500`. For the first setup, deploy the Worker, upload the keys and the CSRF key, then set the vars and deploy again.
-- The CSRF key `CONSOLE_CSRF_KEY` stays a `secret_text`. `mise run console:secrets:standard -- --yes` creates 32 random bytes locally and uploads them (no file, not printed). After recreating it, open forms need to be reloaded.
-- Tokens: for `AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN`, use a token that can write only the Standard Worker, separate from the Admin token (without it, the `wrangler login` OAuth token is used, in memory only). The tools do not read the Admin variables. Even though the key cannot be extracted, anyone who can change the Worker's code or secrets can sign any JWT.
+- The CSRF key `CONSOLE_CSRF_KEY` stays a `secret_text`. `mise run console:secrets -- --yes` creates 32 random bytes locally and uploads them (no file, not printed). After recreating it, open forms need to be reloaded.
+- Tokens: for `AWSBRIDGE_CONSOLE_CF_API_TOKEN`, use a token that can write only the Standard Worker, separate from the Admin token (without it, the `wrangler login` OAuth token is used, in memory only). The tools do not read the Admin variables. Even though the key cannot be extracted, anyone who can change the Worker's code or secrets can sign any JWT.
 - Update paths: in a development account we confirmed that a `secret_key` binding survives `wrangler deploy`, `wrangler secret put` / `wrangler secret bulk` / `wrangler secret delete` on other secrets, and `wrangler versions secret put / bulk` followed by `versions deploy` (PoC X1-(h)). Managing the Worker's bindings from the dashboard or Terraform was not measured, so do not use those paths.
-- Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_STANDARD_CF_ACCOUNT_ID` (or `account_id` in the wrangler config), `AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN` (optional), `AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG` (default `wrangler.console-standard.jsonc`), `AWSBRIDGE_CONSOLE_STANDARD_ACCESS_TOKEN` (optional; the Access token used for the key-check in `check`).
+- Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID` (or `account_id` in the wrangler config), `AWSBRIDGE_CONSOLE_CF_API_TOKEN` (optional), `AWSBRIDGE_CONSOLE_WRANGLER_CONFIG` (default `wrangler.console.jsonc`), `AWSBRIDGE_CONSOLE_ACCESS_TOKEN` (optional; the Access token used for the key-check in `check`).
 
-Checking the bundle and running locally (neither deploys; run `mise run console:config:generate` first. The wrangler config is `AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG`, default `wrangler.console-standard.jsonc`; the MCP-side `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` are not read):
+Checking the bundle and running locally (neither deploys; run `mise run console:config:generate` first. The wrangler config is `AWSBRIDGE_CONSOLE_WRANGLER_CONFIG`, default `wrangler.console.jsonc`; the MCP-side `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` are not read):
 
 ```bash
-mise run console:build:standard   # wrangler deploy --dry-run --outdir dist/console-standard (bundles even while the key vars are empty)
+mise run console:build   # wrangler deploy --dry-run --outdir dist/console (bundles even while the key vars are empty)
 mise run console:dev              # wrangler dev (local use; a secret_key binding cannot be created locally, so every route returns 500 while the key vars are empty)
 # Deploy by hand after you approve it (check the routes and vars first)
-#   e.g. AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-standard.jsonc AWSBRIDGE_WRANGLER_ENV= AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy bash scripts/wrangler.sh deploy
+#   e.g. AWSBRIDGE_WRANGLER_CONFIG=wrangler.console.jsonc AWSBRIDGE_WRANGLER_ENV= AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy bash scripts/wrangler.sh deploy
 ```
 
 First upload (per boundary):
 
 ```bash
-mise run console:standard-key:put -- --boundary managed            # only shows what it would do (no API calls)
-mise run console:standard-key:put -- --boundary managed --yes      # creates the key and uploads it as a secret_key; prints the name, kid, public key, and the vars to set next
+mise run console:key:put -- --boundary managed            # only shows what it would do (no API calls)
+mise run console:key:put -- --boundary managed --yes      # creates the key and uploads it as a secret_key; prints the name, kid, public key, and the vars to set next
 # put reads the vars in the wrangler config and prints them with only this boundary replaced.
-# Before moving to the next boundary, write the printed STANDARD_PUBLIC_JWKS and STANDARD_CURRENT_KEYS into the vars of the wrangler config
+# Before moving to the next boundary, write the printed CONSOLE_PUBLIC_JWKS and CONSOLE_CURRENT_KEYS into the vars of the wrangler config
 # (if you skip this, the previous boundary is dropped from the next output)
-mise run console:standard-key:put -- --boundary partner:partner-x --yes
+mise run console:key:put -- --boundary partner:partner-x --yes
 # again, write the printed vars into the wrangler config
-mise run console:secrets:standard -- --yes                         # the CSRF key (secret_text)
+mise run console:secrets -- --yes                         # the CSRF key (secret_text)
 # once the vars cover every boundary, deploy
-mise run console:standard-key:check     # per boundary: binding type, discovery and JWKS, key-check (non-extractable, exportKey fails, self-verification)
+mise run console:key:check     # per boundary: binding type, discovery and JWKS, key-check (non-extractable, exportKey fails, self-verification)
 ```
 
 Rotation (per boundary; every 90 days or less; always rotate and remove the old kid if a compromise is suspected):
 
 ```bash
-mise run console:standard-key:put -- --boundary managed --yes      # 1. upload a new key under a new name
-# 2. set that boundary in vars STANDARD_PUBLIC_JWKS to the old and new keys and deploy (both in the JWKS)
+mise run console:key:put -- --boundary managed --yes      # 1. upload a new key under a new name
+# 2. set that boundary in vars CONSOLE_PUBLIC_JWKS to the old and new keys and deploy (both in the JWKS)
 # -- wait at least 1 hour (24 hours to be safe): until the STS JWKS cache expires --
-# 3. set that boundary in vars STANDARD_CURRENT_KEYS to the new key, deploy, and run mise run console:standard-key:check
-# 4. wait longer than the JWT lifetime (5 minutes), remove the old public key from STANDARD_PUBLIC_JWKS, and deploy
-mise run console:standard-key:retire -- --binding STANDARD_KEY_<old key> --yes   # 5. delete the old key (refuses current keys, keys still in the vars or JWKS, and the CSRF key)
+# 3. set that boundary in vars CONSOLE_CURRENT_KEYS to the new key, deploy, and run mise run console:key:check
+# 4. wait longer than the JWT lifetime (5 minutes), remove the old public key from CONSOLE_PUBLIC_JWKS, and deploy
+mise run console:key:retire -- --binding CONSOLE_KEY_<old key> --yes   # 5. delete the old key (refuses current keys, keys still in the vars or JWKS, and the CSRF key)
 ```
 
 ## Admin signing key for console login
@@ -490,7 +490,7 @@ Exit codes: 0 done (or nothing to change; extra values alone still give 0) / 1 s
 - Confirmed interval: per account, the end of the "confirmed interval" is kept in a state file (`--state <file>`, default `.secrets/console-reconcile-state.json`; `.secrets/` is gitignored). If this run starts later than that end (an interval nobody read), it is `coverage_gap` (error, exit code 1). With no file (first run) there is no gap, and the output says `coverage: first run`. The file holds only the account ID and a time; never a token, email, or `jti`. **Only a run with exit code 0 advances the interval** (to "this run's end minus the propagation lag"): advancing on a run with errors or unverifiable assumptions would move them out of the next run's range and bury them. A corrupt state file is not treated as a first run; the tool refuses to run (exit code 2). To clear a gap, investigate and then re-run with `--since` set at or before the previous end (delete the state file only when you decide to accept the gap).
 - The output is redacted (`jti` shows its first 8 characters, no email, account IDs show the last 4 digits). The summary shows the window read, the number of regions, the unverifiable count, truncated lines, and where the records came from (`source: api` or `file`).
 - Exit codes: `0` no errors / `1` errors, or one or more unverifiable assumptions (even with zero errors) / `2` could not run (input, aws, or API failure).
-- Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_LOGS_TOKEN` (API token for `--logs-api`; environment variable only), `AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID` (Cloudflare account ID), `AWSBRIDGE_CONSOLE_LOGS_WORKERS` (optional; Worker names, default `awsbridge-console-standard,awsbridge-console-admin`), `AWSBRIDGE_CONSOLE_CONFIG` (config file).
+- Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_LOGS_TOKEN` (API token for `--logs-api`; environment variable only), `AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID` (Cloudflare account ID), `AWSBRIDGE_CONSOLE_LOGS_WORKERS` (optional; Worker names, default `awsbridge-console,awsbridge-console-admin`), `AWSBRIDGE_CONSOLE_CONFIG` (config file).
 - Token: a read-only token is preferable, but according to the Cloudflare API specification `telemetry/query` accepts only the "Workers Observability Write" permission. Whether a Read-only token works is to be checked in stage 2. Limit the token to Workers Observability; do not give it permission to write Workers or secrets.
 
 ```bash
@@ -513,11 +513,11 @@ Operations:
 `mise run console:exposure-check` fetches each console issuer's `/.well-known/openid-configuration` and `jwks.json` from the outside and compares them with the public keys in your configuration. The AWS IAM OIDC providers trust the JWKS served at the issuer host, so if a Route or similar replaces the response of that host, a forged JWT (an Administrator, for example) could be accepted. This is the daily check for "what awsbridge serves is what it should serve". Together with `console:reconcile` it makes the two daily checks: (i) this comparison from the outside, (ii) the reconciliation above.
 
 - **Targets**: every boundary issuer of Standard, and the Admin issuer. If there is no Admin config (no `worker.admin.json`), it checks Standard only and says so. **Without `worker.admin.json` the Admin check is skipped, and the exit code does not tell this apart from a full match** (read the output).
-- **What it compares with**: the public keys in the vars of the wrangler config (`STANDARD_PUBLIC_JWKS` / `ADMIN_PUBLIC_JWKS`, the same files the `console:*-key:check` tools read) and the issuer URLs in the generated `worker.standard.json` / `worker.admin.json`. It does not only compare `kid`: it compares the key contents (`kty`, `n`, `e`, `alg`, `use`, and any extra member), the `issuer` and `jwks_uri` of the discovery document, and the HTTP status (200 only).
+- **What it compares with**: the public keys in the vars of the wrangler config (`CONSOLE_PUBLIC_JWKS` / `ADMIN_PUBLIC_JWKS`, the same files the `console:*-key:check` tools read) and the issuer URLs in the generated `worker.standard.json` / `worker.admin.json`. It does not only compare `kid`: it compares the key contents (`kty`, `n`, `e`, `alg`, `use`, and any extra member), the `issuer` and `jwks_uri` of the discovery document, and the HTTP status (200 only).
 - **What is an error** (it says "match" only when everything matches): a status other than 200, a **redirect (not followed; it is an error)**, a fetch failure or timeout, a response that is not JSON or has the wrong shape, an `issuer` / `jwks_uri` that differs, a key that is missing, **an extra key**, a key whose contents differ, a duplicate `kid`.
 - **How it fetches**: so that the local DNS (including its negative cache) cannot affect the result, it resolves the host with public DNS over HTTPS (`https://cloudflare-dns.com/dns-query`, A and AAAA), connects to that IP over TLS, and sends the original host name as the SNI and `Host` (the certificate is verified against the host name). One GET per document, no retry, 10 s timeout. It uses **no Cloudflare or AWS token** and sends no `Authorization` header: it is public HTTP GETs only.
 - **Output and exit codes**: `[OK]` / `[NG]` lines per issuer and a conclusion. Responses' values (`n`, the `kid` of a foreign key) are not printed; account IDs and emails are redacted. `0` all match / `1` some mismatch / `2` could not run (config unreadable, no expected keys, and so on).
-- Variables (the same as the key tools; set them in `mise.local.toml`): `AWSBRIDGE_CONSOLE_OUT_DIR` (default `.generated/console`), `AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG` (default `wrangler.console-standard.jsonc`), `AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG` (default `wrangler.console-admin.jsonc`; read only when `worker.admin.json` exists). Run `mise run console:config:generate` first.
+- Variables (the same as the key tools; set them in `mise.local.toml`): `AWSBRIDGE_CONSOLE_OUT_DIR` (default `.generated/console`), `AWSBRIDGE_CONSOLE_WRANGLER_CONFIG` (default `wrangler.console.jsonc`), `AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG` (default `wrangler.console-admin.jsonc`; read only when `worker.admin.json` exists). Run `mise run console:config:generate` first.
 
 ```bash
 mise run console:exposure-check

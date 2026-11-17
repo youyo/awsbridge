@@ -432,7 +432,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
     apiEvents = [
       {
         $metadata: { id: "e1" },
-        $workers: { scriptName: "awsbridge-console-standard", eventType: "fetch" },
+        $workers: { scriptName: "awsbridge-console", eventType: "fetch" },
         dataset: "cloudflare-workers",
         timestamp: Date.parse(a.at),
         source: a,
@@ -471,7 +471,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
   });
   const logEvent = (r: ReturnType<typeof issue>, id: string) => ({
     $metadata: { id },
-    $workers: { scriptName: "awsbridge-console-standard", eventType: "fetch" },
+    $workers: { scriptName: "awsbridge-console", eventType: "fetch" },
     dataset: "cloudflare-workers",
     timestamp: Date.parse(r.at),
     source: r,
@@ -484,7 +484,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
     // 記録でない行（他のログ）も混ぜる。同じ $metadata.id の行もある（実物でも一意でない）
     const noise = Array.from({ length: 30 }, (_, i) => ({
       $metadata: { id: `n${i % 20}` },
-      $workers: { scriptName: "awsbridge-console-standard", eventType: "fetch" },
+      $workers: { scriptName: "awsbridge-console", eventType: "fetch" },
       dataset: "cloudflare-workers",
       timestamp: now() - (4 * 24 * 60 - i * 13) * MIN,
       source: { message: "GET /" },

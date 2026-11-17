@@ -3,7 +3,7 @@
 // 負の試験（断るケース）は console-negative.test.ts に集めてある（重複を持たない）。
 // 入口の身元のグループの取り方は未確定なので、本物のエントリ（normal）は全チームの S1 へのリンクに落ちる経路を通り、
 // 試験用のエントリの変数 E2E_IDENTITY_GROUPS を渡したもの（grouped）が所属するチームの行の経路を通る。
-// 設定はリポジトリの wrangler.console-standard.jsonc を読み、main を E2E 用のエントリ（外向きの通信だけを擬似に向ける）にし、
+// 設定はリポジトリの wrangler.console.jsonc を読み、main を E2E 用のエントリ（外向きの通信だけを擬似に向ける）にし、
 // routes を外し（手元では Host ヘッダーで振り分ける）、alias を試験用の生成物に、vars に擬似の宛先を足した一時ファイルで起動する。
 // 署名鍵は E2E 用のエントリが Worker の中で境界ごとに取り出せない鍵を作る（本番の secret_key と同じ CryptoKey の形）。
 // 実 AWS・Cloudflare は呼ばない。
@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify, SignJWT } from "jose";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AUDIENCE } from "../../src/console/constants";
-import { AUDS, displayConfig, standardConfig, stsXml } from "../unit/console-standard-harness";
+import { AUDS, displayConfig, standardConfig, stsXml } from "../unit/console-worker-harness";
 import { readJsonc } from "./jsonc";
 
 const root = new URL("../../", import.meta.url).pathname;
@@ -209,7 +209,7 @@ beforeAll(async () => {
   writeFileSync(generated, JSON.stringify(standardConfig()));
   const generatedDisplay = join(tmp, "display.standard.json");
   writeFileSync(generatedDisplay, JSON.stringify(displayConfig()));
-  const config = readJsonc(join(root, "wrangler.console-standard.jsonc"));
+  const config = readJsonc(join(root, "wrangler.console.jsonc"));
   expect(config.workers_dev).toBe(false);
   expect(config.preview_urls).toBe(false);
   delete config.routes; // 手元では Host ヘッダーで振り分ける（routes があると wrangler dev が Host を書き換える）
@@ -223,7 +223,7 @@ beforeAll(async () => {
     JSON.stringify({
       ...config,
       $schema: undefined,
-      main: join(root, "test/e2e/fixtures/console-standard-entry.ts"),
+      main: join(root, "test/e2e/fixtures/console-entry.ts"),
       alias: {
         "awsbridge:console-worker": generated,
         "awsbridge:console-display": generatedDisplay,

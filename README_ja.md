@@ -349,49 +349,49 @@ Cloudflare に頼らないもう 1 つの発行の停止です。止めたいロ
 
 ## コンソールログインの Standard の署名鍵
 
-コンソールログインの Standard の Worker（`wrangler.console-standard.jsonc`）は、境界（`managed`・`partner:<id>`）ごとに、Workers の `secret_key` 型のバインディング（取り出せない `CryptoKey`。RSASSA-PKCS1-v1_5 / SHA-256、usages は `sign` だけ）で STS に渡す JWT に署名します。仕組みは Admin の署名鍵と同じで、鍵・トークン・Worker は Admin と別です。文字列の秘密鍵 JWK を secret に入れる形は使いません。
+コンソールログインの Standard の Worker（`wrangler.console.jsonc`）は、境界（`managed`・`partner:<id>`）ごとに、Workers の `secret_key` 型のバインディング（取り出せない `CryptoKey`。RSASSA-PKCS1-v1_5 / SHA-256、usages は `sign` だけ）で STS に渡す JWT に署名します。仕組みは Admin の署名鍵と同じで、鍵・トークン・Worker は Admin と別です。文字列の秘密鍵 JWK を secret に入れる形は使いません。
 
-- 鍵は `mise run console:standard-key:put -- --boundary <境界>` が手元のメモリの中で作り、Cloudflare API で入れます。ファイルに書かず、出力もしません。CI やログを通しません。実行するのは人で、手元からだけです。
-- バインディングの名前は `STANDARD_KEY_<kid の先頭 8 バイトの 16 進>` で、kid から決まります（境界の名前は入りません）。道具は同じ名前への投入を断ります。差し替えは必ず別の名前で入れます。
-- Worker は vars の `STANDARD_CURRENT_KEYS`（境界 → 今の鍵の名前と kid）と `STANDARD_PUBLIC_JWKS`（境界 → 公開鍵。新旧 2 つまで）を読みます。どちらかが空・壊れている、今の kid がその境界の公開鍵に無い、同じ鍵が 2 つの境界にある、ときはどの経路も `500 server_misconfigured` です。署名の前にその境界のバインディングを確かめ（`CryptoKey`・取り出せない・`sign` だけ・`exportKey` が失敗する）、署名した JWT を vars の公開鍵で確かめます。合わなければその境界の発行は `503 signing_unavailable` です。境界の issuer の JWKS は、その境界の vars の公開鍵だけを出します。
+- 鍵は `mise run console:key:put -- --boundary <境界>` が手元のメモリの中で作り、Cloudflare API で入れます。ファイルに書かず、出力もしません。CI やログを通しません。実行するのは人で、手元からだけです。
+- バインディングの名前は `CONSOLE_KEY_<kid の先頭 8 バイトの 16 進>` で、kid から決まります（境界の名前は入りません）。道具は同じ名前への投入を断ります。差し替えは必ず別の名前で入れます。
+- Worker は vars の `CONSOLE_CURRENT_KEYS`（境界 → 今の鍵の名前と kid）と `CONSOLE_PUBLIC_JWKS`（境界 → 公開鍵。新旧 2 つまで）を読みます。どちらかが空・壊れている、今の kid がその境界の公開鍵に無い、同じ鍵が 2 つの境界にある、ときはどの経路も `500 server_misconfigured` です。署名の前にその境界のバインディングを確かめ（`CryptoKey`・取り出せない・`sign` だけ・`exportKey` が失敗する）、署名した JWT を vars の公開鍵で確かめます。合わなければその境界の発行は `503 signing_unavailable` です。境界の issuer の JWKS は、その境界の vars の公開鍵だけを出します。
 - 鍵を入れるまで（vars が空のあいだ）は、どの経路も `500` です。初回は「Worker をデプロイ → 鍵と CSRF の鍵を入れる → vars を書いてデプロイ」の順にします。
-- CSRF の鍵 `CONSOLE_CSRF_KEY` は `secret_text` のままです。`mise run console:secrets:standard -- --yes` が 32 バイトの乱数を手元で作って入れます（ファイルに書かず、表示しません）。作り直すと、開いている画面のフォームは開き直しが要ります。
-- トークン: `AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN` には Standard の Worker だけを書けるトークンを使い、Admin 用のトークンと分けます（無ければ `wrangler login` の OAuth をメモリの中だけで使います）。道具は Admin 用の変数を読みません。鍵を取り出せなくても、Worker のコードや secret を書き換えられる人は任意の JWT に署名できます。
+- CSRF の鍵 `CONSOLE_CSRF_KEY` は `secret_text` のままです。`mise run console:secrets -- --yes` が 32 バイトの乱数を手元で作って入れます（ファイルに書かず、表示しません）。作り直すと、開いている画面のフォームは開き直しが要ります。
+- トークン: `AWSBRIDGE_CONSOLE_CF_API_TOKEN` には Standard の Worker だけを書けるトークンを使い、Admin 用のトークンと分けます（無ければ `wrangler login` の OAuth をメモリの中だけで使います）。道具は Admin 用の変数を読みません。鍵を取り出せなくても、Worker のコードや secret を書き換えられる人は任意の JWT に署名できます。
 - 更新の経路: `secret_key` のバインディングは、`wrangler deploy`、別の secret を更新する `wrangler secret put`・`wrangler secret bulk`・`wrangler secret delete`、`wrangler versions secret put / bulk` → `versions deploy` のあとも残ることを開発環境で確かめました（PoC X1-(h)）。ダッシュボードや Terraform で Worker のバインディングを管理する経路は測っていないので使いません。
-- 変数（`mise.local.toml`）: `AWSBRIDGE_CONSOLE_STANDARD_CF_ACCOUNT_ID`（または wrangler の設定の `account_id`）、`AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN`（任意）、`AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG`（既定 `wrangler.console-standard.jsonc`）、`AWSBRIDGE_CONSOLE_STANDARD_ACCESS_TOKEN`（任意。`check` の key-check に使う Access のトークン）。
+- 変数（`mise.local.toml`）: `AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID`（または wrangler の設定の `account_id`）、`AWSBRIDGE_CONSOLE_CF_API_TOKEN`（任意）、`AWSBRIDGE_CONSOLE_WRANGLER_CONFIG`（既定 `wrangler.console.jsonc`）、`AWSBRIDGE_CONSOLE_ACCESS_TOKEN`（任意。`check` の key-check に使う Access のトークン）。
 
-バンドルの確認と手元の起動（どちらもデプロイしない。先に `mise run console:config:generate` が要る。wrangler の設定は `AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG`、既定 `wrangler.console-standard.jsonc`。MCP 用の `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` は読まない）:
+バンドルの確認と手元の起動（どちらもデプロイしない。先に `mise run console:config:generate` が要る。wrangler の設定は `AWSBRIDGE_CONSOLE_WRANGLER_CONFIG`、既定 `wrangler.console.jsonc`。MCP 用の `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` は読まない）:
 
 ```bash
-mise run console:build:standard   # wrangler deploy --dry-run --outdir dist/console-standard（鍵の vars が空でもバンドルできる）
+mise run console:build   # wrangler deploy --dry-run --outdir dist/console（鍵の vars が空でもバンドルできる）
 mise run console:dev              # wrangler dev（手元用。secret_key のバインディングは作れないので、鍵の vars が空なら全経路 500）
 # デプロイは承認したあと手で行う（routes と vars を先に確かめる）
-#   例: AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-standard.jsonc AWSBRIDGE_WRANGLER_ENV= AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy bash scripts/wrangler.sh deploy
+#   例: AWSBRIDGE_WRANGLER_CONFIG=wrangler.console.jsonc AWSBRIDGE_WRANGLER_ENV= AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy bash scripts/wrangler.sh deploy
 ```
 
 初回の投入（境界ごと）:
 
 ```bash
-mise run console:standard-key:put -- --boundary managed            # 何をするかの表示だけ（API を呼ばない）
-mise run console:standard-key:put -- --boundary managed --yes      # 鍵を作って secret_key として入れる。名前・kid・公開鍵と、次に入れる vars を表示する
+mise run console:key:put -- --boundary managed            # 何をするかの表示だけ（API を呼ばない）
+mise run console:key:put -- --boundary managed --yes      # 鍵を作って secret_key として入れる。名前・kid・公開鍵と、次に入れる vars を表示する
 # put は wrangler の設定の vars を読んで、その境界だけを入れ替えた vars を表示する。
-# 次の境界へ進む前に、表示された STANDARD_PUBLIC_JWKS と STANDARD_CURRENT_KEYS を wrangler の設定の vars に書く（書かずに続けると前の境界が抜ける）
-mise run console:standard-key:put -- --boundary partner:partner-x --yes
+# 次の境界へ進む前に、表示された CONSOLE_PUBLIC_JWKS と CONSOLE_CURRENT_KEYS を wrangler の設定の vars に書く（書かずに続けると前の境界が抜ける）
+mise run console:key:put -- --boundary partner:partner-x --yes
 # 同じく、表示された vars を wrangler の設定に書く
-mise run console:secrets:standard -- --yes                         # CSRF の鍵（secret_text）
+mise run console:secrets -- --yes                         # CSRF の鍵（secret_text）
 # vars をすべての境界で書いたらデプロイする
-mise run console:standard-key:check     # 境界ごとのバインディングの型・discovery と JWKS・key-check（取り出せない・exportKey が失敗する・自己検証）
+mise run console:key:check     # 境界ごとのバインディングの型・discovery と JWKS・key-check（取り出せない・exportKey が失敗する・自己検証）
 ```
 
 差し替え（境界ごと。90 日以下を目安に。侵害の疑いがあれば必ず替え、旧い kid を外す）:
 
 ```bash
-mise run console:standard-key:put -- --boundary managed --yes      # 1. 新しい鍵を別の名前で入れる
-# 2. vars STANDARD_PUBLIC_JWKS のその境界を新旧 2 つにしてデプロイする（JWKS に並べる）
+mise run console:key:put -- --boundary managed --yes      # 1. 新しい鍵を別の名前で入れる
+# 2. vars CONSOLE_PUBLIC_JWKS のその境界を新旧 2 つにしてデプロイする（JWKS に並べる）
 # ── 最低 1 時間（安全側に 24 時間）待つ: STS の JWKS キャッシュが切れるまで ──
-# 3. vars STANDARD_CURRENT_KEYS のその境界を新しい鍵にしてデプロイし、mise run console:standard-key:check
-# 4. JWT の有効期限（5 分）より長く待ってから、旧い公開鍵を STANDARD_PUBLIC_JWKS から外してデプロイする
-mise run console:standard-key:retire -- --binding STANDARD_KEY_<旧い鍵> --yes   # 5. 旧い鍵を消す（今の鍵・vars と JWKS に残る鍵・CSRF の鍵は断る）
+# 3. vars CONSOLE_CURRENT_KEYS のその境界を新しい鍵にしてデプロイし、mise run console:key:check
+# 4. JWT の有効期限（5 分）より長く待ってから、旧い公開鍵を CONSOLE_PUBLIC_JWKS から外してデプロイする
+mise run console:key:retire -- --binding CONSOLE_KEY_<旧い鍵> --yes   # 5. 旧い鍵を消す（今の鍵・vars と JWKS に残る鍵・CSRF の鍵は断る）
 ```
 
 ## コンソールログインの Admin の署名鍵
@@ -489,7 +489,7 @@ mise run console:inspect -- --profile=<p> --stops=.secrets/console-stops.json   
 - 確認済みの区間: アカウントごとに「確認済みの区間の終わり」を状態のファイル（`--state <file>`。既定 `.secrets/console-reconcile-state.json`。`.secrets/` は gitignore 済み）に残します。今回の読み始めがそれより後（間に読んでいない区間がある）なら `coverage_gap`（誤り。終了コード 1）です。ファイルが無い初回は穴なしとして扱い、出力に `coverage: first run` と出します。ファイルにはアカウント ID と時刻だけを書き、トークン・email・`jti` は書きません。**区間を進めるのは終了コード 0 の実行だけ**です（終わりは「今回の終わり − 反映の遅れ」）。誤りや検証できない引き受けのある実行で進めると、次の実行の範囲の外に出て誤りが埋もれるためです。壊れた状態のファイルは初回として扱わず、実行しません（終了コード 2）。穴の誤りを直すには、調べたうえで `--since` を前回の終わり以前に戻して回します（状態のファイルを手で消すのは、穴を受け入れると決めたときだけです）。
 - 出力は伏せ字です（`jti` は先頭 8 文字、email は出さない、アカウント ID は末尾 4 桁）。要約に、読んだ期間・リージョン数・検証できない件数・切られた行・記録をどこから読んだか（`source: api` か `file`）を出します。
 - 終了コード: `0` 誤りなし / `1` 誤りあり、または検証できない引き受けが 1 件以上（誤りが 0 でも 0 で終わらせない）/ `2` 実行できない（入力・aws・API の失敗）。
-- 変数（`mise.local.toml`）: `AWSBRIDGE_CONSOLE_LOGS_TOKEN`（`--logs-api` の API のトークン。環境変数だけ）、`AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID`（Cloudflare のアカウント ID）、`AWSBRIDGE_CONSOLE_LOGS_WORKERS`（任意。Worker の名前。既定 `awsbridge-console-standard,awsbridge-console-admin`）、`AWSBRIDGE_CONSOLE_CONFIG`（設定ファイル）。
+- 変数（`mise.local.toml`）: `AWSBRIDGE_CONSOLE_LOGS_TOKEN`（`--logs-api` の API のトークン。環境変数だけ）、`AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID`（Cloudflare のアカウント ID）、`AWSBRIDGE_CONSOLE_LOGS_WORKERS`（任意。Worker の名前。既定 `awsbridge-console,awsbridge-console-admin`）、`AWSBRIDGE_CONSOLE_CONFIG`（設定ファイル）。
 - トークン: 読み取りだけのトークンが望ましいですが、Cloudflare の API の仕様では `telemetry/query` は「Workers Observability Write」の権限しか受け付けません。読み取り（Read）だけで通るかは ② で確かめます。トークンは Workers Observability だけに絞り、Worker や secret を書ける権限を付けません。
 
 ```bash
@@ -512,11 +512,11 @@ mise run console:reconcile -- --profile <プロファイル> --logs-api --since 
 `mise run console:exposure-check` は、コンソールの issuer の `/.well-known/openid-configuration` と `jwks.json` を**外から取り**、設定の公開鍵と比べます。AWS の IAM の OIDC プロバイダーは issuer のホストが返す JWKS を信頼するので、Route などでそのホストの応答を差し替えられると、作られた JWT（たとえば Administrator）が通りえます。これは「awsbridge が出しているものが正しいこと」の毎日の確認で、`console:reconcile` と合わせて毎日の確認の 2 つになります: (i) この外からの比較、(ii) 上の突き合わせ。
 
 - **対象**: Standard の境界ごとの issuer と、Admin の issuer。Admin の設定（`worker.admin.json`）が無ければ Standard だけを確かめ、その旨を出します。**Admin の生成物（`worker.admin.json`）が無いと Admin の確認は飛ばされ、終了コードでは全部一致と区別できません**（出力を読みます）。
-- **比べる相手**: wrangler の設定の vars の公開鍵（`STANDARD_PUBLIC_JWKS` / `ADMIN_PUBLIC_JWKS`。`console:*-key:check` が読むのと同じファイル）と、生成物 `worker.standard.json` / `worker.admin.json` の issuer の URL。`kid` だけでなく、鍵の中身（`kty`・`n`・`e`・`alg`・`use`・余分なメンバー）、discovery の `issuer` と `jwks_uri`、HTTP の状態（200 だけ）を比べます。
+- **比べる相手**: wrangler の設定の vars の公開鍵（`CONSOLE_PUBLIC_JWKS` / `ADMIN_PUBLIC_JWKS`。`console:*-key:check` が読むのと同じファイル）と、生成物 `worker.standard.json` / `worker.admin.json` の issuer の URL。`kid` だけでなく、鍵の中身（`kty`・`n`・`e`・`alg`・`use`・余分なメンバー）、discovery の `issuer` と `jwks_uri`、HTTP の状態（200 だけ）を比べます。
 - **誤りにするもの**（すべて合ったときだけ「一致」）: 200 以外の状態、**リダイレクト（追わずに誤り）**、取得の失敗・タイムアウト、JSON でない・形が違う応答、`issuer` / `jwks_uri` の違い、欠けた鍵、**余分な鍵**、中身の違う鍵、`kid` の重複。
 - **取り方**: 手元の DNS（否定のキャッシュを含む）に左右されないよう、公開の DNS over HTTPS（`https://cloudflare-dns.com/dns-query`。A と AAAA）でホストを引き、その IP に TLS で接続します。SNI と `Host` はもとのホスト名で、証明書もホスト名で検査します。文書ごとに GET は 1 回、再試行なし、タイムアウト 10 秒。**Cloudflare・AWS のトークンは使わず**、`Authorization` も送りません（公開の HTTP の GET だけ）。
 - **出力と終了コード**: issuer ごとの `[OK]` / `[NG]` の行と結論。応答の値（`n`、知らない鍵の `kid`）は出さず、アカウント ID・email は伏せます。`0` すべて一致 / `1` 不一致あり / `2` 実行できない（設定が読めない・期待する鍵を得られない など）。
-- 変数（鍵の道具と同じ。`mise.local.toml` に置く）: `AWSBRIDGE_CONSOLE_OUT_DIR`（既定 `.generated/console`）、`AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG`（既定 `wrangler.console-standard.jsonc`）、`AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG`（既定 `wrangler.console-admin.jsonc`。`worker.admin.json` があるときだけ読む）。先に `mise run console:config:generate` を回します。
+- 変数（鍵の道具と同じ。`mise.local.toml` に置く）: `AWSBRIDGE_CONSOLE_OUT_DIR`（既定 `.generated/console`）、`AWSBRIDGE_CONSOLE_WRANGLER_CONFIG`（既定 `wrangler.console.jsonc`）、`AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG`（既定 `wrangler.console-admin.jsonc`。`worker.admin.json` があるときだけ読む）。先に `mise run console:config:generate` を回します。
 
 ```bash
 mise run console:exposure-check

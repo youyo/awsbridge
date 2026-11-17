@@ -254,9 +254,9 @@ describe("console:secrets:admin（Admin の CSRF の鍵。G2 の論点 5）", ()
     const r = await exec(
       ["--yes"],
       {
-        AWSBRIDGE_CONSOLE_STANDARD_CF_ACCOUNT_ID: ACCOUNT,
-        AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN: STD_TOKEN,
-        AWSBRIDGE_CONSOLE_STANDARD_CF_API_BASE: base,
+        AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID: ACCOUNT,
+        AWSBRIDGE_CONSOLE_CF_API_TOKEN: STD_TOKEN,
+        AWSBRIDGE_CONSOLE_CF_API_BASE: base,
         AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG: join(dir, "wrangler.admin.jsonc"),
       },
       "secrets-admin.ts",
@@ -268,7 +268,7 @@ describe("console:secrets:admin（Admin の CSRF の鍵。G2 の論点 5）", ()
     // Admin の変数がそろっていれば、Standard のトークンがあっても Admin のトークンを使う
     const ok = await exec(
       ["--yes"],
-      { ...adminEnv(), AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN: STD_TOKEN },
+      { ...adminEnv(), AWSBRIDGE_CONSOLE_CF_API_TOKEN: STD_TOKEN },
       "secrets-admin.ts",
     );
     expect(ok.status, ok.out).toBe(0);

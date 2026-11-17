@@ -194,7 +194,7 @@ describe("console:access:inspect", () => {
     delete (env as Record<string, string | undefined>).AWSBRIDGE_CONSOLE_ACCESS_READ_TOKEN;
     const r = await exec({
       ...env,
-      AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN: TOKEN,
+      AWSBRIDGE_CONSOLE_CF_API_TOKEN: TOKEN,
       AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN: TOKEN,
       CLOUDFLARE_API_TOKEN: TOKEN,
     });

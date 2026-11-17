@@ -1,5 +1,5 @@
 // 外からの比較の道具（scripts/console/exposure-check-lib.ts）。設定の読み方と、取得の差し替えでの全体の流れ。
-// 設定: 生成物（worker.standard.json・worker.admin.json）の境界の issuer と、wrangler の設定の vars の公開鍵（STANDARD_PUBLIC_JWKS・ADMIN_PUBLIC_JWKS）。
+// 設定: 生成物（worker.standard.json・worker.admin.json）の境界の issuer と、wrangler の設定の vars の公開鍵（CONSOLE_PUBLIC_JWKS・ADMIN_PUBLIC_JWKS）。
 // Admin が無ければ Standard だけ。期待する鍵を得られないときは SettingsError（終了コード 2）。取得は fetchDoc を差し替える（ネットワークを使わない）。
 import { calculateJwkThumbprint } from "jose";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -10,7 +10,7 @@ import {
 } from "../../scripts/console/exposure-check-lib";
 import type { DocResponse } from "../../src/console/exposure";
 import type { PublicJwk } from "../../src/console/signing/key";
-import { adminConfig, standardConfig } from "./console-standard-harness";
+import { adminConfig, standardConfig } from "./console-worker-harness";
 
 async function makeJwk(): Promise<PublicJwk> {
   const pair = (await crypto.subtle.generateKey(
@@ -45,9 +45,9 @@ const adminIssuer = (adm.boundaries[0] as { issuer: string }).issuer;
 
 /** 境界の名前 → 公開鍵。undefined なら vars を空にする。 */
 const stdWrangler = (byBoundary: Record<string, PublicJwk[]> | undefined) => {
-  const vars: Record<string, string> = { STANDARD_CURRENT_KEYS: "", STANDARD_PUBLIC_JWKS: "" };
+  const vars: Record<string, string> = { CONSOLE_CURRENT_KEYS: "", CONSOLE_PUBLIC_JWKS: "" };
   if (byBoundary) {
-    vars.STANDARD_CURRENT_KEYS = JSON.stringify(
+    vars.CONSOLE_CURRENT_KEYS = JSON.stringify(
       Object.fromEntries(
         Object.entries(byBoundary).map(([b, ks]) => {
           const cur = ks[0] as PublicJwk;
@@ -55,7 +55,7 @@ const stdWrangler = (byBoundary: Record<string, PublicJwk[]> | undefined) => {
         }),
       ),
     );
-    vars.STANDARD_PUBLIC_JWKS = JSON.stringify(byBoundary);
+    vars.CONSOLE_PUBLIC_JWKS = JSON.stringify(byBoundary);
   }
   return `{\n  // 試験用\n  "name": "std",\n  "vars": ${JSON.stringify(vars)}\n}`;
 };
@@ -64,7 +64,7 @@ function bindingOf(kid: string): string {
   const bytes = Uint8Array.from(atob(t + "=".repeat((4 - (t.length % 4)) % 4)), (c) =>
     c.charCodeAt(0),
   );
-  return `STANDARD_KEY_${[...bytes.slice(0, 8)]
+  return `CONSOLE_KEY_${[...bytes.slice(0, 8)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("")
     .toUpperCase()}`;
@@ -86,7 +86,7 @@ function reader(files: Files) {
 const baseFiles = (): Files => ({
   ".generated/console/worker.standard.json": JSON.stringify(std),
   ".generated/console/worker.admin.json": JSON.stringify(adm),
-  "wrangler.console-standard.jsonc": stdWrangler({
+  "wrangler.console.jsonc": stdWrangler({
     [boundary.name]: [s1, s2],
     [partner.name]: [s3],
   }),
@@ -121,12 +121,12 @@ describe("exposureSettings", () => {
     const moved: Files = {
       "out/worker.standard.json": files[".generated/console/worker.standard.json"] as string,
       "out/worker.admin.json": files[".generated/console/worker.admin.json"] as string,
-      "s.jsonc": files["wrangler.console-standard.jsonc"] as string,
+      "s.jsonc": files["wrangler.console.jsonc"] as string,
       "a.jsonc": files["wrangler.console-admin.jsonc"] as string,
     };
     const s = await load(moved, {
       AWSBRIDGE_CONSOLE_OUT_DIR: "out",
-      AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG: "s.jsonc",
+      AWSBRIDGE_CONSOLE_WRANGLER_CONFIG: "s.jsonc",
       AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG: "a.jsonc",
     });
     expect(s.admin).toBeDefined();
@@ -138,7 +138,7 @@ describe("exposureSettings", () => {
     delete f[".generated/console/worker.standard.json"];
     cases.push(f);
     f = baseFiles();
-    f["wrangler.console-standard.jsonc"] = stdWrangler(undefined);
+    f["wrangler.console.jsonc"] = stdWrangler(undefined);
     cases.push(f);
     f = baseFiles();
     f["wrangler.console-admin.jsonc"] = admWrangler(undefined);
@@ -147,14 +147,14 @@ describe("exposureSettings", () => {
     delete f["wrangler.console-admin.jsonc"];
     cases.push(f);
     f = baseFiles();
-    f["wrangler.console-standard.jsonc"] = "{ not json";
+    f["wrangler.console.jsonc"] = "{ not json";
     cases.push(f);
     f = baseFiles();
     f[".generated/console/worker.admin.json"] = "{}";
     cases.push(f);
     // 境界（partner）の鍵が vars に無い
     f = baseFiles();
-    f["wrangler.console-standard.jsonc"] = stdWrangler({ [boundary.name]: [s1, s2] });
+    f["wrangler.console.jsonc"] = stdWrangler({ [boundary.name]: [s1, s2] });
     cases.push(f);
     for (const c of cases) await expect(load(c)).rejects.toBeInstanceOf(SettingsError);
   });
@@ -178,7 +178,7 @@ describe("exposureSettings", () => {
 
   it("誤りの文に vars の値や JSON の断片を入れない", async () => {
     const f = baseFiles();
-    f["wrangler.console-standard.jsonc"] = '{ "name": "SECRET-FRAGMENT" oops';
+    f["wrangler.console.jsonc"] = '{ "name": "SECRET-FRAGMENT" oops';
     const e = await load(f).catch((x: unknown) => x as Error);
     expect((e as Error).message).not.toContain("SECRET-FRAGMENT");
   });

@@ -18,7 +18,7 @@ import { bindingNameForKid, type PublicJwk } from "../../src/console/admin/key";
 import { createAdminWorker } from "../../src/console/admin/worker";
 import { AUDIENCE, TEAM_TAG_KEY } from "../../src/console/constants";
 import { AWS_SOURCE_IDENTITY_CLAIM, AWS_TAGS_CLAIM } from "../../src/console/issue/claims";
-import { createStandardWorker } from "../../src/console/standard/worker";
+import { createConsoleWorker } from "../../src/console/worker/worker";
 import { buildDiscovery } from "../../src/oidc";
 import {
   ADMIN_ENTRY,
@@ -37,7 +37,7 @@ import {
   PORTAL_HOST,
   SUB,
   standardConfig,
-} from "./console-standard-harness";
+} from "./console-worker-harness";
 
 const ADMIN_ISSUER = "https://admin-id.example.com/admin";
 const ADMIN_ISSUER_HOST = "admin-id.example.com";
@@ -304,7 +304,7 @@ describe("Admin の Worker: Access JWT の iat からの経過時間の上限（
   });
 
   it("Standard の Worker は上限を見ない（古い iat でも従来どおり）", async () => {
-    const std = createStandardWorker(standardConfig(), {
+    const std = createConsoleWorker(standardConfig(), {
       getAccessKey: h.getAccessKey,
       fetch: h.fetch,
     });
@@ -400,7 +400,7 @@ describe("Admin の issuer の文書（Admin の issuer のホストの /admin�
   });
 
   it("Standard の Worker は Admin の issuer のホストの文書を出さない（404）", async () => {
-    const std = createStandardWorker(standardConfig(), {
+    const std = createConsoleWorker(standardConfig(), {
       getAccessKey: h.getAccessKey,
       fetch: h.fetch,
     });
@@ -531,7 +531,7 @@ describe("デプロイ後の確認: GET <team-base>/key-check（Access の検証
   });
 
   it("Standard の Worker の key-check は Standard の境界の鍵だけを返し、Admin の鍵・vars を見ない（Admin の JWT は通らない）", async () => {
-    const std = createStandardWorker(standardConfig(), {
+    const std = createConsoleWorker(standardConfig(), {
       getAccessKey: h.getAccessKey,
       fetch: h.fetch,
     });

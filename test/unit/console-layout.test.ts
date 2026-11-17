@@ -72,7 +72,7 @@ describe("MCP 用 Worker との分離（静的な import）", () => {
       "src/console/issue/federation.ts",
       "src/console/issue/identity.ts",
       "src/console/issue/record.ts",
-      "src/console/issue/sign-standard.ts",
+      "src/console/issue/sign-boundary.ts",
       "src/console/issue/signer.ts",
     ]) {
       const g = importGraph(join(root, f));
@@ -155,7 +155,7 @@ describe("突き合わせの道具（src/console/reconcile*.ts）の置き場所
   it("どの Worker のエントリ（wrangler の main）からも届かない", () => {
     for (const entry of [
       "src/index.ts",
-      "src/console/standard/index.ts",
+      "src/console/worker/index.ts",
       "src/console/admin/index.ts",
     ]) {
       const files = importGraph(join(root, entry)).files.map((f) => relative(root, f));

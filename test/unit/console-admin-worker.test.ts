@@ -24,7 +24,7 @@ import {
   PORTAL_HOST,
   standardConfig,
   standardKeyEnv,
-} from "./console-standard-harness";
+} from "./console-worker-harness";
 
 let h: Harness;
 let logs: string[];
@@ -128,13 +128,13 @@ describe("Admin の Worker: 9 段目は 503 signing_unavailable（最初の Red�
     expect(res.headers.get("Set-Cookie")).toBeNull();
   });
 
-  it("Standard の署名鍵の vars（STANDARD_CURRENT_KEYS・STANDARD_PUBLIC_JWKS）・旧い文字列の鍵の secret を読まない（壊れていても読まない）", async () => {
+  it("Standard の署名鍵の vars（CONSOLE_CURRENT_KEYS・CONSOLE_PUBLIC_JWKS）・旧い文字列の鍵の secret を読まない（壊れていても読まない）", async () => {
     expect((await post({}, adminEnv(h))).status).toBe(503);
     const res = await post(
       {},
       adminEnv(h, {
-        STANDARD_CURRENT_KEYS: "not json",
-        STANDARD_PUBLIC_JWKS: "not json",
+        CONSOLE_CURRENT_KEYS: "not json",
+        CONSOLE_PUBLIC_JWKS: "not json",
         CONSOLE_SIGNING_KEYS: "not json",
       }),
     );
@@ -419,8 +419,8 @@ describe("Admin の画面: [ADMIN] の印（ユーザーの確認待ちの既定
   });
 
   it("Standard の画面には [ADMIN] を付けない（対照）", async () => {
-    const { createStandardWorker } = await import("../../src/console/standard/worker");
-    const std = createStandardWorker(standardConfig(), { getAccessKey: h.getAccessKey });
+    const { createConsoleWorker } = await import("../../src/console/worker/worker");
+    const std = createConsoleWorker(standardConfig(), { getAccessKey: h.getAccessKey });
     const env = {
       ACCESS_TEAM_DOMAIN: "https://unit-team.cloudflareaccess.com",
       ...standardKeyEnv(h.stdKeys),

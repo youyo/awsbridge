@@ -7,7 +7,7 @@
 //
 // 入力（鍵の道具と同じ。mise.toml の [env] に置かず mise.local.toml などで与える）:
 //   AWSBRIDGE_CONSOLE_OUT_DIR                   生成物の置き場所（既定 .generated/console）
-//   AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG  Standard の wrangler の設定（既定 wrangler.console-standard.jsonc。vars の公開鍵を読む）
+//   AWSBRIDGE_CONSOLE_WRANGLER_CONFIG  Standard の wrangler の設定（既定 wrangler.console.jsonc。vars の公開鍵を読む）
 //   AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG     Admin の wrangler の設定（既定 wrangler.console-admin.jsonc。Admin の生成物があるときだけ）
 // 出力は伏せ字（アカウント ID・email）。終了コード: 0 一致 / 1 不一致あり / 2 実行できない（設定が読めない・期待する鍵を得られない等）。
 import { existsSync, readFileSync } from "node:fs";

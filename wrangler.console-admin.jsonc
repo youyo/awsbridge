@@ -1,5 +1,5 @@
 {
-  // コンソールログインの Admin の Worker（docs/specs/console-login-portal.md §3・§8・§9、X1 の決裁）。MCP 用の wrangler.jsonc・Standard の wrangler.console-standard.jsonc とは別の Worker。
+  // コンソールログインの Admin の Worker（docs/specs/console-login-portal.md §3・§8・§9、X1 の決裁）。MCP 用の wrangler.jsonc・Standard の wrangler.console.jsonc とは別の Worker。
   // これは上流の「例」。下流は自前の wrangler.<name>-console-admin.jsonc を書き、routes・vars を自分の値にする（このファイルは編集しない）。
   // 入口は自社ドメインの Custom Domain だけ。workers_dev と Preview URL は無効（Access を経由しない入口を閉じる。console-login.md §5 の T11）。
   //   例のホスト: ポータル = awsbridge-admin-console.example.com、issuer = awsbridge-oidc-admin-console.example.com（issuer の URL は https://awsbridge-oidc-admin-console.example.com/admin）。

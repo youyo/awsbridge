@@ -14,8 +14,8 @@ type RateLimit = {
   simple: { limit: number; period: number };
 };
 
-describe("wrangler.console-standard.jsonc（設定の例）", () => {
-  const file = "wrangler.console-standard.jsonc";
+describe("wrangler.console.jsonc（設定の例）", () => {
+  const file = "wrangler.console.jsonc";
   const config = readJsonc(join(root, file));
 
   it("入口は Custom Domain だけ（workers.dev・Preview URL は無効。Access を経由しない入口を閉じる）", () => {
@@ -32,7 +32,7 @@ describe("wrangler.console-standard.jsonc（設定の例）", () => {
   });
 
   it("エントリと生成物の alias、回数の制限の binding、vars（ACCESS_TEAM_DOMAIN など）を持ち、secret を vars に書かない", () => {
-    expect(config.main).toBe("src/console/standard/index.ts");
+    expect(config.main).toBe("src/console/worker/index.ts");
     expect(config.alias).toEqual({
       "awsbridge:console-worker": "./.generated/console/worker.standard.json",
       "awsbridge:console-display": "./.generated/console/display.standard.json",
@@ -47,9 +47,9 @@ describe("wrangler.console-standard.jsonc（設定の例）", () => {
     const vars = config.vars as Record<string, string>;
     expect(Object.keys(vars).sort()).toEqual([
       "ACCESS_TEAM_DOMAIN",
+      "CONSOLE_CURRENT_KEYS",
+      "CONSOLE_PUBLIC_JWKS",
       "LOGIN_DISABLED",
-      "STANDARD_CURRENT_KEYS",
-      "STANDARD_PUBLIC_JWKS",
       "STS_REGION",
     ]);
     expect(vars.ACCESS_TEAM_DOMAIN).toMatch(/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/);
@@ -66,17 +66,17 @@ describe("wrangler.console-standard.jsonc（設定の例）", () => {
     expect(raw).not.toMatch(/"nodejs_compat"|"webcrypto_modern_algorithms"/);
   });
 
-  it("署名鍵は境界ごとの secret_key 型のバインディング（STANDARD_KEY_<16 進>）で、文字列の秘密鍵の secret（CONSOLE_SIGNING_KEYS）は使わない。例には鍵の値を書かず、今の鍵と公開鍵の vars は空（鍵が無ければ 500）", () => {
+  it("署名鍵は境界ごとの secret_key 型のバインディング（CONSOLE_KEY_<16 進>）で、文字列の秘密鍵の secret（CONSOLE_SIGNING_KEYS）は使わない。例には鍵の値を書かず、今の鍵と公開鍵の vars は空（鍵が無ければ 500）", () => {
     const raw = readFileSync(join(root, file), "utf8");
     expect(raw).toContain("secret_key");
-    expect(raw).toContain("STANDARD_KEY_");
-    expect(raw).toContain("mise run console:standard-key:put");
+    expect(raw).toContain("CONSOLE_KEY_");
+    expect(raw).toContain("mise run console:key:put");
     expect(raw).not.toContain("CONSOLE_SIGNING_KEYS");
     expect(raw).not.toMatch(/KMS/);
     expect(raw).not.toMatch(/"n"\s*:/);
     const vars = config.vars as Record<string, string>;
-    expect(vars.STANDARD_CURRENT_KEYS).toBe("");
-    expect(vars.STANDARD_PUBLIC_JWKS).toBe("");
+    expect(vars.CONSOLE_CURRENT_KEYS).toBe("");
+    expect(vars.CONSOLE_PUBLIC_JWKS).toBe("");
   });
 });
 
@@ -100,7 +100,7 @@ describe("wrangler.console-admin.jsonc（設定の例）", () => {
     expect(patterns).toContain("awsbridge-oidc-admin-console.example.com");
     expect(patterns).toContain("awsbridge-admin-console.example.com");
     expect(patterns).not.toContain("awsbridge-oidc-console.example.com");
-    const standard = readJsonc(join(root, "wrangler.console-standard.jsonc"));
+    const standard = readJsonc(join(root, "wrangler.console.jsonc"));
     const stdPatterns = (standard.routes as { pattern: string }[]).map((r) => r.pattern);
     for (const p of patterns) expect(stdPatterns, p).not.toContain(p);
   });
@@ -151,7 +151,7 @@ describe("wrangler.console-admin.jsonc（設定の例）", () => {
     expect(vars).not.toHaveProperty("CONSOLE_CSRF_KEY");
     expect(vars).not.toHaveProperty("CONSOLE_SIGNING_KEYS");
     // Standard の Worker と同じ回数の制限の namespace を使い回さない
-    const standard = readJsonc(join(root, "wrangler.console-standard.jsonc"));
+    const standard = readJsonc(join(root, "wrangler.console.jsonc"));
     const stdRl = standard.ratelimits as { namespace_id: string }[];
     expect(rl[0]?.namespace_id).not.toBe(stdRl[0]?.namespace_id);
     expect(standard.name).not.toBe(config.name);
@@ -161,7 +161,7 @@ describe("wrangler.console-admin.jsonc（設定の例）", () => {
 // cto の決裁 2026-11-13「② の発行記録を Workers Logs のままにする」(b): 発行記録は Workers Logs に置くので、
 // 間引き（head-based sampling）で記録が落ちないよう、コンソールの 2 つの Worker の head_sampling_rate を 1 に固定する。
 // あわせて、発行記録に Worker の版 ID を残すため version_metadata の binding（CF_VERSION_METADATA）を持つ。
-describe.each(["wrangler.console-standard.jsonc", "wrangler.console-admin.jsonc"])(
+describe.each(["wrangler.console.jsonc", "wrangler.console-admin.jsonc"])(
   "%s: 発行記録の置き場所（Workers Logs）",
   (file) => {
     const config = readJsonc(join(root, file));

@@ -1,7 +1,7 @@
 // issuer の「外からの比較」の道具の本体。CLI は scripts/console/exposure-check.ts、判定は src/console/exposure.ts（純粋な関数）。
 // 外から取った issuer の discovery と JWKS が、設定の公開鍵と一致するかを確かめる（Standard の境界ごと・Admin）。
 // 期待する側は、生成物（worker.standard.json・worker.admin.json）の issuer と、wrangler の設定の vars の公開鍵
-// （STANDARD_PUBLIC_JWKS・ADMIN_PUBLIC_JWKS。鍵の道具 console:*-key:check と同じ設定）。Admin の生成物が無ければ Standard だけ。
+// （CONSOLE_PUBLIC_JWKS・ADMIN_PUBLIC_JWKS。鍵の道具 console:*-key:check と同じ設定）。Admin の生成物が無ければ Standard だけ。
 // Cloudflare・AWS のトークンは使わない。公開の HTTP の GET だけ（取得は exposure-check-net.ts）。
 // 例外の文に vars の値・JSON の断片を入れない。
 import { adminIssuerOf } from "../../src/console/admin/issuer";
@@ -17,8 +17,8 @@ import {
 } from "../../src/console/exposure";
 import { readWorkerConfig } from "../../src/console/portal/worker-config";
 import type { PublicJwk } from "../../src/console/signing/key";
-import { parseStandardKeys } from "../../src/console/standard/key";
 import type { WorkerConfig } from "../../src/console/types";
+import { parseConsoleKeys } from "../../src/console/worker/key";
 import { isObj, readJsonc } from "./key-tool-common";
 
 /** 設定が読めない・期待する鍵を一意に得られない（終了コード 2）。 */
@@ -75,7 +75,7 @@ function readGenerated(
 
 /**
  * 設定を読む。環境変数（鍵の道具と同じ）: AWSBRIDGE_CONSOLE_OUT_DIR（既定 .generated/console）、
- * AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG（既定 wrangler.console-standard.jsonc）、
+ * AWSBRIDGE_CONSOLE_WRANGLER_CONFIG（既定 wrangler.console.jsonc）、
  * AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG（既定 wrangler.console-admin.jsonc。Admin の生成物があるときだけ読む）。
  */
 export async function exposureSettings(
@@ -87,12 +87,11 @@ export async function exposureSettings(
 
   const stdPath = `${outDir}/worker.standard.json`;
   const stdConfig = readGenerated(stdPath, "standard", readFile);
-  const stdWrangler =
-    env.AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG || "wrangler.console-standard.jsonc";
+  const stdWrangler = env.AWSBRIDGE_CONSOLE_WRANGLER_CONFIG || "wrangler.console.jsonc";
   const stdVars = readVars(stdWrangler, readFile, exists);
-  let keys: Awaited<ReturnType<typeof parseStandardKeys>>;
+  let keys: Awaited<ReturnType<typeof parseConsoleKeys>>;
   try {
-    keys = await parseStandardKeys(stdVars.STANDARD_CURRENT_KEYS, stdVars.STANDARD_PUBLIC_JWKS);
+    keys = await parseConsoleKeys(stdVars.CONSOLE_CURRENT_KEYS, stdVars.CONSOLE_PUBLIC_JWKS);
   } catch (e) {
     throw new SettingsError(`${stdWrangler} の vars: ${(e as Error).message}`);
   }
@@ -102,7 +101,7 @@ export async function exposureSettings(
     const jwks = keys.publicJwks[b.name];
     if (!jwks)
       throw new SettingsError(
-        `${stdWrangler} の vars STANDARD_PUBLIC_JWKS に境界 ${b.name} の公開鍵が無い`,
+        `${stdWrangler} の vars CONSOLE_PUBLIC_JWKS に境界 ${b.name} の公開鍵が無い`,
       );
     if (!isHttpsIssuer(b.issuer))
       throw new SettingsError(

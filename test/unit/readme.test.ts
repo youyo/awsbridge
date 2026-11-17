@@ -103,22 +103,22 @@ describe("README のコンソールログインの Standard の署名鍵（cto �
     it(`${f}: 境界ごとの put（--boundary --yes）・check・retire、CSRF の鍵、secret_key、更新の経路（PoC X1-(h)）を載せ、「KMS 相当」と書かない`, () => {
       const text = read(f);
       for (const s of [
-        "mise run console:standard-key:put -- --boundary",
-        "mise run console:standard-key:check",
-        "mise run console:standard-key:retire -- --binding",
-        "mise run console:secrets:standard -- --yes",
-        "STANDARD_KEY_",
-        "STANDARD_CURRENT_KEYS",
-        "STANDARD_PUBLIC_JWKS",
-        "AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN",
+        "mise run console:key:put -- --boundary",
+        "mise run console:key:check",
+        "mise run console:key:retire -- --binding",
+        "mise run console:secrets -- --yes",
+        "CONSOLE_KEY_",
+        "CONSOLE_CURRENT_KEYS",
+        "CONSOLE_PUBLIC_JWKS",
+        "AWSBRIDGE_CONSOLE_CF_API_TOKEN",
         "CONSOLE_CSRF_KEY",
         "secret bulk",
-        "mise run console:build:standard",
+        "mise run console:build",
         "mise run console:dev",
       ])
         expect(text, s).toContain(s);
-      expect(text).toContain("AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG");
-      expect(text).not.toContain("AWSBRIDGE_CONSOLE_WRANGLER_CONFIG");
+      expect(text).toContain("AWSBRIDGE_CONSOLE_WRANGLER_CONFIG");
+      expect(text).not.toContain("AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG");
       expect(text).not.toContain("console:keygen");
       expect(text).not.toContain("CONSOLE_SIGNING_KEYS");
       expect(text).not.toMatch(/KMS 相当|equivalent to KMS|KMS-equivalent/i);

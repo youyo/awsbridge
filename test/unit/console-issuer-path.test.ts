@@ -48,7 +48,7 @@ describe("Standard の issuer のパスは /standard", () => {
         "src",
         "README.md",
         "README_ja.md",
-        "wrangler.console-standard.jsonc",
+        "wrangler.console.jsonc",
         "wrangler.console-admin.jsonc",
       ],
       { cwd: root, encoding: "utf8" },

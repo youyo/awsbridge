@@ -6,8 +6,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAdminWorker } from "../../src/console/admin/worker";
-import { createStandardWorker } from "../../src/console/standard/worker";
 import type { WorkerConfig } from "../../src/console/types";
+import { createConsoleWorker } from "../../src/console/worker/worker";
 import {
   ADMIN_HOST,
   ADMIN_TEAM,
@@ -21,7 +21,7 @@ import {
   ISSUER_HOST,
   PORTAL_HOST,
   standardConfig,
-} from "./console-standard-harness";
+} from "./console-worker-harness";
 
 let h: Harness;
 
@@ -40,7 +40,7 @@ const DEV = AUDS.teams.dev as string;
 const ADMIN_AUD = AUDS.teams[ADMIN_TEAM] as string;
 
 function std(config: unknown = standardConfig()) {
-  return createStandardWorker(
+  return createConsoleWorker(
     config,
     { getAccessKey: h.getAccessKey, fetch: h.fetch },
     displayConfig(),

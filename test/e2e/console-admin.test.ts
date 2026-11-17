@@ -32,7 +32,7 @@ import {
   AUDS,
   adminConfig,
   stsXml,
-} from "../unit/console-standard-harness";
+} from "../unit/console-worker-harness";
 import { readJsonc } from "./jsonc";
 
 const root = new URL("../../", import.meta.url).pathname;

@@ -87,7 +87,7 @@ describe("readRecordLines（NDJSON のファイルの中身）", () => {
 
   it("Trace Events の包み（Logs[].Message[0] が JSON の文字列）からも読む", () => {
     const trace = {
-      ScriptName: "awsbridge-console-standard",
+      ScriptName: "awsbridge-console",
       Outcome: "ok",
       Logs: [
         { Level: "log", Message: ["plain text"], TimestampMs: 1 },
@@ -144,7 +144,7 @@ describe("readRecordLines（NDJSON のファイルの中身）", () => {
       { $workers: { scriptName: "awsbridge-console-admin" }, source: issue({ tier: "admin" }) },
     ];
     const r = readRecordLines(lines.map((o) => JSON.stringify(o)).join("\n"), "s.ndjson", {
-      workers: ["awsbridge-console-standard", "awsbridge-console-admin"],
+      workers: ["awsbridge-console", "awsbridge-console-admin"],
     });
     expect(r.truncated).toEqual([]);
     expect(r.records.map((x) => x.tier)).toEqual(["admin"]);

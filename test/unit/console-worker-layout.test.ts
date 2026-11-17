@@ -1,4 +1,4 @@
-// コンソールログインの Standard の Worker（src/console/standard/）・Admin の Worker（src/console/admin/）と、階層に共通のポータルの部品（src/console/portal/）の依存:
+// コンソールログインの Standard の Worker（src/console/worker/）・Admin の Worker（src/console/admin/）と、階層に共通のポータルの部品（src/console/portal/）の依存:
 // Worker で動くよう node の API に依存せず、MCP 用のエントリ・ハンドラー・scripts/・設定の解析器と生成器を import しない。
 // 発行の経路（portal/login.ts）は、画面・ルーター・表示用の生成物を import しない（docs/specs/console-login-portal.md §9.10 の U2 の条件）。
 // 表示用の照合（src/console/display/）と表示用の生成物の alias（awsbridge:console-display）は Standard のエントリからだけ届く。
@@ -17,10 +17,10 @@ const MCP = [
   "src/profiles.ts",
 ];
 const FILES = [
-  "src/console/standard/index.ts",
-  "src/console/standard/worker.ts",
-  "src/console/standard/issuer.ts",
-  "src/console/standard/key.ts",
+  "src/console/worker/index.ts",
+  "src/console/worker/worker.ts",
+  "src/console/worker/issuer.ts",
+  "src/console/worker/key.ts",
   "src/console/signing/key.ts",
   "src/console/signing/jws.ts",
   "src/console/signing/signer.ts",
@@ -50,7 +50,7 @@ const ISSUE = [
   "src/console/issue/identity.ts",
   "src/console/issue/record.ts",
   "src/console/issue/request.ts",
-  "src/console/issue/sign-standard.ts",
+  "src/console/issue/sign-boundary.ts",
   "src/console/issue/signer.ts",
 ];
 const DISPLAY_ALIAS = "awsbridge:console-display";
@@ -78,7 +78,7 @@ describe("Standard の Worker とポータルの部品の依存", () => {
         ),
       ).toEqual([]);
       // 表示用の生成物の alias は Standard のエントリだけが読む
-      if (f !== "src/console/standard/index.ts") expect(g.bare, f).not.toContain(DISPLAY_ALIAS);
+      if (f !== "src/console/worker/index.ts") expect(g.bare, f).not.toContain(DISPLAY_ALIAS);
     },
   );
 
@@ -92,17 +92,17 @@ describe("Standard の Worker とポータルの部品の依存", () => {
     expect(files).not.toContain("src/console/portal/routes.ts");
     expect(files.filter((p) => /display/.test(p))).toEqual([]);
     expect(g.bare).not.toContain("awsbridge:console-display");
-    // Standard の鍵の扱い（sign-standard.ts）は Admin でも使う発行の経路に入れない（差し込み口で渡す）
-    expect(files).not.toContain("src/console/issue/sign-standard.ts");
+    // Standard の鍵の扱い（sign-boundary.ts）は Admin でも使う発行の経路に入れない（差し込み口で渡す）
+    expect(files).not.toContain("src/console/issue/sign-boundary.ts");
   });
 
-  it("Standard の鍵の扱いと issuer の文書は src/console/standard/ からだけ読む（ポータルの部品は読まない）", () => {
+  it("Standard の鍵の扱いと issuer の文書は src/console/worker/ からだけ読む（ポータルの部品は読まない）", () => {
     for (const f of FILES.filter((x) => x.startsWith("src/console/portal/"))) {
       const files = importGraph(join(root, f)).files.map((p) => relative(root, p));
-      expect(files, f).not.toContain("src/console/issue/sign-standard.ts");
+      expect(files, f).not.toContain("src/console/issue/sign-boundary.ts");
       expect(files, f).not.toContain("src/oidc.ts");
       expect(
-        files.filter((p) => p.startsWith("src/console/standard/")),
+        files.filter((p) => p.startsWith("src/console/worker/")),
         f,
       ).toEqual([]);
     }
@@ -117,12 +117,12 @@ describe("Standard の Worker とポータルの部品の依存", () => {
       expect(files, f).toContain("src/console/portal/login.ts");
       expect(files, f).toContain("src/console/issue/signer.ts");
       for (const banned of [
-        "src/console/issue/sign-standard.ts",
+        "src/console/issue/sign-boundary.ts",
         "src/oidc.ts",
-        "src/console/standard/index.ts",
-        "src/console/standard/worker.ts",
-        "src/console/standard/issuer.ts",
-        "src/console/standard/key.ts",
+        "src/console/worker/index.ts",
+        "src/console/worker/worker.ts",
+        "src/console/worker/issuer.ts",
+        "src/console/worker/key.ts",
         "src/keys.ts",
       ]) {
         expect(files, `${f} → ${banned}`).not.toContain(banned);
@@ -146,16 +146,16 @@ describe("Standard の Worker とポータルの部品の依存", () => {
       const g = importGraph(join(root, f));
       expect(g.bare, f).toEqual([]);
       const files = g.files.map((p) => relative(root, p));
-      expect(files, f).not.toContain("src/console/issue/sign-standard.ts");
+      expect(files, f).not.toContain("src/console/issue/sign-boundary.ts");
       expect(files, f).not.toContain("src/oidc.ts");
     }
   });
 
-  it("Standard の署名の部品（sign-standard・standard/key・standard/issuer）は外部のパッケージ・文字列の秘密鍵を読む部品（src/keys・src/oidc）・Admin の部品を読まない（cto の決裁「Standard も secret_key に揃える」）", () => {
+  it("Standard の署名の部品（sign-boundary・standard/key・standard/issuer）は外部のパッケージ・文字列の秘密鍵を読む部品（src/keys・src/oidc）・Admin の部品を読まない（cto の決裁「Standard も secret_key に揃える」）", () => {
     for (const f of [
-      "src/console/issue/sign-standard.ts",
-      "src/console/standard/key.ts",
-      "src/console/standard/issuer.ts",
+      "src/console/issue/sign-boundary.ts",
+      "src/console/worker/key.ts",
+      "src/console/worker/issuer.ts",
     ]) {
       const g = importGraph(join(root, f));
       expect(g.bare, f).toEqual([]);
@@ -167,21 +167,21 @@ describe("Standard の Worker とポータルの部品の依存", () => {
       ).toEqual([]);
     }
     // 陽性の対照: 共通の署名の部品は届いている
-    const files = importGraph(join(root, "src/console/issue/sign-standard.ts")).files.map((p) =>
+    const files = importGraph(join(root, "src/console/issue/sign-boundary.ts")).files.map((p) =>
       relative(root, p),
     );
     expect(files).toContain("src/console/signing/signer.ts");
   });
 
   it("Standard の Worker は Admin のエントリ・Admin の生成物の alias を読まない（取り違えを防ぐ）", () => {
-    const g = importGraph(join(root, "src/console/standard/index.ts"));
+    const g = importGraph(join(root, "src/console/worker/index.ts"));
     const files = g.files.map((p) => relative(root, p));
     expect(files.filter((p) => p.startsWith("src/console/admin/"))).toEqual([]);
     expect(g.bare).not.toContain("awsbridge:console-worker-admin");
   });
 
   it("表示用の照合（display/）と表示用の生成物は、Standard のエントリからだけ届く（陽性の対照つき）", () => {
-    const std = importGraph(join(root, "src/console/standard/index.ts"));
+    const std = importGraph(join(root, "src/console/worker/index.ts"));
     const stdFiles = std.files.map((p) => relative(root, p));
     expect(stdFiles).toContain("src/console/display/entry.ts");
     expect(stdFiles).toContain("src/console/display/groups.ts");
