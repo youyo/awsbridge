@@ -1,15 +1,16 @@
 {
-  // コンソールログインの Standard の Worker（docs/specs/console-login-portal.md §3・§9・§11）。MCP 用の wrangler.jsonc とは別の Worker。
+  // コンソールログインの Worker（1 つ。Standard と Admin の両方のチームを受ける。P2（B）の設計メモ。docs/specs/console-login-portal.md §3・§9・§11）。
+  // MCP 用の wrangler.jsonc とは別の Worker。この Worker をデプロイできる者と、その secret・依存物に触れる者は、
+  // Administrator を配った全アカウントの全権を持つ（README の受容 a〜e）。デプロイと鍵の操作は Administrator を発行してよい人だけが行う。
   // これは上流の「例」。下流は自前の wrangler.<name>-console.jsonc を書き、routes・vars を自分の値にする（このファイルは編集しない）。
   // 入口は自社ドメインの Custom Domain だけ。workers.dev と Preview URL は無効（Access を経由しない入口を閉じる。console-login.md §5 の T11）。
-  //   ポータルのホスト（設定の portal.standardOrigin。ホスト方式ならチームごとの <team>.<host> も）と、issuer のホスト（境界の issuer の URL）。
+  //   ポータルのホスト（設定の portal.origin。ホスト方式ならチームごとの <team>.<host> も）と、issuer のホスト（境界の issuer の URL）。
   //   issuer のホストでは /<path>/.well-known/openid-configuration と jwks.json だけを返し、それ以外（/t/*/login を含む）は 404。
-  //   例のホスト: ポータル = awsbridge-console.example.com、issuer = awsbridge-oidc-console.example.com（issuer の URL は https://awsbridge-oidc-console.example.com/standard）。
+  //   例のホスト: ポータル = awsbridge-console.example.com、issuer = awsbridge-oidc-console.example.com（issuer の URL は https://awsbridge-oidc-console.example.com/console）。
   //   issuer のホストは接頭辞 awsbridge-oidc- を付けた専用のホストにする（同じドメインで別の仕組みの OIDC を立てたときに持ち主が分かるように）。このホストの名前は IAM の OIDC プロバイダーの URL になるので、ドメインの更新切れ・レジストラのロック・ゾーンの権限は issuer の乗っ取りに直結する。
   // 生成物: mise run console:config:generate が書く .generated/console/ の 2 つ（gitignore）を alias で読む。
-  //   worker.standard.json   発行用（チームの AUD・ロールの ARN・issuer）
-  //   display.standard.json  表示用（入口の一覧 S0 だけが読む。Administrator の行は表示用だけで email・AUD・ARN を持たない）
-  //   Admin の生成物（worker.admin.json）はここでは読まない。
+  //   worker.json   発行用（両階層のチームの AUD と tier・ロールの ARN・境界の issuer）
+  //   display.json  表示用（入口の一覧 S0 だけが読む。Administrator の行は表示用だけで email・AUD・ARN を持たない）
   // 静的なファイル（/assets・/t/<team>/assets の CSS・JS）はバンドルに埋め込み、Worker から返す（Workers の静的アセットは使わない。
   //   Worker より先に返り、Access の検証と issuer のホストの 404 を飛ばすため）。
   // 互換フラグは付けない（nodejs_compat は要らない。公開鍵は vars で渡すので webcrypto_modern_algorithms も使わない）。
@@ -25,7 +26,11 @@
   //   CONSOLE_CSRF_KEY      CSRF トークンの HMAC の鍵（32 バイト以上のランダムな文字列。署名鍵と別。secret_text のまま）
   // vars:
   //   ACCESS_TEAM_DOMAIN    Access のチームドメイン（https://<team>.cloudflareaccess.com）
-  //   LOGIN_DISABLED        停止スイッチ。"false" 以外（"true" など）にすると発行を止める（503 login_disabled）
+  //   LOGIN_DISABLED        停止スイッチ（全体）。"false" 以外（"true" など）にすると発行を止める（503 login_disabled）
+  //   ADMIN_LOGIN_DISABLED  Admin の階層のチームだけの停止スイッチ。読み方は LOGIN_DISABLED と同じ（止める側に倒す）。
+  //                         止めるのは新しい発行だけで、発行済みの STS のセッションは止まらない（README の停止の節）
+  //   ADMIN_ACCESS_MAX_AGE_SECONDS  Admin の階層のチームの Access JWT の iat からの経過時間の上限（秒。既定 900。60〜86400）。
+  //                         Access の JWT が発行されてからの時間で、利用者が認証してからの時間ではない
   //   STS_REGION            STS の地域の endpoint（sts.<region>.amazonaws.com）。CloudTrail の AssumeRoleWithWebIdentity はこのリージョンに残る
   //   CONSOLE_CURRENT_KEYS 境界の名前 → 今の署名鍵（{"binding":"CONSOLE_KEY_…","kid":"…"}）の JSON 文字列。空・壊れていればどの経路も 500
   //   CONSOLE_PUBLIC_JWKS  境界の名前 → 公開鍵 JWK の配列（新旧 2 つまで）の JSON 文字列。その境界の issuer の JWKS と、署名の自己検証に使う
@@ -45,12 +50,14 @@
     { "pattern": "awsbridge-oidc-console.example.com", "custom_domain": true }
   ],
   "alias": {
-    "awsbridge:console-worker": "./.generated/console/worker.standard.json",
-    "awsbridge:console-display": "./.generated/console/display.standard.json"
+    "awsbridge:console-worker": "./.generated/console/worker.json",
+    "awsbridge:console-display": "./.generated/console/display.json"
   },
   "vars": {
     "ACCESS_TEAM_DOMAIN": "https://example.cloudflareaccess.com",
     "LOGIN_DISABLED": "false",
+    "ADMIN_LOGIN_DISABLED": "false",
+    "ADMIN_ACCESS_MAX_AGE_SECONDS": "900",
     "STS_REGION": "us-east-1",
     "CONSOLE_CURRENT_KEYS": "",
     "CONSOLE_PUBLIC_JWKS": ""

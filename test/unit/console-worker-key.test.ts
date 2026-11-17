@@ -19,15 +19,15 @@ import {
   makeStandardKey,
   PORTAL_HOST,
   STD_ISSUER,
-  standardConfig,
   standardKeyEnv,
   type TestKey,
+  workerConfig,
 } from "./console-worker-harness";
 
 const INFRA = AUDS.teams.infra as string;
 /** infra のチームが Viewer で入れる、partner:partner-x の境界の行。 */
 const PARTNER_ENTRY = "222222222222:readonly";
-const PARTNER_ISSUER = "https://id.example.com/partner-x";
+const PARTNER_ISSUER = "https://id.example.com/p/partner-x/console";
 
 let h: Harness;
 let logs: string[];
@@ -53,7 +53,7 @@ afterEach(() => {
 });
 
 const worker = () =>
-  createConsoleWorker(standardConfig(), { getAccessKey: h.getAccessKey, fetch: h.fetch });
+  createConsoleWorker(workerConfig(), { getAccessKey: h.getAccessKey, fetch: h.fetch });
 
 async function post(env: Record<string, unknown>, entry = ENTRY) {
   const jwt = await h.accessJwt({ aud: INFRA, email: EMAIL });
@@ -97,7 +97,7 @@ describe("Standard の Worker: 境界ごとの取り出せない鍵で署名す�
     expect((await post(env)).status).toBe(302);
     const token = tokenAt(0);
     expect(decodeProtectedHeader(token).kid).toBe(managed.kid);
-    const jwks = await jwksOf(env, "/standard/.well-known/jwks.json");
+    const jwks = await jwksOf(env, "/console/.well-known/jwks.json");
     const { payload } = await jwtVerify(token, createLocalJWKSet(jwks), {
       issuer: STD_ISSUER,
       audience: AUDIENCE,
@@ -115,9 +115,9 @@ describe("Standard の Worker: 境界ごとの取り出せない鍵で署名す�
     expect((await post(env, PARTNER_ENTRY)).status).toBe(302);
     const token = tokenAt(0);
     expect(decodeProtectedHeader(token).kid).toBe(partner.kid);
-    const own = await jwksOf(env, "/partner-x/.well-known/jwks.json");
+    const own = await jwksOf(env, "/p/partner-x/console/.well-known/jwks.json");
     await jwtVerify(token, createLocalJWKSet(own), { issuer: PARTNER_ISSUER, audience: AUDIENCE });
-    const other = await jwksOf(env, "/standard/.well-known/jwks.json");
+    const other = await jwksOf(env, "/console/.well-known/jwks.json");
     await expect(jwtVerify(token, createLocalJWKSet(other))).rejects.toThrow();
   });
 
@@ -126,10 +126,10 @@ describe("Standard の Worker: 境界ごとの取り出せない鍵で署名す�
       h,
       standardKeyEnv(h.stdKeys, { managed: [managed, next], "partner:partner-x": [partner] }),
     );
-    const jwks = await jwksOf(env, "/standard/.well-known/jwks.json");
+    const jwks = await jwksOf(env, "/console/.well-known/jwks.json");
     expect(jwks.keys).toEqual([managed.publicJwk, next.publicJwk]);
     expect(JSON.stringify(jwks)).not.toMatch(/"(d|p|q|dp|dq|qi)"/);
-    expect((await jwksOf(env, "/partner-x/.well-known/jwks.json")).keys).toEqual([
+    expect((await jwksOf(env, "/p/partner-x/console/.well-known/jwks.json")).keys).toEqual([
       partner.publicJwk,
     ]);
   });
@@ -244,7 +244,7 @@ describe("Standard の Worker: vars の形の誤りは 500 server_misconfigured"
     expect(res.status).toBe(500);
     expect(await res.text()).toContain("server_misconfigured");
     noIssue();
-    expect((await get(ISSUER_HOST, "/standard/.well-known/jwks.json", env)).status).toBe(500);
+    expect((await get(ISSUER_HOST, "/console/.well-known/jwks.json", env)).status).toBe(500);
     expect(logs.join("\n")).toContain("invalid console env: signing_keys");
   });
 });
@@ -284,7 +284,7 @@ describe("デプロイ後の確認: GET <team-base>/key-check（Access の検証
 
   it("そのチームの行がある境界だけを返す（ほかの境界の名前と kid を出さない）", async () => {
     // dev のチームから partner の行を外した生成物
-    const config = standardConfig();
+    const config = workerConfig();
     for (const a of config.accounts)
       if (a.boundary === "partner:partner-x")
         a.roles = a.roles

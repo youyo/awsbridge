@@ -40,15 +40,15 @@ const ISSUE_ONLY_KEYS = ["aud", "roleArn", "issuer", "entryAud", "tagKey", "boun
 export function readDisplayConfig(raw: unknown): DisplayConfig {
   check(isObj(raw), "not_object");
   check(raw.purpose === "display", "purpose");
-  check(raw.tier === "standard", "tier");
+  // P2 より前の形（Standard のデプロイだけに渡す印 tier: standard・Admin のオリジン）は受けない
+  check(!Object.hasOwn(raw, "tier"), "tier");
   check(raw.schemaVersion === CONSOLE_SCHEMA_VERSION, "schema_version");
   for (const k of ISSUE_ONLY_KEYS) check(!Object.hasOwn(raw, k), "issue_value");
 
   const portal = raw.portal;
   check(isObj(portal), "portal");
   check(isHttpsOrigin(portal.origin), "portal_origin");
-  check(portal.adminOrigin === undefined || isHttpsOrigin(portal.adminOrigin), "admin_origin");
-  check(portal.adminOrigin !== portal.origin, "admin_origin");
+  check(!Object.hasOwn(portal, "adminOrigin"), "admin_origin");
   check(portal.routing === "path" || portal.routing === "host", "portal_routing");
   check(!Object.hasOwn(portal, "entryAud"), "issue_value");
 

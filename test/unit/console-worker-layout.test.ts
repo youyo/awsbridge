@@ -1,8 +1,8 @@
-// コンソールログインの Standard の Worker（src/console/worker/）・Admin の Worker（src/console/admin/）と、階層に共通のポータルの部品（src/console/portal/）の依存:
+// コンソールログインの Worker（src/console/worker/。P2 で 1 つ。Admin の Worker は消した）と、ポータルの部品（src/console/portal/）の依存:
 // Worker で動くよう node の API に依存せず、MCP 用のエントリ・ハンドラー・scripts/・設定の解析器と生成器を import しない。
 // 発行の経路（portal/login.ts）は、画面・ルーター・表示用の生成物を import しない（docs/specs/console-login-portal.md §9.10 の U2 の条件）。
-// 表示用の照合（src/console/display/）と表示用の生成物の alias（awsbridge:console-display）は Standard のエントリからだけ届く。
-// 発行の経路（portal/login.ts・issue/*）・階層に共通の工場（portal/*）・Admin の Worker からは届かない。
+// 表示用の照合（src/console/display/）と表示用の生成物の alias（awsbridge:console-display）はエントリからだけ届く。
+// 発行の経路（portal/login.ts・issue/*）・工場（portal/*）からは届かない。
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { importGraph } from "./import-graph";
@@ -25,11 +25,6 @@ const FILES = [
   "src/console/signing/jws.ts",
   "src/console/signing/signer.ts",
   "src/console/signing/issuer-doc.ts",
-  "src/console/admin/index.ts",
-  "src/console/admin/worker.ts",
-  "src/console/admin/key.ts",
-  "src/console/admin/sign-admin.ts",
-  "src/console/admin/issuer.ts",
   "src/console/portal/worker.ts",
   "src/console/portal/login.ts",
   "src/console/portal/pages.ts",
@@ -55,7 +50,7 @@ const ISSUE = [
 ];
 const DISPLAY_ALIAS = "awsbridge:console-display";
 
-describe("Standard の Worker とポータルの部品の依存", () => {
+describe("コンソールの Worker とポータルの部品の依存", () => {
   it.each(FILES)(
     "%s は node の API・MCP 用の本体・scripts/・設定の解析器と生成器を import しない",
     (f) => {
@@ -67,17 +62,13 @@ describe("Standard の Worker とポータルの部品の依存", () => {
       expect(files).not.toContain("src/console/generate.ts");
       expect(files.filter((p) => p.startsWith("scripts/"))).toEqual([]);
       expect(g.bare.filter((b) => b.startsWith("node:"))).toEqual([]);
-      // 外部のパッケージは jose と、生成物の alias（Standard・Admin の発行用、Standard の表示用）だけ
+      // 外部のパッケージは jose と、生成物の alias（発行用・表示用）だけ
       expect(
         g.bare.filter(
-          (b) =>
-            b !== "jose" &&
-            b !== "awsbridge:console-worker" &&
-            b !== "awsbridge:console-worker-admin" &&
-            b !== DISPLAY_ALIAS,
+          (b) => b !== "jose" && b !== "awsbridge:console-worker" && b !== DISPLAY_ALIAS,
         ),
       ).toEqual([]);
-      // 表示用の生成物の alias は Standard のエントリだけが読む
+      // 表示用の生成物の alias はエントリだけが読む
       if (f !== "src/console/worker/index.ts") expect(g.bare, f).not.toContain(DISPLAY_ALIAS);
     },
   );
@@ -92,11 +83,11 @@ describe("Standard の Worker とポータルの部品の依存", () => {
     expect(files).not.toContain("src/console/portal/routes.ts");
     expect(files.filter((p) => /display/.test(p))).toEqual([]);
     expect(g.bare).not.toContain("awsbridge:console-display");
-    // Standard の鍵の扱い（sign-boundary.ts）は Admin でも使う発行の経路に入れない（差し込み口で渡す）
+    // 鍵の扱い（sign-boundary.ts）は発行の経路に入れない（差し込み口 TokenSigner で渡す）
     expect(files).not.toContain("src/console/issue/sign-boundary.ts");
   });
 
-  it("Standard の鍵の扱いと issuer の文書は src/console/worker/ からだけ読む（ポータルの部品は読まない）", () => {
+  it("鍵の扱いと issuer の文書は src/console/worker/ からだけ読む（ポータルの部品は読まない）", () => {
     for (const f of FILES.filter((x) => x.startsWith("src/console/portal/"))) {
       const files = importGraph(join(root, f)).files.map((p) => relative(root, p));
       expect(files, f).not.toContain("src/console/issue/sign-boundary.ts");
@@ -108,36 +99,8 @@ describe("Standard の Worker とポータルの部品の依存", () => {
     }
   });
 
-  it("Admin の Worker は Standard の鍵の扱い・OIDC・issuer の文書・Standard のエントリを読まず、自分の生成物の alias だけを読む", () => {
-    for (const f of ["src/console/admin/index.ts", "src/console/admin/worker.ts"]) {
-      const g = importGraph(join(root, f));
-      const files = g.files.map((p) => relative(root, p));
-      // 陽性の対照: 共通の工場・署名の差し込み口・発行の経路は届いている
-      expect(files, f).toContain("src/console/portal/worker.ts");
-      expect(files, f).toContain("src/console/portal/login.ts");
-      expect(files, f).toContain("src/console/issue/signer.ts");
-      for (const banned of [
-        "src/console/issue/sign-boundary.ts",
-        "src/oidc.ts",
-        "src/console/worker/index.ts",
-        "src/console/worker/worker.ts",
-        "src/console/worker/issuer.ts",
-        "src/console/worker/key.ts",
-        "src/keys.ts",
-      ]) {
-        expect(files, `${f} → ${banned}`).not.toContain(banned);
-      }
-      expect(g.bare, f).not.toContain("awsbridge:console-worker");
-    }
-    const entry = importGraph(join(root, "src/console/admin/index.ts"));
-    expect(entry.bare).toContain("awsbridge:console-worker-admin");
-  });
-
-  it("Admin の署名の部品（key・sign-admin・issuer と共通の signing/）は外部のパッケージを読まない（WebCrypto だけで JWS を組む。X1 の決裁 (d)）", () => {
+  it("署名の共通の部品（signing/）は外部のパッケージを読まない（WebCrypto だけで JWS を組む。X1 の決裁 (d) を Worker 全体に）", () => {
     for (const f of [
-      "src/console/admin/key.ts",
-      "src/console/admin/sign-admin.ts",
-      "src/console/admin/issuer.ts",
       "src/console/signing/key.ts",
       "src/console/signing/jws.ts",
       "src/console/signing/signer.ts",
@@ -151,7 +114,7 @@ describe("Standard の Worker とポータルの部品の依存", () => {
     }
   });
 
-  it("Standard の署名の部品（sign-boundary・standard/key・standard/issuer）は外部のパッケージ・文字列の秘密鍵を読む部品（src/keys・src/oidc）・Admin の部品を読まない（cto の決裁「Standard も secret_key に揃える」）", () => {
+  it("境界ごとの署名の部品（sign-boundary・worker/key・worker/issuer）は外部のパッケージ・文字列の秘密鍵を読む部品（src/keys・src/oidc）を読まない（cto の決裁「Standard も secret_key に揃える」）", () => {
     for (const f of [
       "src/console/issue/sign-boundary.ts",
       "src/console/worker/key.ts",
@@ -173,14 +136,18 @@ describe("Standard の Worker とポータルの部品の依存", () => {
     expect(files).toContain("src/console/signing/signer.ts");
   });
 
-  it("Standard の Worker は Admin のエントリ・Admin の生成物の alias を読まない（取り違えを防ぐ）", () => {
+  it("Worker は P2 より前の Admin の Worker の部品・Admin の生成物の alias を読まない（消したものを戻さない）", () => {
     const g = importGraph(join(root, "src/console/worker/index.ts"));
     const files = g.files.map((p) => relative(root, p));
     expect(files.filter((p) => p.startsWith("src/console/admin/"))).toEqual([]);
     expect(g.bare).not.toContain("awsbridge:console-worker-admin");
+    // 陽性の対照: 発行の経路・境界の署名・入口は届いている
+    expect(files).toContain("src/console/portal/login.ts");
+    expect(files).toContain("src/console/issue/sign-boundary.ts");
+    expect(files).toContain("src/console/display/entry.ts");
   });
 
-  it("表示用の照合（display/）と表示用の生成物は、Standard のエントリからだけ届く（陽性の対照つき）", () => {
+  it("表示用の照合（display/）と表示用の生成物は、エントリからだけ届く（陽性の対照つき）", () => {
     const std = importGraph(join(root, "src/console/worker/index.ts"));
     const stdFiles = std.files.map((p) => relative(root, p));
     expect(stdFiles).toContain("src/console/display/entry.ts");
@@ -191,8 +158,7 @@ describe("Standard の Worker とポータルの部品の依存", () => {
       "src/console/portal/pages.ts",
       "src/console/portal/routes.ts",
       "src/console/portal/assets.ts",
-      "src/console/admin/index.ts",
-      "src/console/admin/worker.ts",
+      "src/console/issue/sign-boundary.ts",
     ]) {
       const g = importGraph(join(root, f));
       const files = g.files.map((p) => relative(root, p));

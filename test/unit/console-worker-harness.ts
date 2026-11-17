@@ -1,4 +1,4 @@
-// コンソールログインの Standard の Worker（src/console/worker/worker.ts）の試験用の道具。
+// コンソールログインの Worker（src/console/worker/worker.ts。1 つで Standard と Admin の両方のチームを受ける）の試験用の道具。
 // 偽の Access（手元の鍵と JWKS）・STS・getSigninToken を用意し、Worker を直接呼ぶ。値はすべてダミー。
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { parseConsoleConfig } from "../../src/console/config";
@@ -13,20 +13,22 @@ export const TEAM_DOMAIN = "https://unit-team.cloudflareaccess.com";
 export const PORTAL = "https://portal.example.com";
 export const PORTAL_HOST = "portal.example.com";
 export const ISSUER_HOST = "id.example.com";
-export const STD_ISSUER = "https://id.example.com/standard";
-export const ADMIN_PORTAL = "https://admin-portal.example.com";
-export const ADMIN_HOST = "admin-portal.example.com";
+/** managed の境界の issuer（P2: Standard と Admin の階層で同じ issuer）。 */
+export const STD_ISSUER = "https://id.example.com/console";
+/** 管理外の先方の境界の issuer。 */
+export const PARTNER_ISSUER = "https://id.example.com/p/partner-x/console";
+/** Admin の階層のチーム（同じ Worker・同じオリジンの /t/infra-elevated）。 */
 export const ADMIN_TEAM = "infra-elevated";
-/** Admin の issuer（Standard の issuer・ポータルと別のホストの /admin。X1 の決裁で A-3 = I-B）。 */
-export const ADMIN_ISSUER = "https://admin-id.example.com/admin";
-export const ADMIN_ISSUER_HOST = "admin-id.example.com";
+/** Admin の階層のもう 1 つのチーム（同じ階層の別のチーム。X13）。 */
+export const ADMIN_TEAM_B = "dev-elevated";
 /** infra-elevated のチームが Administrator で入れる行（種類 A のアカウント）。 */
 export const ADMIN_ENTRY = "333333333333:admin";
+/** dev-elevated だけが Administrator で入れる行は無いので、B だけの行は種類 B のアカウントを足して作る（試験の中で）。 */
 export const STS_URL = "https://sts.us-east-1.amazonaws.com/";
 export const FEDERATION = "https://signin.aws.amazon.com/federation";
 export const AUDS = companyAuds() as {
   teams: Record<string, string>;
-  entry: { standard: string; admin: string };
+  entry: string;
 };
 /** infra のチームが Viewer で入れる行（種類 A のアカウント）。 */
 export const ENTRY = "333333333333:readonly";
@@ -37,8 +39,8 @@ export const CSRF_SECRET = ["unit", "csrf", "k".repeat(40)].join("-");
 export const ACCESS_KEY_ID = ["ASIA", "U".repeat(16)].join("");
 export const SIGNIN_TOKEN = ["signin", "u".repeat(24)].join("-");
 
-/** 会社用の設定（試験の fixture）から作った Standard の発行用の生成物。 */
-export function standardConfig(): WorkerConfig {
+/** 会社用の設定（試験の fixture）から作った発行用の生成物（worker.json。両階層のチーム）。 */
+export function workerConfig(): WorkerConfig {
   const { config } = parseConsoleConfig(companyConfig());
   return generateConsoleArtifacts(config, {
     mode: "deploy",
@@ -46,10 +48,10 @@ export function standardConfig(): WorkerConfig {
     sourceRevision: "unit",
     auds: companyAuds(),
     inventory: companyInventory(),
-  }).worker.standard;
+  }).worker;
 }
 
-/** 会社用の設定（試験の fixture）から作った表示用の生成物（display.standard.json）。 */
+/** 会社用の設定（試験の fixture）から作った表示用の生成物（display.json）。 */
 export function displayConfig(): DisplayConfig {
   const { config } = parseConsoleConfig(companyConfig());
   return generateConsoleArtifacts(config, {
@@ -59,18 +61,6 @@ export function displayConfig(): DisplayConfig {
     auds: companyAuds(),
     inventory: companyInventory(),
   }).display;
-}
-
-export function adminConfig(): WorkerConfig {
-  const { config } = parseConsoleConfig(companyConfig());
-  const w = generateConsoleArtifacts(config, {
-    mode: "deploy",
-    generatedAt: "2026-11-12T00:00:00.000Z",
-    auds: companyAuds(),
-    inventory: companyInventory(),
-  }).worker.admin;
-  if (!w) throw new Error("admin config is missing");
-  return w;
 }
 
 export const stsXml = (accessKeyId: string) => `<AssumeRoleWithWebIdentityResponse>
@@ -100,7 +90,7 @@ export type Harness = {
     iat?: number;
   }): Promise<string>;
   csrf(aud: string, sub?: string): Promise<string>;
-  /** Standard の境界ごとの署名鍵（取り出せない CryptoKey。本番の secret_key と同じ形）。 */
+  /** 境界ごとの署名鍵（取り出せない CryptoKey。本番の secret_key と同じ形。両階層で同じ鍵）。 */
   stdKeys: Record<string, TestKey>;
   getAccessKey: ReturnType<typeof createLocalJWKSet>;
   fetch: typeof fetch;
@@ -193,7 +183,7 @@ function standardTestKeys(): Promise<Record<string, TestKey>> {
 }
 
 /**
- * Standard の署名鍵の vars とバインディング。境界 → 今の鍵（CONSOLE_CURRENT_KEYS）、境界 → 公開鍵（CONSOLE_PUBLIC_JWKS。
+ * 署名鍵の vars とバインディング。境界 → 今の鍵（CONSOLE_CURRENT_KEYS）、境界 → 公開鍵（CONSOLE_PUBLIC_JWKS。
  * 既定は今の鍵だけ）、バインディング（名前 → CryptoKey）。
  */
 export function standardKeyEnv(
@@ -222,19 +212,6 @@ export function baseEnv(h: Harness, extra: Record<string, unknown> = {}): Record
   return {
     ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
     ...standardKeyEnv(h.stdKeys),
-    CONSOLE_CSRF_KEY: CSRF_SECRET,
-    LOGIN_RATE_LIMITER: allowAll,
-    ...extra,
-  };
-}
-
-/** Admin の Worker の env（署名鍵の secret は持たない）。 */
-export function adminEnv(
-  _h: Harness,
-  extra: Record<string, unknown> = {},
-): Record<string, unknown> {
-  return {
-    ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
     CONSOLE_CSRF_KEY: CSRF_SECRET,
     LOGIN_RATE_LIMITER: allowAll,
     ...extra,

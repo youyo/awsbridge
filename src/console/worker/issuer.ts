@@ -1,6 +1,5 @@
-// コンソールログイン（Standard）: 境界ごとの OIDC issuer の公開文書（discovery と JWKS）。
+// コンソールログイン: 境界ごとの OIDC issuer の公開文書（discovery と JWKS。Standard と Admin の階層で同じ issuer）。
 // issuer のホストでは、生成物の境界の issuer の URL（ホストとパス）に完全一致する 2 つのパスだけを返し、それ以外は 404。
-// Admin の issuer の文書は出さない（Standard の生成物に Admin の issuer は入らない）。
 // JWKS はその境界の vars CONSOLE_PUBLIC_JWKS の公開鍵だけ（秘密鍵のバインディングには触れない。cto の決裁 (a)）。
 // MCP 用の OIDC の部品（src/oidc.ts・src/keys.ts。文字列の秘密鍵の読み込みを含む）は import しない。
 import { issuerDiscovery, issuerJwks } from "../signing/issuer-doc";

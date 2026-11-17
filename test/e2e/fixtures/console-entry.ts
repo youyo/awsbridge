@@ -6,7 +6,8 @@
 // バインディングの名前（CONSOLE_KEY_<kid の 16 進>）に渡す。vars の CONSOLE_CURRENT_KEYS・CONSOLE_PUBLIC_JWKS もここで作る。
 // 鍵はモジュールで境界ごとに 1 つだけ作る（JWKS と署名の鍵が要求ごとに変わらないように）。env は受け取った env ごとに 1 回だけ組む。
 // 変数 E2E_KEY_MODE: "ok"（既定）/ "mismatch"（managed のバインディングに別の鍵を入れる = 鍵だけ替えて公開鍵を替え忘れた）/
-//   "none"（鍵の vars もバインディングも渡さない = 鍵の投入前）。
+//   "none"（鍵の vars もバインディングも渡さない = 鍵の投入前）/ "no-managed"（managed の境界は公開鍵だけで今の鍵が無い。
+//   ほかの境界の鍵で代用しないことの試験。P2 の設計メモ §7.3 の X14）。
 // 入口の一覧（S0。U2）の身元のグループの取り方は未確定で、本物のエントリは渡さない（全チームのリンクに落ちる）。
 // 変数 E2E_IDENTITY_GROUPS（Object ID のカンマ区切り）があるときだけ、同じ生成物で工場を呼び、その値を返す差し込み口を渡す
 // （試験用。要求から値を読まない）。本番のバンドルには入らない（wrangler.console.jsonc の main は src/console/worker/index.ts。
@@ -75,11 +76,14 @@ async function keyedEnv(env: E2EEnv): Promise<ConsoleEnv> {
     Object.fromEntries(e),
   );
   const ks = await keys;
+  const noManaged = env.E2E_KEY_MODE === "no-managed";
   const out: Record<string, unknown> = {
     ...env,
     CONSOLE_CURRENT_KEYS: JSON.stringify(
       Object.fromEntries(
-        Object.entries(ks).map(([b, k]) => [b, { binding: consoleBindingName(k.kid), kid: k.kid }]),
+        Object.entries(ks)
+          .filter(([b]) => !(noManaged && b === "managed"))
+          .map(([b, k]) => [b, { binding: consoleBindingName(k.kid), kid: k.kid }]),
       ),
     ),
     CONSOLE_PUBLIC_JWKS: JSON.stringify(

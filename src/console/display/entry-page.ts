@@ -1,6 +1,6 @@
 // コンソールログイン（表示用）: 入口（S0）の 1 つの一覧の画面（docs/specs/console-login-portal.md §4.1・§5.4・§5.6・§7）。
 // 所属するチーム（表示用の照合の結果）の行だけを出す。行のロールは、その行のチームのパスの S2 へのリンク（GET）。
-// Administrator の行は Admin のオリジンの S2 へのリンクで、[ADMIN] の印を付ける。この画面では発行しない。
+// Administrator の行は同じオリジンの Admin のチームのパスの S2 へのリンクで、[ADMIN] の印を付ける（P2）。この画面では発行しない。
 // アカウントの email は出さない（S0 には出さない。§5.6）。AUD・ロールの ARN は表示用の生成物に無い。
 // 発行の経路（portal/login.ts・issue/*）はこのモジュールを import しない。
 import type { Tier } from "../constants";
@@ -8,15 +8,20 @@ import { ADMIN_MARK, dataElement, esc, layout } from "../portal/pages";
 import type { DisplayAccount, DisplayConfig } from "../types";
 import type { Membership } from "./groups";
 
-/** チームの起点（パス方式は /t/<team> か Admin のオリジンの /t/<team>、ホスト方式は https://<team>.<host>）。 */
-export function teamBaseFor(display: DisplayConfig, team: string, tier: Tier): string | undefined {
-  const origin = tier === "admin" ? display.portal.adminOrigin : display.portal.origin;
-  if (origin === undefined) return undefined;
+/**
+ * チームの起点（パス方式は /t/<team>、ホスト方式は https://<team>.<host>）。P2 ではどちらの階層のチームも同じオリジン。
+ * 階層の引数は呼び出し側の形を保つためだけに受ける（起点は階層によらない）。
+ */
+export function teamBaseFor(
+  display: DisplayConfig,
+  team: string,
+  _tier?: Tier,
+): string | undefined {
   if (display.portal.routing === "host") {
-    const u = new URL(origin);
+    const u = new URL(display.portal.origin);
     return `${u.protocol}//${team}.${u.host}`;
   }
-  return tier === "admin" ? `${origin}/t/${team}` : `/t/${team}`;
+  return `/t/${team}`;
 }
 
 export type EntryRow = {

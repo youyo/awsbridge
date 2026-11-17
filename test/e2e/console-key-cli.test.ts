@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { calculateJwkThumbprint } from "jose";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { consoleBindingName } from "../../src/console/worker/key";
-import { standardConfig } from "../unit/console-worker-harness";
+import { workerConfig } from "../unit/console-worker-harness";
 import { freePort, root } from "./console-e2e-kit";
 
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
@@ -87,9 +87,9 @@ beforeAll(async () => {
     publicJwk: { kty: "RSA", n: pub.n as string, e: "AQAB", kid, alg: "RS256", use: "sig" },
   };
   dir = mkdtempSync(join(tmpdir(), "awsbridge-key-cli-"));
-  // put は生成物（worker.standard.json）で境界の名前を確かめる。retire の試験は生成物の無い置き場所（out）を使う
+  // put は生成物（worker.json）で境界の名前を確かめる。retire の試験は生成物の無い置き場所（out）を使う
   mkdirSync(join(dir, "generated"));
-  writeFileSync(join(dir, "generated", "worker.standard.json"), JSON.stringify(standardConfig()));
+  writeFileSync(join(dir, "generated", "worker.json"), JSON.stringify(workerConfig()));
   writeFileSync(
     join(dir, "wrangler.standard.jsonc"),
     `{\n  // 試験用\n  "name": "${SCRIPT}",\n  "vars": ${JSON.stringify({
@@ -206,10 +206,10 @@ describe("console:key:put", () => {
     expect(reqs.map((x) => x.method)).toEqual(["GET"]);
   });
 
-  it("--yes でも、生成物（worker.standard.json）が無ければ境界の名前を確かめられないので断る（終了コード 1・API を呼ばない）", async () => {
+  it("--yes でも、生成物（worker.json）が無ければ境界の名前を確かめられないので断る（終了コード 1・API を呼ばない）", async () => {
     const r = await run(["put", "--boundary", "managed", "--yes"]);
     expect(r.status, r.out).toBe(1);
-    expect(r.out).toContain("worker.standard.json");
+    expect(r.out).toContain("worker.json");
     expect(reqs).toHaveLength(0);
   });
 
@@ -239,7 +239,7 @@ describe("console:key:retire", () => {
     const old = "CONSOLE_KEY_0123456789ABCDEF";
     expect((await run(["retire", "--binding", old])).status).toBe(0);
     expect(reqs).toHaveLength(0);
-    // 試験の作業ディレクトリには生成物（worker.standard.json）が無いので、境界の issuer が分からない
+    // 試験の作業ディレクトリには生成物（worker.json）が無いので、境界の issuer が分からない
     const r = await run(["retire", "--binding", old, "--yes"]);
     expect(r.status, r.out).toBe(1);
     expect(reqs).toHaveLength(0);

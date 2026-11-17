@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { calculateJwkThumbprint } from "jose";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PublicJwk } from "../../src/console/signing/key";
-import { adminConfig, standardConfig } from "../unit/console-worker-harness";
+import { adminConfig, workerConfig } from "../unit/console-worker-harness";
 import { freePort, root } from "./console-e2e-kit";
 
 type Doc = { status?: number; location?: string; body?: unknown; raw?: string };
@@ -24,7 +24,7 @@ type Seen = {
   auth: string | undefined;
 };
 
-const std = standardConfig();
+const std = workerConfig();
 const adm = adminConfig();
 const boundaries = std.boundaries as { name: string; issuer: string }[];
 const adminIssuer = (adm.boundaries[0] as { issuer: string }).issuer;

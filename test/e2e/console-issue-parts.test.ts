@@ -118,6 +118,7 @@ describe("発行の部品を通しで（擬似の STS・サインイン）", () 
 
     const signer = createBoundarySigner({
       boundaries: { managed: standardKeyOf(key) },
+      teamTiers: { infra: "standard" },
       log: () => {},
     });
     const signed = await signer.sign({ identity, resolved: resolved.value, row });
@@ -242,6 +243,7 @@ describe("発行の部品を通しで（擬似の STS・サインイン）", () 
     stsMode = "denied";
     const signer = createBoundarySigner({
       boundaries: { managed: standardKeyOf(key) },
+      teamTiers: { infra: "standard" },
       log: () => {},
     });
     const identity = { sub: "s", email: "bob@example.com" };

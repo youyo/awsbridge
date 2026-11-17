@@ -19,14 +19,14 @@ import {
 } from "../../scripts/console/key-lib";
 import type { PublicJwk } from "../../src/console/signing/key";
 import { consoleBindingName } from "../../src/console/worker/key";
-import { standardConfig } from "./console-worker-harness";
+import { workerConfig } from "./console-worker-harness";
 
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
 const SCRIPT = "awsbridge-console";
 const TOKEN = ["cf", "token", "s".repeat(32)].join("-");
 const ACCESS_TOKEN = ["access", "token", "a".repeat(32)].join("-");
-const ISSUER = "https://id.example.com/standard";
-const P_ISSUER = "https://id.example.com/partner-x";
+const ISSUER = "https://id.example.com/console";
+const P_ISSUER = "https://id.example.com/p/partner-x/console";
 const PORTAL = "https://portal.example.com";
 const PARTNER = "partner:partner-x";
 
@@ -78,7 +78,7 @@ async function settings(
 ): Promise<Settings> {
   return standardKeySettings({ AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID: ACCOUNT, ...env }, (f) => {
     if (f.endsWith(".jsonc")) return wranglerText(vars);
-    if (f.endsWith("worker.standard.json")) return JSON.stringify(standardConfig());
+    if (f.endsWith("worker.json")) return JSON.stringify(workerConfig());
     throw new Error(`unexpected read ${f}`);
   });
 }
@@ -265,7 +265,7 @@ describe("put: 境界の鍵をメモリの中で作り、Cloudflare API で secr
     expect(d.calls).toHaveLength(0);
   });
 
-  it("生成物（worker.standard.json）が無ければ、境界の名前を確かめられないので断る（API・トークンを使わない）", async () => {
+  it("生成物（worker.json）が無ければ、境界の名前を確かめられないので断る（API・トークンを使わない）", async () => {
     const noConfig = await standardKeySettings(
       { AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID: ACCOUNT },
       (f) => {
@@ -277,7 +277,7 @@ describe("put: 境界の鍵をメモリの中で作り、Cloudflare API で secr
     expect(await runPut(noConfig, d, { yes: true, boundary: "managed" })).toBe(1);
     expect(d.calls).toHaveLength(0);
     expect(d.tokenCalls).toBe(0);
-    expect(d.out.join("\n")).toContain("worker.standard.json");
+    expect(d.out.join("\n")).toContain("worker.json");
   });
 
   it("同じ名前のバインディングが既にあれば PUT しない", async () => {
@@ -369,7 +369,7 @@ describe("retire: 旧い鍵のバインディングを消す（どの境界の J
     expect(d.calls.some((x) => x.method === "DELETE")).toBe(false);
   });
 
-  it("生成物（worker.standard.json）が無ければ断る", async () => {
+  it("生成物（worker.json）が無ければ断る", async () => {
     const s = await standardKeySettings({ AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID: ACCOUNT }, (f) => {
       if (f.endsWith(".jsonc")) return wranglerText(keyed(b, [b]));
       throw new Error("no file");

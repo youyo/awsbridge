@@ -10,7 +10,7 @@ import {
 } from "../../scripts/console/exposure-check-lib";
 import type { DocResponse } from "../../src/console/exposure";
 import type { PublicJwk } from "../../src/console/signing/key";
-import { adminConfig, standardConfig } from "./console-worker-harness";
+import { adminConfig, workerConfig } from "./console-worker-harness";
 
 async function makeJwk(): Promise<PublicJwk> {
   const pair = (await crypto.subtle.generateKey(
@@ -36,7 +36,7 @@ beforeAll(async () => {
   [s1, s2, s3, a1] = await Promise.all([makeJwk(), makeJwk(), makeJwk(), makeJwk()]);
 });
 
-const std = standardConfig();
+const std = workerConfig();
 const adm = adminConfig();
 // 生成物の境界は 2 つ（managed と partner:partner-x。どちらも同じ issuer のホスト）。鍵は境界ごとに別
 const boundary = std.boundaries[0] as { name: string; issuer: string };

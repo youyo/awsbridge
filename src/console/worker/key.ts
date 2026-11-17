@@ -1,6 +1,6 @@
-// コンソールログインの Standard の署名鍵（cto の決裁「Standard も secret_key に揃える」）: 境界ごとの Workers の secret_key 型の
+// コンソールログインの署名鍵（境界ごと。Standard と Admin の階層で同じ鍵）（cto の決裁「Standard も secret_key に揃える」）: 境界ごとの Workers の secret_key 型の
 // バインディング（取り出せない CryptoKey）と、それを指す vars の約束。Worker と手元の道具（scripts/console/key.ts）の両方が使う。
-// 規則（名前・検査）は Admin と共通の src/console/signing/key.ts にあり、ここは Standard の名前（接頭辞・vars の名前）と境界の対応だけを持つ。
+// 規則（名前・検査）は src/console/signing/key.ts にあり、ここはコンソールの鍵の名前（接頭辞・vars の名前）と境界の対応だけを持つ。
 //
 //   バインディングの名前    CONSOLE_KEY_<kid の先頭 8 バイトの大文字の 16 進>。境界の名前（: や - を含む）は名前に入れず、kid から決める
 //   CONSOLE_CURRENT_KEYS   vars。境界の名前 → 今の署名鍵 {binding, kid} の JSON
@@ -29,7 +29,7 @@ export type ConsoleKeys = {
   publicJwks: Record<string, PublicJwk[]>;
 };
 
-/** kid から Standard のバインディングの名前を作る。形が違えば例外。 */
+/** kid からコンソールの鍵のバインディングの名前を作る。形が違えば例外。 */
 export function consoleBindingName(kid: string): string {
   return bindingNameFor(CONSOLE_KEY_BINDING_PREFIX, kid);
 }

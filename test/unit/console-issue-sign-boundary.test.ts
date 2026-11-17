@@ -48,9 +48,11 @@ const material = (k: TestKey, issuer: string, key: unknown = k.privateKey): Boun
   publicJwk: k.publicJwk,
   key,
 });
+/** チーム → 階層（生成物の teams[].tier）。署名の部品が、タグのチームの階層と ARN のパスの階層を比べるのに使う。 */
+const TEAM_TIERS = { infra: "standard", "infra-elevated": "admin" } as const;
 const signerOf = (boundaries: Record<string, BoundaryKey>) => {
   logs = [];
-  return createBoundarySigner({ boundaries, log: (l) => logs.push(l) });
+  return createBoundarySigner({ boundaries, teamTiers: TEAM_TIERS, log: (l) => logs.push(l) });
 };
 
 describe("createBoundarySigner", () => {
@@ -248,4 +250,46 @@ describe("parseConsoleKeys（境界 → 今の鍵・境界 → 公開鍵の 2 �
       expect(String(e)).not.toContain(managed.publicJwk.n);
     }
   });
+});
+
+// P2（B）の設計メモ §7.1・§7.3 の X9: 署名の直前に、タグに入れるチームの階層と、ロールの ARN のパスの階層が同じことを
+// 確かめる（行の検査と別の層の多重の防御）。違えば署名しない。行の検査（findRow）を通らない入力をここに直接渡して確かめる。
+describe("createBoundarySigner: タグのチームの階層とロールの ARN のパスの階層（X9）", () => {
+  const ADMIN_ARN =
+    "arn:aws:iam::123456789012:role/awsbridge-console/admin/FederatedAwsBridgeAdministrator";
+  const STD_ARN = "arn:aws:iam::123456789012:role/awsbridge-console/std/FederatedAwsBridgeViewer";
+
+  it("陽性の対照: Admin の階層のチームで Admin のパスの ARN は署名する", async () => {
+    const signer = signerOf({ managed: material(managed, ISSUER) });
+    const r = await signer.sign(
+      request({ row: row({ team: "infra-elevated", role: "administrator", roleArn: ADMIN_ARN }) }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it.each([
+    ["Standard の階層のチームで Admin のパスの ARN", "infra", ADMIN_ARN],
+    ["Admin の階層のチームで Standard のパスの ARN", "infra-elevated", STD_ARN],
+    ["階層の分からないチーム（生成物に無い）", "ghost", STD_ARN],
+    [
+      "コンソールのパスでない ARN",
+      "infra",
+      "arn:aws:iam::123456789012:role/FederatedAwsBridgeViewer",
+    ],
+    [
+      "未知の階層のパスの ARN",
+      "infra",
+      "arn:aws:iam::123456789012:role/awsbridge-console/root/FederatedAwsBridgeViewer",
+    ],
+  ])(
+    "%s は署名しない（signing_unavailable。ログは console_tier_mismatch）",
+    async (_n, team, roleArn) => {
+      const signer = signerOf({ managed: material(managed, ISSUER) });
+      const r = await signer.sign(request({ row: row({ team, roleArn }) }));
+      expect(r).toEqual({ ok: false, code: "signing_unavailable" });
+      expect(logs.join("\n")).toContain("console_tier_mismatch");
+      // 値（チーム名・ARN）はログに出さない
+      expect(logs.join("\n")).not.toContain(roleArn);
+    },
+  );
 });

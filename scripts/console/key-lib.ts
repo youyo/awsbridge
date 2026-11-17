@@ -1,5 +1,5 @@
-// コンソールログインの Standard の署名鍵（Workers の secret_key 型。境界ごと）の運用の道具の本体。CLI は scripts/console/key.ts。
-// cto の決裁「Standard も secret_key に揃える」の (d)・(e)・(g)。Admin の道具（admin-key-lib.ts）と同じ形で、境界ごとに鍵を持つ:
+// コンソールログインの署名鍵（Workers の secret_key 型。境界ごと。Standard と Admin の階層で同じ鍵。P2）の運用の道具の本体。
+// CLI は scripts/console/key.ts。cto の決裁「Standard も secret_key に揃える」の (d)・(e)・(g)。境界ごとに鍵を持つ:
 //   put     --boundary の鍵（RSA 2048、RS256）を道具の中でメモリ上に作り、Cloudflare API の PUT .../workers/scripts/<script>/secrets で
 //           secret_key（format jwk・RSASSA-PKCS1-v1_5/SHA-256・usages sign）として入れる。ファイルに書かない・出力しない。
 //           名前は kid から決まる（CONSOLE_KEY_<16 進>）。同じ名前が既にあれば PUT しない（同じ名前への PUT は即座に置き換わるため）。
@@ -7,8 +7,9 @@
 //   retire  旧い鍵のバインディングを消す（DELETE）。どれかの境界の今の鍵・公開鍵の vars・デプロイ済みの JWKS に残っている鍵は断る。
 //           CONSOLE_KEY_<16 進> の形以外（CSRF の鍵・Admin の鍵など）は断る
 //   check   デプロイ後の確認: 境界ごとに今の鍵のバインディングが secret_key か、境界の issuer の discovery と JWKS が vars と合うか、
-//           key-check（Access の検証の後ろ。取り出せない・exportKey が失敗する・自己検証が通る）
-// トークンは Standard 用の変数（AWSBRIDGE_CONSOLE_CF_API_TOKEN）だけを読み、Admin 用のトークンは読まない（決裁 (e): トークンを分ける）。
+//           key-check（Access の検証の後ろ。取り出せない・exportKey が失敗する・自己検証が通る）。--team で Admin の階層のチームの
+//           パスでも開ける（同じ Worker。そのチームの行がある境界だけを返す）
+// トークンはコンソールの道具の変数（AWSBRIDGE_CONSOLE_CF_API_TOKEN）だけを読む。デプロイと鍵の操作は利用者だけ（受容 b）。
 // トークン（Cloudflare API・Access）と鍵の値は出力しない。
 
 import { readWorkerConfig } from "../../src/console/portal/worker-config";
@@ -50,7 +51,7 @@ export type Settings = {
   apiBase: string;
   /** vars の鍵（両方とも空なら undefined）。 */
   keys?: ConsoleKeys | undefined;
-  /** 生成物（worker.standard.json）。境界と issuer・ポータルを知るのに使う。無ければ undefined。 */
+  /** 生成物（worker.json）。境界と issuer・ポータルを知るのに使う。無ければ undefined。 */
   stdConfig?: WorkerConfig | undefined;
 };
 
@@ -61,7 +62,7 @@ export function standardApiBaseFrom(env: Record<string, string | undefined>): st
   return apiBaseFromVar(env, "AWSBRIDGE_CONSOLE_CF_API_BASE");
 }
 
-/** Standard 用のトークン（無ければ undefined。呼び出し側が wrangler の OAuth に落とす）。Admin 用・ほかの変数は読まない。 */
+/** コンソールの道具のトークン（無ければ undefined。呼び出し側が wrangler の OAuth に落とす）。ほかの変数は読まない。 */
 export function standardToken(env: Record<string, string | undefined>): string | undefined {
   return env[TOKEN_VAR] || undefined;
 }
@@ -70,7 +71,7 @@ const blank = (v: unknown) => v === undefined || (typeof v === "string" && v.tri
 
 /**
  * 設定を読む。wrangler の設定（既定 wrangler.console.jsonc。AWSBRIDGE_CONSOLE_WRANGLER_CONFIG）の name・account_id・vars、
- * アカウント ID（AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID か account_id）、生成物（AWSBRIDGE_CONSOLE_OUT_DIR/worker.standard.json。任意）。
+ * アカウント ID（AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID か account_id）、生成物（AWSBRIDGE_CONSOLE_OUT_DIR/worker.json。任意）。
  */
 export async function standardKeySettings(
   env: Record<string, string | undefined>,
@@ -101,10 +102,7 @@ export async function standardKeySettings(
   let stdConfig: WorkerConfig | undefined;
   const outDir = env.AWSBRIDGE_CONSOLE_OUT_DIR || ".generated/console";
   try {
-    stdConfig = readWorkerConfig(
-      JSON.parse(readFile(`${outDir}/worker.standard.json`)),
-      "standard",
-    );
+    stdConfig = readWorkerConfig(JSON.parse(readFile(`${outDir}/worker.json`)));
   } catch {
     stdConfig = undefined;
   }
@@ -124,7 +122,7 @@ const secretsUrl = (s: Settings, name?: string) =>
   }`;
 
 const NEXT_STEPS = [
-  "次の手順（README の「コンソールログインの Standard の署名鍵」）:",
+  "次の手順（README の「コンソールログインの署名鍵」）:",
   "  1. wrangler の設定の vars CONSOLE_PUBLIC_JWKS を上の値にしてデプロイする（その境界の JWKS に新旧を並べる）。",
   "     差し替えなら、STS の JWKS のキャッシュが切れるまで最低 1 時間（安全側に 24 時間）待つ",
   "  2. vars CONSOLE_CURRENT_KEYS を上の値にしてデプロイする（その境界の署名を新しい鍵に切り替える）。mise run console:key:check",
@@ -152,18 +150,18 @@ export async function runPut(
       "  4. 名前・kid・公開鍵と、次に入れる vars（その境界だけを入れ替えたもの）を表示する（秘密の成分は表示しない）",
     );
     d.print(
-      `トークン: ${TOKEN_VAR}（Standard の Worker だけを書けるトークン。Admin と分ける）か wrangler の OAuth`,
+      `トークン: ${TOKEN_VAR}（コンソールの Worker だけを書けるトークン。利用者だけが持つ）か wrangler の OAuth`,
     );
     return 0;
   }
   if (!s.stdConfig) {
     d.print(
-      "[NG] 生成物（worker.standard.json）が無く、境界の名前を確かめられない。何もしていない（mise run console:config:generate）",
+      "[NG] 生成物（worker.json）が無く、境界の名前を確かめられない。何もしていない（mise run console:config:generate）",
     );
     return 1;
   }
   if (!s.stdConfig.boundaries.some((b) => b.name === boundary)) {
-    d.print(`[NG] 境界 ${boundary} は生成物（worker.standard.json）に無い。何もしていない`);
+    d.print(`[NG] 境界 ${boundary} は生成物（worker.json）に無い。何もしていない`);
     return 1;
   }
   const existing = s.keys?.publicJwks[boundary] ?? [];
@@ -250,7 +248,7 @@ export async function runRetire(
   const name = o.binding;
   if (!BINDING_RE.test(name)) {
     d.print(
-      "[NG] --binding は CONSOLE_KEY_<16 進 16 桁> の名前（CSRF の鍵・Admin の鍵は消さない）",
+      "[NG] --binding は CONSOLE_KEY_<16 進 16 桁> の名前（CSRF の鍵などほかの名前は消さない）",
     );
     return 1;
   }
@@ -279,7 +277,7 @@ export async function runRetire(
   // デプロイ済みのどの境界の issuer の JWKS（公開の URL）にも、消す鍵の kid が残っていないこと（取れなければ消さない）
   if (!s.stdConfig || s.stdConfig.boundaries.length === 0) {
     d.print(
-      "[NG] 生成物（worker.standard.json）が無い。デプロイ済みの JWKS を確かめられないので消さない（mise run console:config:generate）",
+      "[NG] 生成物（worker.json）が無い。デプロイ済みの JWKS を確かめられないので消さない（mise run console:config:generate）",
     );
     return 1;
   }
@@ -327,7 +325,7 @@ export async function runCheck(
   }
   const config = s.stdConfig;
   if (!config) {
-    bad("生成物（worker.standard.json）が無い。mise run console:config:generate");
+    bad("生成物（worker.json）が無い。mise run console:config:generate");
     return 1;
   }
 
@@ -389,13 +387,13 @@ export async function runCheck(
   const team =
     o.team ?? config.teams.find((t) => t.aud !== undefined)?.name ?? config.teams[0]?.name;
   if (!team) {
-    bad("生成物に Standard のチームが無い");
+    bad("生成物にチームが無い");
     return 1;
   }
   const url = keyCheckUrl(config, team);
   if (!o.accessToken) {
     d.print(
-      `[--] key-check は飛ばした。ブラウザ（Standard のチームの Access）で ${url} を開き、境界ごとに extractable false・exportKey rejected・selfVerify ok を確かめる`,
+      `[--] key-check は飛ばした。ブラウザ（そのチームの Access）で ${url} を開き、境界ごとに extractable false・exportKey rejected・selfVerify ok を確かめる`,
     );
     d.print(
       "     （または AWSBRIDGE_CONSOLE_ACCESS_TOKEN に cloudflared access token の値を入れて実行する）",

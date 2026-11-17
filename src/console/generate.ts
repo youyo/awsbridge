@@ -565,16 +565,19 @@ function readLedger(raw: unknown, key: string): LedgerTeam[] | undefined | null 
 
 /**
  * 前回の StackSets 用の生成物の台帳と比べる。台帳から名前を消さない・消したチームは台帳へ移す・同じ名前の階層を変えない。
- * 前回が無い（新しいチェックアウトなど）ときは比べられないので警告にする（生成物は gitignore で、前回はその場所にしか無い）。
+ * 前回が無い（新しいチェックアウトなど）ときは比べられないので、生成物を書く（deploy）ときに警告する
+ * （生成物は gitignore で、前回はその場所にしか無い）。
  */
 function checkLedger(
   config: ConsoleConfig,
   previous: unknown,
+  mode: GenerateMode,
   out: IssueList,
   warnings: IssueList,
 ) {
   if (previous === undefined) {
-    warnings.add("previous", "ledger_previous_missing");
+    // 生成物を書く（deploy）ときだけ警告する。PR の検査（check）では前回が無いのが普通なので黙る（渡されれば比べる）
+    if (mode === "deploy") warnings.add("previous", "ledger_previous_missing");
     return;
   }
   if (typeof previous !== "object" || previous === null || Array.isArray(previous)) {
@@ -622,7 +625,7 @@ export function generateConsoleArtifacts(
   const requireAud = options.mode === "deploy" || options.auds !== undefined;
   const auds = resolveAuds(config, options.auds, requireAud, out);
   const listed = listAccounts(config, options.inventory, options.mode, out, warnings);
-  checkLedger(config, options.previous, out, warnings);
+  checkLedger(config, options.previous, options.mode, out, warnings);
   if (out.items.length > 0) throw new ConsoleConfigError(out.items);
   return {
     display: buildDisplay(config, listed, meta),

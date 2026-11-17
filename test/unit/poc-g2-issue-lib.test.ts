@@ -13,7 +13,7 @@ import {
   portalHostPrefixes,
 } from "../../scripts/poc/g2/issue-lib";
 import { loginFormPage, errorPage as realErrorPage } from "../../src/console/portal/pages";
-import { standardConfig } from "./console-worker-harness";
+import { workerConfig } from "./console-worker-harness";
 
 // CSRF の形の文字列は実行時に組む
 const CSRF = ["v1", "1800000000", "A".repeat(43)].join(".");
@@ -240,7 +240,7 @@ describe("loginBody", () => {
 
 describe("本物の画面（src/console/portal/pages.ts）の出力で取り出せる", () => {
   it("loginFormPage の hidden の csrf を取り出す", () => {
-    const config = standardConfig();
+    const config = workerConfig();
     const account = config.accounts.find((a) => a.roles.some((r) => r.teams.length > 0));
     if (!account) throw new Error("fixture: no account");
     const team = account.roles.find((r) => r.teams.length > 0)?.teams[0] as string;

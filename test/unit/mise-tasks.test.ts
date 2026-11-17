@@ -70,14 +70,17 @@ describe("mise.toml のデプロイタスク", () => {
   });
 });
 
-describe("mise.toml: コンソールログインの Admin の署名鍵（X1 の決裁）", () => {
-  it("console:admin-key:put / retire / check は scripts/console/admin-key.ts を呼び、--yes を既定で付けない。wrangler deploy・aws を呼ばない", () => {
-    for (const cmd of ["put", "retire", "check"]) {
-      const sec = section(`tasks."console:admin-key:${cmd}"`);
-      const run = /^run\s*=.*$/m.exec(sec)?.[0] ?? "";
-      expect(run, cmd).toContain(`scripts/console/admin-key.ts ${cmd}`);
-      expect(run, cmd).not.toMatch(/--yes|wrangler|\baws\b|deploy/);
-    }
+describe("mise.toml: コンソールログインの鍵の道具（P2: Admin の鍵の道具は無い）", () => {
+  it("Admin の Worker の鍵・CSRF の鍵のタスク（console:admin-key:*・console:secrets:admin）は無い（鍵は境界ごとに 1 つ。P2）", () => {
+    for (const t of [
+      "console:admin-key:put",
+      "console:admin-key:retire",
+      "console:admin-key:check",
+      "console:secrets:admin",
+    ])
+      expect(toml, t).not.toContain(`[tasks."${t}"]`);
+    expect(toml).not.toContain("scripts/console/admin-key.ts");
+    expect(toml).not.toContain("scripts/console/secrets-admin.ts");
   });
   it("鍵の道具の変数（トークン・アカウント ID）を [env] に置かない", () => {
     expect(section("env")).not.toMatch(/^AWSBRIDGE_CONSOLE_ADMIN_/m);
@@ -97,7 +100,7 @@ describe("mise.toml: コンソールログインの Admin の署名鍵（X1 の�
   });
 });
 
-describe("mise.toml: コンソールログインの Standard の署名鍵（cto の決裁「Standard も secret_key に揃える」）", () => {
+describe("mise.toml: コンソールログインの署名鍵（境界ごと。cto の決裁「Standard も secret_key に揃える」）", () => {
   it("console:key:put / retire / check は scripts/console/key.ts を呼び、--yes を既定で付けない。wrangler deploy・aws を呼ばない", () => {
     for (const cmd of ["put", "retire", "check"]) {
       const sec = section(`tasks."console:key:${cmd}"`);
@@ -110,13 +113,6 @@ describe("mise.toml: コンソールログインの Standard の署名鍵（cto 
     const sec = section('tasks."console:secrets"');
     const run = /^run\s*=.*$/m.exec(sec)?.[0] ?? "";
     expect(run).toContain("scripts/console/secrets.ts");
-    expect(run).not.toMatch(/--yes|wrangler|\baws\b|deploy/);
-    expect(sec).toContain("CONSOLE_CSRF_KEY");
-  });
-  it("console:secrets:admin は Admin の CSRF の鍵だけを入れる道具（scripts/console/secrets-admin.ts）で、--yes を既定で付けない（G2 の論点 5）", () => {
-    const sec = section('tasks."console:secrets:admin"');
-    const run = /^run\s*=.*$/m.exec(sec)?.[0] ?? "";
-    expect(run).toContain("scripts/console/secrets-admin.ts");
     expect(run).not.toMatch(/--yes|wrangler|\baws\b|deploy/);
     expect(sec).toContain("CONSOLE_CSRF_KEY");
   });

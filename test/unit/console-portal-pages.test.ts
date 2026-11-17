@@ -1,26 +1,22 @@
 // コンソールログインのチームの画面: S1（一覧。検索・お気に入り・最近使ったもの）・S3（aws login の手順）・静的なファイル。
 // 設計: docs/specs/console-login-portal.md §4.2・§4.4・§5.4・§5.6・§6.5・§9.2・§9.6。
-// 階層に共通の画面（Standard と Admin）。一覧は発行用の生成物のこのチームの行だけから作り、他のチームの行・AUD・ARN を出さない。
+// 階層に共通の画面（1 つの Worker の Standard と Admin のチーム）。一覧は発行用の生成物のこのチームの行だけから作り、他のチームの行・AUD・ARN を出さない。
 // CSP（script-src 'self'・style-src 'self'）に合わせ、inline の script・style を使わない（一覧の JSON は実行されないデータの要素）。
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createAdminWorker } from "../../src/console/admin/worker";
 import type { WorkerConfig } from "../../src/console/types";
 import { createConsoleWorker } from "../../src/console/worker/worker";
 import {
-  ADMIN_HOST,
   ADMIN_TEAM,
   AUDS,
-  adminConfig,
-  adminEnv,
   baseEnv,
   createHarness,
   displayConfig,
   type Harness,
   ISSUER_HOST,
   PORTAL_HOST,
-  standardConfig,
+  workerConfig,
 } from "./console-worker-harness";
 
 let h: Harness;
@@ -39,15 +35,16 @@ const INFRA = AUDS.teams.infra as string;
 const DEV = AUDS.teams.dev as string;
 const ADMIN_AUD = AUDS.teams[ADMIN_TEAM] as string;
 
-function std(config: unknown = standardConfig()) {
+function std(config: unknown = workerConfig()) {
   return createConsoleWorker(
     config,
     { getAccessKey: h.getAccessKey, fetch: h.fetch },
     displayConfig(),
   );
 }
-function adm(config: unknown = adminConfig()) {
-  return createAdminWorker(config, { getAccessKey: h.getAccessKey, fetch: h.fetch });
+/** Admin の階層のチームの画面（P2: 同じ Worker。Admin の Worker は無い）。 */
+function adm(config: unknown = workerConfig()) {
+  return std(config);
 }
 
 async function get(
@@ -136,12 +133,11 @@ describe("S1 チームの一覧（Standard）", () => {
     ]);
     expect(html).not.toContain("arn:aws:iam::");
     expect(html).not.toContain('"teams"');
-    for (const aud of [...Object.values(AUDS.teams), AUDS.entry.standard, AUDS.entry.admin])
-      expect(html).not.toContain(aud);
+    for (const aud of [...Object.values(AUDS.teams), AUDS.entry]) expect(html).not.toContain(aud);
   });
 
   it("設定の値が </script> を含んでも、埋め込みの JSON と HTML を壊さない", async () => {
-    const config = standardConfig();
+    const config = workerConfig();
     const a = config.accounts.find(
       (x) => x.accountId === "333333333333",
     ) as WorkerConfig["accounts"][number];
@@ -199,7 +195,7 @@ describe("S1 チームの一覧（Standard）", () => {
   });
 
   it("このチームの行が無ければ、空であることと入口の一覧へのリンクを出す", async () => {
-    const config = standardConfig();
+    const config = workerConfig();
     for (const a of config.accounts)
       for (const r of a.roles)
         r.teams =
@@ -218,18 +214,17 @@ describe("S1 チームの一覧（Standard）", () => {
 });
 
 describe("S1 チームの一覧（Admin）", () => {
-  it("[ADMIN] の印、静的なファイルはチームのパスの下、入口の一覧は Standard のオリジン", async () => {
+  it("[ADMIN] の印、静的なファイルはチームのパスの下、入口の一覧は同じオリジンの /", async () => {
     const res = await get(adm(), `/t/${ADMIN_TEAM}/`, {
       aud: ADMIN_AUD,
-      host: ADMIN_HOST,
-      env: adminEnv(h),
     });
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("<title>[ADMIN]");
     expect(html).toContain(`href="/t/${ADMIN_TEAM}/a/333333333333?role=admin"`);
     expect(html).toContain(`<script src="/t/${ADMIN_TEAM}/assets/portal.js" defer></script>`);
-    expect(html).toContain('href="https://portal.example.com/"');
+    expect(html).toContain('href="/"');
+    expect(html).not.toContain("admin-portal");
     noInline(html);
   });
 });
@@ -267,8 +262,6 @@ describe("S3 aws login の手順", () => {
     const html = await (
       await get(adm(), `/t/${ADMIN_TEAM}/a/333333333333/cli?role=admin`, {
         aud: ADMIN_AUD,
-        host: ADMIN_HOST,
-        env: adminEnv(h),
       })
     ).text();
     expect(html).toContain("aws login --profile svc-a-prod-admin");
@@ -288,11 +281,13 @@ describe("S3 aws login の手順", () => {
   });
 
   it("ロールが複数で指定が無ければ、ロールを選ぶリンクを出す", async () => {
-    const config = standardConfig();
+    const config = workerConfig();
     const a = config.accounts.find(
       (x) => x.accountId === "444444444444",
     ) as WorkerConfig["accounts"][number];
-    for (const r of a.roles) if (!r.teams.includes("infra")) r.teams.push("infra");
+    // Standard の階層のロールの行だけ（Admin のロールの行に Standard のチームを入れると row_team_tier で 500）
+    for (const r of a.roles)
+      if (r.role !== "admin" && !r.teams.includes("infra")) r.teams.push("infra");
     const html = await (await get(std(config), "/t/infra/a/444444444444/cli")).text();
     expect(html).toContain('href="/t/infra/a/444444444444/cli?role=readonly"');
     expect(html).toContain('href="/t/infra/a/444444444444/cli?role=developer"');
@@ -300,7 +295,7 @@ describe("S3 aws login の手順", () => {
   });
 
   it("プロファイル名は アカウント名-ロール を小文字にし、使えない文字は - にする", async () => {
-    const config = standardConfig();
+    const config = workerConfig();
     const a = config.accounts.find(
       (x) => x.accountId === "333333333333",
     ) as WorkerConfig["accounts"][number];
@@ -313,21 +308,21 @@ describe("S3 aws login の手順", () => {
 describe("静的なファイル（/assets と /t/<team>/assets）", () => {
   it("Standard: /assets/portal.js・portal.css を返す（キャッシュしてよい。CSP・nosniff は付ける）", async () => {
     const w = std();
-    const js = await get(w, "/assets/portal.js", { aud: AUDS.entry.standard });
+    const js = await get(w, "/assets/portal.js", { aud: AUDS.entry });
     expect(js.status).toBe(200);
     expect(js.headers.get("Content-Type")).toBe("text/javascript; charset=utf-8");
     expect(js.headers.get("Cache-Control")).not.toBe("no-store");
     expect(js.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(js.headers.get("Content-Security-Policy")).toContain("script-src 'self'");
     expect(await js.text()).toContain("portal-data");
-    const css = await get(w, "/assets/portal.css", { aud: AUDS.entry.standard });
+    const css = await get(w, "/assets/portal.css", { aud: AUDS.entry });
     expect(css.status).toBe(200);
     expect(css.headers.get("Content-Type")).toBe("text/css; charset=utf-8");
   });
 
   it("Standard: /t/<team>/assets はチームの Access JWT で返す（中身は同じ）", async () => {
     const w = std();
-    const a = await (await get(w, "/assets/portal.js", { aud: AUDS.entry.standard })).text();
+    const a = await (await get(w, "/assets/portal.js", { aud: AUDS.entry })).text();
     const t = await get(w, "/t/infra/assets/portal.js");
     expect(t.status).toBe(200);
     expect(await t.text()).toBe(a);
@@ -343,31 +338,22 @@ describe("静的なファイル（/assets と /t/<team>/assets）", () => {
 
   it("許可リストにない名前・知らないチーム・issuer のホストは 404、POST は 405", async () => {
     const w = std();
-    expect((await get(w, "/assets/other.js", { aud: AUDS.entry.standard })).status).toBe(404);
-    expect((await get(w, "/assets/../worker.js", { aud: AUDS.entry.standard })).status).toBe(404);
+    expect((await get(w, "/assets/other.js", { aud: AUDS.entry })).status).toBe(404);
+    expect((await get(w, "/assets/../worker.js", { aud: AUDS.entry })).status).toBe(404);
     expect((await get(w, "/t/infra/assets/x.css")).status).toBe(404);
     expect((await get(w, "/t/nope/assets/portal.js")).status).toBe(404);
     expect((await get(w, "/assets/portal.js", { host: ISSUER_HOST })).status).toBe(404);
     expect((await get(w, "/t/infra/assets/portal.js", { method: "POST" })).status).toBe(405);
   });
 
-  it("Admin: /assets は 404（チームのパスだけ）、/t/<team>/assets はチームの JWT で返す", async () => {
+  it("Admin のチーム: /assets は入口の AUD でだけ返す（チームの AUD では 403）。/t/<team>/assets はチームの JWT で返す", async () => {
     const w = adm();
-    const env = adminEnv(h);
-    expect(
-      (await get(w, "/assets/portal.js", { aud: ADMIN_AUD, host: ADMIN_HOST, env })).status,
-    ).toBe(404);
-    const t = await get(w, `/t/${ADMIN_TEAM}/assets/portal.js`, {
-      aud: ADMIN_AUD,
-      host: ADMIN_HOST,
-      env,
-    });
+    expect((await get(w, "/assets/portal.js", { aud: ADMIN_AUD })).status).toBe(403);
+    const t = await get(w, `/t/${ADMIN_TEAM}/assets/portal.js`, { aud: ADMIN_AUD });
     expect(t.status).toBe(200);
     expect(t.headers.get("Content-Type")).toBe("text/javascript; charset=utf-8");
-    expect(
-      (await get(w, `/t/${ADMIN_TEAM}/assets/portal.js`, { aud: null, host: ADMIN_HOST, env }))
-        .status,
-    ).toBe(401);
+    expect((await get(w, `/t/${ADMIN_TEAM}/assets/portal.js`, { aud: null })).status).toBe(401);
+    expect((await get(w, `/t/${ADMIN_TEAM}/assets/portal.js`, { aud: INFRA })).status).toBe(403);
   });
 });
 
@@ -398,8 +384,6 @@ describe("POST のフォームに noreferrer を付けない（Origin: null で�
     const html = await (
       await get(adm(), `/t/${ADMIN_TEAM}/a/333333333333?role=admin`, {
         aud: ADMIN_AUD,
-        host: ADMIN_HOST,
-        env: adminEnv(h),
       })
     ).text();
     expectNoReferrerFree(html, 1);
@@ -414,8 +398,6 @@ describe("POST のフォームに noreferrer を付けない（Origin: null で�
     const html = await (
       await get(adm(), `/t/${ADMIN_TEAM}/a/333333333333/cli?role=admin`, {
         aud: ADMIN_AUD,
-        host: ADMIN_HOST,
-        env: adminEnv(h),
       })
     ).text();
     expectNoReferrerFree(html, 1);

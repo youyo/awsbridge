@@ -1,8 +1,10 @@
-// コンソールログインの Admin の署名（X1 の決裁: Workers の secret_key 型の取り出せない CryptoKey で RS256 の JWS を組む）。
-//   鍵の部品（admin/key.ts）: バインディングの名前の規則（kid から作る）、今の署名鍵（名前と kid の組）、公開鍵の vars、
+// コンソールログインの署名の共通の部品（Workers の secret_key 型の取り出せない CryptoKey で RS256 の JWS を組む）。
+// P2（B）で Admin の Worker の署名の部品（admin/key.ts・admin/sign-admin.ts）を消したので、その試験を共通の部品
+// （signing/key.ts・signing/signer.ts。境界ごとの署名 issue/sign-boundary.ts が使う）の試験に書き直した（検査は弱めない）。
+//   鍵の部品（signing/key.ts）: バインディングの名前の規則（kid から作る）、今の署名鍵（名前と kid の組）、公開鍵の vars、
 //                             バインディングの検査（CryptoKey・private・extractable false・usages sign だけ・RS256・exportKey が失敗する）
 //   JWS（signing/jws.ts）:     WebCrypto だけで組む。jose で検証できる形
-//   署名の部品（admin/sign-admin.ts）: STS 用の claim、kid、vars の公開鍵での自己検証、返す JWT の照合
+//   署名の部品（signing/signer.ts）: STS 用の claim、kid、vars の公開鍵での自己検証、返す JWT の照合
 // 試験の鍵は手元の WebCrypto で取り出せない形に作る（本番の secret_key と同じ CryptoKey の形）。
 import {
   calculateJwkThumbprint,
@@ -12,24 +14,37 @@ import {
   jwtVerify,
 } from "jose";
 import { beforeAll, describe, expect, it } from "vitest";
-import {
-  ADMIN_KEY_BINDING_PREFIX,
-  bindingNameForKid,
-  isUsableSigningKey,
-  jwkThumbprint,
-  type PublicJwk,
-  parseCurrentKey,
-  parsePublicJwks,
-  RS256_ALGORITHM,
-} from "../../src/console/admin/key";
-import { createAdminSigner } from "../../src/console/admin/sign-admin";
 import { AUDIENCE, TEAM_TAG_KEY, UUID_RE } from "../../src/console/constants";
 import { AWS_SOURCE_IDENTITY_CLAIM, AWS_TAGS_CLAIM } from "../../src/console/issue/claims";
 import type { IssueRow, SigningRequest } from "../../src/console/issue/signer";
 import { signJws } from "../../src/console/signing/jws";
+import {
+  bindingNameFor,
+  isBlank,
+  isUsableSigningKey,
+  jwkThumbprint,
+  type PublicJwk,
+  parseJsonVar,
+  RS256_ALGORITHM,
+  readCurrentKey,
+  readPublicJwks,
+} from "../../src/console/signing/key";
+import { createKeySigner } from "../../src/console/signing/signer";
+import { CONSOLE_KEY_BINDING_PREFIX } from "../../src/console/worker/key";
+
+/** コンソールの鍵のバインディングの名前（CONSOLE_KEY_<kid の 16 進>）。 */
+const bindingNameForKid = (kid: string) => bindingNameFor(CONSOLE_KEY_BINDING_PREFIX, kid);
+/** 1 つの今の鍵の vars（{binding, kid}）を読む。未設定・空は undefined（境界ごとの vars の 1 つの値と同じ規則）。 */
+const parseCurrentKey = (raw: unknown) =>
+  isBlank(raw)
+    ? undefined
+    : readCurrentKey(parseJsonVar(raw, "L"), CONSOLE_KEY_BINDING_PREFIX, "L");
+/** 公開鍵の配列を読む。未設定・空は undefined。 */
+const parsePublicJwks = async (raw: unknown) =>
+  isBlank(raw) ? undefined : readPublicJwks(parseJsonVar(raw, "L"), "L");
 
 const NOW = 1_700_000_000;
-const ISSUER = "https://admin-id.example.com/admin";
+const ISSUER = "https://id.example.com/console";
 
 type TestKey = { privateKey: CryptoKey; publicJwk: PublicJwk; kid: string };
 
@@ -93,7 +108,9 @@ const request = (over: Partial<SigningRequest> = {}): SigningRequest => ({
 });
 
 function signer(o: { key?: unknown; publicJwk?: PublicJwk; log?: (l: string) => void } = {}) {
-  return createAdminSigner({
+  return createKeySigner({
+    event: "console_signer",
+    kind: "console",
     issuer: ISSUER,
     current: { binding: bindingNameForKid(a.kid), kid: a.kid },
     publicJwk: o.publicJwk ?? a.publicJwk,
@@ -102,17 +119,17 @@ function signer(o: { key?: unknown; publicJwk?: PublicJwk; log?: (l: string) => 
   });
 }
 
-describe("admin/key: バインディングの名前の規則（kid から作る。差し替えは必ず別の名前）", () => {
-  it("ADMIN_KEY_ と kid（SHA-256 の thumbprint）の先頭 8 バイトの大文字の 16 進。同じ kid なら同じ名前", () => {
+describe("signing/key: バインディングの名前の規則（kid から作る。差し替えは必ず別の名前）", () => {
+  it("CONSOLE_KEY_ と kid（SHA-256 の thumbprint）の先頭 8 バイトの大文字の 16 進。同じ kid なら同じ名前", () => {
     const name = bindingNameForKid(a.kid);
-    expect(ADMIN_KEY_BINDING_PREFIX).toBe("ADMIN_KEY_");
-    expect(name).toMatch(/^ADMIN_KEY_[0-9A-F]{16}$/);
+    expect(CONSOLE_KEY_BINDING_PREFIX).toBe("CONSOLE_KEY_");
+    expect(name).toMatch(/^CONSOLE_KEY_[0-9A-F]{16}$/);
     expect(bindingNameForKid(a.kid)).toBe(name);
     const bytes = Uint8Array.from(atob(`${a.kid.replace(/-/g, "+").replace(/_/g, "/")}=`), (c) =>
       c.charCodeAt(0),
     );
     const hex = [...bytes.slice(0, 8)].map((x) => x.toString(16).padStart(2, "0")).join("");
-    expect(name).toBe(`ADMIN_KEY_${hex.toUpperCase()}`);
+    expect(name).toBe(`CONSOLE_KEY_${hex.toUpperCase()}`);
   });
 
   it("別の鍵（別の kid）は別の名前", () => {
@@ -133,7 +150,7 @@ describe("admin/key: バインディングの名前の規則（kid から作る�
   });
 });
 
-describe("admin/key: 今の署名鍵（vars ADMIN_CURRENT_KEY: 名前と kid の組）", () => {
+describe("signing/key: 今の署名鍵（vars の 1 つの値: 名前と kid の組）", () => {
   it("未設定・空は undefined（署名の部品は未接続 = 503 signing_unavailable）", () => {
     expect(parseCurrentKey(undefined)).toBeUndefined();
     expect(parseCurrentKey("")).toBeUndefined();
@@ -150,7 +167,7 @@ describe("admin/key: 今の署名鍵（vars ADMIN_CURRENT_KEY: 名前と kid の
     ["配列", "[]"],
     [
       "名前が規則と違う",
-      () => JSON.stringify({ binding: "ADMIN_KEY_0000000000000000", kid: a.kid }),
+      () => JSON.stringify({ binding: "CONSOLE_KEY_0000000000000000", kid: a.kid }),
     ],
     ["別の鍵の名前", () => JSON.stringify({ binding: bindingNameForKid(b.kid), kid: a.kid })],
     ["余計な項目", () => JSON.stringify({ binding: bindingNameForKid(a.kid), kid: a.kid, x: 1 })],
@@ -167,7 +184,7 @@ describe("admin/key: 今の署名鍵（vars ADMIN_CURRENT_KEY: 名前と kid の
   });
 });
 
-describe("admin/key: 公開鍵の vars（ADMIN_PUBLIC_JWKS。新旧 2 つまで）", () => {
+describe("signing/key: 公開鍵の vars（新旧 2 つまで）", () => {
   it("未設定・空は undefined", async () => {
     expect(await parsePublicJwks(undefined)).toBeUndefined();
     expect(await parsePublicJwks("")).toBeUndefined();
@@ -202,7 +219,7 @@ describe("admin/key: 公開鍵の vars（ADMIN_PUBLIC_JWKS。新旧 2 つまで�
   });
 });
 
-describe("admin/key: バインディングの検査（使う前に。合わなければ署名しない）", () => {
+describe("signing/key: バインディングの検査（使う前に。合わなければ署名しない）", () => {
   it("取り出せない RS256 の秘密鍵（usages sign だけ）は使える", async () => {
     expect(a.privateKey.extractable).toBe(false);
     expect(a.privateKey.usages).toEqual(["sign"]);
@@ -269,7 +286,7 @@ describe("signing/jws: WebCrypto だけで RS256 の JWS を組む", () => {
   });
 });
 
-describe("admin/sign-admin: Admin の署名の部品（TokenSigner）", () => {
+describe("signing/signer: 署名の部品（TokenSigner）", () => {
   it("STS 用の claim（iss・aud 固定、iat 現在、exp = iat + 300、jti、タグ、SourceIdentity）を kid 付きで署名し、vars の公開鍵で検証できる", async () => {
     const r = await signer().sign(request());
     expect(r.ok).toBe(true);
@@ -303,9 +320,9 @@ describe("admin/sign-admin: Admin の署名の部品（TokenSigner）", () => {
     expect(decodeJwt(r1.token.jwt).jti).not.toBe(decodeJwt(r2.token.jwt).jti);
   });
 
-  it("行の issuer が Admin の issuer（固定）と違えば署名しない", async () => {
+  it("行の issuer が部品の issuer（固定）と違えば署名しない", async () => {
     const r = await signer().sign(
-      request({ row: row({ issuer: "https://id.example.com/standard" }) }),
+      request({ row: row({ issuer: "https://id.example.com/p/partner-x/console" }) }),
     );
     expect(r).toEqual({ ok: false, code: "signing_unavailable" });
   });
@@ -318,7 +335,7 @@ describe("admin/sign-admin: Admin の署名の部品（TokenSigner）", () => {
     const logs: string[] = [];
     const r = await signer({ key, log: (l) => logs.push(l) }).sign(request());
     expect(r).toEqual({ ok: false, code: "signing_unavailable" });
-    expect(logs.join("\n")).toContain("admin_key_unusable");
+    expect(logs.join("\n")).toContain("console_key_unusable");
   });
 
   it("取り出せる秘密鍵は signing_unavailable", async () => {
@@ -331,7 +348,7 @@ describe("admin/sign-admin: Admin の署名の部品（TokenSigner）", () => {
     const logs: string[] = [];
     const s = signer({ key: b.privateKey, log: (l) => logs.push(l) });
     expect(await s.sign(request())).toEqual({ ok: false, code: "signing_unavailable" });
-    expect(logs.join("\n")).toContain("admin_key_self_verify_failed");
+    expect(logs.join("\n")).toContain("console_key_self_verify_failed");
     // 失敗は覚えない（毎回検証する）。2 回目も止まる
     expect(await s.sign(request())).toEqual({ ok: false, code: "signing_unavailable" });
     for (const l of logs) expect(l).not.toMatch(/[A-Za-z0-9_-]{100,}/);

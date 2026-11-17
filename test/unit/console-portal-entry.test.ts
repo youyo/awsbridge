@@ -15,7 +15,7 @@ import {
   type Harness,
   loginRequest,
   PORTAL_HOST,
-  standardConfig,
+  workerConfig,
 } from "./console-worker-harness";
 
 let h: Harness;
@@ -35,14 +35,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const ENTRY_AUD = AUDS.entry.standard;
+const ENTRY_AUD = AUDS.entry;
 
 const failing: IdentityGroupsSource = async () => ({ ok: false, reason: "unavailable" });
 
 /** 表示用の生成物は、引数を省いたときだけ既定（undefined を渡せば「無い」）。 */
 function worker(identityGroups?: IdentityGroupsSource, ...display: [unknown?]) {
   return createConsoleWorker(
-    standardConfig(),
+    workerConfig(),
     { getAccessKey: h.getAccessKey, fetch: h.fetch, identityGroups },
     display.length > 0 ? display[0] : displayConfig(),
   );
@@ -70,10 +70,9 @@ describe("S0 入口: 所属が分からないときの落とし方（最初の R
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("所属を確かめられませんでした");
-    // 全チームの S1 へのリンク（Standard はこのオリジンのパス、Admin は Admin のオリジン）
-    for (const t of ["infra", "dev", "sa"]) expect(html).toContain(`href="/t/${t}/"`);
-    for (const t of ["infra-elevated", "dev-elevated"])
-      expect(html).toContain(`href="https://admin-portal.example.com/t/${t}/"`);
+    // 全チームの S1 へのリンク（P2: どちらの階層のチームも同じオリジンのパス）
+    for (const t of ["infra", "dev", "sa", "infra-elevated", "dev-elevated"])
+      expect(html).toContain(`href="/t/${t}/"`);
     expect(html).toContain("[ADMIN]");
     // 行（アカウント）は出さない
     expect(html).not.toContain("333333333333");
@@ -100,27 +99,24 @@ describe("S0 入口: 所属するチームの行（U2。表示のためだけ）
     // 所属しないチーム（dev・sa・Admin のチーム）の割り当ては出さない
     expect(html).not.toContain("/t/dev/");
     expect(html).not.toContain("/t/sa/");
-    expect(html).not.toContain("admin-portal.example.com");
+    expect(html).not.toContain("/t/infra-elevated/");
     expect(html).not.toContain("[ADMIN]");
   });
 
-  it("Admin のチームのグループなら、Administrator の行は Admin のオリジンの S2 へのリンクで [ADMIN] の印", async () => {
+  it("Admin のチームのグループなら、Administrator の行は同じオリジンの Admin のチームのパスの S2 へのリンクで [ADMIN] の印", async () => {
     const html = await (await entry(worker(groupsOf(uuid(1), uuid(4))))).text();
-    expect(html).toContain(
-      'href="https://admin-portal.example.com/t/infra-elevated/a/333333333333?role=admin"',
-    );
+    expect(html).toContain('href="/t/infra-elevated/a/333333333333?role=admin"');
     expect(html).toContain("[ADMIN]");
     expect(html).toContain('href="/t/infra/a/333333333333?role=readonly"');
-    // Admin のチームの S2 を Standard のオリジンに作らない
-    expect(html).not.toContain('href="/t/infra-elevated/');
+    // Admin のオリジンは無い（P2。受容 c）
+    expect(html).not.toContain("admin-portal");
   });
 
   it("S0 にはアカウントの email・AUD・ロールの ARN を出さない", async () => {
     const html = await (await entry(worker(groupsOf(uuid(1), uuid(2), uuid(3), uuid(4))))).text();
     expect(html).toContain("svc-a-prod");
     expect(html).not.toMatch(/aws\+[a-z-]+@example\.(com|org)/);
-    for (const aud of [...Object.values(AUDS.teams), AUDS.entry.standard, AUDS.entry.admin])
-      expect(html).not.toContain(aud);
+    for (const aud of [...Object.values(AUDS.teams), AUDS.entry]) expect(html).not.toContain(aud);
     expect(html).not.toContain("arn:aws:iam::");
     expect(html).not.toContain("/awsbridge-console/");
   });
@@ -219,7 +215,7 @@ describe("S0 入口: 入口のアプリの Access JWT を確かめてから描�
   });
 
   it("入口の AUD が発行用の生成物に無ければ 500 server_misconfigured", async () => {
-    const config = standardConfig();
+    const config = workerConfig();
     delete config.portal.entryAud;
     const w = createConsoleWorker(
       config,
@@ -243,7 +239,7 @@ describe("S0 入口: 表示用の生成物の誤りは入口だけを止める",
     const broken: unknown[] = [
       undefined,
       { purpose: "display" },
-      standardConfig(),
+      workerConfig(),
       {
         ...displayConfig(),
         portal: { ...displayConfig().portal, origin: "https://other.example.com" },
@@ -325,7 +321,7 @@ describe("S0 入口: 画面の JS に渡すデータ", () => {
     expect(data).toEqual({
       teams: {
         infra: "/t/infra",
-        "infra-elevated": "https://admin-portal.example.com/t/infra-elevated",
+        "infra-elevated": "/t/infra-elevated",
       },
       adminTeams: ["infra-elevated"],
     });

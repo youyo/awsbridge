@@ -1,11 +1,12 @@
 // コンソールログイン: `POST <team-base>/login` の検査と発行（docs/specs/console-login-portal.md §9.3・§9.4・§10.3）。
 // 発行の経路はこのモジュールに閉じる（ルーター・画面・入口の表示用の照合を import しない。§9.10 の U2 の条件）。
-// 階層（Standard / Admin）に共通で、違いは署名の部品（signer）と Access JWT の経過時間の上限（Admin だけ）。
-// Standard（境界ごと）も Admin も Workers の secret_key 型の取り出せない鍵（鍵が使えなければ 503 signing_unavailable）。
+// P2: 1 つの Worker が Standard と Admin の両方のチームを受ける。階層はパスのチームの階層（生成物の teams[].tier）で、
+// 違いは Access JWT の経過時間の上限（Admin の階層のチームだけ。呼び出し側が選んで渡す）と、回数の制限のキー（<階層>:<sub>）。
+// 署名は境界ごとの Workers の secret_key 型の取り出せない鍵（鍵が使えなければ 503 signing_unavailable）。
 //
 // 段の順（司令塔の決定。§9.3 の「本文の前に 1〜3、STS の前に 4〜8」は満たす）:
 //   停止スイッチ → 要求の検査（Origin・Sec-Fetch-Site・Content-Type）→ Access JWT（aud ちょうど 1 つ・入口の AUD は受けない）
-//   → 本文 → CSRF → 行（このチーム・この階層の行。7 段目）→ 身元（identity_unsupported）→ 回数の制限
+//   → 本文 → CSRF → 行（このチームの行で、チーム・ロール・ARN のパスの 3 つの階層がそろうもの。7 段目）→ 身元（identity_unsupported）→ 回数の制限
 //   → 署名 → STS → getSigninToken → 302
 // どこかで失敗したら発行しない（fail-closed）。例外を握りつぶして続行しない。
 import { decodeProtectedHeader, type JWTVerifyGetKey } from "jose";
@@ -32,7 +33,6 @@ import type { WorkerConfig } from "../types";
 export type LoginRateLimiter = { limit(options: { key: string }): Promise<{ success: boolean }> };
 
 export type LoginContext = {
-  tier: Tier;
   /** 検証済みの発行用の生成物（readWorkerConfig を通したもの）。 */
   config: WorkerConfig;
   /** パス（ホスト）のチーム。設定にあるチームだけ（ルーターが確かめる）。AUD のチームと食い違えば拒否する。 */
@@ -50,7 +50,7 @@ export type LoginContext = {
   now: () => number;
   log: (line: string) => void;
   getAccessKey?: JWTVerifyGetKey | undefined;
-  /** Access JWT の iat からの経過時間の上限（秒）。Admin だけが渡す（X1 の決裁 (f)）。 */
+  /** Access JWT の iat からの経過時間の上限（秒）。パスのチームが Admin の階層のときだけ渡す（X1 の決裁 (f)）。 */
   accessMaxAgeSeconds?: number | undefined;
   /** 発行記録に残す Worker の版 ID（binding CF_VERSION_METADATA の id。取れなければ undefined）。 */
   workerVersionId?: string | undefined;
@@ -103,13 +103,11 @@ const fail = (code: IssueErrorCode): LoginOutcome => ({
 
 const ENTRY_RE = /^(\d{12}):([a-z][a-z0-9-]{0,31})$/;
 
-/** `entry`（`<account-id>:<role>`）を、このチーム・この階層の行に引く。なければ undefined（not_listed）。 */
-export function findRow(
-  config: WorkerConfig,
-  tier: Tier,
-  team: string,
-  entry: string,
-): IssueRow | undefined {
+/**
+ * `entry`（`<account-id>:<role>`）を、このチームの行に引く。なければ undefined（not_listed）。
+ * パスのチームの階層・行のロールの階層・ARN のパスの階層の 3 つがそろうことを求める（P2 の設計メモ §7.2）。
+ */
+export function findRow(config: WorkerConfig, team: string, entry: string): IssueRow | undefined {
   const m = ENTRY_RE.exec(entry);
   if (!m) return undefined;
   const [, accountId, roleName] = m as unknown as [string, string, string];
@@ -120,7 +118,9 @@ export function findRow(
   const boundary = config.boundaries.find((b) => b.name === account?.boundary);
   if (!account || !accountRole || !role || !boundary) return undefined;
   if (!accountRole.teams.includes(team)) return undefined;
-  // 多重の防御: この階層のロールのパスと名前の ARN だけ（生成物の検査でも確かめている）
+  // 多重の防御（生成物の検査 row_team_tier・row_tier でも確かめている）: パスのチームの階層 = ロールの階層 = ARN のパスの階層
+  const tier = config.teams.find((t) => t.name === team)?.tier;
+  if (tier === undefined || role.tier !== tier) return undefined;
   if (accountRole.roleArn !== `arn:aws:iam::${accountId}:role${rolePath(tier)}${role.roleName}`)
     return undefined;
   return {
@@ -141,11 +141,14 @@ function single(form: URLSearchParams, name: string): string | undefined {
 }
 
 export async function handleLogin(req: Request, ctx: LoginContext): Promise<LoginOutcome> {
+  // パスのチームの階層（ルーターが設定にあるチームだけを渡す。無ければ設定の不整合として断る）
+  const tier = ctx.config.teams.find((t) => t.name === ctx.team)?.tier;
+  if (tier === undefined) return fail("server_misconfigured");
   const log = (code: string, extra: Record<string, unknown> = {}) =>
     ctx.log(
       JSON.stringify({
         event: "console_login",
-        tier: ctx.tier,
+        tier,
         team: ctx.team,
         result: code,
         ...extra,
@@ -167,7 +170,7 @@ export async function handleLogin(req: Request, ctx: LoginContext): Promise<Logi
       : fail(bad.code);
   }
 
-  // Access JWT（aud はちょうど 1 つで、このデプロイの階層のチームの AUD。入口の AUD は受けない）
+  // Access JWT（aud はちょうど 1 つで、パスのチームの AUD。入口の AUD は受けない）
   const access = await verifyConsoleAccess(
     req.headers.get("Cf-Access-Jwt-Assertion"),
     ctx.team,
@@ -213,9 +216,9 @@ export async function handleLogin(req: Request, ctx: LoginContext): Promise<Logi
     return fail(csrf.code);
   }
 
-  // 7 段目: このチーム・この階層の行（Admin の行は Standard の生成物にないので not_listed）
+  // 7 段目: このチームの行（チーム・ロール・ARN のパスの階層がそろうもの。Admin の行を Standard のチームに送れば not_listed）
   const entry = single(form, "entry");
-  const row = entry === undefined ? undefined : findRow(ctx.config, ctx.tier, ctx.team, entry);
+  const row = entry === undefined ? undefined : findRow(ctx.config, ctx.team, entry);
   if (!row) {
     log("not_listed");
     return fail("not_listed");
@@ -251,7 +254,7 @@ export async function handleLogin(req: Request, ctx: LoginContext): Promise<Logi
     } = {},
   ) => {
     const r = createIssueRecord({
-      tier: ctx.tier,
+      tier,
       result,
       now: ctx.now(),
       identity,
@@ -271,10 +274,12 @@ export async function handleLogin(req: Request, ctx: LoginContext): Promise<Logi
     // （cto の決裁 2026-11-13。突き合わせの道具 src/console/reconcile.ts がこの形を読む）
     ctx.log(JSON.stringify({ event: "console_issue", ...issueLogRecord(r) }));
   };
-  return issue(ctx, { identity, resolved, row, region, record });
+  return issue(ctx, { tier, identity, resolved, row, region, record });
 }
 
 type IssueState = {
+  /** パスのチームの階層（回数の制限のキーに使う。Viewer の発行が Admin の枠を使い切らない）。 */
+  tier: Tier;
   identity: AccessIdentity;
   resolved: ResolvedIdentity;
   row: IssueRow;
@@ -298,8 +303,7 @@ async function issue(ctx: LoginContext, s: IssueState): Promise<LoginOutcome> {
   }
   let allowed: boolean;
   try {
-    allowed =
-      (await ctx.rateLimiter.limit({ key: `${ctx.tier}:${identity.sub}` })).success === true;
+    allowed = (await ctx.rateLimiter.limit({ key: `${s.tier}:${identity.sub}` })).success === true;
   } catch {
     record("temporarily_unavailable");
     return fail("temporarily_unavailable");

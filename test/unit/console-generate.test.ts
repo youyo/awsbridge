@@ -678,8 +678,11 @@ describe("退役したチーム名の台帳（前回の生成物との比較）"
     expect(r.stacksets.retiredTeams).toEqual([{ name: "ops", tier: "standard" }]);
   });
 
-  it("前回の生成物が無ければ ledger_previous_missing の警告（黙って通さない）", () => {
+  it("前回の生成物が無ければ、生成物を書く（deploy）ときに ledger_previous_missing の警告（黙って通さない）。check では出さない", () => {
     expect(company().warnings).toContainEqual(issue("previous", "ledger_previous_missing"));
+    expect(gen(companyConfig(), { mode: "check" }).warnings).not.toContainEqual(
+      issue("previous", "ledger_previous_missing"),
+    );
     const withPrev = gen(companyConfig(), { ...opts(), previous: prevOf(company()) });
     expect(withPrev.warnings).not.toContainEqual(issue("previous", "ledger_previous_missing"));
   });
