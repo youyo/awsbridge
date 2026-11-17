@@ -474,6 +474,26 @@ mise run console:reconcile -- --profile <プロファイル> --logs-api --since 
 - 毎日の実行は awsbridge の外（MCP 経由のエージェントなど）で行います。awsbridge には定期の実行の仕組みを入れません。通知も awsbridge の外で、仕組みは利用者が決めます。
 - ② の最初に、実物で次を確かめます: Cloudflare の API の応答の形（`events`・`$metadata.id` のカーソル・`count` の意味・切られた印が `$workers.truncated` か `$cloudflare.truncated` か）、CloudTrail の `AssumeRoleWithWebIdentity` のフィールド名（`requestParameters.webIdentityTokenId`・`userIdentity.identityProvider` など）。違えば `scripts/console/reconcile-cf.ts`・`src/console/reconcile-input.ts` とフィクスチャを直します。
 
+## コンソールログインの issuer の外からの確認（毎日）
+
+`mise run console:exposure-check` は、コンソールの issuer の `/.well-known/openid-configuration` と `jwks.json` を**外から取り**、設定の公開鍵と比べます。AWS の IAM の OIDC プロバイダーは issuer のホストが返す JWKS を信頼するので、Route などでそのホストの応答を差し替えられると、作られた JWT（たとえば Administrator）が通りえます。これは「awsbridge が出しているものが正しいこと」の毎日の確認で、`console:reconcile` と合わせて毎日の確認の 2 つになります: (i) この外からの比較、(ii) 上の突き合わせ。
+
+- **対象**: Standard の境界ごとの issuer と、Admin の issuer。Admin の設定（`worker.admin.json`）が無ければ Standard だけを確かめ、その旨を出します。**Admin の生成物（`worker.admin.json`）が無いと Admin の確認は飛ばされ、終了コードでは全部一致と区別できません**（出力を読みます）。
+- **比べる相手**: wrangler の設定の vars の公開鍵（`STANDARD_PUBLIC_JWKS` / `ADMIN_PUBLIC_JWKS`。`console:*-key:check` が読むのと同じファイル）と、生成物 `worker.standard.json` / `worker.admin.json` の issuer の URL。`kid` だけでなく、鍵の中身（`kty`・`n`・`e`・`alg`・`use`・余分なメンバー）、discovery の `issuer` と `jwks_uri`、HTTP の状態（200 だけ）を比べます。
+- **誤りにするもの**（すべて合ったときだけ「一致」）: 200 以外の状態、**リダイレクト（追わずに誤り）**、取得の失敗・タイムアウト、JSON でない・形が違う応答、`issuer` / `jwks_uri` の違い、欠けた鍵、**余分な鍵**、中身の違う鍵、`kid` の重複。
+- **取り方**: 手元の DNS（否定のキャッシュを含む）に左右されないよう、公開の DNS over HTTPS（`https://cloudflare-dns.com/dns-query`。A と AAAA）でホストを引き、その IP に TLS で接続します。SNI と `Host` はもとのホスト名で、証明書もホスト名で検査します。文書ごとに GET は 1 回、再試行なし、タイムアウト 10 秒。**Cloudflare・AWS のトークンは使わず**、`Authorization` も送りません（公開の HTTP の GET だけ）。
+- **出力と終了コード**: issuer ごとの `[OK]` / `[NG]` の行と結論。応答の値（`n`、知らない鍵の `kid`）は出さず、アカウント ID・email は伏せます。`0` すべて一致 / `1` 不一致あり / `2` 実行できない（設定が読めない・期待する鍵を得られない など）。
+- 変数（鍵の道具と同じ。`mise.local.toml` に置く）: `AWSBRIDGE_CONSOLE_OUT_DIR`（既定 `.generated/console`）、`AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG`（既定 `wrangler.console-standard.jsonc`）、`AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG`（既定 `wrangler.console-admin.jsonc`。`worker.admin.json` があるときだけ読む）。先に `mise run console:config:generate` を回します。
+
+```bash
+mise run console:exposure-check
+```
+
+限界と、ゾーンの持ち主が持つもの:
+
+- **ゾーンの設定の見張りは、ゾーンの持ち主の運用で持ちます**。awsbridge はゾーンを読めるトークンを持ちません。見るべきもの: **Admin と Standard の 4 つのホスト（ポータルと issuer）に当たる Route が無いこと**。`*.<zone>/*` のようなワイルドカードで当たるものも数えます。確かめ方の例: Zone Read などを持つトークンをその場で使い、`GET /zones/{zone_id}/workers/routes` を**全ページ**読みます。**一覧が取れない・途中で終わったときは、0 本とみなしません**。awsbridge はこのためのトークンを常には持ちません。Custom Domain を変えたときは、そのとき使ったトークンを消す前に、同じトークンで 1 回確かめます。
+- **外からの比較は検知であって、予防ではありません**。残っている差し替えは次の確認で見つかりますが、確認の間に足して外したものは見つかりません。ポータルのホストに Route を重ねられると、ログイン済みの利用者として発行されうり、その発行は突き合わせでは正常に見えます（推測。測っていません）。
+
 ## コンソールログインの Administrator の残った権限の棚卸し
 
 Administrator は対象のアカウントの全権なので、アクセスキー・ロール・プロバイダー・信頼ポリシーの変更などで、コンソールログインを止めたあとも使える入口を残せます。revoke（L3）や 1 人停止（L3-1）ではこれらは止まりません（`docs/specs/console-login-admin.md` §7）。止めたあと（または定期の確認で）、次の手順で棚卸しし、残ったものを個別に消します。**下のコマンドはまだ実行していない例**で、② の停止の訓練で確かめます。読み取りだけの例で、消す操作はここに書きません。コンソール用のロール以外の主体（IAM Identity Center など）のプロファイルで実行します。
