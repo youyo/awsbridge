@@ -11,7 +11,7 @@
 //                             本文の大きさ、GET・HEAD・OPTIONS・PUT など
 //   3. Standard のチーム       Admin の行（X1）、Admin のチームのパス（X2）、issuer のホストからポータルの経路に届かない、チーム以外のパス、
 //                            鍵が vars の公開鍵と合わなければ 503・鍵が無ければ 500、デプロイ後の確認（key-check）は Access の検証の後ろ
-//   4. Admin の階層のチーム    X2〜X6・X11〜X13、既知の経路以外は env を読む前に 404（Worker 全体）、鍵が合わなければ 503
+//   4. Admin の階層のチーム    X2〜X6・X11〜X13（X13 は a・b・c に分ける）、既知の経路以外は env を読む前に 404（Worker 全体）、鍵が合わなければ 503
 //   5. 停止スイッチ           LOGIN_DISABLED（全体。両階層）と ADMIN_LOGIN_DISABLED（Admin の階層だけ。X10）
 //   6. Access アプリの無いチーム  AUD が設定にないチームのパスは必ず断る（両階層のチーム noapp・noapp-admin）
 //   7. secret が壊れている    CSRF の鍵が短いとき、発行しない（500 server_misconfigured）。既知の経路以外は env を読む前に 404
@@ -1109,12 +1109,35 @@ describe("Admin の階層のチーム: 負の試験（階層をまたぐもの�
     denied(await post(t, { jwt: await accessJwt(AUDS.entry) }), 403, "unknown_audience");
   });
 
-  it("X13: 同じ階層の別のチーム（dev-elevated）の AUD で、自分のパスに infra-elevated だけの行は 404 not_listed", async () => {
+  it("X13a: 同じ階層の別のチーム（dev-elevated）の AUD で infra-elevated のパスに POST は 403 team_mismatch", async () => {
+    denied(await post(t, { jwt: await accessJwt(t.peerAud) }), 403, "team_mismatch");
+  });
+
+  it("X13b: dev-elevated の自分のパスに infra-elevated だけの行は 404 not_listed", async () => {
     denied(
       await post(t, {
         jwt: await accessJwt(t.peerAud),
         path: `${teamBase(t.peerTeam)}/login`,
         csrf: csrfs.get(t.peerTeam) ?? "",
+      }),
+      404,
+      "not_listed",
+    );
+  });
+
+  it("X13c: 本文・クエリに infra-elevated のチームを書いても、署名するチームは差し替わらない（dev-elevated のパスで 404 not_listed）", async () => {
+    denied(
+      await post(t, {
+        jwt: await accessJwt(t.peerAud),
+        path: `${teamBase(t.peerTeam)}/login?team=${t.team}`,
+        fields: [
+          ["entry", t.entry],
+          ["region", "ap-northeast-1"],
+          ["csrf", csrfs.get(t.peerTeam) ?? ""],
+          ["team", t.team],
+          ["tier", "admin"],
+          ["awsbridge_team", t.team],
+        ],
       }),
       404,
       "not_listed",

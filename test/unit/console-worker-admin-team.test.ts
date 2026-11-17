@@ -6,7 +6,10 @@
 // 設計: docs/specs/console-login-portal.md §3・§8・§9、X1 の決裁、G-6、P2（B）の設計メモ §5・§7。
 // 偽の Access（手元の鍵）・STS・getSigninToken を相手に、Worker の fetch を直接呼ぶ。
 
+import { decodeJwt } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TEAM_TAG_KEY } from "../../src/console/constants";
+import { AWS_TAGS_CLAIM } from "../../src/console/issue/claims";
 import type { WorkerConfig } from "../../src/console/types";
 import { createConsoleWorker } from "../../src/console/worker/worker";
 import { issueEgressCalls, resetEgressCalls } from "./console-egress-spy";
@@ -224,19 +227,68 @@ describe("Admin の階層のチーム: 発行の前の段で断る（階層を�
     noIssue();
   });
 
-  it("X13: 同じ階層の別のチーム（dev-elevated）の AUD で infra-elevated のパスは 403 team_mismatch、自分のパスで infra-elevated だけの行は 404 not_listed", async () => {
-    const mismatch = await post({ aud: ADMIN_B_AUD, csrfAud: ADMIN_B_AUD });
-    expect(mismatch.status).toBe(403);
-    expect(await mismatch.text()).toContain("team_mismatch");
-    const own = await post({
+  it("X13a: 同じ階層の別のチーム（dev-elevated）の AUD で infra-elevated のパスに POST は 403 team_mismatch（画面も同じ）", async () => {
+    const res = await post({ aud: ADMIN_B_AUD, csrfAud: ADMIN_B_AUD });
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain("team_mismatch");
+    const jwt = await h.accessJwt({ aud: ADMIN_B_AUD });
+    for (const path of [`${TEAM_PATH}/`, `${TEAM_PATH}/a/333333333333`]) {
+      const r = await get(path, { jwt });
+      expect(r.status, path).toBe(403);
+      expect(await r.text()).toContain("team_mismatch");
+    }
+    noIssue();
+  });
+
+  it("X13b: dev-elevated の自分のパスで infra-elevated だけの行（333333333333:admin）を POST は 404 not_listed", async () => {
+    const res = await post({
       aud: ADMIN_B_AUD,
       csrfAud: ADMIN_B_AUD,
       path: `/t/${ADMIN_TEAM_B}/login`,
       form: { entry: ADMIN_ENTRY, csrf: await h.csrf(ADMIN_B_AUD) },
     });
-    expect(own.status).toBe(404);
-    expect(await own.text()).toContain("not_listed");
+    expect(res.status).toBe(404);
+    expect(await res.text()).toContain("not_listed");
     noIssue();
+  });
+
+  it("X13c: 署名するチームは POST の値（team・tier・awsbridge_team の項目、クエリ）で差し替わらない", async () => {
+    // 1) dev-elevated のパスで、本文とクエリに infra-elevated を書いても、infra-elevated だけの行は通らない
+    const swapped = await post({
+      aud: ADMIN_B_AUD,
+      csrfAud: ADMIN_B_AUD,
+      path: `/t/${ADMIN_TEAM_B}/login?team=${ADMIN_TEAM}`,
+      form: {
+        entry: ADMIN_ENTRY,
+        csrf: await h.csrf(ADMIN_B_AUD),
+        team: ADMIN_TEAM,
+        tier: "admin",
+        awsbridge_team: ADMIN_TEAM,
+      },
+    });
+    expect(swapped.status).toBe(404);
+    expect(await swapped.text()).toContain("not_listed");
+    noIssue();
+    // 2) infra-elevated の正しい発行で、本文に別のチーム（dev-elevated・Standard の infra）を書いても、タグのチームはパスのチーム
+    const ok = await post({
+      path: `${TEAM_PATH}/login?team=${ADMIN_TEAM_B}`,
+      form: {
+        entry: ADMIN_ENTRY,
+        csrf: await h.csrf(ADMIN_AUD),
+        team: "infra",
+        tier: "standard",
+        awsbridge_team: ADMIN_TEAM_B,
+      },
+    });
+    expect(ok.status).toBe(302);
+    expect(h.seen.sts).toHaveLength(1);
+    const token = h.seen.sts[0]?.get("WebIdentityToken") as string;
+    const payload = decodeJwt(token) as Record<string, unknown>;
+    expect(payload[AWS_TAGS_CLAIM]).toEqual({ principal_tags: { [TEAM_TAG_KEY]: [ADMIN_TEAM] } });
+    expect(h.seen.sts[0]?.get("RoleArn")).toBe(ADMIN_ARN);
+    const rec = JSON.parse(logs.find((l) => l.includes('"console_issue"')) as string);
+    expect(rec.team).toBe(ADMIN_TEAM);
+    expect(rec.tier).toBe("admin");
   });
 
   it("X16: Admin の確認画面（S2）の CSRF は、同じチームの別の行の POST に使える（仕様。CSRF は aud と sub に束縛し、行には束縛しない）", async () => {
