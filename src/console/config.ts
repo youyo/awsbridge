@@ -125,6 +125,10 @@ export type ConsoleConfigIssueCode =
   | "team_removed_not_retired"
   | "team_tier_changed"
   | "ledger_previous"
+  // 台帳（cto の決裁 2026-11-17: deploy では前回の無いこと・P2 より前の形を誤りにする）
+  | "ledger_previous_legacy"
+  | "ledger_init_not_allowed"
+  | "ledger_baseline"
   | "placement"
   | "param_collision"
   | "aud_missing"
@@ -140,6 +144,7 @@ export type ConsoleConfigIssueCode =
   | "unassigned_role"
   | "unassigned_accounts"
   | "inventory_missing"
+  // deploy では誤り、check（P2 より前の形の前回）では警告
   | "ledger_previous_missing";
 
 /** 誤り・警告の 1 件。path はキーのパス（例 teams[1].name）。値は持たない。 */

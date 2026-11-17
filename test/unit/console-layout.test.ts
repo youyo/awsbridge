@@ -236,6 +236,7 @@ describe("設定の例（config/console*.example.json）", () => {
     );
     const r = generateConsoleArtifacts(config, {
       mode: "deploy",
+      ledgerInit: true, // 台帳を扱わない試験。前回の無い deploy を初回の指定で明示して通す
       generatedAt: "x",
       auds: { teams, entry: "a".repeat(64) },
     });

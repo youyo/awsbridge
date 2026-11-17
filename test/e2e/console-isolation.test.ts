@@ -138,6 +138,7 @@ beforeAll(() => {
   );
   const artifacts = generateConsoleArtifacts(consoleConfig, {
     mode: "deploy",
+    ledgerInit: true, // 台帳を扱わない試験。前回の無い deploy を初回の指定で明示して通す
     generatedAt: "2026-11-12T00:00:00.000Z",
     auds: { teams: AUD, entry: ENTRY },
     inventory: {

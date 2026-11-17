@@ -44,6 +44,8 @@ export function workerConfig(): WorkerConfig {
   const { config } = parseConsoleConfig(companyConfig());
   return generateConsoleArtifacts(config, {
     mode: "deploy",
+    // 前回の生成物の無い deploy は台帳の誤り（cto の決裁）。この試験は台帳を扱わないので、初回の指定を明示して通す
+    ledgerInit: true,
     generatedAt: "2026-11-12T00:00:00.000Z",
     sourceRevision: "unit",
     auds: companyAuds(),
@@ -56,6 +58,8 @@ export function displayConfig(): DisplayConfig {
   const { config } = parseConsoleConfig(companyConfig());
   return generateConsoleArtifacts(config, {
     mode: "deploy",
+    // 前回の生成物の無い deploy は台帳の誤り（cto の決裁）。この試験は台帳を扱わないので、初回の指定を明示して通す
+    ledgerInit: true,
     generatedAt: "2026-11-12T00:00:00.000Z",
     sourceRevision: "unit",
     auds: companyAuds(),

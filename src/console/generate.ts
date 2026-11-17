@@ -56,10 +56,22 @@ export type GenerateOptions = {
   /** placement: ou の Organization のアカウント: { <Organization>: [{ accountId, name, email?, ouPath, status? }] }。 */
   inventory?: unknown;
   /**
-   * 前回の StackSets 用の生成物（stacksets.json）。台帳（teams・retiredTeams）を比べ、台帳から名前を消していないか・
-   * 消したチームを台帳へ移したか・同じ名前の階層を変えていないかを確かめる。無ければ警告（ledger_previous_missing）。
+   * 前回の StackSets 用の生成物（出力先の stacksets.json）。台帳（teams・retiredTeams）を比べ、台帳から名前を消していないか・
+   * 消したチームを台帳へ移したか・同じ名前の階層を変えていないかを確かめる。
+   * deploy では、比べる台帳（前回か baseline）が無ければ誤り（ledger_previous_missing・ledger_previous_legacy）。
+   * check では、無ければ黙り、P2 より前の形なら警告（ledger_previous_missing）。
    */
   previous?: unknown;
+  /**
+   * 保管しておいた台帳（--ledger-baseline <path> の stacksets.json）。渡したら前回と baseline の両方と比べ、どちらにも
+   * 通ることを要する。読めない（null）・形が違う・台帳の項目が無いなら ledger_baseline。
+   */
+  baseline?: unknown;
+  /**
+   * 初回の指定（--ledger-init）。比べる台帳（前回も baseline も）が無いときだけ通し、stacksets.json の meta に
+   * ledgerInit を残す。前回か baseline に台帳があるのに付けたら ledger_init_not_allowed。
+   */
+  ledgerInit?: boolean;
 };
 
 export type StackSetsRole = {
@@ -123,6 +135,8 @@ export type ConsoleArtifacts = {
   stacksets: StackSetsParams;
   access: AccessSummary;
   warnings: ConsoleConfigIssue[];
+  /** 初回の指定で通したときだけ: 台帳に書いたチームの名前（標準出力に出す。チーム名以外の値は持たない）。 */
+  ledgerInit?: { teams: string[]; retiredTeams: string[] };
 };
 
 // ---- AUD ----
@@ -563,48 +577,72 @@ function readLedger(raw: unknown, key: string): LedgerTeam[] | undefined | null 
   return out;
 }
 
+type Ledger = { teams?: LedgerTeam[]; retiredTeams?: LedgerTeam[] };
+
+/** 台帳の生成物を読む。形が違えば "bad"、台帳の項目が 1 つも無ければ "legacy"（P2 より前の形）。 */
+function readLedgerDoc(v: unknown): Ledger | "bad" | "legacy" {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return "bad";
+  const teams = readLedger(v, "teams");
+  const retiredTeams = readLedger(v, "retiredTeams");
+  if (teams === null || retiredTeams === null) return "bad";
+  if (teams === undefined && retiredTeams === undefined) return "legacy";
+  return {
+    ...(teams !== undefined ? { teams } : {}),
+    ...(retiredTeams !== undefined ? { retiredTeams } : {}),
+  };
+}
+
+/** 1 つの台帳と比べる。台帳から名前を消さない・消したチームは台帳へ移す・同じ名前の階層を変えない。 */
+function compareLedger(config: ConsoleConfig, prev: Ledger, prefix: string, out: IssueList) {
+  const retired = new Set(config.retiredTeams.map((t) => t.name));
+  const current = new Map(config.teams.map((t, i) => [t.name, { tier: t.tier, i }]));
+  if ((prev.retiredTeams ?? []).some((t) => !retired.has(t.name)))
+    out.add(`${prefix}retiredTeams`, "retired_team_removed");
+  for (const t of prev.teams ?? []) {
+    const now = current.get(t.name);
+    if (now === undefined) {
+      if (!retired.has(t.name)) out.add(`${prefix}teams`, "team_removed_not_retired");
+    } else if (now.tier !== t.tier) out.add(`${prefix}teams[${now.i}].tier`, "team_tier_changed");
+  }
+}
+
 /**
- * 前回の StackSets 用の生成物の台帳と比べる。台帳から名前を消さない・消したチームは台帳へ移す・同じ名前の階層を変えない。
- * 前回が無い（新しいチェックアウトなど）ときは比べられないので、生成物を書く（deploy）ときに警告する
- * （生成物は gitignore で、前回はその場所にしか無い）。
+ * 台帳の検査（P2 の設計メモ §7.1、cto の決裁 2026-11-17 の c1〜c5）。生成物は gitignore なので、前回は出力先にしか無い。
+ * - check: 前回が無ければ黙り、あれば比べる（P2 より前の形なら警告）。baseline を渡せば比べる
+ * - deploy: 比べる台帳（前回か baseline）が無ければ誤り。初回の指定（ledgerInit）は、比べる台帳が無いときだけ通す
+ * 返り値は、初回の指定で通したかどうか。
  */
 function checkLedger(
   config: ConsoleConfig,
-  previous: unknown,
-  mode: GenerateMode,
+  options: GenerateOptions,
   out: IssueList,
   warnings: IssueList,
-) {
-  if (previous === undefined) {
-    // 生成物を書く（deploy）ときだけ警告する。PR の検査（check）では前回が無いのが普通なので黙る（渡されれば比べる）
-    if (mode === "deploy") warnings.add("previous", "ledger_previous_missing");
-    return;
+): boolean {
+  const deploy = options.mode === "deploy";
+  const prev = options.previous === undefined ? undefined : readLedgerDoc(options.previous);
+  const hasBaseline = "baseline" in options && options.baseline !== undefined;
+  const base = hasBaseline ? readLedgerDoc(options.baseline) : undefined;
+  if (prev === "bad") out.add("previous", "ledger_previous");
+  if (hasBaseline && (base === "bad" || base === "legacy")) out.add("baseline", "ledger_baseline");
+  const prevLedger = typeof prev === "object" ? prev : undefined;
+  const baseLedger = typeof base === "object" ? base : undefined;
+  if (prevLedger) compareLedger(config, prevLedger, "", out);
+  if (baseLedger) compareLedger(config, baseLedger, "baseline.", out);
+
+  if (options.ledgerInit === true) {
+    // 比べる相手（前回の台帳も baseline も）が無いときだけ通す
+    if (prevLedger) out.add("previous", "ledger_init_not_allowed");
+    if (baseLedger) out.add("baseline", "ledger_init_not_allowed");
+    return prevLedger === undefined && baseLedger === undefined;
   }
-  if (typeof previous !== "object" || previous === null || Array.isArray(previous)) {
-    out.add("previous", "ledger_previous");
-    return;
+  if (!deploy) {
+    if (prev === "legacy") warnings.add("previous", "ledger_previous_missing");
+    return false;
   }
-  const prevTeams = readLedger(previous, "teams");
-  const prevRetired = readLedger(previous, "retiredTeams");
-  if (prevTeams === null || prevRetired === null) {
-    out.add("previous", "ledger_previous");
-    return;
-  }
-  if (prevTeams === undefined && prevRetired === undefined) {
-    // P2 より前の形（台帳の項目が無い）。比べる相手が無い
-    warnings.add("previous", "ledger_previous_missing");
-    return;
-  }
-  const retired = new Set(config.retiredTeams.map((t) => t.name));
-  const current = new Map(config.teams.map((t, i) => [t.name, { tier: t.tier, i }]));
-  if ((prevRetired ?? []).some((t) => !retired.has(t.name)))
-    out.add("retiredTeams", "retired_team_removed");
-  for (const t of prevTeams ?? []) {
-    const now = current.get(t.name);
-    if (now === undefined) {
-      if (!retired.has(t.name)) out.add("teams", "team_removed_not_retired");
-    } else if (now.tier !== t.tier) out.add(`teams[${now.i}].tier`, "team_tier_changed");
-  }
+  if (prev === "legacy") out.add("previous", "ledger_previous_legacy");
+  else if (prev === undefined && baseLedger === undefined)
+    out.add("previous", "ledger_previous_missing");
+  return false;
 }
 
 /**
@@ -625,13 +663,22 @@ export function generateConsoleArtifacts(
   const requireAud = options.mode === "deploy" || options.auds !== undefined;
   const auds = resolveAuds(config, options.auds, requireAud, out);
   const listed = listAccounts(config, options.inventory, options.mode, out, warnings);
-  checkLedger(config, options.previous, options.mode, out, warnings);
+  const initialized = checkLedger(config, options, out, warnings);
   if (out.items.length > 0) throw new ConsoleConfigError(out.items);
   return {
     display: buildDisplay(config, listed, meta),
     worker: buildWorker(config, auds, listed, meta),
-    stacksets: buildStackSets(config, meta),
+    // 初回の指定で通したことは、StackSets 用の生成物（台帳を持つもの）の meta にだけ残す
+    stacksets: buildStackSets(config, initialized ? { ...meta, ledgerInit: true } : meta),
     access: buildAccess(config, auds, meta),
     warnings: warnings.items,
+    ...(initialized
+      ? {
+          ledgerInit: {
+            teams: config.teams.map((t) => t.name),
+            retiredTeams: config.retiredTeams.map((t) => t.name),
+          },
+        }
+      : {}),
   };
 }

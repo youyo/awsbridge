@@ -36,16 +36,24 @@ function tmp(): string {
   return d;
 }
 
-function run(cmd: string, env: Record<string, string>, cwd = root) {
+function run(cmd: string, env: Record<string, string>, cwd = root, args: string[] = []) {
   return spawnSync(
     join(root, "node_modules/.bin/tsx"),
-    [join(root, "scripts/console/config.ts"), cmd],
+    [join(root, "scripts/console/config.ts"), cmd, ...args],
     {
       cwd,
       env: { PATH: process.env.PATH ?? "", ...env },
       encoding: "utf8",
     },
   );
+}
+
+/**
+ * 出力先に前回の生成物が無い generate（新しい出力先）。前回の無い deploy は台帳の誤り（cto の決裁 2026-11-17）なので、
+ * 台帳を扱わない試験は初回の指定（--ledger-init）を明示して通す。
+ */
+function runInit(env: Record<string, string>, cwd = root) {
+  return run("generate", env, cwd, ["--ledger-init"]);
 }
 
 function write(d: string, name: string, value: unknown): string {
@@ -95,7 +103,7 @@ describe("console:config:check", () => {
     expect(r.stderr).toContain("boundaries[1].issuer: issuer_host_overlaps_portal");
     expect(r.stderr + r.stdout).not.toContain("portal.example.com");
     const out = join(d, "out");
-    const g = run("generate", {
+    const g = runInit({
       AWSBRIDGE_CONSOLE_CONFIG: file,
       AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
       AWSBRIDGE_CONSOLE_INVENTORY_FILE: write(d, "inventory.json", companyInventory()),
@@ -115,7 +123,7 @@ describe("console:config:check", () => {
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("roles[0].sessionSeconds: admin_session_seconds");
     const out = join(d, "out");
-    const g = run("generate", {
+    const g = runInit({
       AWSBRIDGE_CONSOLE_CONFIG: file,
       AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
@@ -163,13 +171,14 @@ describe("設定の例（config/console*.example.json）を CLI に通す", () =
   it("個人用の例から、発行用の生成物（worker.json）に FederatedAwsBridgeViewer の行だけが出る", () => {
     const d = tmp();
     const out = join(d, "out");
-    const r = run("generate", {
+    const r = runInit({
       AWSBRIDGE_CONSOLE_CONFIG: join(root, "config/console.example.json"),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
     });
     expect(r.status, r.stderr).toBe(0);
-    // 初回は前回の生成物が無いので、台帳を比べられない旨の警告だけ
-    expect(r.stderr.trim().split("\n")).toEqual(["warning: previous: ledger_previous_missing"]);
+    // 初回は前回の生成物が無いので、初回の指定（--ledger-init）で通し、その旨を標準出力に出す（警告・誤りなし）
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toContain("--ledger-init");
     const worker = JSON.parse(readFileSync(join(out, "worker.json"), "utf8"));
     const arns = worker.accounts.flatMap((a: { roles: { roleArn: string }[] }) =>
       a.roles.map((x) => x.roleArn),
@@ -178,13 +187,17 @@ describe("設定の例（config/console*.example.json）を CLI に通す", () =
       "arn:aws:iam::111111111111:role/awsbridge-console/std/FederatedAwsBridgeViewer",
     ]);
     expect(existsSync(join(out, "worker.admin.json"))).toBe(false);
-    // 2 回目は前回の台帳と比べるので警告なし
+    // 2 回目は前回の台帳と比べるので、初回の指定なしで警告なしに通る（初回の記録は消える）
     const again = run("generate", {
       AWSBRIDGE_CONSOLE_CONFIG: join(root, "config/console.example.json"),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
     });
     expect(again.status, again.stderr).toBe(0);
     expect(again.stderr).not.toContain("warning");
+    expect(again.stdout).not.toContain("--ledger-init");
+    expect(
+      JSON.parse(readFileSync(join(out, "stacksets.json"), "utf8")).ledgerInit,
+    ).toBeUndefined();
   });
 
   it("会社用の例（Admin のチームが 2 つ）を deploy 生成できる。1 つの発行用の生成物に両階層があり、表示用に AUD が無い", () => {
@@ -196,7 +209,7 @@ describe("設定の例（config/console*.example.json）を CLI に通す", () =
         String(i + 1).repeat(64),
       ]),
     );
-    const r = run("generate", {
+    const r = runInit({
       AWSBRIDGE_CONSOLE_CONFIG: join(root, "config/console.company.example.json"),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
       AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", { teams: teamAuds, entry: "a".repeat(64) }),
@@ -257,7 +270,7 @@ describe("console:config:generate", () => {
   it("会社用: 発行用（worker.json）・表示用（display.json）・StackSets 用・Access の検査用を書く（他人に読めない権限で）", () => {
     const d = tmp();
     const out = join(d, "out");
-    const r = run("generate", {
+    const r = runInit({
       AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", companyConfig()),
       AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
       AWSBRIDGE_CONSOLE_INVENTORY_FILE: write(d, "inventory.json", companyInventory()),
@@ -323,7 +336,7 @@ describe("console:config:generate", () => {
   it("個人用: 同じ 4 つの生成物を書く（階層ごとのファイルは作らない）", () => {
     const d = tmp();
     const out = join(d, "out");
-    const r = run("generate", {
+    const r = runInit({
       AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", personalConfig()),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
     });
@@ -343,7 +356,7 @@ describe("console:config:generate", () => {
     mkdirSync(out, { recursive: true });
     for (const old of ["worker.standard.json", "worker.admin.json", "display.standard.json"])
       writeFileSync(join(out, old), "{}");
-    const r = run("generate", {
+    const r = runInit({
       AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", companyConfig()),
       AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
@@ -359,7 +372,7 @@ describe("console:config:generate", () => {
     const out = join(d, "out");
     const c = companyConfig();
     c.schemaVersion = 1;
-    const r = run("generate", {
+    const r = runInit({
       AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", c),
       AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
@@ -380,9 +393,7 @@ describe("console:config:generate", () => {
       AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
     };
-    expect(
-      run("generate", { ...base, AWSBRIDGE_CONSOLE_CONFIG: write(d, "c1.json", c) }).status,
-    ).toBe(0);
+    expect(runInit({ ...base, AWSBRIDGE_CONSOLE_CONFIG: write(d, "c1.json", c) }).status).toBe(0);
     const before = readFileSync(join(out, "stacksets.json"), "utf8");
     c.retiredTeams = [];
     const r = run("generate", { ...base, AWSBRIDGE_CONSOLE_CONFIG: write(d, "c2.json", c) });
@@ -398,7 +409,7 @@ describe("console:config:generate", () => {
   it("AUD が足りなければ終了コード 1 で、何も書かない", () => {
     const d = tmp();
     const out = join(d, "out");
-    const r = run("generate", {
+    const r = runInit({
       AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", companyConfig()),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
     });
@@ -410,7 +421,7 @@ describe("console:config:generate", () => {
   it("AUD・インベントリのファイルが JSON として読めなければ終了コード 1", () => {
     const d = tmp();
     writeFileSync(join(d, "auds.json"), "{");
-    const r = run("generate", {
+    const r = runInit({
       AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", companyConfig()),
       AWSBRIDGE_CONSOLE_AUD_FILE: join(d, "auds.json"),
       AWSBRIDGE_CONSOLE_OUT_DIR: join(d, "out"),
@@ -424,7 +435,7 @@ describe("console:config:generate: ロールのテンプレート（種類の St
   it("種類ごとに kind.<kind>.yaml を書く。中身は生成器の出力で、パラメーターは stacksets.json と対応する", () => {
     const d = tmp();
     const out = join(d, "out");
-    const r = run("generate", {
+    const r = runInit({
       AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", companyConfig()),
       AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
@@ -443,7 +454,7 @@ describe("console:config:generate: ロールのテンプレート（種類の St
     const out = join(d, "out");
     const c = companyConfig();
     c.roles[0].sessionSeconds = 1800; // roles[0] は Admin の階層（name: admin）
-    const r = run("generate", {
+    const r = runInit({
       AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", c),
       AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
@@ -466,7 +477,7 @@ describe("console:config:generate: ロールのテンプレート（種類の St
       AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
     };
-    expect(run("generate", env).status).toBe(0);
+    expect(runInit(env).status).toBe(0);
     // 消したチームは台帳へ移す（移さなければ team_removed_not_retired で止まる）
     const personal = personalConfig();
     personal.retiredTeams = companyConfig().teams.map((t: { name: string; tier?: string }) => ({
@@ -492,8 +503,7 @@ describe("console:config:generate: ロールのテンプレート（種類の St
     };
     write(d, "policies/extra.json", extra);
     const out = join(d, "out");
-    const r = run(
-      "generate",
+    const r = runInit(
       { AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", c), AWSBRIDGE_CONSOLE_OUT_DIR: out },
       d,
     );
@@ -523,7 +533,7 @@ describe("console:config:generate: ロールのテンプレート（種類の St
     const out = join(d, "out");
     const c = personalConfig();
     c.signing = { accountIds: ["111111111111"] };
-    const r = run("generate", {
+    const r = runInit({
       AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", c),
       AWSBRIDGE_CONSOLE_OUT_DIR: out,
     });
@@ -531,5 +541,131 @@ describe("console:config:generate: ロールのテンプレート（種類の St
     expect(r.stderr).toContain("organizations[0].accounts[0].accountId: signing_account");
     expect(r.stderr + r.stdout).not.toContain("111111111111");
     expect(existsSync(out)).toBe(false);
+  });
+});
+
+describe("console:config:generate: 退役したチーム名の台帳（cto の決裁 2026-11-17 の c1〜c6）", () => {
+  const setup = () => {
+    const d = tmp();
+    const out = join(d, "out");
+    const env = {
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", companyConfig()),
+      AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: out,
+    };
+    return { d, out, env };
+  };
+  const stacksetsOf = (out: string) =>
+    JSON.parse(readFileSync(join(out, "stacksets.json"), "utf8"));
+
+  it("c1: 前回の生成物が無い generate は終了コード 1（ledger_previous_missing）で、何も書かない", () => {
+    const { out, env } = setup();
+    const r = run("generate", env);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("error: previous: ledger_previous_missing");
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it("c1: 前回が P2 より前の形（台帳の項目が無い）なら終了コード 1（ledger_previous_legacy）で、前回を書き換えない", () => {
+    const { out, env } = setup();
+    mkdirSync(out, { recursive: true });
+    const legacy = JSON.stringify({ schemaVersion: 1, generatedAt: "x", roles: [] });
+    writeFileSync(join(out, "stacksets.json"), legacy);
+    const r = run("generate", env);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("error: previous: ledger_previous_legacy");
+    expect(readFileSync(join(out, "stacksets.json"), "utf8")).toBe(legacy);
+    // 移行: 比べる台帳が無いので、初回の指定で通す
+    expect(runInit(env).status).toBe(0);
+    expect(stacksetsOf(out).ledgerInit).toBe(true);
+  });
+
+  it("c2・c3: --ledger-init で通り、標準出力と stacksets.json の meta に残す。チーム名以外の値は出さない", () => {
+    const { out, env } = setup();
+    const r = runInit(env);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain("--ledger-init");
+    expect(r.stdout).toContain("console:inspect");
+    for (const t of ["infra", "dev", "sa", "infra-elevated", "dev-elevated"])
+      expect(r.stdout).toContain(t);
+    for (const v of Object.values(companyAuds().teams as Record<string, string>))
+      expect(r.stdout + r.stderr).not.toContain(v);
+    expect(r.stdout + r.stderr).not.toMatch(/\d{12}/);
+    expect(stacksetsOf(out).ledgerInit).toBe(true);
+  });
+
+  it("c2: 前回に台帳があるのに --ledger-init を付けたら終了コード 1（ledger_init_not_allowed）で、何も書き換えない", () => {
+    const { out, env } = setup();
+    expect(runInit(env).status).toBe(0);
+    const before = readFileSync(join(out, "stacksets.json"), "utf8");
+    const r = runInit(env);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("error: previous: ledger_init_not_allowed");
+    expect(readFileSync(join(out, "stacksets.json"), "utf8")).toBe(before);
+  });
+
+  it("c2: baseline に台帳があるのに --ledger-init を付けたら終了コード 1", () => {
+    const { d, out, env } = setup();
+    expect(runInit(env).status).toBe(0);
+    const baseline = join(d, "baseline.json");
+    writeFileSync(baseline, readFileSync(join(out, "stacksets.json"), "utf8"));
+    rmSync(out, { recursive: true });
+    const r = run("generate", env, root, ["--ledger-init", "--ledger-baseline", baseline]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("error: baseline: ledger_init_not_allowed");
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it("c4: --ledger-baseline が読めない・JSON でない・形が違うなら終了コード 1", () => {
+    const { d, env } = setup();
+    expect(runInit(env).status).toBe(0);
+    const bad = join(d, "bad.json");
+    writeFileSync(bad, "{");
+    const arr = join(d, "arr.json");
+    writeFileSync(arr, "[]");
+    for (const p of [join(d, "none.json"), bad, arr]) {
+      const r = run("generate", env, root, ["--ledger-baseline", p]);
+      expect(r.status, p).toBe(1);
+      expect(r.stderr, p).toContain("baseline: ledger_baseline");
+    }
+    // 値が無い
+    expect(run("generate", env, root, ["--ledger-baseline"]).status).toBe(1);
+  });
+
+  it("c4・c6: 前回と baseline の片方だけに違反があっても終了コード 1。新しい出力先でも baseline と比べて通す", () => {
+    const { d, out, env } = setup();
+    const c = companyConfig();
+    c.retiredTeams = [{ name: "ops", tier: "standard" }];
+    const withOps = { ...env, AWSBRIDGE_CONSOLE_CONFIG: write(d, "ops.json", c) };
+    expect(runInit(withOps).status).toBe(0);
+    const baseline = join(d, "baseline.json");
+    writeFileSync(baseline, readFileSync(join(out, "stacksets.json"), "utf8"));
+    // 出力先を消した新しいチェックアウト: baseline と比べて通る（初回の指定は要らない）
+    rmSync(out, { recursive: true });
+    const fresh = run("generate", withOps, root, ["--ledger-baseline", baseline]);
+    expect(fresh.status, fresh.stderr).toBe(0);
+    // 前回（ops あり）は通るが、baseline と比べて ops を消すと違反
+    c.retiredTeams = [];
+    const noOps = { ...env, AWSBRIDGE_CONSOLE_CONFIG: write(d, "noops.json", c) };
+    const r1 = run("generate", noOps, root, ["--ledger-baseline", baseline]);
+    expect(r1.status).toBe(1);
+    expect(r1.stderr).toContain("retired_team_removed");
+    // 前回だけに違反: baseline（ops 無し）は通るが、出力先の前回（ops あり）と比べて違反
+    const plainOut = setup();
+    expect(runInit(plainOut.env).status).toBe(0);
+    const plainBaseline = join(d, "plain.json");
+    writeFileSync(plainBaseline, readFileSync(join(plainOut.out, "stacksets.json"), "utf8"));
+    const r2 = run("generate", noOps, root, ["--ledger-baseline", plainBaseline]);
+    expect(r2.status).toBe(1);
+    expect(r2.stderr).toContain("error: retiredTeams: retired_team_removed");
+    expect(r2.stderr).not.toContain("baseline.retiredTeams");
+  });
+
+  it("c5: check は前回が無ければ黙って 0。--ledger-init・--ledger-baseline は generate だけ（check に付けたら 1）", () => {
+    const { env } = setup();
+    const r = run("check", env);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(run("check", env, root, ["--ledger-init"]).status).toBe(1);
   });
 });

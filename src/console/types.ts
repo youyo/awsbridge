@@ -13,7 +13,16 @@
 
 import type { Routing, SourceIdentitySource, Tier } from "./constants";
 
-export type Meta = { schemaVersion: 2; generatedAt: string; sourceRevision?: string };
+export type Meta = {
+  schemaVersion: 2;
+  generatedAt: string;
+  sourceRevision?: string;
+  /**
+   * 台帳の初回の指定（--ledger-init）で、比べる相手（前回も baseline も）なしに通した生成（stacksets.json だけに付く。
+   * 次の生成で消える）。cto の決裁 2026-11-17 の c3。
+   */
+  ledgerInit?: true;
+};
 
 // ---- 発行用 ----
 

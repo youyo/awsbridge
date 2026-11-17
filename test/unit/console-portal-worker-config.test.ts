@@ -28,7 +28,11 @@ describe("readWorkerConfig", () => {
   it("陽性の対照: 生成器が作った会社用（両階層）・個人用の生成物は通る", () => {
     expect(kindOf(workerConfig())).toBeUndefined();
     const { config } = parseConsoleConfig(personalConfig());
-    const personal = generateConsoleArtifacts(config, { mode: "deploy", generatedAt: "x" }).worker;
+    const personal = generateConsoleArtifacts(config, {
+      mode: "deploy",
+      ledgerInit: true, // 台帳を扱わない試験。前回の無い deploy を初回の指定で明示して通す
+      generatedAt: "x",
+    }).worker;
     expect(kindOf(personal)).toBeUndefined();
   });
 
@@ -43,6 +47,7 @@ describe("readWorkerConfig", () => {
       );
       const w = generateConsoleArtifacts(config, {
         mode: "deploy",
+        ledgerInit: true, // 台帳を扱わない試験。前回の無い deploy を初回の指定で明示して通す
         generatedAt: "x",
         sourceRevision: "rev",
         ...(company

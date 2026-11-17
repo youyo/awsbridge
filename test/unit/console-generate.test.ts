@@ -25,17 +25,26 @@ function gen(
     mode?: "check" | "deploy";
     sourceRevision?: string;
     previous?: Raw;
+    baseline?: Raw | null;
+    ledgerInit?: boolean;
   } = {},
 ): ConsoleArtifacts {
   const { config } = parseConsoleConfig(raw);
+  const mode = opts.mode ?? "deploy";
+  // 台帳と関係のない試験は、前回も baseline も無い deploy を「初回の指定（ledgerInit）」で明示して通す
+  // （cto の決裁: 前回の無い deploy は誤り）。台帳の試験は previous・baseline・ledgerInit を自分で渡す
+  const ledgerInit =
+    opts.ledgerInit ??
+    (mode === "deploy" && opts.previous === undefined && !("baseline" in opts) ? true : undefined);
   return generateConsoleArtifacts(config, {
-    mode: opts.mode ?? "deploy",
+    mode,
     generatedAt: AT,
     ...(opts.auds !== undefined ? { auds: opts.auds } : {}),
     ...(opts.inventory !== undefined ? { inventory: opts.inventory } : {}),
     ...(opts.sourceRevision !== undefined ? { sourceRevision: opts.sourceRevision } : {}),
-    // 台帳の前回の生成物（stacksets.json）。省いた試験では、台帳の検査は「前回なし」の警告だけ
     ...(opts.previous !== undefined ? { previous: opts.previous } : {}),
+    ...("baseline" in opts ? { baseline: opts.baseline } : {}),
+    ...(ledgerInit !== undefined ? { ledgerInit } : {}),
   });
 }
 
@@ -678,13 +687,102 @@ describe("退役したチーム名の台帳（前回の生成物との比較）"
     expect(r.stacksets.retiredTeams).toEqual([{ name: "ops", tier: "standard" }]);
   });
 
-  it("前回の生成物が無ければ、生成物を書く（deploy）ときに ledger_previous_missing の警告（黙って通さない）。check では出さない", () => {
-    expect(company().warnings).toContainEqual(issue("previous", "ledger_previous_missing"));
-    expect(gen(companyConfig(), { mode: "check" }).warnings).not.toContainEqual(
+  it("c1: 前回の生成物が無い deploy は ledger_previous_missing の誤り（警告にしない）。check では黙る", () => {
+    expect(issuesOf(() => gen(companyConfig(), { ...opts(), ledgerInit: false }))).toEqual([
+      issue("previous", "ledger_previous_missing"),
+    ]);
+    expect(gen(companyConfig(), { mode: "check" }).warnings).toEqual([]);
+    expect(() => gen(companyConfig(), { ...opts(), previous: prevOf(company()) })).not.toThrow();
+  });
+
+  it("c1: 前回に台帳の項目が無い（P2 より前の形）deploy は ledger_previous_legacy の誤り。check では今のまま（警告）", () => {
+    const prev = prevOf(company());
+    delete prev.teams;
+    delete prev.retiredTeams;
+    expect(issuesOf(() => gen(companyConfig(), { ...opts(), previous: prev }))).toEqual([
+      issue("previous", "ledger_previous_legacy"),
+    ]);
+    expect(gen(companyConfig(), { mode: "check", previous: prev }).warnings).toContainEqual(
       issue("previous", "ledger_previous_missing"),
     );
-    const withPrev = gen(companyConfig(), { ...opts(), previous: prevOf(company()) });
-    expect(withPrev.warnings).not.toContainEqual(issue("previous", "ledger_previous_missing"));
+  });
+
+  it("c2・c3: 初回の指定（ledgerInit）は、前回も baseline も無いときに通し、stacksets.json の meta に残す", () => {
+    const r = gen(withRetired([{ name: "ops", tier: "standard" }]), {
+      ...opts(),
+      ledgerInit: true,
+    });
+    expect(r.stacksets.ledgerInit).toBe(true);
+    expect(r.ledgerInit).toEqual({
+      teams: ["infra", "dev", "sa", "infra-elevated", "dev-elevated"],
+      retiredTeams: ["ops"],
+    });
+    // 次の生成（前回あり・指定なし）では消える
+    const next = gen(companyConfig(), { ...opts(), previous: prevOf(company()) });
+    expect(next.stacksets.ledgerInit).toBeUndefined();
+    expect(next.ledgerInit).toBeUndefined();
+    // P2 より前の形の前回（比べる台帳が無い）も、初回の指定で通す（移行の経路）
+    const legacy = prevOf(company());
+    delete legacy.teams;
+    delete legacy.retiredTeams;
+    expect(
+      gen(companyConfig(), { ...opts(), previous: legacy, ledgerInit: true }).stacksets.ledgerInit,
+    ).toBe(true);
+  });
+
+  it("c2: 前回か baseline に台帳があるのに初回の指定を付けたら ledger_init_not_allowed", () => {
+    const prev = prevOf(company());
+    expect(
+      issuesOf(() => gen(companyConfig(), { ...opts(), previous: prev, ledgerInit: true })),
+    ).toEqual([issue("previous", "ledger_init_not_allowed")]);
+    expect(
+      issuesOf(() => gen(companyConfig(), { ...opts(), baseline: prev, ledgerInit: true })),
+    ).toEqual([issue("baseline", "ledger_init_not_allowed")]);
+  });
+
+  it("c4: baseline が読めない・形が違う・台帳の項目が無いなら ledger_baseline", () => {
+    const legacy = prevOf(company());
+    delete legacy.teams;
+    delete legacy.retiredTeams;
+    for (const bad of [null, [], { teams: "x" }, legacy])
+      expect(
+        issuesOf(() =>
+          gen(companyConfig(), { ...opts(), previous: prevOf(company()), baseline: bad }),
+        ),
+        JSON.stringify(bad),
+      ).toContainEqual(issue("baseline", "ledger_baseline"));
+  });
+
+  it("c4・c6: baseline と前回の両方と比べる。片方だけに違反があっても誤り", () => {
+    const withOps = prevOf(gen(withRetired([{ name: "ops", tier: "standard" }]), opts()));
+    const plain = prevOf(company());
+    const now = withRetired([]);
+    // 前回は台帳に ops が無いので通るが、baseline では ops を台帳から消している
+    expect(issuesOf(() => gen(now, { ...opts(), previous: plain, baseline: withOps }))).toEqual([
+      issue("baseline.retiredTeams", "retired_team_removed"),
+    ]);
+    // 逆: baseline は通るが、前回では ops を台帳から消している
+    expect(issuesOf(() => gen(now, { ...opts(), previous: withOps, baseline: plain }))).toEqual([
+      issue("retiredTeams", "retired_team_removed"),
+    ]);
+    // 両方に通れば通る
+    expect(() =>
+      gen(withRetired([{ name: "ops", tier: "standard" }]), {
+        ...opts(),
+        previous: plain,
+        baseline: withOps,
+      }),
+    ).not.toThrow();
+  });
+
+  it("c4: 前回が無くても baseline に台帳があれば、baseline と比べて通す（新しいチェックアウト）", () => {
+    const withOps = prevOf(gen(withRetired([{ name: "ops", tier: "standard" }]), opts()));
+    expect(() =>
+      gen(withRetired([{ name: "ops", tier: "standard" }]), { ...opts(), baseline: withOps }),
+    ).not.toThrow();
+    expect(issuesOf(() => gen(withRetired([]), { ...opts(), baseline: withOps }))).toEqual([
+      issue("baseline.retiredTeams", "retired_team_removed"),
+    ]);
   });
 
   it("前回の台帳の名前が今の台帳に無ければ retired_team_removed（台帳から名前を消せない）", () => {
