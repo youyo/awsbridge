@@ -18,20 +18,25 @@
 //   error   record_line_unreadable    読めない記録の行
 //   error   record_read_incomplete    発行記録（API）を、別の経路の件数まで読み切れなかった窓（c2。cto の受け入れ条件 a）
 //   error   coverage_gap              前回の確認済みの区間の終わりより、今回の読み始めが後（間に読んでいない区間がある）
+//   error   assume_time_gap           対になった引き受けの時刻が、発行の時刻から「JWT の寿命＋時計ずれ」を超えて後、または時計ずれを超えて前
+//   error   identity_mismatch         発行記録の利用者と、CloudTrail の SourceIdentity の伏せ字が食い違う（弱い一致: 先頭 1 文字と末尾のドメイン）
+//   error   identity_not_compared_admin Administrator の階層（admin）の対で、記録か引き受けのどちらかに利用者が無く、比べられなかった
 //   warning jti_reused                同じ jti で 2 回以上引き受けた
 //   warning record_without_assume     引き受けがあるはずの記録に、引き受けが無い
 //   warning aux_mismatch              補助のキー（AccessKeyId・RequestId・AssumedRoleId の伏せ字）が食い違う
-//   warning assume_time_gap           対になった引き受けの時刻が、発行の時刻から「JWT の寿命＋時計ずれ」を超えて後、または時計ずれを超えて前
-//   warning identity_mismatch         発行記録の利用者と、CloudTrail の SourceIdentity の伏せ字が食い違う
 //   warning unverifiable              記録の保持より古く、記録の無い引き受け（件数。決裁 (a)。1 件以上なら終了コードは 1）
 //   warning window_exceeds_retention  さかのぼりが記録の保持より長い
 //   note    pending                   反映の遅れ（lagSeconds）より新しく、まだ引き受けが見えない記録
 //   note    record_sts_failed_no_event STS が失敗した記録で、引き受けのイベントが無い（失敗はイベント履歴に出ないことがある）
 //   note    assume_failed             失敗した引き受け（errorCode）の件数
-//   note    identity_not_compared     記録か引き受けのどちらかに利用者が無く、SourceIdentity を比べられなかった対の件数
+//   note    identity_not_compared     記録か引き受けのどちらかに利用者が無く、SourceIdentity を比べられなかった対の件数（全階層）
 //
-// 時間の検査と利用者の検査は、まず警告（終了コードは変えない）。しきい値は ② の (ii) で正規の時間差・SourceIdentity の出方を
-// 実測してから決め、誤りに上げる予定（cto の決裁 G2 の途中経過）。
+// 時間の検査と利用者の検査は誤り（cto の決裁 G2-A 条件 c5 の Q1、2026-11-17。前は警告）。当たったら停止スイッチで発行を止め、
+// 該当の発行と引き受けを調べ、技術の判断者に上げる（README の突き合わせの節）。
+// 所見にしない表示（同じ決裁）: 対の発行からの時間差（秒）の階層ごとの最小・最大・件数（Q1 の記録）、コンソール以外として除外した
+// 引き受けの件数（Q2。期待値は手順で確かめる）、Administrator の階層の発行の件数と各時刻（Q4）。
+// 「Administrator の階層」は admin の階層（記録の tier・ロールのパス /awsbridge-console/admin/・設定の Admin の issuer のどれか）。
+// 突き合わせの入力にはロールごとの区別が無いので、Admin の階層のロールすべて（Administrator のロールに限らない）を含む。
 
 import { ROLE_PATH_PREFIX, rolePath, TIERS, type Tier } from "./constants";
 import { TOKEN_TTL_SECONDS } from "./issue/claims";
@@ -53,8 +58,8 @@ export const DEFAULT_LAG_SECONDS = 300;
 /** JWT の寿命（秒）。発行から引き受けまでの正規の最長（iat + 300 = exp）。 */
 export const JWT_LIFETIME_SECONDS = TOKEN_TTL_SECONDS;
 /**
- * 時計ずれの許容（秒）。Worker の時計と CloudTrail の時計の差。既定 60 秒は仮の値（CloudTrail の eventTime は秒単位、
- * Worker の iat は秒に切り捨て）で、② の (ii) で実測してから決め直す。CLI の --clock-skew-seconds で変えられる。
+ * 時計ずれの許容（秒）。Worker の時計と CloudTrail の時計の差。既定 60 秒（CloudTrail の eventTime は秒単位、
+ * Worker の iat は秒に切り捨て）。② の実測では正規の差がこの範囲に収まり、c5 で誤りに上げた。CLI の --clock-skew-seconds で変えられる。
  */
 export const DEFAULT_CLOCK_SKEW_SECONDS = 60;
 /** Workers Logs の保持（Workers Paid）。② の発行記録の置き場所（cto の決裁）。 */
@@ -102,9 +107,16 @@ export type ReconcileSummary = {
   lagSeconds: number;
   clockSkewSeconds: number;
   coverage: Coverage;
-  /** SourceIdentity を比べた対の数と、比べられなかった対の数。 */
+  /** SourceIdentity を比べた対の数と、比べられなかった対の数（うち Administrator の階層）。 */
   identityCompared: number;
   identityNotCompared: number;
+  identityNotComparedAdmin: number;
+  /** 対になった（成功した）引き受けの、発行からの時間差（秒）の階層ごとの件数・最小・最大（Q1 の記録用）。 */
+  timeFromIssue: Record<Tier, TimeFromIssue>;
+  /** コンソール以外として除外した引き受け（AssumeRoleWithWebIdentity）の件数（Q2）。 */
+  excludedAssumes: number;
+  /** Administrator の階層の発行記録（このアカウント・読んだ期間）の時刻（epoch ミリ秒）と結果。時刻の順（Q4）。 */
+  adminIssues: { at: number; result: string }[];
   regionsRead: number;
   regionsTotal: number;
   lines: number;
@@ -118,6 +130,8 @@ export type ReconcileSummary = {
   truncatedLines: number;
   unreadableLines: number;
 };
+
+export type TimeFromIssue = { count: number; min?: number; max?: number };
 
 export type ReconcileResult = { findings: ReconFinding[]; summary: ReconcileSummary };
 
@@ -187,6 +201,8 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
   let failedAssumes = 0;
   let identityCompared = 0;
   let identityNotCompared = 0;
+  let identityNotComparedAdmin = 0;
+  const deltas: Record<Tier, number[]> = { standard: [], admin: [] };
   const when = (t: number) => new Date(t).toISOString();
 
   // ---- 引き受けの側 ----
@@ -253,12 +269,16 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
       });
     // 時間: 引き受けの時刻 − 発行の時刻（iat。無い記録は記録の時刻 at。at は STS の応答のあとに書くので、前向きの差は少し小さく出る）。
     // 後ろに寿命＋ずれを超える（JWT の寿命の外での引き受け、同じ jti の使い回し）か、前にずれを超える（発行の前の引き受け。
-    // 時計の異常か、作られた JWT に記録を合わせた形）なら、向きを detail に出す同じ所見にする。どちらも今は警告。
+    // 時計の異常か、作られた JWT に記録を合わせた形）なら、向きを detail に出す同じ所見にする。どちらも誤り（c5 の Q1）。
+    // 対の階層: 記録の tier・ロールのパス・プロバイダーのどれかが admin なら admin（食い違いで Admin の比べ漏れを隠さない）
+    const pairTier: Tier =
+      r.tier === "admin" || roleTier === "admin" || providerTier === "admin" ? "admin" : "standard";
     const issuedAt = r.iat !== undefined ? r.iat * 1000 : r.at;
     const deltaSeconds = Math.round((e.time - issuedAt) / 1000);
+    deltas[pairTier].push(deltaSeconds);
     if (deltaSeconds > JWT_LIFETIME_SECONDS + clockSkewSeconds || deltaSeconds < -clockSkewSeconds)
       add({
-        severity: "warning",
+        severity: "error",
         code: "assume_time_gap",
         ...base,
         detail: `${at} ${deltaSeconds > 0 ? "+" : ""}${deltaSeconds}s from issue (allowed -${clockSkewSeconds}s..+${JWT_LIFETIME_SECONDS + clockSkewSeconds}s) (${r.pos})`,
@@ -268,12 +288,24 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
       identityCompared++;
       if (r.identity !== e.sourceIdentity)
         add({
-          severity: "warning",
+          severity: "error",
           code: "identity_mismatch",
           ...base,
           detail: `${at} the record's user and the event's SourceIdentity differ (masked) (${r.pos})`,
         });
-    } else identityNotCompared++;
+    } else {
+      identityNotCompared++;
+      // Administrator の階層は比べられないこと自体を誤りにする（c5 の Q1）
+      if (pairTier === "admin") {
+        identityNotComparedAdmin++;
+        add({
+          severity: "error",
+          code: "identity_not_compared_admin",
+          ...base,
+          detail: `${at} no user on the record or no SourceIdentity on the event (${r.pos})`,
+        });
+      }
+    }
     const aux = [
       auxDiffers(r.accessKeyId, e.accessKeyId) ? "accessKeyId" : undefined,
       auxDiffers(r.requestId, e.requestId) ? "requestId" : undefined,
@@ -330,6 +362,12 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
     else add({ severity: "note", code: "record_sts_failed_no_event", ...base });
   }
 
+  // Administrator の階層の発行（Q4）: このアカウント・読んだ期間の admin の記録。結果も出す（失敗した発行も数える）
+  const adminIssues = thisAccount
+    .filter((r) => r.tier === "admin" && r.at >= i.window.since && r.at <= i.window.until)
+    .map((r) => ({ at: r.at, result: r.result }))
+    .sort((a, b) => a.at - b.at);
+
   // ---- 入力の欠け ----
   for (const region of i.regions.unread)
     add({ severity: "error", code: "region_unread", detail: region });
@@ -371,6 +409,10 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
       coverage,
       identityCompared,
       identityNotCompared,
+      identityNotComparedAdmin,
+      timeFromIssue: { standard: summarize(deltas.standard), admin: summarize(deltas.admin) },
+      excludedAssumes: i.events.length - consoleEvents.length,
+      adminIssues,
       regionsRead: i.regions.read.length,
       regionsTotal: i.regions.read.length + i.regions.unread.length,
       lines: i.lines.total,
@@ -385,6 +427,12 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
       unreadableLines: i.lines.unreadable.length,
     },
   };
+}
+
+function summarize(list: readonly number[]): TimeFromIssue {
+  return list.length === 0
+    ? { count: 0 }
+    : { count: list.length, min: Math.min(...list), max: Math.max(...list) };
 }
 
 /**
@@ -430,6 +478,9 @@ function coverageLine(c: Coverage): string {
   return `coverage: GAP (the previous confirmed interval ends ${iso(c.previous)}; this run starts later)`;
 }
 
+const timeFromIssueText = (t: TimeFromIssue) =>
+  t.count === 0 ? "n=0" : `n=${t.count} min ${t.min}s max ${t.max}s`;
+
 /** 結果を 1 行ずつの文字列にする（伏せ字済み）。最後に件数の行。 */
 export function formatReconcileReport(
   r: ReconcileResult,
@@ -444,8 +495,11 @@ export function formatReconcileReport(
     `regions: read ${s.regionsRead}/${s.regionsTotal}`,
     `records: ${s.records} (this account ${s.recordsThisAccount}, lines ${s.lines}), console assumes: ${s.consoleAssumes} (failed ${s.failedAssumes}), matched: ${s.matched}`,
     `unverifiable: ${s.unverifiable}, truncated lines: ${s.truncatedLines}, unreadable lines: ${s.unreadableLines}, pending: ${s.pending}`,
-    `time check: lifetime ${JWT_LIFETIME_SECONDS}s + clock skew ${s.clockSkewSeconds}s (warning only)`,
-    `identity: compared ${s.identityCompared}, not compared ${s.identityNotCompared}`,
+    `time check: lifetime ${JWT_LIFETIME_SECONDS}s + clock skew ${s.clockSkewSeconds}s (error)`,
+    `time from issue: ${TIERS.map((t) => `${t} ${timeFromIssueText(s.timeFromIssue[t])}`).join(", ")}`,
+    `identity: compared ${s.identityCompared}, not compared ${s.identityNotCompared} (admin ${s.identityNotComparedAdmin})`,
+    `excluded assumes (not console): ${s.excludedAssumes}`,
+    `admin issues: ${s.adminIssues.length}${s.adminIssues.length > 0 ? ` (${s.adminIssues.map((x) => `${iso(x.at)} ${x.result}`).join(", ")})` : ""}`,
     coverageLine(s.coverage),
   ];
   const order: Severity[] = ["error", "warning", "note"];

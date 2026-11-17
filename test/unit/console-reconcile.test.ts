@@ -413,8 +413,8 @@ describe("reconcileExitCode（終了コード。司令塔の判断 2026-11-13: �
   });
 });
 
-// ---- 時間の検査（cto の決裁 G2 の途中経過。まず警告。(ii) で正規の時間差を見てから誤りに上げる予定） ----
-describe("reconcile: 時間の検査（引き受けの時刻 − 発行の時刻 が 300 秒＋時計ずれを超えたら assume_time_gap の警告）", () => {
+// ---- 時間の検査（cto の決裁 G2-A 条件 c5 の Q1 で誤りに上げた。前は警告） ----
+describe("reconcile: 時間の検査（引き受けの時刻 − 発行の時刻 が 300 秒＋時計ずれを超えたら assume_time_gap の誤り）", () => {
   const SEC = 1000;
   const iatOf = (r: ReconRecord) => Math.floor(r.at / 1000);
 
@@ -423,7 +423,7 @@ describe("reconcile: 時間の検査（引き受けの時刻 − 発行の時刻
     expect(DEFAULT_CLOCK_SKEW_SECONDS).toBe(60);
   });
 
-  it("発行（jwt.iat）から 360 秒ちょうどまでは所見なし。361 秒で assume_time_gap（警告）", () => {
+  it("発行（jwt.iat）から 360 秒ちょうどまでは所見なし。361 秒で assume_time_gap（誤り）", () => {
     const a = rec({ iat: Math.floor((NOW - 60 * MIN) / 1000) });
     const issued = (a.iat ?? 0) * SEC;
     expect(
@@ -432,7 +432,7 @@ describe("reconcile: 時間の検査（引き受けの時刻 − 発行の時刻
     const late = reconcile(
       input({ records: [a], events: [evFor(a, { time: issued + 361 * SEC })] }),
     );
-    expect(codes(late)).toEqual(["warning:assume_time_gap"]);
+    expect(codes(late)).toEqual(["error:assume_time_gap"]);
     expect(late.findings[0]?.detail).toContain("+361s");
     expect(late.findings[0]?.jti).toBe(`${a.jti?.slice(0, 8)}…`);
   });
@@ -446,7 +446,7 @@ describe("reconcile: 時間の検査（引き受けの時刻 − 発行の時刻
           input({ records: [withIat], events: [evFor(withIat, { time: withIat.at + 2 * SEC })] }),
         ),
       ),
-    ).toEqual(["warning:assume_time_gap"]);
+    ).toEqual(["error:assume_time_gap"]);
     const noIat = rec({ at: NOW - 60 * MIN });
     expect(
       codes(
@@ -454,7 +454,7 @@ describe("reconcile: 時間の検査（引き受けの時刻 − 発行の時刻
           input({ records: [noIat], events: [evFor(noIat, { time: noIat.at + 400 * SEC })] }),
         ),
       ),
-    ).toEqual(["warning:assume_time_gap"]);
+    ).toEqual(["error:assume_time_gap"]);
     expect(
       codes(
         reconcile(
@@ -473,7 +473,7 @@ describe("reconcile: 時間の検査（引き受けの時刻 − 発行の時刻
     const early = reconcile(
       input({ records: [a], events: [evFor(a, { time: issued - 61 * SEC })] }),
     );
-    expect(codes(early)).toEqual(["warning:assume_time_gap"]);
+    expect(codes(early)).toEqual(["error:assume_time_gap"]);
     expect(early.findings[0]?.detail).toContain("-61s");
   });
 
@@ -485,7 +485,7 @@ describe("reconcile: 時間の検査（引き受けの時刻 − 発行の時刻
       [],
     );
     expect(codes(reconcile(input({ records: [a], events: [e], clockSkewSeconds: 30 })))).toEqual([
-      "warning:assume_time_gap",
+      "error:assume_time_gap",
     ]);
     expect(
       reconcile(input({ records: [a], events: [e], clockSkewSeconds: 30 })).summary
@@ -493,18 +493,19 @@ describe("reconcile: 時間の検査（引き受けの時刻 − 発行の時刻
     ).toBe(30);
   });
 
-  it("警告なので終了コードは 0 のまま。対にならない引き受け・失敗した引き受けには検査しない", () => {
+  it("誤りなので終了コードは 1、確認済みの区間を進めない。対にならない引き受け・失敗した引き受けには検査しない", () => {
     const a = rec({ iat: Math.floor((NOW - 60 * MIN) / 1000) });
     const issued = (a.iat ?? 0) * SEC;
     const r = reconcile(input({ records: [a], events: [evFor(a, { time: issued + 900 * SEC })] }));
-    expect(reconcileExitCode(r)).toBe(0);
+    expect(reconcileExitCode(r)).toBe(1);
+    expect(nextCoveredUntil(r, undefined)).toBeUndefined();
     const failed = reconcile(
       input({
         records: [a],
         events: [evFor(a, { time: issued + 900 * SEC, errorCode: "AccessDenied" })],
       }),
     );
-    expect(codes(failed)).not.toContain("warning:assume_time_gap");
+    expect(codes(failed)).not.toContain("error:assume_time_gap");
   });
 });
 
@@ -520,14 +521,14 @@ describe("reconcile: 発行記録の利用者と CloudTrail の SourceIdentity �
     expect(r.summary.identityNotCompared).toBe(0);
   });
 
-  it("伏せ字が違えば identity_mismatch（警告）。値は所見に出さない。終了コードは 0", () => {
+  it("伏せ字が違えば identity_mismatch（誤り）。値は所見に出さない。終了コードは 1", () => {
     const a = rec({ identity: "a***@***.com" });
     const r = reconcile(
       input({ records: [a], events: [evFor(a, { sourceIdentity: "b***@***.org" })] }),
     );
-    expect(codes(r)).toEqual(["warning:identity_mismatch"]);
+    expect(codes(r)).toEqual(["error:identity_mismatch"]);
     expect(JSON.stringify(r.findings)).not.toMatch(/a\*\*\*|b\*\*\*|@/);
-    expect(reconcileExitCode(r)).toBe(0);
+    expect(reconcileExitCode(r)).toBe(1);
   });
 
   it("どちらかが無ければ比べない。黙って飛ばさず、比べなかった件数を identity_not_compared（注記）と要約に出す", () => {
@@ -616,5 +617,165 @@ describe("nextCoveredUntil（成功した実行（終了コード 0）だけが�
     expect(
       nextCoveredUntil(reconcile(input({ previousCoveredUntil: NOW - 6 * DAY - 1 })), 123),
     ).toBeUndefined();
+  });
+});
+
+// ---- cto の決裁 G2-A 条件 c5（2026-11-17）: Q1 の比べなかった件数（Administrator の階層は誤り）・時間差の記録、Q2 の除外の件数、Q4 の Admin の発行 ----
+describe("reconcile: Administrator の階層（admin）で SourceIdentity を比べなかった対は identity_not_compared_admin の誤り（Q1）", () => {
+  const noIdentity = (over: Partial<ReconRecord> = {}): ReconRecord => {
+    const { identity: _i, ...r } = rec(over);
+    return r;
+  };
+  const stripSi = (e: AssumeEvent): AssumeEvent => {
+    const { sourceIdentity: _s, ...rest } = e;
+    return rest;
+  };
+
+  it("admin の対で記録の利用者か SourceIdentity が無ければ、対ごとに誤り。終了コード 1・区間を進めない。注記の件数（全体）も出す", () => {
+    const a = noIdentity({ tier: "admin", roleArn: ADMIN_ROLE });
+    const b = rec({ tier: "admin", roleArn: ADMIN_ROLE, stsRegion: "ap-northeast-1" });
+    const r = reconcile(input({ records: [a, b], events: [evFor(a), stripSi(evFor(b))] }));
+    expect(codes(r)).toEqual([
+      "error:identity_not_compared_admin",
+      "error:identity_not_compared_admin",
+      "note:identity_not_compared",
+    ]);
+    expect(r.summary.identityNotCompared).toBe(2);
+    expect(r.summary.identityNotComparedAdmin).toBe(2);
+    const f = r.findings.find((x) => x.code === "identity_not_compared_admin");
+    expect(f?.jti).toMatch(/^j\d{7}…$/);
+    expect(f?.role).toBe("FederatedAdministrator");
+    expect(JSON.stringify(r.findings)).not.toMatch(/@/);
+    expect(reconcileExitCode(r)).toBe(1);
+    expect(nextCoveredUntil(r, undefined)).toBeUndefined();
+    expect(formatReconcileReport(r)).toContain("identity: compared 0, not compared 2 (admin 2)");
+  });
+
+  it("standard の対で比べなかったものは今までどおり注記だけ（誤りにしない）", () => {
+    const a = noIdentity();
+    const r = reconcile(input({ records: [a], events: [evFor(a)] }));
+    expect(codes(r)).toEqual(["note:identity_not_compared"]);
+    expect(r.summary.identityNotComparedAdmin).toBe(0);
+    expect(reconcileExitCode(r)).toBe(0);
+    expect(formatReconcileReport(r)).toContain("identity: compared 0, not compared 1 (admin 0)");
+  });
+
+  it("階層は記録の tier・ロールのパス・プロバイダーのどれかが admin なら admin とみなす（食い違いで比べ漏れを隠さない）", () => {
+    // 記録は standard だが、引き受けたロールは Admin のパス
+    const a = noIdentity({ roleArn: ADMIN_ROLE });
+    const r = reconcile(
+      input({ records: [a], events: [evFor(a, { provider: providerArn(ADMIN_ISSUER) })] }),
+    );
+    expect(codes(r)).toContain("error:identity_not_compared_admin");
+    expect(r.summary.identityNotComparedAdmin).toBe(1);
+  });
+});
+
+describe("reconcile: 対になった引き受けの発行からの時間差（秒）の最小・最大・件数を階層ごとに出す（Q1 の記録用）", () => {
+  const SEC = 1000;
+
+  it("一致した対（失敗した引き受け・対にならない引き受けは数えない）の差を階層ごとにまとめる", () => {
+    const s1 = rec();
+    const s2 = rec();
+    const s3 = rec();
+    const a1 = rec({ tier: "admin", roleArn: ADMIN_ROLE });
+    const a2 = rec({ tier: "admin", roleArn: ADMIN_ROLE });
+    const failed = rec();
+    const r = reconcile(
+      input({
+        records: [s1, s2, s3, a1, a2, failed],
+        events: [
+          evFor(s1, { time: s1.at }),
+          evFor(s2, { time: s2.at + 2 * SEC }),
+          evFor(s3, { time: s3.at + 5 * SEC }),
+          evFor(a1, { time: a1.at + 1 * SEC }),
+          evFor(a2, { time: a2.at + 3 * SEC }),
+          evFor(failed, { time: failed.at + 900 * SEC, errorCode: "AccessDenied" }),
+          evFor(rec(), { time: NOW - 10 * MIN }), // 記録の無い引き受け（assume_without_record）
+        ],
+      }),
+    );
+    expect(r.summary.timeFromIssue).toEqual({
+      standard: { count: 3, min: 0, max: 5 },
+      admin: { count: 2, min: 1, max: 3 },
+    });
+    expect(formatReconcileReport(r)).toContain(
+      "time from issue: standard n=3 min 0s max 5s, admin n=2 min 1s max 3s",
+    );
+  });
+
+  it("負の差もそのまま（最小に出る）。対が無い階層は n=0", () => {
+    const a = rec({ iat: Math.floor((NOW - 60 * MIN) / 1000) });
+    const r = reconcile(
+      input({ records: [a], events: [evFor(a, { time: (a.iat ?? 0) * SEC - 30 * SEC })] }),
+    );
+    expect(r.summary.timeFromIssue).toEqual({
+      standard: { count: 1, min: -30, max: -30 },
+      admin: { count: 0 },
+    });
+    expect(formatReconcileReport(r)).toContain(
+      "time from issue: standard n=1 min -30s max -30s, admin n=0",
+    );
+  });
+
+  it("時間の検査は誤りとして出力に書く（警告だけとは書かない）", () => {
+    const text = formatReconcileReport(reconcile(input()));
+    expect(text).toContain("time check: lifetime 300s + clock skew 60s (error)");
+    expect(text).not.toContain("warning only");
+  });
+});
+
+describe("reconcile: コンソール以外として除外した引き受けの件数（Q2。表示だけで所見にしない）", () => {
+  it("MCP の引き受けは数から外し、件数を要約と出力に出す。所見は無く、終了コードは 0", () => {
+    const a = rec();
+    const mcp: AssumeEvent = {
+      time: NOW - 10 * MIN,
+      region: "us-east-1",
+      roleArn: MCP_ROLE,
+      provider: `arn:aws:iam::${ACCOUNT}:oidc-provider/awsbridge-oidc-mcp.example.com`,
+      tokenId: jti(),
+    };
+    const r = reconcile(
+      input({ records: [a], events: [evFor(a), mcp, { ...mcp, region: "ap-northeast-1" }] }),
+    );
+    expect(codes(r)).toEqual([]);
+    expect(r.summary.consoleAssumes).toBe(1);
+    expect(r.summary.excludedAssumes).toBe(2);
+    expect(reconcileExitCode(r)).toBe(0);
+    expect(formatReconcileReport(r)).toContain("excluded assumes (not console): 2");
+  });
+
+  it("除外が無ければ 0 と出す", () => {
+    expect(formatReconcileReport(reconcile(input()))).toContain(
+      "excluded assumes (not console): 0",
+    );
+  });
+});
+
+describe("reconcile: Administrator の階層の発行の件数と各時刻（UTC）を出力に出す（Q4）", () => {
+  it("このアカウント・読んだ期間の admin の記録を時刻の順に、結果とともに出す（standard・期間の外・別のアカウントは出さない）", () => {
+    const t1 = NOW - 120 * MIN;
+    const t2 = NOW - 30 * MIN;
+    const a1 = rec({ tier: "admin", roleArn: ADMIN_ROLE, at: t2 });
+    const a2 = rec({ tier: "admin", roleArn: ADMIN_ROLE, at: t1, result: "sts_denied" });
+    const outside = rec({ tier: "admin", roleArn: ADMIN_ROLE, at: NOW - 7 * DAY });
+    const other = rec({ tier: "admin", roleArn: ADMIN_ROLE, accountId: OTHER, at: t1 });
+    const std = rec({ at: t1 });
+    const r = reconcile(
+      input({ records: [a1, a2, outside, other, std], events: [evFor(a1), evFor(std)] }),
+    );
+    expect(r.summary.adminIssues).toEqual([
+      { at: t1, result: "sts_denied" },
+      { at: t2, result: "ok" },
+    ]);
+    expect(formatReconcileReport(r)).toContain(
+      `admin issues: 2 (${new Date(t1).toISOString()} sts_denied, ${new Date(t2).toISOString()} ok)`,
+    );
+  });
+
+  it("admin の発行が無ければ 0 と出す", () => {
+    expect(formatReconcileReport(reconcile(input({ records: [rec()] })))).toContain(
+      "admin issues: 0",
+    );
   });
 });
