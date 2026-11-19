@@ -53,6 +53,8 @@ export type ReconFinding = {
   role?: string;
   /** 位置（記録の行）・リージョン・時刻など。値（email など）は入れない。 */
   detail?: string;
+  /** 所見の元になった引き受けか記録の時刻（epoch ミリ秒）。出力の最も古い誤りの行に使う（所見の行には出さない）。 */
+  at?: number;
 };
 
 export const DEFAULT_LAG_SECONDS = 300;
@@ -67,6 +69,61 @@ export const DEFAULT_CLOCK_SKEW_SECONDS = 60;
 export const DEFAULT_RETENTION_DAYS = 7;
 /** 既定のさかのぼり（保持より短く。決裁 (a)）。 */
 export const DEFAULT_LOOKBACK_DAYS = 6;
+/**
+ * 状態から読み始めを決めるときの重なり（秒）。前回の確認済みの区間の終わりより、これだけ前から読み直す（CloudTrail の反映が
+ * 遅れた引き受けを拾う）。反映の遅れ（lag）とは別の値。既定 24 時間・下限 1 時間（推測の値。実測で直す）。CLI の --overlap-seconds。
+ */
+export const DEFAULT_OVERLAP_SECONDS = 86_400;
+export const MIN_OVERLAP_SECONDS = 3_600;
+
+/**
+ * 読み始めとその決め方。option は --since、state は「確認済みの区間の終わり − 重なり」、lookback は既定のさかのぼり
+ * （状態が無い初回か、終わり − 重なりがさかのぼりより前のとき。後者は coveredUntil を持つ）。
+ */
+export type ReadStart =
+  | { basis: "option"; since: number }
+  | { basis: "state"; since: number; coveredUntil: number; overlapSeconds: number }
+  | { basis: "lookback"; since: number; lookbackDays: number; coveredUntil?: number };
+
+/**
+ * 読み始め = max(今 − さかのぼり, 確認済みの区間の終わり − 重なり)。since（--since）を渡せばそれが勝つ。状態が無ければさかのぼり。
+ * 古い区間を含む長い窓の照会が間引かれて（sampleInterval > 1）読み切れなくなるのを避ける緩和策（原因は未確認: 保存の間引きか
+ * 照会の間引きかを区別していない）。穴の判定（coverage_gap）は reconcile の側のままで、ここで決めた読み始めは終わり以前なので穴にならない。
+ * 重なりが下限（MIN_OVERLAP_SECONDS）より短ければ RangeError（黙って広げない）。
+ */
+export function decideReadStart(o: {
+  now: number;
+  since?: number | undefined;
+  coveredUntil?: number | undefined;
+  overlapSeconds?: number | undefined;
+  lookbackDays?: number | undefined;
+}): ReadStart {
+  const overlapSeconds = o.overlapSeconds ?? DEFAULT_OVERLAP_SECONDS;
+  if (!Number.isInteger(overlapSeconds) || overlapSeconds < MIN_OVERLAP_SECONDS)
+    throw new RangeError(`the overlap must be at least ${MIN_OVERLAP_SECONDS} seconds`);
+  if (o.since !== undefined) return { basis: "option", since: o.since };
+  const lookbackDays = o.lookbackDays ?? DEFAULT_LOOKBACK_DAYS;
+  const lookback = o.now - lookbackDays * 86_400_000;
+  if (o.coveredUntil === undefined) return { basis: "lookback", since: lookback, lookbackDays };
+  const fromState = o.coveredUntil - overlapSeconds * 1000;
+  return fromState > lookback
+    ? { basis: "state", since: fromState, coveredUntil: o.coveredUntil, overlapSeconds }
+    : { basis: "lookback", since: lookback, lookbackDays, coveredUntil: o.coveredUntil };
+}
+
+/** 読み始めの 1 行（決め方と実際の時刻。UTC）。 */
+export function formatReadStart(s: ReadStart): string {
+  const iso = (t: number) => new Date(t).toISOString();
+  const how =
+    s.basis === "option"
+      ? "--since"
+      : s.basis === "state"
+        ? `from the state: confirmed until ${iso(s.coveredUntil)} minus overlap ${s.overlapSeconds}s`
+        : s.coveredUntil === undefined
+          ? `default lookback ${s.lookbackDays}d; no confirmed interval on record`
+          : `default lookback ${s.lookbackDays}d; the confirmed interval ends ${iso(s.coveredUntil)}, the overlap would go back further`;
+  return `read start: ${iso(s.since)} (${how})`;
+}
 
 export type ReconcileInput = {
   records: readonly ReconRecord[];
@@ -214,6 +271,7 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
     const base = {
       ...(e.tokenId !== undefined ? { jti: maskJti(e.tokenId) } : {}),
       ...(role !== undefined ? { role: role.name } : {}),
+      at: e.time,
     };
     const at = `${e.region} ${when(e.time)}`;
     const roleTier = pathTier(role?.path);
@@ -362,6 +420,7 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
         code: "team_not_in_config",
         ...(r.jti !== undefined ? { jti: maskJti(r.jti) } : {}),
         detail: `${when(r.at)} (${r.pos})`,
+        at: r.at,
       });
   let pending = 0;
   for (const r of thisAccount) {
@@ -369,7 +428,11 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
     if (r.at < i.window.since || r.at > i.window.until) continue;
     if (unread.has(r.stsRegion)) continue; // region_unread の誤りで知らせる
     if (eventsByJti.has(r.jti)) continue;
-    const base = { jti: maskJti(r.jti), detail: `${r.stsRegion} ${when(r.at)} (${r.pos})` };
+    const base = {
+      jti: maskJti(r.jti),
+      detail: `${r.stsRegion} ${when(r.at)} (${r.pos})`,
+      at: r.at,
+    };
     if (r.at > i.now - lagSeconds * 1000) {
       pending++;
       add({ severity: "note", code: "pending", ...base });
@@ -460,10 +523,23 @@ export function reconcileExitCode(r: ReconcileResult): 0 | 1 {
 }
 
 /**
+ * 時刻を持つ誤り（引き受けか記録の時刻のあるもの）のうち最も古い時刻。無ければ undefined。
+ * 検出した誤りは状態に残らない（状態は進めないだけ）ので、この時刻が既定の窓（今 − 6 日）から外れると、次の実行では読まれない
+ * （--overlap-seconds や --since を変えても外れうる）。その前に所見を道具の外に記録させるために出す。
+ */
+export function oldestErrorAt(r: ReconcileResult): number | undefined {
+  const times = r.findings
+    .filter((f) => f.severity === "error" && f.at !== undefined)
+    .map((f) => f.at as number);
+  return times.length === 0 ? undefined : Math.min(...times);
+}
+
+/**
  * 成功した実行（終了コード 0）が進める「確認済みの区間の終わり」。成功でなければ undefined（進めない）。
  * 終わりは「今回の終わり − 反映の遅れ（lag）」: 最後の lag の間は CloudTrail の反映が間に合わず、まだ判定していない（pending）。
  * 前回が先なら戻さない。誤りがある実行や検証できない引き受けがある実行で進めると、誤りが次の実行の区間の外に出て埋もれるので進めない
  * （穴の誤りが出た実行も、誤りなので進めない。直すには、読み始めを前回の終わり以前に戻して回す）。
+ * 保証はその実行で読んだ窓の中だけ: 検出した誤りは状態に残らず、時刻が窓の外へ出れば次の実行で読まれず進む（oldestErrorAt）。
  */
 export function nextCoveredUntil(
   r: ReconcileResult,
@@ -500,7 +576,7 @@ const timeFromIssueText = (t: TimeFromIssue) =>
 /** 結果を 1 行ずつの文字列にする（伏せ字済み）。最後に件数の行。 */
 export function formatReconcileReport(
   r: ReconcileResult,
-  o: { label?: string; apiCount?: number | undefined } = {},
+  o: { label?: string; apiCount?: number | undefined; start?: ReadStart | undefined } = {},
 ): string {
   const s = r.summary;
   const iso = (t: number) => new Date(t).toISOString();
@@ -508,6 +584,7 @@ export function formatReconcileReport(
     `account: ****${s.accountId.slice(-4)}${o.label !== undefined ? ` ${o.label}` : ""}`,
     `source: ${s.source}${s.source === "api" ? " (Cloudflare Workers Observability telemetry query)" : ""}${o.apiCount !== undefined ? ` api count ${o.apiCount}` : ""}`,
     `window: ${iso(s.window.since)} .. ${iso(s.window.until)} (retention: ${s.retentionDays}d, lag: ${s.lagSeconds}s)`,
+    ...(o.start !== undefined ? [formatReadStart(o.start)] : []),
     `regions: read ${s.regionsRead}/${s.regionsTotal}`,
     `records: ${s.records} (this account ${s.recordsThisAccount}, lines ${s.lines}), console assumes: ${s.consoleAssumes} (failed ${s.failedAssumes}), matched: ${s.matched}`,
     `unverifiable: ${s.unverifiable}, truncated lines: ${s.truncatedLines}, unreadable lines: ${s.unreadableLines}, pending: ${s.pending}`,
@@ -518,6 +595,11 @@ export function formatReconcileReport(
     `admin issues: ${s.adminIssues.length}${s.adminIssues.length > 0 ? ` (${s.adminIssues.map((x) => `${iso(x.at)} ${x.result}`).join(", ")})` : ""}`,
     coverageLine(s.coverage),
   ];
+  const oldest = oldestErrorAt(r);
+  if (oldest !== undefined)
+    lines.push(
+      `oldest error finding: ${iso(oldest)} (it leaves the default window of ${DEFAULT_LOOKBACK_DAYS}d after ${iso(oldest + DEFAULT_LOOKBACK_DAYS * 86_400_000)}; record the findings outside the tool today)`,
+    );
   const order: Severity[] = ["error", "warning", "note"];
   for (const sev of order)
     for (const f of r.findings.filter((x) => x.severity === sev))
