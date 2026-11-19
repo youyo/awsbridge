@@ -302,3 +302,73 @@ describe("本番でのコンソールログインの導入の文書（英・日�
     });
   }
 });
+
+// 毎日の照合: 読み始めは状態から決まる。毎日回す・空いた日数の限界・状態が進まないときの手順・状態のファイルの限界・--since 6d は監査用
+describe("本番の導入の文書: 毎日の照合の読み始めと状態のファイル", () => {
+  const PHRASES: Record<string, string[]> = {
+    [JA]: [
+      "`--since` を付けずに毎日回します",
+      "`read start:`",
+      "`from the state`",
+      "間引かれずに読めると実測で確かめた期間",
+      "今の道具の読み方では",
+      "どの区間を検証できなかったかを記録し",
+      "状態のファイルを黙って消しません",
+      "その日のうちに所見（時刻・code・`jti` の先頭・ロール）を道具の外に記録します",
+      "原因が分かるまで `--overlap-seconds` と `--since` を変えず、状態のファイルを作り直しません",
+      "解決か受け入れを記録してから再開します",
+      "検証して再開",
+      "検証できないまま受け入れて再開",
+      "アカウント・検証できなかった区間・未解決の所見・理由・判断した人と日時・状態のファイルの変更の前後",
+      "終了コード 0 は、重なりの外に遅れて出た引き受けが無いことの証明ではありません",
+      "状態のファイルを書ける者は",
+      "`--since 6d`",
+    ],
+    [EN]: [
+      "Run it every day without `--since`",
+      "`read start:`",
+      "`from the state`",
+      "the period measured to read without sampling",
+      "the current way the tool reads",
+      "record which interval could not be verified",
+      "Do not delete the state file silently",
+      "record the findings (time, code, the start of the `jti`, role) outside the tool the day they appear",
+      "Until the cause is known, do not change `--overlap-seconds` or `--since`, and do not rebuild the state file",
+      "Resume only after recording the resolution or the acceptance",
+      "resume after verification",
+      "resume by accepting it unverified",
+      "the account, the interval that could not be verified, the unresolved findings, the reason, who decided and when, and the state file before and after the change",
+      "Exit code 0 does not prove that no assumption showed up late outside the overlap",
+      "Anyone who can write the state file",
+      "`--since 6d`",
+    ],
+  };
+  for (const d of DOCS)
+    it(`${d}: 段 3 に、毎日回すこと・読み始めの確かめ方・空いた日数の限界・状態が進まないときの手順・状態のファイルの限界・監査用の --since 6d を書く`, () => {
+      const text = read(d);
+      const i = text.indexOf(d === JA ? "## 段 3" : "## Step 3");
+      const j = text.indexOf(d === JA ? "## 段 4" : "## Step 4");
+      expect(i).toBeGreaterThan(0);
+      const s3 = text.slice(i, j);
+      for (const s of PHRASES[d] ?? []) expect(s3, s).toContain(s);
+      expect(s3).not.toContain(
+        d === JA ? "その間の発行は検証できなくなります" : "can no longer be verified",
+      );
+    });
+  for (const d of DOCS)
+    it(`${d}: 段 5 の判断に、CloudTrail の反映の遅れの実測と重なりの決め方を入れる。段 2 の当日に遅れを記録する`, () => {
+      const text = read(d);
+      const s5 = text.slice(text.indexOf(d === JA ? "## 段 5" : "## Step 5"));
+      expect(s5).toContain(d === JA ? "反映の遅れの実測" : "measured CloudTrail delay");
+      expect(s5).toContain("`--overlap-seconds`");
+      const s2 = text.slice(
+        text.indexOf(d === JA ? "### 最初の発行の当日" : "### On the day of the first issuance"),
+        text.indexOf(d === JA ? "## 段 3" : "## Step 3"),
+      );
+      expect(s2).toContain(
+        d === JA
+          ? "引き受けが CloudTrail に初めて見えた時刻"
+          : "the time the assumption first appeared in CloudTrail",
+      );
+    });
+});

@@ -372,6 +372,131 @@ describe("突き合わせの運用: 誤りのあとの回し直しと --since �
   });
 });
 
+// 読み始めを状態から決める（確認済みの区間の終わり − 重なり。--overlap-seconds）。原因は断定しない
+describe("突き合わせの運用: 読み始めを状態から決める・状態のファイルの限界・状態が進まないときの手順", () => {
+  it("README_ja.md: 読み始め・重なり（既定 24 時間・下限 1 時間・lag と別）・--since が勝つ・監査は --since 6d・read start の行・原因は未確認・限界・作り直しの手順・空いた日数の限界", () => {
+    const text = read("README_ja.md");
+    for (const s of [
+      "「確認済みの区間の終わり − 重なり」と「今 − 6 日」の遅いほう",
+      "`--overlap-seconds <n>`（既定 `86400` = 24 時間、下限 `3600` = 1 時間",
+      "反映の遅れ（`--lag-seconds`）とは別の値",
+      "`--since` を渡せばそれが勝ちます",
+      "全部を読み直す監査には `--since 6d` を使います",
+      "`read start:`",
+      "間引かれたのが保存のときか照会のときかは確かめていません",
+      "状態のファイルを書ける者は、確認済みの区間の終わりを先へ進めて",
+      "どの区間を検証できなかったかを記録します",
+      "状態のファイルを黙って消しません",
+      "間引かれずに読めると実測で確かめた期間を超えると、今の道具の読み方では、その間を完全に読めたことを確かめられません",
+      // 誤りのある実行は進めない、の保証の範囲（読んだ窓の中だけ）と、窓の外へ出た誤り
+      "保証するのは、その実行で読んだ窓に誤りがあれば区間を進めないことまでです",
+      "次の実行では読まれず、終了コード 0 で区間が進みます",
+      "`oldest error finding:`",
+      "その日のうちに、所見を道具の外に記録します",
+      "原因が分かるまで `--overlap-seconds` と `--since` を変えず、状態のファイルを作り直しません",
+      // 重なりの値の根拠と、正常終了の意味
+      "終了コード 0 は、重なりの外に遅れて出た引き受けが無いことの証明ではありません",
+      "安全を裏付けた値ではありません",
+      "重なりを短くする条件は、実測（遅れの分布）で決めます",
+      // 読めなくなったときの順序と、2 つの再開
+      "保持の期限（7 日）の内に証拠を残します",
+      "短い窓で読み直します",
+      "検証して再開",
+      "検証できないまま受け入れて再開",
+      "判断した人と日時",
+      // --until と --overlap-seconds の扱い
+      "状態から決めた読み始めが `--until` 以後になると実行しません（終了コード 2）",
+      "`--overlap-seconds` を使わないことを 1 行出します",
+    ])
+      expect(text, s).toContain(s);
+    expect(text).not.toMatch(/取り込み時に間引かれ/);
+    expect(text).not.toContain("その間の発行は検証できなくなります");
+    expect(text).not.toContain("誤りが埋もれるため");
+  });
+  it("README.md: same points in English", () => {
+    const text = read("README.md");
+    for (const s of [
+      'the later of "the end of the confirmed interval minus the overlap" and "now minus 6 days"',
+      "`--overlap-seconds <n>` (default `86400` = 24 hours, minimum `3600` = 1 hour",
+      "a value separate from the propagation lag (`--lag-seconds`)",
+      "`--since` always wins",
+      "For an audit that reads everything again, use `--since 6d`",
+      "`read start:`",
+      "Whether the sampling happened at storage or at query time has not been confirmed",
+      "anyone who can write the state file can move the end of the confirmed interval forward",
+      "record which interval could not be verified",
+      "Do not delete the state file silently",
+      "If you skip more days than the period measured to read without sampling, the current way the tool reads cannot confirm that the interval in between was read completely",
+      "What this guarantees is only that a run with an error in the window it read does not advance the interval",
+      "the next run does not read it, and the interval advances with exit code 0",
+      "`oldest error finding:`",
+      "record the findings outside the tool the day they appear",
+      "Until the cause is known, do not change `--overlap-seconds` or `--since`, and do not rebuild the state file",
+      "Exit code 0 does not prove that no assumption showed up late outside the overlap",
+      "not values shown to be safe",
+      "The conditions for shortening the overlap are decided by measurement (the distribution of the delay",
+      "keep the evidence within the retention (7 days)",
+      "read it again in short windows",
+      "resume after verification",
+      "resume by accepting it unverified",
+      "who decided and when",
+      "the start taken from the state is at or after `--until`, the tool refuses to run (exit code 2)",
+      "prints one line saying that `--overlap-seconds` is not used",
+    ])
+      expect(text, s).toContain(s);
+    expect(text).not.toMatch(/sampled at ingestion/i);
+    expect(text).not.toContain("the issuances in between can no longer be verified");
+    expect(text).not.toContain("and bury them");
+  });
+  it("README（英日）: 誤りが出た実行の項は「解決か受け入れを記録してから再開する」で終える（解決した日も記録を残す）。緩和の効果は言い切らない。--until の文は 1 文", () => {
+    const bulletOf = (text: string, head: string) =>
+      text.split("\n").find((l) => l.startsWith(head)) ?? "";
+    const ja = read("README_ja.md");
+    expect(bulletOf(ja, "- **誤りが出た実行は区間を進めません**")).toMatch(
+      /解決か受け入れを記録してから再開します（解決した日も、解決の記録を残します）。$/,
+    );
+    expect(ja).toContain(
+      "偽の API の試験では避けられました。実物で効くかは、導入の段 2 で確かめます",
+    );
+    expect(ja).not.toContain("それを避ける緩和策");
+    const en = read("README.md");
+    expect(bulletOf(en, "- **A run with errors does not advance the interval.**")).toMatch(
+      /Resume only after recording the resolution or the acceptance \(on the day an error is resolved, too, keep a record of the resolution\)\.$/,
+    );
+    expect(en).toContain(
+      "it was avoided in the tests against a fake API; whether it works against the real one is checked in step 2 of the rollout",
+    );
+    expect(en).not.toContain("a mitigation that avoids it");
+    expect(en).not.toContain("If only `--until` is set in the past: If");
+    expect(en).toContain(
+      "If only `--until` is set in the past and the start taken from the state is at or after `--until`, the tool refuses to run (exit code 2)",
+    );
+  });
+  it("docs/specs/console-login.md: 誤りのあとの運用・受け入れの記録・2 つの再開は README の節を正とする", () => {
+    expect(read("docs/specs/console-login.md")).toContain(
+      "誤りのあとの運用（所見の記録・受け入れの記録・「検証して再開」と「検証できないまま受け入れて再開」の書き分け）は、README の「コンソールログインの突き合わせ」の節を正とする",
+    );
+  });
+  it("docs/specs/console-login.md: 読み始めを状態から決める（--overlap-seconds）・保証の範囲・原因は未確認。「既定のさかのぼりは 6 日で」と書かない", () => {
+    const text = read("docs/specs/console-login.md");
+    for (const s of [
+      "確認済みの区間の終わり − 重なり",
+      "`--overlap-seconds`",
+      "保証するのは、その実行で読んだ窓に誤りがあれば区間を進めないことまで",
+      "保存の間引きか照会の間引きかは未確認",
+    ])
+      expect(text, s).toContain(s);
+    expect(text).not.toContain("既定のさかのぼりは 6 日で");
+  });
+  it("mise.toml: console:reconcile の説明に、読み始めは状態から（--overlap-seconds）・--since が勝つと書く", () => {
+    const text = read("mise.toml");
+    const i = text.indexOf('[tasks."console:reconcile"]');
+    const section = text.slice(i, text.indexOf("\n", text.indexOf("description", i)));
+    expect(section).toContain("--overlap-seconds");
+    expect(section).toContain("--since が勝つ");
+  });
+});
+
 // cto の決裁 G2-A 条件 c5（2026-11-17）: 照合の Q1・Q2・Q4・Q5、L2 と信頼ポリシーの拒否、Administrator の別スタック
 describe("cto の決裁 G2-A 条件 c5 の文面", () => {
   const section = (text: string, heading: string, next = "\n## ") => {

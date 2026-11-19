@@ -49,6 +49,11 @@ let apiFail = false;
 let apiSampleAboveMs: number | undefined;
 /** events の照会がいつも 1 行少なく返す（割っても件数に届かない場合）。 */
 let apiDropOne = false;
+/**
+ * 古い区間を含む照会の件数が間引かれる（sampleInterval > 1）のをまねる: timeframe の from がこれより前なら、calculations の
+ * sampleInterval を 10 にする（窓全体に掛かる。保存の間引きか照会の間引きかは未確認のため、窓に古い区間を含むかだけで決める）。
+ */
+let apiCountSampledBefore: number | undefined;
 
 /**
  * 偽の telemetry/query（実物の振る舞いをまねる）: timeframe の両端は含まない。calculations の view は count、
@@ -72,7 +77,17 @@ function telemetry(body: {
           {
             alias: "n",
             calculation: "count",
-            aggregates: [{ count: inside.length, sampleInterval: inside.length > 0 ? 1 : 0 }],
+            aggregates: [
+              {
+                count: inside.length,
+                sampleInterval:
+                  apiCountSampledBefore !== undefined && from < apiCountSampledBefore
+                    ? 10
+                    : inside.length > 0
+                      ? 1
+                      : 0,
+              },
+            ],
             series: [],
           },
         ],
@@ -133,6 +148,7 @@ beforeEach(() => {
   apiFail = false;
   apiSampleAboveMs = undefined;
   apiDropOne = false;
+  apiCountSampledBefore = undefined;
 });
 
 // ---- 材料 ----
@@ -232,7 +248,17 @@ if (process.env.AWS_STUB_FAIL_ON && process.env.AWS_STUB_FAIL_ON.split("|").some
 }
 const table = JSON.parse(fs.readFileSync(process.env.AWS_STUB_TABLE, "utf8"));
 if (!(key in table)) { process.stderr.write("unknown call: " + key + "\\n"); process.exit(255); }
-process.stdout.write(JSON.stringify(table[key]));
+let res = table[key];
+// AWS_STUB_FILTER_TIME があれば、lookup-events は --start-time .. --end-time の中のイベントだけを返す（実物と同じ）
+if (process.env.AWS_STUB_FILTER_TIME && args[1] === "lookup-events") {
+  const at = (n) => Date.parse(args[args.indexOf(n) + 1]);
+  const from = at("--start-time"), to = at("--end-time");
+  res = { Events: res.Events.filter((e) => {
+    const t = Date.parse(JSON.parse(e.CloudTrailEvent).eventTime);
+    return t >= from && t <= to;
+  }) };
+}
+process.stdout.write(JSON.stringify(res));
 `;
 
 type Setup = {
@@ -240,6 +266,8 @@ type Setup = {
   recordLines?: string[];
   trails?: { region: string; events: unknown[] }[];
   failOn?: string;
+  /** lookup-events を --start-time .. --end-time で絞る（実物と同じ）。 */
+  filterTime?: boolean;
 };
 
 function setup(s: Setup) {
@@ -279,6 +307,7 @@ function setup(s: Setup) {
     AWS_STUB_LOG: log,
     AWSBRIDGE_CONSOLE_CONFIG: join(d, "console.json"),
     ...(s.failOn ? { AWS_STUB_FAIL_ON: s.failOn } : {}),
+    ...(s.filterTime ? { AWS_STUB_FILTER_TIME: "1" } : {}),
   };
   return { env, records, log, dir: d, state: join(d, "state.json") };
 }
@@ -896,5 +925,377 @@ describe("console:reconcile: cto の決裁 G2-A 条件 c5（Administrator の比
     expect(r.out).toContain(`admin issues: 2 (${a1.at} ok, ${a2.at} ok)`);
     expect(r.out).toMatch(/errors: 0, warnings: 0/);
     noSecrets(r.out, [s1.jwt.jti, a1.jwt.jti, a2.jwt.jti]);
+  });
+});
+
+// ---- 読み始め（状態があれば「確認済みの区間の終わり − 重なり」から。既定のさかのぼり 6 日より前には戻らない） ----
+// 古い区間を含む長い窓の照会が間引かれて record_read_incomplete になるのを避ける緩和策。--since が勝ち、初回と coverage_gap は変えない。
+describe("console:reconcile: 読み始めを状態から決める（--overlap-seconds。既定 24 時間・下限 1 時間）", () => {
+  const prof = ["--profile", "reconcile-test"];
+  const H = 3_600_000;
+  const DAY = 86_400_000;
+  const stateText = (coveredUntil: number) =>
+    JSON.stringify({
+      version: 1,
+      accounts: { [ACCOUNT]: { coveredUntil: new Date(coveredUntil).toISOString() } },
+    });
+  const startOf = (log: string) => {
+    const lookups = callsOf(log).filter((c) => c[1] === "lookup-events");
+    expect(lookups.length).toBeGreaterThan(0);
+    const starts = new Set(lookups.map((c) => c[c.indexOf("--start-time") + 1] ?? ""));
+    expect(starts.size).toBe(1);
+    return Date.parse([...starts][0] ?? "");
+  };
+  const iso = (t: number) => new Date(t).toISOString();
+  const apiEnvOf = (env: Record<string, string>) => ({
+    ...env,
+    AWSBRIDGE_CONSOLE_LOGS_API_BASE: base,
+    AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID: CF_ACCOUNT,
+    AWSBRIDGE_CONSOLE_LOGS_TOKEN: TOKEN,
+  });
+  const logEventOf = (r: ReturnType<typeof issue>, id: string) => ({
+    $metadata: { id },
+    $workers: { scriptName: "awsbridge-console", eventType: "fetch" },
+    dataset: "cloudflare-workers",
+    timestamp: Date.parse(r.at),
+    source: r,
+  });
+
+  it("状態があれば、CloudTrail を「確認済みの区間の終わり − 24 時間」から読み、そのことと時刻を出す。成功すれば区間を進める", async () => {
+    const a = issue({ jti: newJti(), at: now() - 60 * MIN });
+    const { env, records, state, log } = setup({
+      records: [a],
+      trails: [{ region: "us-east-1", events: [trail(a)] }],
+      filterTime: true,
+    });
+    const covered = now() - 2 * H;
+    writeFileSync(state, stateText(covered));
+    const r = await run([...prof, "--records", records], env);
+    expect(r.status, r.out).toBe(0);
+    expect(startOf(log)).toBe(covered - DAY);
+    expect(r.out).toContain(
+      `read start: ${iso(covered - DAY)} (from the state: confirmed until ${iso(covered)} minus overlap 86400s)`,
+    );
+    expect(r.out).toContain(`window: ${iso(covered - DAY)} ..`);
+    expect(r.out).toContain("coverage: continuous");
+    expect(r.out).toContain("state: confirmed until");
+    expect(
+      Date.parse(JSON.parse(readFileSync(state, "utf8")).accounts[ACCOUNT].coveredUntil),
+    ).toBeGreaterThan(covered);
+    noSecrets(r.out, [a.jwt.jti]);
+  });
+
+  // 既知の限界（後半）: 検出した誤りは状態に残らないので、--overlap-seconds を短くして窓の外へ出すと次の実行で読まれず、終了コード 0 で
+  // 状態が進む。所見の保持の PR で、後半の期待値を逆にする（誤りが解決か受け入れまで残る）。
+  it("重なりの中の遅れた引き受け（前回の終わりより前・記録なし）は assume_without_record（誤り）で終了コード 1。状態は進めない。既知の限界: --overlap-seconds 3600 に変えると同じ引き受けは窓の外で読まれず終了コード 0（所見の保持の PR で期待値を逆にする）", async () => {
+    const late = issue({ jti: newJti(), at: now() - 4 * H });
+    const { env, records, state, log } = setup({
+      records: [],
+      trails: [{ region: "us-east-1", events: [trail(late)] }],
+      filterTime: true,
+    });
+    const covered = now() - 2 * H;
+    writeFileSync(state, stateText(covered));
+    const r = await run([...prof, "--records", records], env);
+    expect(startOf(log)).toBe(covered - DAY);
+    expect(r.out).toContain("assume_without_record");
+    expect(r.out).toContain(late.jwt.jti.slice(0, 8));
+    expect(r.status, r.out).toBe(1);
+    expect(r.out).toContain("state: not advanced");
+    expect(readFileSync(state, "utf8")).toBe(stateText(covered));
+
+    // 重なりを 1 時間にすると読み始めは終わり − 1 時間（4 時間前の引き受けは読まない）。既知の限界: 検出済みの誤りが消えて 0 になる
+    writeFileSync(log, "");
+    const short = await run([...prof, "--records", records, "--overlap-seconds", "3600"], env);
+    expect(startOf(log)).toBe(covered - H);
+    expect(short.out).toContain("minus overlap 3600s");
+    expect(short.out).not.toContain("assume_without_record");
+    expect(short.status, short.out).toBe(0);
+  });
+
+  it("--since を渡せば状態があってもそれが勝つ（全部を読み直す監査用の指定）。前回の終わりより後なら今までどおり coverage_gap", async () => {
+    const { env, records, state, log } = setup({ filterTime: true });
+    const covered = now() - 2 * H;
+    writeFileSync(state, stateText(covered));
+    const t0 = now();
+    const r = await run([...prof, "--records", records, "--since", "6d"], env);
+    expect(r.status, r.out).toBe(0);
+    const start = startOf(log);
+    expect(start).toBeGreaterThanOrEqual(t0 - 6 * DAY - 1000);
+    expect(start).toBeLessThanOrEqual(now() - 6 * DAY);
+    expect(r.out).toContain(`read start: ${iso(start)} (--since)`);
+    expect(r.out).toContain("coverage: continuous");
+
+    writeFileSync(state, stateText(covered));
+    const later = await run([...prof, "--records", records, "--since", "1h"], env);
+    expect(later.out).toContain("coverage_gap");
+    expect(later.out).toContain("(--since)");
+    expect(later.status, later.out).toBe(1);
+    expect(readFileSync(state, "utf8")).toBe(stateText(covered));
+  });
+
+  it("状態が無い初回は今までどおり 6 日。終わり − 重なりが 6 日より前でも 6 日（穴なし）。6 日より前に終わった状態は今までどおり coverage_gap", async () => {
+    const first = setup({ filterTime: true });
+    const t0 = now();
+    const r = await run([...prof, "--records", first.records], first.env);
+    expect(r.status, r.out).toBe(0);
+    const start = startOf(first.log);
+    expect(start).toBeGreaterThanOrEqual(t0 - 6 * DAY - 1000);
+    expect(start).toBeLessThanOrEqual(now() - 6 * DAY);
+    expect(r.out).toContain(
+      `read start: ${iso(start)} (default lookback 6d; no confirmed interval on record)`,
+    );
+    expect(r.out).toContain("coverage: first run");
+
+    const near = setup({ filterTime: true });
+    const covered = now() - 5 * DAY - 12 * H;
+    writeFileSync(near.state, stateText(covered));
+    const n = await run([...prof, "--records", near.records], near.env);
+    expect(n.status, n.out).toBe(0);
+    expect(n.out).toContain(
+      `(default lookback 6d; the confirmed interval ends ${iso(covered)}, the overlap would go back further)`,
+    );
+    expect(n.out).toContain("coverage: continuous");
+
+    const old = setup({ filterTime: true });
+    writeFileSync(old.state, stateText(now() - 8 * DAY));
+    const g = await run([...prof, "--records", old.records], old.env);
+    expect(g.out).toContain("coverage_gap");
+    expect(g.out).toContain("default lookback 6d");
+    expect(g.status, g.out).toBe(1);
+  });
+
+  it("--overlap-seconds が 1 時間（3600）未満・整数でなければ実行できない（終了コード 2。aws を呼ばない）", async () => {
+    for (const v of ["3599", "0", "1.5", "24h"]) {
+      const { env, records, log } = setup({});
+      const r = await run([...prof, "--records", records, "--overlap-seconds", v], env);
+      expect(r.status, `${v}: ${r.out}`).toBe(2);
+      expect(r.out).toContain("--overlap-seconds");
+      expect(callsOf(log)).toEqual([]);
+    }
+  });
+
+  it("状態が壊れている・未来なら、--overlap-seconds があっても今までどおり実行しない（終了コード 2）", async () => {
+    const { env, records, state, log } = setup({});
+    writeFileSync(state, stateText(now() + DAY));
+    const r = await run([...prof, "--records", records, "--overlap-seconds", "7200"], env);
+    expect(r.status, r.out).toBe(2);
+    expect(callsOf(log).map((c) => `${c[0]} ${c[1]}`)).toEqual(["sts get-caller-identity"]);
+    writeFileSync(state, "{");
+    const broken = await run([...prof, "--records", records], env);
+    expect(broken.status, broken.out).toBe(2);
+  });
+
+  it("--until だけを状態の終わり − 重なりより前にすると、読み始めが終わりを越えるので実行できない（終了コード 2。CloudTrail を読まない）", async () => {
+    const { env, records, state, log } = setup({});
+    const covered = now() - 2 * H;
+    writeFileSync(state, stateText(covered));
+    const r = await run([...prof, "--records", records, "--until", iso(covered - 2 * DAY)], env);
+    expect(r.status, r.out).toBe(2);
+    expect(callsOf(log).some((c) => c[1] === "lookup-events")).toBe(false);
+  });
+
+  it("--logs-api: 状態があれば照会の窓も「終わり − 重なり − 15 分」より前を含まない。古い区間を含む照会が間引かれる（sampleInterval > 1）ときも、状態から始めれば読める", async () => {
+    const a = issue({ jti: newJti(), at: now() - 60 * MIN });
+    apiEvents = [logEventOf(a, "e1")];
+    // 3 日より前を含む照会の件数は間引かれる
+    apiCountSampledBefore = now() - 3 * DAY;
+    // 状態が無い初回（6 日）は、古い区間を含むので record_read_incomplete（今までどおり誤り）
+    const first = setup({ trails: [{ region: "us-east-1", events: [trail(a)] }] });
+    const r1 = await run([...prof, "--logs-api"], apiEnvOf(first.env));
+    expect(r1.out).toContain("record_read_incomplete");
+    expect(r1.status, r1.out).toBe(1);
+
+    reqs.length = 0;
+    const s = setup({ trails: [{ region: "us-east-1", events: [trail(a)] }] });
+    const covered = now() - 2 * H;
+    writeFileSync(s.state, stateText(covered));
+    const r = await run([...prof, "--logs-api"], apiEnvOf(s.env));
+    expect(r.out).not.toContain("record_read_incomplete");
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toMatch(/matched: 1/);
+    expect(reqs.length).toBeGreaterThan(0);
+    for (const q of reqs)
+      expect(JSON.parse(q.body).timeframe.from).toBeGreaterThanOrEqual(covered - DAY - 15 * MIN);
+    noSecrets(r.out, [a.jwt.jti]);
+  });
+});
+
+// ---- 同じ状態ファイルでの連続実行（あとから CloudTrail に出た過去の引き受け）と、読み始め・終わりの境界 ----
+describe("console:reconcile: 同じ状態ファイルでの連続実行と、読み始めの境界", () => {
+  const prof = ["--profile", "reconcile-test"];
+  const H = 3_600_000;
+  const DAY = 86_400_000;
+  const iso = (t: number) => new Date(t).toISOString();
+  const stateText = (coveredUntil: string) =>
+    JSON.stringify({ version: 1, accounts: { [ACCOUNT]: { coveredUntil } } });
+  const coveredOf = (state: string) =>
+    Date.parse(JSON.parse(readFileSync(state, "utf8")).accounts[ACCOUNT].coveredUntil);
+  const lookupArg = (log: string, name: string) => {
+    const lookups = callsOf(log).filter((c) => c[1] === "lookup-events");
+    expect(lookups.length).toBeGreaterThan(0);
+    const vals = new Set(lookups.map((c) => c[c.indexOf(name) + 1] ?? ""));
+    expect(vals.size).toBe(1);
+    return [...vals][0] ?? "";
+  };
+  /** 偽の aws の応答の表に、あとから CloudTrail に出たイベントを足す（前回の照会には無かった過去の引き受け）。 */
+  const addTrails = (dir: string, events: unknown[]) => {
+    const p = join(dir, "table.json");
+    const table = JSON.parse(readFileSync(p, "utf8"));
+    table["cloudtrail lookup-events --region=us-east-1"].Events.push(...events);
+    writeFileSync(p, JSON.stringify(table));
+  };
+  /** 秒にそろえた時刻（CloudTrail の eventTime は秒）。 */
+  const sec = (t: number) => Math.floor(t / 1000) * 1000;
+
+  it("1 回目が成功して状態が進んだあと、前回の終わりより前の引き受けが CloudTrail に遅れて出たら、重なりの中なら 2 回目で assume_without_record（終了コード 1・状態は進めない）", async () => {
+    const a = issue({ jti: newJti(), at: now() - 60 * MIN });
+    const s = setup({
+      records: [a],
+      trails: [{ region: "us-east-1", events: [trail(a)] }],
+      filterTime: true,
+    });
+    const first = await run([...prof, "--records", s.records], s.env);
+    expect(first.status, first.out).toBe(0);
+    expect(first.out).toContain("coverage: first run");
+    const c1 = coveredOf(s.state);
+    const afterFirst = readFileSync(s.state, "utf8");
+    // 前回の終わりの 2 時間前の引き受け（記録なし）が、1 回目のあとに CloudTrail に出た
+    const late = issue({ jti: newJti(), at: c1 - 2 * H });
+    addTrails(s.dir, [trail(late)]);
+    writeFileSync(s.log, "");
+    const second = await run([...prof, "--records", s.records], s.env);
+    expect(lookupArg(s.log, "--start-time")).toBe(iso(c1 - DAY));
+    expect(second.out).toContain("from the state");
+    expect(second.out).toContain("assume_without_record");
+    expect(second.out).toContain(late.jwt.jti.slice(0, 8));
+    expect(second.status, second.out).toBe(1);
+    expect(second.out).toContain("state: not advanced");
+    expect(readFileSync(s.state, "utf8")).toBe(afterFirst);
+    // 終了コード 1 のとき、時刻を持つ誤りの最も古い時刻と、それが既定の窓（6 日）から外れる時刻を出す
+    const lateAt = late.jwt.iat * 1000 + 2000;
+    expect(second.out).toContain(
+      `oldest error finding: ${iso(lateAt)} (it leaves the default window of 6d after ${iso(lateAt + 6 * DAY)}`,
+    );
+    expect(first.out).not.toContain("oldest error finding:");
+  });
+
+  it("既知の限界: 遅れが重なり（既定 24 時間）を超えて CloudTrail に出た引き受けは、2 回目では読まれず検出されない（終了コード 0・状態は進む）。正常終了は重なりの外の遅れが無いことを証明しない", async () => {
+    const a = issue({ jti: newJti(), at: now() - 60 * MIN });
+    const s = setup({
+      records: [a],
+      trails: [{ region: "us-east-1", events: [trail(a)] }],
+      filterTime: true,
+    });
+    const first = await run([...prof, "--records", s.records], s.env);
+    expect(first.status, first.out).toBe(0);
+    const c1 = coveredOf(s.state);
+    // 前回の終わりの 25 時間前（重なりの外。6 日よりは新しい）の引き受け（記録なし）が、あとから出た
+    const late = issue({ jti: newJti(), at: c1 - 25 * H });
+    addTrails(s.dir, [trail(late)]);
+    writeFileSync(s.log, "");
+    const second = await run([...prof, "--records", s.records], s.env);
+    expect(lookupArg(s.log, "--start-time")).toBe(iso(c1 - DAY));
+    // 限界: 読まないので所見にならない（この試験はその限界を固定する。重なりを広げるか --since で読み直せば見つかる）
+    expect(second.out).not.toContain("assume_without_record");
+    expect(second.status, second.out).toBe(0);
+    expect(coveredOf(s.state)).toBeGreaterThanOrEqual(c1);
+    // --since で全部を読み直せば見つかる（監査用の指定）
+    const audit = await run([...prof, "--records", s.records, "--since", "6d"], s.env);
+    expect(audit.out).toContain("assume_without_record");
+    expect(audit.status, audit.out).toBe(1);
+  });
+
+  it("--until がちょうど読み始め（状態の終わり − 重なり）か 1 ミリ秒前なら実行できない（終了コード 2）。1 ミリ秒後なら読み、過去の --until で成功しても確認済みの終わりを後ろに戻さない", async () => {
+    const s = setup({ filterTime: true });
+    const covered = now() - 2 * H;
+    writeFileSync(s.state, stateText(iso(covered)));
+    const start = covered - DAY;
+    for (const u of [start, start - 1]) {
+      writeFileSync(s.log, "");
+      const r = await run([...prof, "--records", s.records, "--until", iso(u)], s.env);
+      expect(r.status, `${iso(u)}: ${r.out}`).toBe(2);
+      expect(callsOf(s.log).some((c) => c[1] === "lookup-events")).toBe(false);
+    }
+    writeFileSync(s.log, "");
+    const ok = await run([...prof, "--records", s.records, "--until", iso(start + 1)], s.env);
+    expect(ok.status, ok.out).toBe(0);
+    expect(lookupArg(s.log, "--start-time")).toBe(iso(start));
+    expect(lookupArg(s.log, "--end-time")).toBe(iso(start + 1));
+    // 成功しても、確認済みの終わりは前回のまま（今回の終わり − lag は前回より前なので戻さない）
+    expect(coveredOf(s.state)).toBe(covered);
+    expect(ok.out).toContain(`state: confirmed until ${iso(covered)}`);
+  });
+
+  it("小数秒の状態の時刻（.5 など）は、ミリ秒のまま CloudTrail の --start-time に渡す", async () => {
+    const s = setup({ filterTime: true });
+    const whole = sec(now() - 2 * H);
+    const text = `${iso(whole).slice(0, 19)}.5Z`;
+    writeFileSync(s.state, stateText(text));
+    const r = await run([...prof, "--records", s.records], s.env);
+    expect(r.status, r.out).toBe(0);
+    expect(lookupArg(s.log, "--start-time")).toBe(iso(whole + 500 - DAY));
+    expect(lookupArg(s.log, "--start-time")).toMatch(/\.500Z$/);
+    expect(r.out).toContain(`confirmed until ${iso(whole + 500)} minus overlap 86400s`);
+  });
+
+  it("--since・--until・--overlap-seconds を同時に渡すと、--since と --until の窓で読み、--overlap-seconds を使わないことを 1 行出す（終了コード は変えない）", async () => {
+    const s = setup({ filterTime: true });
+    writeFileSync(s.state, stateText(iso(now() - 2 * H)));
+    const since = sec(now() - 3 * DAY);
+    const until = sec(now() - 3 * H);
+    const r = await run(
+      [
+        ...prof,
+        "--records",
+        s.records,
+        "--since",
+        iso(since),
+        "--until",
+        iso(until),
+        "--overlap-seconds",
+        "7200",
+      ],
+      s.env,
+    );
+    expect(r.status, r.out).toBe(0);
+    expect(lookupArg(s.log, "--start-time")).toBe(iso(since));
+    expect(lookupArg(s.log, "--end-time")).toBe(iso(until));
+    expect(r.out).toContain(`read start: ${iso(since)} (--since)`);
+    expect(r.out).toContain("--since があるので --overlap-seconds は使わない");
+    // --overlap-seconds だけなら、その行は出さない
+    const only = await run([...prof, "--records", s.records, "--overlap-seconds", "7200"], s.env);
+    expect(only.out).not.toContain("--overlap-seconds は使わない");
+  });
+
+  it("--logs-api: 読み始めちょうどの引き受けと記録も読む（CloudTrail は読み始めから、記録の照会は読み始め − 15 分から）", async () => {
+    const covered = sec(now() - 2 * H);
+    const start = covered - DAY;
+    const a = issue({ jti: newJti(), at: start });
+    apiEvents = [
+      {
+        $metadata: { id: "edge" },
+        $workers: { scriptName: "awsbridge-console", eventType: "fetch" },
+        dataset: "cloudflare-workers",
+        timestamp: start,
+        source: a,
+      },
+    ];
+    const s = setup({
+      trails: [{ region: "us-east-1", events: [trail(a, { afterIssueSeconds: 0 })] }],
+      filterTime: true,
+    });
+    writeFileSync(s.state, stateText(iso(covered)));
+    const r = await run([...prof, "--logs-api"], {
+      ...s.env,
+      AWSBRIDGE_CONSOLE_LOGS_API_BASE: base,
+      AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID: CF_ACCOUNT,
+      AWSBRIDGE_CONSOLE_LOGS_TOKEN: TOKEN,
+    });
+    expect(lookupArg(s.log, "--start-time")).toBe(iso(start));
+    expect(r.out).toMatch(/matched: 1/);
+    expect(r.status, r.out).toBe(0);
+    const froms = reqs.map((q) => JSON.parse(q.body).timeframe.from as number);
+    expect(Math.min(...froms)).toBe(start - 15 * MIN);
   });
 });

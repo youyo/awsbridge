@@ -476,12 +476,19 @@ describe("Cloudflare の API（POST /accounts/{id}/workers/observability/telemet
     expect(r.events).toHaveLength(40);
   });
 
-  it("取り込みの時点で間引かれた記録（sampleInterval > 1）は、割っても取り戻せないので incomplete", async () => {
+  // sampleInterval > 1 が保存の時点の間引きか照会の時点の間引きかは未確認。今は割らずに incomplete にする（割って戻るかは実測で確かめる）
+  it("件数が間引かれた窓（sampleInterval > 1）は、割らずに incomplete", async () => {
     const rows = Array.from({ length: 4 }, (_, i) => ({ id: `s${i}`, ts: 100 + i }));
-    const { f } = store(rows, { sampleInterval: 2 });
+    const { f, seen } = store(rows, { sampleInterval: 2 });
     const r = await queryIssueLogs({ fetch: f }, { ...opts6d(0, 1000), minWindowMs: 10 });
-    expect(r.incomplete.length).toBeGreaterThan(0);
-    expect(r.incomplete[0]?.reason).toContain("sampled");
+    // 割らない: 照会はどれも最初の窓のまま（半分の窓を数えない）で、incomplete は最初の窓 1 つ
+    expect(seen.length).toBeGreaterThan(0);
+    for (const b of seen) expect(b.timeframe).toEqual({ from: 0, to: 1000 });
+    expect(r.incomplete).toHaveLength(1);
+    expect(r.incomplete[0]).toMatchObject({ from: 0, to: 1000, expected: 4 });
+    expect(r.incomplete[0]?.reason).toBe(
+      "sampleInterval 2 (sampled at storage or at query; not confirmed)",
+    );
   });
 
   it("件数が上限（limit）を超える窓は、ページ送りより先に割る（カーソルの id が一意でないので頼らない）", async () => {
@@ -533,11 +540,13 @@ describe("Cloudflare の API（POST /accounts/{id}/workers/observability/telemet
     ).rejects.toThrow(/requests/);
   });
 
-  it("件数が 0 でも取り込みの時点で間引かれていれば（sampleInterval > 1）早期に終えず incomplete（0 件を信用しない）", async () => {
+  it("件数が 0 でも間引かれていれば（sampleInterval > 1）早期に終えず incomplete（0 件を信用しない）。理由に、保存か照会かは未確認と出す", async () => {
     const { f } = store([], { sampleInterval: 2 });
     const r = await queryIssueLogs({ fetch: f }, opts6d(0, 1000));
     expect(r.incomplete).toHaveLength(1);
-    expect(r.incomplete[0]?.reason).toContain("ingestion sampled");
+    expect(r.incomplete[0]?.reason).toBe(
+      "sampleInterval 2 (sampled at storage or at query; not confirmed)",
+    );
   });
 
   it("件数が上限以下でもページが満杯なら（件数のあとに行が増えた）、割れる窓ではページ送りせずに割る", async () => {

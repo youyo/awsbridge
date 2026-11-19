@@ -1,7 +1,7 @@
 // 突き合わせの道具の CLI: 発行記録 × CloudTrail の AssumeRoleWithWebIdentity（mise タスク console:reconcile）。
 //   pnpm tsx scripts/console/reconcile.ts --profile <AWS のプロファイル> (--records <file|dir> | --logs-api)
 //     [--since <ISO 8601 | <n>d | <n>h>] [--until <ISO 8601>] [--account-id <12 桁>] [--retention-days <n>] [--lag-seconds <n>]
-//     [--clock-skew-seconds <n>] [--state <file>]
+//     [--clock-skew-seconds <n>] [--state <file>] [--overlap-seconds <n>]
 // 1 回で 1 アカウント（プロファイルのアカウント）。CloudTrail は有効な全リージョンを読む（cto の決裁 ★1）。
 // 呼ぶ aws は照会の 4 種類だけ（reconcile-read.ts の RECONCILE_READ_COMMANDS）、Cloudflare は照会の API だけ（reconcile-cf.ts）。
 // 判定の本体は src/console/reconcile.ts（純粋な関数）。設計: docs/specs/console-login.md §5.6。
@@ -16,7 +16,10 @@
 //     AWSBRIDGE_CONSOLE_LOGS_API_BASE     試験用（http://127.0.0.1:<port> だけ）
 //     窓ごとに件数（calculations の count）を先に数え、行数が届くまで窓を割って読む（長い窓は読み取りの時点で間引かれるため。
 //     reconcile-cf.ts の冒頭）。届かない窓は誤り record_read_incomplete（終了コード 1）。api count は件数の合計
-// 既定のさかのぼりは 6 日（記録の保持 7 日より短く。決裁 (a)）。
+// 読み始め: --since が無ければ max(今 − 6 日, 確認済みの区間の終わり − 重なり)。状態が無い初回は 6 日（記録の保持 7 日より短く。決裁 (a)）。
+// 重なりは --overlap-seconds（既定 86400 = 24 時間、下限 3600。反映の遅れ --lag-seconds とは別）。古い区間を含む長い窓の照会が
+// 間引かれて（sampleInterval > 1）record_read_incomplete になるのを避ける緩和策（保存の間引きか照会の間引きかは未確認）。
+// --since を渡せばそれが勝つ（全部を読み直す監査用）。出力の read start の行に、読み始めの決め方と時刻を出す。
 // 時間の検査: 対になった引き受けの時刻が、発行の時刻から「JWT の寿命 300 秒＋時計ずれ（既定 60 秒。--clock-skew-seconds）」を超えて後ろ、
 // または時計ずれを超えて前なら誤り（assume_time_gap）。利用者の食い違い（identity_mismatch）と、Administrator の階層で利用者を
 // 比べられなかった対（identity_not_compared_admin）も誤り（cto の決裁 G2-A 条件 c5 の Q1）。
@@ -38,8 +41,11 @@ import {
   DEFAULT_CLOCK_SKEW_SECONDS,
   DEFAULT_LAG_SECONDS,
   DEFAULT_LOOKBACK_DAYS,
+  DEFAULT_OVERLAP_SECONDS,
   DEFAULT_RETENTION_DAYS,
+  decideReadStart,
   formatReconcileReport,
+  MIN_OVERLAP_SECONDS,
   nextCoveredUntil,
   reconcile,
   reconcileExitCode,
@@ -185,13 +191,14 @@ async function main(): Promise<number> {
         "lag-seconds": { type: "string" },
         "clock-skew-seconds": { type: "string" },
         state: { type: "string" },
+        "overlap-seconds": { type: "string" },
       },
     }).values;
   } catch (e) {
     throw new InputError((e as Error).message);
   }
   const usage =
-    "使い方: reconcile.ts --profile <AWS のプロファイル> (--records <file|dir> | --logs-api) [--since <ISO|<n>d>] [--until <ISO>] [--account-id <12 桁>] [--retention-days <n>] [--lag-seconds <n>] [--clock-skew-seconds <n>] [--state <file>]";
+    "使い方: reconcile.ts --profile <AWS のプロファイル> (--records <file|dir> | --logs-api) [--since <ISO|<n>d>] [--until <ISO>] [--account-id <12 桁>] [--retention-days <n>] [--lag-seconds <n>] [--clock-skew-seconds <n>] [--state <file>] [--overlap-seconds <n>]";
   const profile = typeof values.profile === "string" ? values.profile : undefined;
   if (!profile || !PROFILE_RE.test(profile)) throw new InputError(usage);
   const recordsPath = typeof values.records === "string" ? values.records : undefined;
@@ -217,15 +224,21 @@ async function main(): Promise<number> {
     "--clock-skew-seconds",
     DEFAULT_CLOCK_SKEW_SECONDS,
   );
+  const overlapSeconds = positiveInt(
+    values["overlap-seconds"] as string | undefined,
+    "--overlap-seconds",
+    DEFAULT_OVERLAP_SECONDS,
+  );
+  if (overlapSeconds < MIN_OVERLAP_SECONDS)
+    throw new InputError(`--overlap-seconds は ${MIN_OVERLAP_SECONDS} 以上（1 時間以上）`);
   const statePath = typeof values.state === "string" ? values.state : DEFAULT_STATE_FILE;
   if (statePath.trim() === "") throw new InputError("--state はファイルのパス");
   const now = Date.now();
-  const since =
-    typeof values.since === "string"
-      ? parseTime(values.since, now, "--since")
-      : now - DEFAULT_LOOKBACK_DAYS * 86_400_000;
+  const sinceOption =
+    typeof values.since === "string" ? parseTime(values.since, now, "--since") : undefined;
   const until = typeof values.until === "string" ? parseTime(values.until, now, "--until") : now;
-  if (!(since < until) || until > now + 60_000)
+  // 読み始めの下限（--since が無ければ状態で後ろにずれうるので、決めたあとにもう一度確かめる）
+  if (!((sinceOption ?? now - DEFAULT_LOOKBACK_DAYS * 86_400_000) < until) || until > now + 60_000)
     throw new InputError("--since < --until <= 今 にする");
 
   // 設定の issuer（プロバイダー。境界ごとに 1 つ）とチームの階層
@@ -264,6 +277,20 @@ async function main(): Promise<number> {
   // 確認済みの区間（読めない状態のファイルは、CloudTrail を読む前に止める）
   const state = readState(statePath, now);
   const previousCoveredUntil = coveredUntilOf(state, accountId);
+  // 読み始め: --since が勝つ。無ければ max(今 − 6 日, 確認済みの区間の終わり − 重なり)（CloudTrail を読む前に決める）
+  const start = decideReadStart({
+    now,
+    since: sinceOption,
+    coveredUntil: previousCoveredUntil,
+    overlapSeconds,
+  });
+  const since = start.since;
+  if (sinceOption !== undefined && values["overlap-seconds"] !== undefined)
+    console.error("--since があるので --overlap-seconds は使わない");
+  if (!(since < until))
+    throw new InputError(
+      "読み始め（確認済みの区間の終わり − 重なり）が --until 以後になる。--since を渡すか --until を後ろにする",
+    );
   const regions = await readEnabledRegions(run);
   const trail = await readAssumeEvents(run, regions, { since, until });
 
@@ -306,7 +333,7 @@ async function main(): Promise<number> {
   });
   const code = reconcileExitCode(result);
   const advanced = nextCoveredUntil(result, previousCoveredUntil);
-  console.log(formatReconcileReport(result, { label: `profile ${profile}`, apiCount }));
+  console.log(formatReconcileReport(result, { label: `profile ${profile}`, apiCount, start }));
   if (advanced === undefined)
     console.log(
       `state: not advanced (exit code ${code}; the confirmed interval moves only on a run with exit code 0)`,

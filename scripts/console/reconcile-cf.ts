@@ -22,8 +22,9 @@
 //   - 一次情報: API の仕様（https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/query/）
 //     statistics.abr_level「The level of Adaptive Bit Rate (ABR) sampling used for the query. If empty the ABR level is 1」、
 //     calculations の count「Estimated number of matching events: the sum of the sample intervals of the stored events.
-//     It equals the number of stored events when sampleInterval is 1」、sampleInterval は取り込みの時点の間引き（head_sampling_rate など）で
-//     abr_level とは別。ABR の説明: https://developers.cloudflare.com/analytics/faq/graphql-api-inconsistent-results/
+//     It equals the number of stored events when sampleInterval is 1」。sampleInterval は保存された行の間引きの倍率として説明され、
+//     abr_level とは別。2026-11-19 に、古い区間を含む照会で sampleInterval > 1 を見た（窓全体に掛かっていた）。それが保存の時点の間引きか
+//     照会の時点の間引きかは未確認（短い窓に割ると 1 に戻るかは実測で確かめる）。ABR の説明: https://developers.cloudflare.com/analytics/faq/graphql-api-inconsistent-results/
 //   - events.count: 仕様は「Total number of events matching the query (may exceed the number returned due to limits)」だが、
 //     実物は返したページの行数だった（limit 100 で 100/100/…/79、間引かれた 6 日の窓で 614）。全件の数としては使えない
 //   - $metadata.id は一意でない（同じミリ秒の別の行が同じ id を持つ例を 2 時間の窓で 4 件見た）。重複を消さず、行数で比べる
@@ -37,7 +38,7 @@
 //   ページ送りは割れない窓（最小の幅）だけ。そこでは、前のページに出た id が後のページに再び出たら incomplete（cursor ambiguous）にし、
 //   2 ページ以上読んだときは読み終えたあとに数え直して、行数がその数にも届くことを求める（同じ id の行をまとめて飛ばされ、
 //   あとから入った行がその欠けを埋めた場合を見逃さないため）。
-//   取り込みの時点の間引き（sampleInterval > 1）は件数が 0 でも信用しない（早期に終えず incomplete）。
+//   件数の間引き（sampleInterval > 1。保存の時点か照会の時点かは未確認）は件数が 0 でも信用しない（早期に終えず incomplete）。
 //   最小の幅（既定 1 分）まで割っても届かなければ、その窓を incomplete に入れて返す（CLI が誤り record_read_incomplete にし、終了コード 1）。
 //   行数が count を超えるのは、count のあとに取り込まれた行（今に近い窓）として受け入れる（読み落としではない）。
 // トークン: 仕様では telemetry/query は「Workers Observability Write」しか受け付けない。読み取りだけ（Read）で通るかは ② で確かめる。
@@ -275,14 +276,14 @@ export async function queryIssueLogs(
   const canSplit = (from: number, to: number) => to - from > Math.max(minWindow, 2);
   const trusted = (c: Count) => c.abr <= 1;
   // 件数が 0 でも sampleInterval > 1 なら信用しない（早期に終えず incomplete にする）
-  const ingestSampled = (c: Count) => c.sampleInterval > 1;
-  const reliable = (c: Count) => trusted(c) && !ingestSampled(c);
+  const intervalSampled = (c: Count) => c.sampleInterval > 1;
+  const reliable = (c: Count) => trusted(c) && !intervalSampled(c);
 
   const readWindow = async (from: number, to: number, given?: Count): Promise<void> => {
     let c = given ?? (await countWindow(from, to));
     if (c.count === 0 && reliable(c)) return;
     const split = canSplit(from, to);
-    if (!ingestSampled(c) && split && (!trusted(c) || c.count > limit)) {
+    if (!intervalSampled(c) && split && (!trusted(c) || c.count > limit)) {
       await splitWindow(from, to, c);
       return;
     }
@@ -309,14 +310,15 @@ export async function queryIssueLogs(
         out.windows++;
         return;
       }
-      if (ingestSampled(c)) break; // 取り込みの時点の間引きは、割っても読み直しても戻らない
+      // sampleInterval > 1 は、今は割らず読み直さずに incomplete にする（保存か照会かは未確認。割って戻るかは実測で確かめる）
+      if (intervalSampled(c)) break;
       if (split) {
         await splitWindow(from, to, c);
         return;
       }
     }
-    const reason = ingestSampled(c)
-      ? `ingestion sampled (sampleInterval ${c.sampleInterval})`
+    const reason = intervalSampled(c)
+      ? `sampleInterval ${c.sampleInterval} (sampled at storage or at query; not confirmed)`
       : !trusted(c)
         ? `count sampled (abr_level ${c.abr})`
         : last.abr > 1

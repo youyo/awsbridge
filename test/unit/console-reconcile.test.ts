@@ -4,9 +4,14 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_CLOCK_SKEW_SECONDS,
+  DEFAULT_LOOKBACK_DAYS,
+  DEFAULT_OVERLAP_SECONDS,
+  decideReadStart,
   formatReconcileReport,
   JWT_LIFETIME_SECONDS,
+  MIN_OVERLAP_SECONDS,
   nextCoveredUntil,
+  oldestErrorAt,
   type ReconcileInput,
   reconcile,
   reconcileExitCode,
@@ -619,6 +624,198 @@ describe("reconcile: 確認済みの区間（前回の終わりより今回の�
     expect(r.findings[0]?.detail).toContain(new Date(since - 1).toISOString());
     expect(reconcileExitCode(r)).toBe(1);
     expect(formatReconcileReport(r)).toContain("coverage: GAP");
+  });
+});
+
+// ---- 読み始めの決め方（状態があれば「確認済みの区間の終わり − 重なり」から。既定のさかのぼり 6 日より前には戻らない） ----
+// 古い区間を含む長い窓の照会が間引かれて（sampleInterval > 1）record_read_incomplete になるのを避ける緩和策。
+// 読み始め = max(今 − 6 日, 確認済みの終わり − 重なり)。--since が勝つ。初回と coverage_gap の判定は変えない。
+describe("decideReadStart（読み始め = max(今 − 6 日, 確認済みの終わり − 重なり)。--since が勝つ）", () => {
+  const H = 3_600_000;
+
+  it("重なりの既定は 24 時間、下限は 1 時間。既定のさかのぼりは 6 日", () => {
+    expect(DEFAULT_OVERLAP_SECONDS).toBe(86_400);
+    expect(MIN_OVERLAP_SECONDS).toBe(3_600);
+    expect(DEFAULT_LOOKBACK_DAYS).toBe(6);
+  });
+
+  it("状態が無い初回は、今までどおり既定のさかのぼり 6 日", () => {
+    expect(decideReadStart({ now: NOW })).toEqual({
+      basis: "lookback",
+      since: NOW - 6 * DAY,
+      lookbackDays: 6,
+    });
+  });
+
+  it("状態があれば、確認済みの区間の終わり − 重なり（既定 24 時間）から読む", () => {
+    const coveredUntil = NOW - 2 * H;
+    expect(decideReadStart({ now: NOW, coveredUntil })).toEqual({
+      basis: "state",
+      since: coveredUntil - 24 * H,
+      coveredUntil,
+      overlapSeconds: 86_400,
+    });
+  });
+
+  it("重なりは overlapSeconds で変えられる（lag とは別の値）", () => {
+    const coveredUntil = NOW - 2 * H;
+    expect(decideReadStart({ now: NOW, coveredUntil, overlapSeconds: 3_600 })).toEqual({
+      basis: "state",
+      since: coveredUntil - H,
+      coveredUntil,
+      overlapSeconds: 3_600,
+    });
+  });
+
+  it("重なりが下限（1 時間）より短ければ例外（黙って広げない）", () => {
+    expect(() =>
+      decideReadStart({ now: NOW, coveredUntil: NOW - 2 * H, overlapSeconds: 3_599 }),
+    ).toThrow(RangeError);
+    expect(() => decideReadStart({ now: NOW, overlapSeconds: 0 })).toThrow(RangeError);
+  });
+
+  it("確認済みの終わり − 重なりが 6 日より前なら、既定のさかのぼり 6 日（それより前には戻らない）。根拠に状態の時刻も残す", () => {
+    const coveredUntil = NOW - 5 * DAY - 12 * H;
+    expect(decideReadStart({ now: NOW, coveredUntil })).toEqual({
+      basis: "lookback",
+      since: NOW - 6 * DAY,
+      lookbackDays: 6,
+      coveredUntil,
+    });
+  });
+
+  it("境界: 確認済みの終わり − 重なり がちょうど 今 − 6 日なら既定のさかのぼり、1 ミリ秒後なら状態、1 ミリ秒前なら既定のさかのぼり", () => {
+    const lookback = NOW - 6 * DAY;
+    const at = (coveredUntil: number) => decideReadStart({ now: NOW, coveredUntil });
+    expect(at(lookback + 24 * H)).toMatchObject({ basis: "lookback", since: lookback });
+    expect(at(lookback + 24 * H + 1)).toMatchObject({ basis: "state", since: lookback + 1 });
+    expect(at(lookback + 24 * H - 1)).toMatchObject({ basis: "lookback", since: lookback });
+    // どれも前回の終わり以前なので、穴にならない
+    for (const c of [lookback + 24 * H - 1, lookback + 24 * H, lookback + 24 * H + 1])
+      expect(
+        reconcile(input({ window: { since: at(c).since, until: NOW }, previousCoveredUntil: c }))
+          .summary.coverage.status,
+      ).toBe("continuous");
+  });
+
+  it("--since（since）を渡せば、状態があってもそれが勝つ（全部を読み直す監査用の指定を残す）", () => {
+    const since = NOW - 6 * DAY;
+    expect(decideReadStart({ now: NOW, since, coveredUntil: NOW - 2 * H })).toEqual({
+      basis: "option",
+      since,
+    });
+    // 状態より後でも --since のまま（穴の判定は reconcile の側で今までどおり）
+    expect(decideReadStart({ now: NOW, since: NOW - H, coveredUntil: NOW - 2 * H })).toEqual({
+      basis: "option",
+      since: NOW - H,
+    });
+  });
+
+  it("許容の範囲内で未来の状態（時計のずれ）でも、終わり − 重なりから読む", () => {
+    const coveredUntil = NOW + 60_000;
+    expect(decideReadStart({ now: NOW, coveredUntil }).since).toBe(coveredUntil - 24 * H);
+  });
+
+  it("coverage_gap の判定は変わらない: 状態から決めた読み始めは穴にならず、6 日より古い状態は今までどおり穴", () => {
+    for (const coveredUntil of [NOW - 2 * H, NOW - 5 * DAY - 12 * H, NOW - 6 * DAY]) {
+      const { since } = decideReadStart({ now: NOW, coveredUntil });
+      const r = reconcile(
+        input({ window: { since, until: NOW }, previousCoveredUntil: coveredUntil }),
+      );
+      expect(r.summary.coverage).toEqual({ status: "continuous", previous: coveredUntil });
+      expect(reconcileExitCode(r)).toBe(0);
+    }
+    const old = NOW - 7 * DAY;
+    const { since } = decideReadStart({ now: NOW, coveredUntil: old });
+    const gap = reconcile(input({ window: { since, until: NOW }, previousCoveredUntil: old }));
+    expect(codes(gap)).toEqual(["error:coverage_gap"]);
+    // --since で前回の終わりより後から読んでも、今までどおり穴
+    const later = decideReadStart({ now: NOW, since: NOW - H, coveredUntil: NOW - 2 * H });
+    expect(
+      codes(
+        reconcile(
+          input({ window: { since: later.since, until: NOW }, previousCoveredUntil: NOW - 2 * H }),
+        ),
+      ),
+    ).toEqual(["error:coverage_gap"]);
+  });
+
+  it("重なりの中の遅れた引き受け（前回の終わりより前・記録なし）は assume_without_record（誤り）。区間を進めない", () => {
+    const coveredUntil = NOW - 2 * H;
+    const { since } = decideReadStart({ now: NOW, coveredUntil });
+    const late = evFor(rec({ at: NOW - 4 * H }));
+    expect(late.time).toBeGreaterThan(since);
+    expect(late.time).toBeLessThan(coveredUntil);
+    const r = reconcile(
+      input({ window: { since, until: NOW }, events: [late], previousCoveredUntil: coveredUntil }),
+    );
+    expect(codes(r)).toEqual(["error:assume_without_record"]);
+    expect(nextCoveredUntil(r, coveredUntil)).toBeUndefined();
+  });
+
+  it("出力に、読み始めの決め方と実際の時刻（UTC）を出す", () => {
+    const r = reconcile(input());
+    const iso = (t: number) => new Date(t).toISOString();
+    const coveredUntil = NOW - 2 * H;
+    const fromState = decideReadStart({ now: NOW, coveredUntil });
+    expect(formatReconcileReport(r, { start: fromState })).toContain(
+      `read start: ${iso(coveredUntil - 24 * H)} (from the state: confirmed until ${iso(coveredUntil)} minus overlap 86400s)`,
+    );
+    expect(formatReconcileReport(r, { start: decideReadStart({ now: NOW }) })).toContain(
+      `read start: ${iso(NOW - 6 * DAY)} (default lookback 6d; no confirmed interval on record)`,
+    );
+    const old = NOW - 5 * DAY - 12 * H;
+    expect(
+      formatReconcileReport(r, { start: decideReadStart({ now: NOW, coveredUntil: old }) }),
+    ).toContain(
+      `read start: ${iso(NOW - 6 * DAY)} (default lookback 6d; the confirmed interval ends ${iso(old)}, the overlap would go back further)`,
+    );
+    expect(
+      formatReconcileReport(r, {
+        start: decideReadStart({ now: NOW, since: NOW - 3 * DAY, coveredUntil }),
+      }),
+    ).toContain(`read start: ${iso(NOW - 3 * DAY)} (--since)`);
+    // 渡さなければ行を出さない（今までの出力のまま）
+    expect(formatReconcileReport(r)).not.toContain("read start:");
+  });
+});
+
+describe("終了コード 1 のとき、時刻を持つ誤りの最も古い時刻と、既定の窓から外れる時刻を出す（検出した誤りは状態に残らないため）", () => {
+  const iso = (t: number) => new Date(t).toISOString();
+  it("時刻を持つ誤り（記録に無い引き受け・時間の検査など）のうち最も古い時刻と、その 6 日後を出す", () => {
+    const older = evFor(rec({ at: NOW - 3 * DAY }));
+    const newer = evFor(rec({ at: NOW - DAY }));
+    const r = reconcile(input({ events: [newer, older] }));
+    expect(reconcileExitCode(r)).toBe(1);
+    expect(oldestErrorAt(r)).toBe(older.time);
+    expect(formatReconcileReport(r)).toContain(
+      `oldest error finding: ${iso(older.time)} (it leaves the default window of 6d after ${iso(older.time + 6 * DAY)}; record the findings outside the tool today)`,
+    );
+  });
+  it("記録の側の誤り（設定に無いチーム）の時刻も数える", () => {
+    const r0 = rec({ at: NOW - 2 * DAY, team: "nope" });
+    const r = reconcile(input({ records: [r0], events: [evFor(r0)] }));
+    expect(oldestErrorAt(r)).toBe(r0.at);
+  });
+  it("誤りが無い・時刻を持つ誤りが無い（読めなかったリージョンだけ・検証できない引き受けだけ）なら出さない", () => {
+    const ok = reconcile(input());
+    expect(oldestErrorAt(ok)).toBeUndefined();
+    expect(formatReconcileReport(ok)).not.toContain("oldest error finding:");
+    const unread = reconcile(
+      input({ regions: { read: ["us-east-1"], unread: ["ap-northeast-1"] } }),
+    );
+    expect(reconcileExitCode(unread)).toBe(1);
+    expect(oldestErrorAt(unread)).toBeUndefined();
+    expect(formatReconcileReport(unread)).not.toContain("oldest error finding:");
+    const old = evFor(rec({ at: NOW - 8 * DAY }), { tokenId: "zzzzzzzz-none" });
+    const unverifiable = reconcile(input({ events: [old] }));
+    expect(reconcileExitCode(unverifiable)).toBe(1);
+    expect(oldestErrorAt(unverifiable)).toBeUndefined();
+  });
+  it("警告（時刻を持つ record_without_assume など）は数えない", () => {
+    const r = reconcile(input({ records: [rec({ at: NOW - 2 * DAY })] }));
+    expect(codes(r)).toEqual(["warning:record_without_assume"]);
+    expect(oldestErrorAt(r)).toBeUndefined();
   });
 });
 
