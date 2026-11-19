@@ -1,6 +1,6 @@
 // G2 の時間差の集計（mise タスク poc:g2:time-gap）。手順書 §3.2 の 6（ii-2）。読み取りだけ。
 //   pnpm tsx scripts/poc/g2/time-gap.ts --records <file|dir> (--profile <AWS のプロファイル> | --trail <file>)
-//     [--since <ISO>] [--until <ISO>] [--workers awsbridge-console-standard,awsbridge-console-admin]
+//     [--since <ISO>] [--until <ISO>] [--workers awsbridge-console,awsbridge-console-admin]
 // 発行記録（console:reconcile の --records と同じ形: 生の行・Trace Events の包み・Workers Logs のイベント。.gz も読む）と、
 // CloudTrail の AssumeRoleWithWebIdentity を jti で結び、差（eventTime − jwt.iat。秒）の分布（件数・最小・中央値・p90・最大）を出す。
 // CloudTrail の読み方は console:reconcile と同じ（scripts/console/reconcile-read.ts。有効な全リージョン、呼ぶのは照会の aws だけ）。
@@ -28,7 +28,7 @@ import {
 import { fail } from "../human/io";
 import { formatTimeGap, pairGaps } from "./time-gap-lib";
 
-const DEFAULT_WORKERS = ["awsbridge-console-standard", "awsbridge-console-admin"];
+const DEFAULT_WORKERS = ["awsbridge-console", "awsbridge-console-admin"];
 const PROFILE_RE = /^[\w.+@][\w.+@-]{0,63}$/;
 
 let values: Record<string, string | undefined>;

@@ -1,10 +1,11 @@
-// コンソールログインの Admin の Worker を wrangler dev で起動し、擬似の Access（certs）・STS・getSigninToken を相手に、
-// 画面（S2）→ POST /t/<team>/login → Admin の鍵で署名 → 擬似 STS → getSigninToken → 302 までを確かめる（X1 の決裁）。
-// STS に渡った JWT は、同じ Worker が Admin の issuer のホスト（/admin）で出す JWKS で検証する。
-// 鍵は Workers の secret_key 型（取り出せない CryptoKey）の代わりに、E2E 用のエントリ（fixtures/console-admin-key-entry.ts）が
+// コンソールログインの Worker（1 つ。P2）を wrangler dev で起動し、Admin の階層のチーム（同じオリジンの /t/infra-elevated）で、
+// 擬似の Access（certs）・STS・getSigninToken を相手に、画面（S2）→ POST /t/<team>/login → 境界の鍵で署名 → 擬似 STS →
+// getSigninToken → 302 までを確かめる（P2 で Admin の Worker を消したので、その通しの試験を 1 つの Worker の形に書き直した）。
+// STS に渡った JWT は、同じ Worker が境界の issuer のホスト（/console。Viewer と同じ issuer）で出す JWKS で検証する。
+// 鍵は Workers の secret_key 型（取り出せない CryptoKey）の代わりに、E2E 用のエントリ（fixtures/console-entry.ts）が
 // Worker の中で取り出せない鍵を作って渡す（手元の wrangler dev は secret_key を作れない）。鍵が無いときの 503 は console-negative.test.ts。
 // 負の試験（断るケース）は console-negative.test.ts に集めてある（重複を持たない）。
-// 設定はリポジトリの wrangler.console-admin.jsonc を読み、main を E2E 用のエントリ（外向きの通信だけを擬似に向ける）にし、
+// 設定はリポジトリの wrangler.console.jsonc を読み、main を E2E 用のエントリ（外向きの通信だけを擬似に向ける）にし、
 // routes を外し（手元では Host ヘッダーで振り分ける）、alias を試験用の生成物に、vars に鍵と擬似の宛先を足した一時ファイルで起動する。
 // 実 AWS・Cloudflare は呼ばない。
 import { type ChildProcess, spawn } from "node:child_process";
@@ -27,12 +28,15 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AUDIENCE } from "../../src/console/constants";
 import { buildDiscovery } from "../../src/oidc";
 import {
-  ADMIN_HOST,
-  ADMIN_PORTAL,
   AUDS,
-  adminConfig,
+  displayConfig,
+  ISSUER_HOST,
+  PORTAL,
+  PORTAL_HOST,
+  STD_ISSUER,
   stsXml,
-} from "../unit/console-standard-harness";
+  workerConfig,
+} from "../unit/console-worker-harness";
 import { readJsonc } from "./jsonc";
 
 const root = new URL("../../", import.meta.url).pathname;
@@ -42,8 +46,6 @@ const SUB = "e2e00000-0000-4000-8000-000000000002";
 const TEAM = "infra-elevated";
 const ADMIN_AUD = AUDS.teams[TEAM] as string;
 const ENTRY = "333333333333:admin";
-const ADMIN_ISSUER = "https://admin-id.example.com/admin";
-const ADMIN_ISSUER_HOST = "admin-id.example.com";
 // 鍵・トークンの形の文字列は実行時に組む（gitleaks の誤検知を避ける）
 const CSRF_SECRET = ["e2e", "csrf", "a".repeat(40)].join("-");
 const ACCESS_KEY_ID = ["ASIA", "A".repeat(16)].join("");
@@ -115,7 +117,7 @@ async function waitReady(inst: Instance): Promise<void> {
   while (Date.now() < deadline) {
     try {
       // Access の JWT が無いチームのパスは 401（Worker が応答している印）
-      const r = await send(inst, { host: ADMIN_HOST, path: `/t/${TEAM}/` });
+      const r = await send(inst, { host: PORTAL_HOST, path: `/t/${TEAM}/` });
       if (r.status === 401) return;
     } catch {}
     await new Promise((r) => setTimeout(r, 500));
@@ -210,9 +212,11 @@ beforeAll(async () => {
   fakeBase = `http://127.0.0.1:${fakePort}`;
 
   tmp = mkdtempSync(join(tmpdir(), "awsbridge-console-admin-e2e-"));
-  const generated = join(tmp, "worker.admin.json");
-  writeFileSync(generated, JSON.stringify(adminConfig()));
-  const config = readJsonc(join(root, "wrangler.console-admin.jsonc"));
+  const generated = join(tmp, "worker.json");
+  writeFileSync(generated, JSON.stringify(workerConfig()));
+  const generatedDisplay = join(tmp, "display.json");
+  writeFileSync(generatedDisplay, JSON.stringify(displayConfig()));
+  const config = readJsonc(join(root, "wrangler.console.jsonc"));
   expect(config.workers_dev).toBe(false);
   expect(config.preview_urls).toBe(false);
   delete config.routes; // 手元では Host ヘッダーで振り分ける（routes があると wrangler dev が Host を書き換える）
@@ -226,10 +230,13 @@ beforeAll(async () => {
     JSON.stringify({
       ...config,
       $schema: undefined,
-      main: join(root, "test/e2e/fixtures/console-admin-key-entry.ts"),
-      alias: { "awsbridge:console-worker-admin": generated },
+      main: join(root, "test/e2e/fixtures/console-entry.ts"),
+      alias: {
+        "awsbridge:console-worker": generated,
+        "awsbridge:console-display": generatedDisplay,
+      },
       ratelimits,
-      // 署名鍵の secret（文字列）は渡さない（Admin の Worker は持たない）。鍵は E2E 用のエントリが Worker の中で作る
+      // 署名鍵の secret（文字列）は渡さない。鍵は E2E 用のエントリが Worker の中で境界ごとに作る
       vars: {
         ...(config.vars as Record<string, string>),
         ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
@@ -266,7 +273,7 @@ async function accessJwt(aud: string | string[]): Promise<string> {
 /** S2 を開いて CSRF トークンを取り出す。 */
 async function csrfFrom(aud: string): Promise<string> {
   const r = await send(normal, {
-    host: ADMIN_HOST,
+    host: PORTAL_HOST,
     path: `/t/${TEAM}/a/333333333333`,
     headers: { "Cf-Access-Jwt-Assertion": await accessJwt(aud) },
   });
@@ -285,19 +292,19 @@ async function postLogin(p: {
 }): Promise<HttpResult> {
   return send(normal, {
     method: "POST",
-    host: p.host ?? ADMIN_HOST,
+    host: p.host ?? PORTAL_HOST,
     path: p.path ?? `/t/${TEAM}/login`,
     headers: {
       "Cf-Access-Jwt-Assertion": p.jwt,
       "Content-Type": "application/x-www-form-urlencoded",
-      ...(p.origin === null ? {} : { Origin: p.origin ?? ADMIN_PORTAL }),
+      ...(p.origin === null ? {} : { Origin: p.origin ?? PORTAL }),
     },
     body: new URLSearchParams(p.form).toString(),
   });
 }
 
 async function issuerJwks(): Promise<JSONWebKeySet> {
-  const r = await send(normal, { host: ADMIN_ISSUER_HOST, path: "/admin/.well-known/jwks.json" });
+  const r = await send(normal, { host: ISSUER_HOST, path: "/console/.well-known/jwks.json" });
   expect(r.status, r.body).toBe(200);
   return JSON.parse(r.body) as JSONWebKeySet;
 }
@@ -310,10 +317,10 @@ async function login(): Promise<HttpResult> {
   });
 }
 
-describe("Admin の Worker（wrangler dev）: 通しの経路（鍵あり）", () => {
+describe("コンソールの Worker（wrangler dev）: Admin の階層のチームの通しの経路（鍵あり）", () => {
   it("S2（[ADMIN] の印）のフォーム → POST /t/infra-elevated/login → 302（getSigninToken のログイン URL）。STS と getSigninToken を 1 回ずつ呼ぶ", async () => {
     const s2 = await send(normal, {
-      host: ADMIN_HOST,
+      host: PORTAL_HOST,
       path: `/t/${TEAM}/a/333333333333`,
       headers: { "Cf-Access-Jwt-Assertion": await accessJwt(ADMIN_AUD) },
     });
@@ -332,7 +339,7 @@ describe("Admin の Worker（wrangler dev）: 通しの経路（鍵あり）", (
     );
   });
 
-  it("STS に渡した JWT は Admin の issuer のホストの JWKS で検証でき、iss・aud・kid・exp=iat+300 を持つ。jti は発行ごとに違う", async () => {
+  it("STS に渡した JWT は境界の issuer（Viewer と同じ）のホストの JWKS で検証でき、iss・aud・kid・exp=iat+300・タグ（Admin のチーム）を持つ。jti は発行ごとに違う", async () => {
     expect((await login()).status).toBe(302);
     expect((await login()).status).toBe(302);
     const tokens = seen.sts.map((p) => p.get("WebIdentityToken") as string);
@@ -341,37 +348,42 @@ describe("Admin の Worker（wrangler dev）: 通しの経路（鍵あり）", (
     expect(jwks.keys).toHaveLength(1);
     for (const t of tokens) {
       const { payload } = await jwtVerify(t, createLocalJWKSet(jwks), {
-        issuer: ADMIN_ISSUER,
+        issuer: STD_ISSUER,
         audience: AUDIENCE,
         algorithms: ["RS256"],
       });
       expect(decodeProtectedHeader(t).kid).toBe(jwks.keys[0]?.kid);
       expect((payload.exp as number) - (payload.iat as number)).toBe(300);
       expect(payload.sub).toBe(EMAIL);
+      expect(payload["https://aws.amazon.com/tags"]).toEqual({
+        principal_tags: { awsbridge_team: [TEAM] },
+      });
     }
     expect(decodeJwt(tokens[0] as string).jti).not.toBe(decodeJwt(tokens[1] as string).jti);
   });
 
-  it("Admin の issuer の discovery は Standard と同じ形（issuer・jwks_uri は Admin の issuer）。JWKS は公開の成分だけ", async () => {
+  it("境界の issuer の discovery（issuer・jwks_uri は境界の issuer。Admin の issuer は無い）。JWKS は公開の成分だけ", async () => {
     const r = await send(normal, {
-      host: ADMIN_ISSUER_HOST,
-      path: "/admin/.well-known/openid-configuration",
+      host: ISSUER_HOST,
+      path: "/console/.well-known/openid-configuration",
     });
     expect(r.status).toBe(200);
-    expect(JSON.parse(r.body)).toEqual(buildDiscovery(ADMIN_ISSUER));
+    expect(JSON.parse(r.body)).toEqual(buildDiscovery(STD_ISSUER));
     const jwks = await issuerJwks();
     for (const k of jwks.keys)
       expect(Object.keys(k).sort()).toEqual(["alg", "e", "kid", "kty", "n", "use"]);
   });
 
-  it("デプロイ後の確認（key-check）: 鍵は取り出せず（extractable false）、Worker の中の exportKey は失敗し、自己検証が通る", async () => {
+  it("デプロイ後の確認（Admin のチームのパスの key-check）: そのチームの行の境界（managed だけ）の鍵は取り出せず、exportKey は失敗し、自己検証が通る", async () => {
     const r = await send(normal, {
-      host: ADMIN_HOST,
+      host: PORTAL_HOST,
       path: `/t/${TEAM}/key-check`,
       headers: { "Cf-Access-Jwt-Assertion": await accessJwt(ADMIN_AUD) },
     });
     expect(r.status, r.body).toBe(200);
-    expect(JSON.parse(r.body)).toMatchObject({
+    const body = JSON.parse(r.body) as { boundaries: Record<string, unknown> };
+    expect(Object.keys(body.boundaries)).toEqual(["managed"]);
+    expect(body.boundaries.managed).toMatchObject({
       configured: true,
       present: true,
       usable: true,
@@ -380,7 +392,7 @@ describe("Admin の Worker（wrangler dev）: 通しの経路（鍵あり）", (
       exportKey: "rejected",
       selfVerify: "ok",
     });
-    expect((await send(normal, { host: ADMIN_HOST, path: `/t/${TEAM}/key-check` })).status).toBe(
+    expect((await send(normal, { host: PORTAL_HOST, path: `/t/${TEAM}/key-check` })).status).toBe(
       401,
     );
   });

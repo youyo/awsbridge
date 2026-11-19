@@ -198,11 +198,7 @@ describe("置き場所", () => {
   const root = new URL("../../", import.meta.url).pathname;
 
   it("どの Worker のエントリからも届かず、IAM の検査の判定（inspect.ts）にも依存しない", () => {
-    for (const entry of [
-      "src/index.ts",
-      "src/console/standard/index.ts",
-      "src/console/admin/index.ts",
-    ]) {
+    for (const entry of ["src/index.ts", "src/console/worker/index.ts"]) {
       const files = importGraph(join(root, entry)).files.map((f) => relative(root, f));
       expect(files, entry).not.toContain("src/console/exposure.ts");
     }

@@ -9,7 +9,7 @@ import {
   X1H_KEY_BINDING,
   x1hSettings,
 } from "../../scripts/poc/x1h/lib";
-import { jwkThumbprint, RS256_ALGORITHM } from "../../src/console/admin/key";
+import { jwkThumbprint, RS256_ALGORITHM } from "../../src/console/signing/key";
 
 async function pair(): Promise<{ priv: CryptoKey; pubJwk: JsonWebKey; privJwk: JsonWebKey }> {
   const p = (await crypto.subtle.generateKey(

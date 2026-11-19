@@ -71,6 +71,11 @@ export type AssumeRoleOptions = {
   /** 既定は https://sts.<region>.amazonaws.com/。E2E で擬似 STS を指すときに上書きする。 */
   endpoint?: string;
   fetch?: typeof fetch;
+  /**
+   * fetch の redirect。渡したときだけ init に入れる（コンソールログインは manual を渡してリダイレクトを追わない。
+   * MCP の中継は渡さないので振る舞いを変えない。cto の決裁 2026-11-17 の c2）。
+   */
+  redirect?: "manual" | "follow" | "error";
 };
 
 /**
@@ -111,6 +116,7 @@ export async function assumeRoleWithWebIdentityDetailed(
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: body.toString(),
+      ...(opts.redirect !== undefined ? { redirect: opts.redirect } : {}),
     });
     xml = await res.text();
   } catch {

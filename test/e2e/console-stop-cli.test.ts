@@ -18,9 +18,9 @@ import {
   awsResponses,
   goodSnapshot,
   inventory,
+  PROVIDER,
   role,
   SIGNING_ACCOUNT,
-  STD_PROVIDER,
 } from "../unit/console-inspect-fixtures";
 
 const root = new URL("../../", import.meta.url).pathname;
@@ -179,7 +179,7 @@ function handmade(name = "HandmadeConsoleRole"): RoleSnapshot {
       Statement: [
         {
           Effect: "Allow",
-          Principal: { Federated: STD_PROVIDER },
+          Principal: { Federated: PROVIDER },
           Action: "sts:AssumeRoleWithWebIdentity",
         },
       ],

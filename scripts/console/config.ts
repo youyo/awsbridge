@@ -1,9 +1,17 @@
-// コンソールログインの設定ファイルの検査と生成の CLI: pnpm tsx scripts/console/config.ts <check|generate>
+// コンソールログインの設定ファイルの検査と生成の CLI:
+//   pnpm tsx scripts/console/config.ts check
+//   pnpm tsx scripts/console/config.ts generate [--ledger-init] [--ledger-baseline <stacksets.json>]
 // mise タスク console:config:check / console:config:generate から呼ぶ。検証と生成の本体は src/console/（純粋関数）。
 // 入力と出力の場所は環境変数（mise.toml の「コンソールログイン」の節を参照）。AWS・Cloudflare・Terraform は呼ばない。
 // 出力にはキーのパスと誤りの種別、ファイルのパスだけを出し、AUD・email・アカウント ID は出さない。
 // generate は、種類ごとのロールのテンプレート（kind.<kind>.yaml。src/console/template.ts）も書く。下流のポリシー文書
 // （roles[].permissions.inlinePolicyFiles）は作業ディレクトリからの相対パスで読む。
+// 退役したチーム名の台帳（P2 の設計メモ §7.1、cto の決裁 2026-11-17）: 書く前に、出力先の前回の stacksets.json を読んで
+// 生成器に渡す（台帳から名前を消していないか・消したチームを台帳へ移したか・階層を変えていないか）。
+//   generate: 比べる台帳（前回か --ledger-baseline）が無ければ誤り。初めての生成と P2 より前の形からの移行だけは
+//             --ledger-init で通し、その旨を標準出力と stacksets.json の meta（ledgerInit）に残す（次の生成で消える）。
+//             --ledger-baseline <path> は保管しておいた stacksets.json で、前回と両方に通ることを要する。
+//   check: 前回が無ければ黙り、あれば比べる（--ledger-init・--ledger-baseline は受けない）。
 import {
   chmodSync,
   existsSync,
@@ -20,6 +28,7 @@ import {
   type ConsoleConfigIssue,
   formatIssue,
   parseConsoleConfig,
+  SCHEMA_VERSION_HINT,
 } from "../../src/console/config";
 import { type GenerateMode, generateConsoleArtifacts } from "../../src/console/generate";
 import { buildKindTemplates, type KindTemplate } from "../../src/console/template";
@@ -89,12 +98,33 @@ function kindTemplates(config: ConsoleConfig): KindTemplate[] {
 /** 種類のテンプレートのファイル名（kind.<kind>.yaml）。 */
 const KIND_FILE_RE = /^kind\..+\.yaml$/;
 
-function main(cmd: string): void {
+type LedgerArgs = { init: boolean; baselinePath?: string };
+
+/** 保管しておいた台帳（--ledger-baseline）。読めない・JSON でなければ null（生成器が ledger_baseline の誤りにする）。 */
+function readBaseline(path: string): unknown {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function main(cmd: string, ledger: LedgerArgs): void {
   if (!existsSync(configPath)) throw new CliError(`設定ファイルがありません: ${configPath}`);
   const mode: GenerateMode = cmd === "generate" ? "deploy" : "check";
   const { config, warnings } = parseConsoleConfig(readFileSync(configPath, "utf8"));
   const auds = readOptionalJson(env.AWSBRIDGE_CONSOLE_AUD_FILE, "auds");
   const inventory = readOptionalJson(env.AWSBRIDGE_CONSOLE_INVENTORY_FILE, "inventory");
+  // 前回の生成物の台帳（上書きの前に読む。読めなければ生成器が ledger_previous の誤りにする）
+  const previousPath = join(outDir, "stacksets.json");
+  let previous: unknown;
+  if (existsSync(previousPath)) {
+    try {
+      previous = JSON.parse(readFileSync(previousPath, "utf8"));
+    } catch {
+      previous = null;
+    }
+  }
   const artifacts = generateConsoleArtifacts(config, {
     mode,
     generatedAt: new Date().toISOString(),
@@ -103,6 +133,9 @@ function main(cmd: string): void {
       : {}),
     ...(auds !== undefined ? { auds } : {}),
     ...(inventory !== undefined ? { inventory } : {}),
+    ...(previous !== undefined ? { previous } : {}),
+    ...(ledger.baselinePath !== undefined ? { baseline: readBaseline(ledger.baselinePath) } : {}),
+    ...(ledger.init ? { ledgerInit: true } : {}),
   });
   // ロールのテンプレート（種類の StackSet。参考の形）。check でも作って、下流のポリシー文書の欠落などを誤りにする
   const kinds = kindTemplates(config);
@@ -114,18 +147,29 @@ function main(cmd: string): void {
   }
   mkdirSync(outDir, { recursive: true, mode: 0o700 });
   const files: [string, unknown][] = [
-    ["worker.standard.json", artifacts.worker.standard],
-    ["display.standard.json", artifacts.display],
+    ["worker.json", artifacts.worker],
+    ["display.json", artifacts.display],
     ["stacksets.json", artifacts.stacksets],
     ["access.json", artifacts.access],
   ];
-  const adminFile = join(outDir, "worker.admin.json");
-  if (artifacts.worker.admin) files.push(["worker.admin.json", artifacts.worker.admin]);
-  // Admin の階層がなくなったら、前回の Admin の生成物を残さない（別のデプロイに古い値が渡らないように）
-  else if (existsSync(adminFile)) rmSync(adminFile);
+  // P2 より前の階層ごとの生成物を残さない（旧い Worker の設定に古い値が渡らないように）
+  for (const old of ["worker.standard.json", "worker.admin.json", "display.standard.json"]) {
+    const path = join(outDir, old);
+    if (existsSync(path)) rmSync(path);
+  }
   for (const [name, value] of files) {
     writePrivate(join(outDir, name), value);
     console.log(`書きました: ${join(outDir, name)}`);
+  }
+  if (artifacts.ledgerInit) {
+    // 比べる台帳なしに通したことを残す（チーム名だけ。stacksets.json の meta にも ledgerInit）
+    const { teams, retiredTeams } = artifacts.ledgerInit;
+    console.log(
+      `台帳: 初回の指定（--ledger-init）で、比べる台帳（前回の生成物・baseline）なしに通しました。今のチーム: ${teams.join(", ") || "なし"}。退役したチーム: ${retiredTeams.join(", ") || "なし"}`,
+    );
+    console.log(
+      `台帳: デプロイの前に mise run console:inspect を回し、${join(outDir, "stacksets.json")} を保管してください（次からは前回か --ledger-baseline と比べます）`,
+    );
   }
   // 設定から消えた種類のテンプレートを残さない（古いロールの定義が配られないように）
   const kindFiles = new Set(kinds.map((k) => `kind.${k.kind}.yaml`));
@@ -138,16 +182,38 @@ function main(cmd: string): void {
   }
 }
 
+const USAGE =
+  "使い方: config.ts check | config.ts generate [--ledger-init] [--ledger-baseline <stacksets.json>]";
+
+/** generate の台帳の引数。check には付けられない。分からない引数・値の無い --ledger-baseline は使い方の誤り。 */
+function parseLedgerArgs(cmd: string, rest: string[]): LedgerArgs | undefined {
+  const out: LedgerArgs = { init: false };
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (cmd !== "generate") return undefined;
+    if (a === "--ledger-init" && !out.init) out.init = true;
+    else if (a === "--ledger-baseline" && out.baselinePath === undefined) {
+      const v = rest[++i];
+      if (v === undefined || v === "" || v.startsWith("--")) return undefined;
+      out.baselinePath = v;
+    } else return undefined;
+  }
+  return out;
+}
+
 const cmd = process.argv[2] ?? "";
-if (cmd !== "check" && cmd !== "generate") {
-  console.error("使い方: config.ts <check|generate>");
+const ledgerArgs = parseLedgerArgs(cmd, process.argv.slice(3));
+if ((cmd !== "check" && cmd !== "generate") || ledgerArgs === undefined) {
+  console.error(USAGE);
   process.exit(1);
 }
 try {
-  main(cmd);
+  main(cmd, ledgerArgs);
 } catch (e) {
   if (e instanceof ConsoleConfigError) {
     for (const i of e.issues) console.error(`error: ${formatIssue(i)}`);
+    // schemaVersion 1 の設定は黙って読み替えない。新しいキーを案内する（値を含めない固定の文）
+    if (e.issues.some((i) => i.code === "schema_version")) console.error(SCHEMA_VERSION_HINT);
     console.error(`設定に誤りがあります（${e.issues.length} 件）: ${configPath}`);
   } else if (e instanceof CliError) {
     console.error(e.message);

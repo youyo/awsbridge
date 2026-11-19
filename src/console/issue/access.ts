@@ -4,7 +4,14 @@
 // 検証済みの payload の aud を自前で「ちょうど 1 つ・既知のチームの AUD」と判定する。
 // 判定に使う値が読めない・壊れている・想定外の形のときは、すべて発行しない側に倒す（fail-closed）。
 // 副作用のない関数だけを置く（JWKS の取得は jose に任せ、テストでは getKey を差し替える）。node の API を使わない。
-import { createRemoteJWKSet, errors, type JWTPayload, type JWTVerifyGetKey, jwtVerify } from "jose";
+import {
+  createRemoteJWKSet,
+  customFetch,
+  errors,
+  type JWTPayload,
+  type JWTVerifyGetKey,
+  jwtVerify,
+} from "jose";
 
 /** exp / nbf に許す時計ずれ（秒）。MCP 用の検証と同じ値。 */
 const CLOCK_TOLERANCE_SECONDS = 30;
@@ -32,6 +39,11 @@ export type ConsoleAccessConfig = {
 export type ConsoleAccessOptions = {
   /** 署名鍵の解決。省略時はチームドメインの certs（/cdn-cgi/access/certs）を取得する */
   getKey?: JWTVerifyGetKey;
+  /**
+   * certs を取る fetch（外への通信を集めた関数。issue/egress.ts）。getKey を渡さないときに使う。
+   * 省略時は jose の既定（グローバルの fetch。redirect: manual）。
+   */
+  fetch?: typeof fetch;
   /** 現在時刻（epoch 秒。テスト用） */
   now?: number;
   /**
@@ -117,13 +129,23 @@ function readConfig(
   return { issuer: url.origin, audTeam };
 }
 
-// チームドメインごとに JWKS（と jose 内部の鍵キャッシュ）を使い回す
-const jwksCache = new Map<string, JWTVerifyGetKey>();
-function remoteJwks(issuer: string): JWTVerifyGetKey {
-  let jwks = jwksCache.get(issuer);
+// チームドメインごとに JWKS（と jose 内部の鍵キャッシュ）を使い回す。certs を取る fetch ごとに分ける
+// （試験が要求ごとに別の fetch を渡しても、最初の fetch が残らないように。外への通信を集めた関数は要求の env ごとに作る）
+const defaultJwks = new Map<string, JWTVerifyGetKey>();
+const jwksByFetch = new WeakMap<typeof fetch, Map<string, JWTVerifyGetKey>>();
+function remoteJwks(issuer: string, fetchFn?: typeof fetch): JWTVerifyGetKey {
+  let cache = defaultJwks;
+  if (fetchFn) {
+    cache = jwksByFetch.get(fetchFn) ?? new Map();
+    jwksByFetch.set(fetchFn, cache);
+  }
+  let jwks = cache.get(issuer);
   if (!jwks) {
-    jwks = createRemoteJWKSet(new URL(`${issuer}/cdn-cgi/access/certs`));
-    jwksCache.set(issuer, jwks);
+    jwks = createRemoteJWKSet(
+      new URL(`${issuer}/cdn-cgi/access/certs`),
+      fetchFn ? { [customFetch]: fetchFn } : undefined,
+    );
+    cache.set(issuer, jwks);
   }
   return jwks;
 }
@@ -154,7 +176,7 @@ export async function verifyConsoleAccess(
   let payload: JWTPayload;
   try {
     // alg を RS256 に固定（none / HS256 へのすり替えを防ぐ）。audience は渡さず、下で自前で判定する
-    ({ payload } = await jwtVerify(token, opts.getKey ?? remoteJwks(conf.issuer), {
+    ({ payload } = await jwtVerify(token, opts.getKey ?? remoteJwks(conf.issuer, opts.fetch), {
       issuer: conf.issuer,
       algorithms: ["RS256"],
       requiredClaims: maxAge === undefined ? ["exp"] : ["exp", "iat"],

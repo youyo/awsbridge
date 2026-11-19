@@ -1,10 +1,12 @@
 // コンソールログインの入口（S0。Standard の / ）: 1 つの一覧（U2）と落とし方。
 // 設計: docs/specs/console-login-portal.md §4.1・§5.4・§5.6・§7、ADR の「一覧の統合（U2）」。
 // 入口のアプリの Access JWT を確かめてから描く。身元の Entra グループは差し込み口（identityGroups）からサーバー側で取り、
-// 表示用の対応表（display.standard.json の groups）と小文字で照合する。表示のためだけで、発行の認可には使わない。
+// 表示用の対応表（display.json の groups）と小文字で照合する。表示のためだけで、発行の認可には使わない。
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IdentityGroupsSource } from "../../src/console/display/groups";
-import { createStandardWorker } from "../../src/console/standard/worker";
+import { createConsoleWorker } from "../../src/console/worker/worker";
+import { issueEgressCalls, resetEgressCalls } from "./console-egress-spy";
 import { uuid } from "./console-fixtures";
 import {
   AUDS,
@@ -15,13 +17,21 @@ import {
   type Harness,
   loginRequest,
   PORTAL_HOST,
-  standardConfig,
-} from "./console-standard-harness";
+  workerConfig,
+} from "./console-worker-harness";
+
+// egress への呼び出しを数える（「STS を呼ばない」を egress の spy で確かめる。console-egress-spy.ts）
+vi.mock("../../src/console/issue/egress", async (orig) =>
+  (await import("./console-egress-spy")).spyEgressModule(
+    await orig<typeof import("../../src/console/issue/egress")>(),
+  ),
+);
 
 let h: Harness;
 let logs: string[];
 
 beforeEach(async () => {
+  resetEgressCalls();
   h = await createHarness();
   logs = [];
   for (const m of ["log", "error", "warn"] as const) {
@@ -35,14 +45,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const ENTRY_AUD = AUDS.entry.standard;
+const ENTRY_AUD = AUDS.entry;
 
 const failing: IdentityGroupsSource = async () => ({ ok: false, reason: "unavailable" });
 
 /** 表示用の生成物は、引数を省いたときだけ既定（undefined を渡せば「無い」）。 */
 function worker(identityGroups?: IdentityGroupsSource, ...display: [unknown?]) {
-  return createStandardWorker(
-    standardConfig(),
+  return createConsoleWorker(
+    workerConfig(),
     { getAccessKey: h.getAccessKey, fetch: h.fetch, identityGroups },
     display.length > 0 ? display[0] : displayConfig(),
   );
@@ -70,10 +80,9 @@ describe("S0 入口: 所属が分からないときの落とし方（最初の R
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("所属を確かめられませんでした");
-    // 全チームの S1 へのリンク（Standard はこのオリジンのパス、Admin は Admin のオリジン）
-    for (const t of ["infra", "dev", "sa"]) expect(html).toContain(`href="/t/${t}/"`);
-    for (const t of ["infra-elevated", "dev-elevated"])
-      expect(html).toContain(`href="https://admin-portal.example.com/t/${t}/"`);
+    // 全チームの S1 へのリンク（P2: どちらの階層のチームも同じオリジンのパス）
+    for (const t of ["infra", "dev", "sa", "infra-elevated", "dev-elevated"])
+      expect(html).toContain(`href="/t/${t}/"`);
     expect(html).toContain("[ADMIN]");
     // 行（アカウント）は出さない
     expect(html).not.toContain("333333333333");
@@ -100,27 +109,24 @@ describe("S0 入口: 所属するチームの行（U2。表示のためだけ）
     // 所属しないチーム（dev・sa・Admin のチーム）の割り当ては出さない
     expect(html).not.toContain("/t/dev/");
     expect(html).not.toContain("/t/sa/");
-    expect(html).not.toContain("admin-portal.example.com");
+    expect(html).not.toContain("/t/infra-elevated/");
     expect(html).not.toContain("[ADMIN]");
   });
 
-  it("Admin のチームのグループなら、Administrator の行は Admin のオリジンの S2 へのリンクで [ADMIN] の印", async () => {
+  it("Admin のチームのグループなら、Administrator の行は同じオリジンの Admin のチームのパスの S2 へのリンクで [ADMIN] の印", async () => {
     const html = await (await entry(worker(groupsOf(uuid(1), uuid(4))))).text();
-    expect(html).toContain(
-      'href="https://admin-portal.example.com/t/infra-elevated/a/333333333333?role=admin"',
-    );
+    expect(html).toContain('href="/t/infra-elevated/a/333333333333?role=admin"');
     expect(html).toContain("[ADMIN]");
     expect(html).toContain('href="/t/infra/a/333333333333?role=readonly"');
-    // Admin のチームの S2 を Standard のオリジンに作らない
-    expect(html).not.toContain('href="/t/infra-elevated/');
+    // Admin のオリジンは無い（P2。受容 c）
+    expect(html).not.toContain("admin-portal");
   });
 
   it("S0 にはアカウントの email・AUD・ロールの ARN を出さない", async () => {
     const html = await (await entry(worker(groupsOf(uuid(1), uuid(2), uuid(3), uuid(4))))).text();
     expect(html).toContain("svc-a-prod");
     expect(html).not.toMatch(/aws\+[a-z-]+@example\.(com|org)/);
-    for (const aud of [...Object.values(AUDS.teams), AUDS.entry.standard, AUDS.entry.admin])
-      expect(html).not.toContain(aud);
+    for (const aud of [...Object.values(AUDS.teams), AUDS.entry]) expect(html).not.toContain(aud);
     expect(html).not.toContain("arn:aws:iam::");
     expect(html).not.toContain("/awsbridge-console/");
   });
@@ -219,9 +225,9 @@ describe("S0 入口: 入口のアプリの Access JWT を確かめてから描�
   });
 
   it("入口の AUD が発行用の生成物に無ければ 500 server_misconfigured", async () => {
-    const config = standardConfig();
+    const config = workerConfig();
     delete config.portal.entryAud;
-    const w = createStandardWorker(
+    const w = createConsoleWorker(
       config,
       { getAccessKey: h.getAccessKey, fetch: h.fetch, identityGroups: failing },
       displayConfig(),
@@ -243,7 +249,7 @@ describe("S0 入口: 表示用の生成物の誤りは入口だけを止める",
     const broken: unknown[] = [
       undefined,
       { purpose: "display" },
-      standardConfig(),
+      workerConfig(),
       {
         ...displayConfig(),
         portal: { ...displayConfig().portal, origin: "https://other.example.com" },
@@ -295,6 +301,7 @@ describe("U2 の条件: 表示用の照合は発行の認可に使わない", ()
     expect(res.status).toBe(403);
     expect(await res.text()).toContain("unknown_audience");
     expect(h.seen.sts).toHaveLength(0);
+    expect(issueEgressCalls()).toEqual({ sts: 0, federation: 0 });
   });
 
   it("表示では infra に所属していても、チームのアプリの JWT が別のチーム（dev）なら /t/infra/login は 403 team_mismatch", async () => {
@@ -310,6 +317,7 @@ describe("U2 の条件: 表示用の照合は発行の認可に使わない", ()
     expect(res.status).toBe(403);
     expect(await res.text()).toContain("team_mismatch");
     expect(h.seen.sts).toHaveLength(0);
+    expect(issueEgressCalls()).toEqual({ sts: 0, federation: 0 });
   });
 });
 
@@ -325,7 +333,7 @@ describe("S0 入口: 画面の JS に渡すデータ", () => {
     expect(data).toEqual({
       teams: {
         infra: "/t/infra",
-        "infra-elevated": "https://admin-portal.example.com/t/infra-elevated",
+        "infra-elevated": "/t/infra-elevated",
       },
       adminTeams: ["infra-elevated"],
     });

@@ -19,15 +19,32 @@ const AT = "2026-11-11T00:00:00.000Z";
 
 function gen(
   raw: Raw,
-  opts: { auds?: Raw; inventory?: Raw; mode?: "check" | "deploy"; sourceRevision?: string } = {},
+  opts: {
+    auds?: Raw;
+    inventory?: Raw;
+    mode?: "check" | "deploy";
+    sourceRevision?: string;
+    previous?: Raw;
+    baseline?: Raw | null;
+    ledgerInit?: boolean;
+  } = {},
 ): ConsoleArtifacts {
   const { config } = parseConsoleConfig(raw);
+  const mode = opts.mode ?? "deploy";
+  // 台帳と関係のない試験は、前回も baseline も無い deploy を「初回の指定（ledgerInit）」で明示して通す
+  // （cto の決裁: 前回の無い deploy は誤り）。台帳の試験は previous・baseline・ledgerInit を自分で渡す
+  const ledgerInit =
+    opts.ledgerInit ??
+    (mode === "deploy" && opts.previous === undefined && !("baseline" in opts) ? true : undefined);
   return generateConsoleArtifacts(config, {
-    mode: opts.mode ?? "deploy",
+    mode,
     generatedAt: AT,
     ...(opts.auds !== undefined ? { auds: opts.auds } : {}),
     ...(opts.inventory !== undefined ? { inventory: opts.inventory } : {}),
     ...(opts.sourceRevision !== undefined ? { sourceRevision: opts.sourceRevision } : {}),
+    ...(opts.previous !== undefined ? { previous: opts.previous } : {}),
+    ...("baseline" in opts ? { baseline: opts.baseline } : {}),
+    ...(ledgerInit !== undefined ? { ledgerInit } : {}),
   });
 }
 
@@ -50,62 +67,54 @@ const company = () =>
     sourceRevision: "abc",
   });
 
-describe("Worker 用の生成物（階層ごと）", () => {
-  it("使われている階層ごとに 1 つずつ作る（個人用は Standard だけ）", () => {
-    expect(Object.keys(company().worker).sort()).toEqual(["admin", "standard"]);
-    expect(Object.keys(gen(personalConfig()).worker)).toEqual(["standard"]);
-  });
-
-  it("Standard: その階層のチーム（AUD つき）・ロール・issuer・ポータルの値だけを持つ", () => {
-    const w = company().worker.standard;
+// P2（B）: 発行用の生成物は 1 つ（worker.json）。両階層のチーム・ロール・行を持ち、チームとロールに tier を付ける
+describe("Worker 用の生成物（1 つ。P2）", () => {
+  it("1 つの生成物に両階層のチーム（AUD・tier つき）・ロール（tier つき）・境界の issuer・ポータルの値を持つ", () => {
+    const w = company().worker;
     expect(w).toMatchObject({
-      schemaVersion: 1,
-      tier: "standard",
+      schemaVersion: 2,
       generatedAt: AT,
       sourceRevision: "abc",
       tagKey: "awsbridge_team",
       portal: {
         origin: "https://portal.example.com",
-        peerOrigin: "https://admin-portal.example.com",
         routing: "path",
         regions: { allowed: ["ap-northeast-1", "us-east-1"], default: "ap-northeast-1" },
         supportUrl: "https://support.example.com/aws",
         entryAud: "6".repeat(64),
       },
     });
+    // 階層はデプロイではなくチームとロールに付く（Worker は要求ごとにパスのチームの階層で決める）
+    expect(w).not.toHaveProperty("tier");
+    expect(w.portal).not.toHaveProperty("peerOrigin");
     expect(w.teams).toEqual([
-      { name: "infra", displayName: "インフラ", aud: "1".repeat(64) },
-      { name: "dev", displayName: "開発", aud: "2".repeat(64) },
-      { name: "sa", displayName: "sa", aud: "3".repeat(64) },
+      { name: "infra", displayName: "インフラ", tier: "standard", aud: "1".repeat(64) },
+      { name: "dev", displayName: "開発", tier: "standard", aud: "2".repeat(64) },
+      { name: "sa", displayName: "sa", tier: "standard", aud: "3".repeat(64) },
+      { name: "infra-elevated", displayName: "infra-elevated", tier: "admin", aud: "4".repeat(64) },
+      { name: "dev-elevated", displayName: "dev-elevated", tier: "admin", aud: "5".repeat(64) },
     ]);
-    expect(w.roles.map((r) => r.name)).toEqual(["developer", "readonly"]);
-    expect(w.roles[1]).toEqual({
+    expect(w.roles.map((r) => [r.name, r.tier])).toEqual([
+      ["admin", "admin"],
+      ["developer", "standard"],
+      ["readonly", "standard"],
+    ]);
+    expect(w.roles[2]).toEqual({
       name: "readonly",
       roleName: "FederatedViewer",
       displayName: "readonly",
+      tier: "standard",
       sessionSeconds: 43200,
     });
+    // 境界ごとに issuer は 1 つ（階層をまたいで同じ）
     expect(w.boundaries).toEqual([
-      { name: "managed", issuer: "https://id.example.com/standard" },
-      { name: "partner:partner-x", issuer: "https://id.example.com/partner-x" },
+      { name: "managed", issuer: "https://id.example.com/console" },
+      { name: "partner:partner-x", issuer: "https://id.example.com/p/partner-x/console" },
     ]);
   });
 
-  it("Admin: Admin のチーム・ロール・Admin の issuer を持つ境界だけ", () => {
-    const w = company().worker.admin;
-    expect(w?.tier).toBe("admin");
-    expect(w?.portal.origin).toBe("https://admin-portal.example.com");
-    expect(w?.portal.peerOrigin).toBe("https://portal.example.com");
-    expect(w?.portal.entryAud).toBe("7".repeat(64));
-    expect(w?.teams.map((t) => t.name)).toEqual(["infra-elevated", "dev-elevated"]);
-    expect(w?.roles.map((r) => r.name)).toEqual(["admin"]);
-    expect(w?.boundaries).toEqual([
-      { name: "managed", issuer: "https://admin-id.example.com/admin" },
-    ]);
-  });
-
-  it("一覧の行: 種類の割り当てを展開し、その階層のロールだけを入れる（§5.2 の形）", () => {
-    const w = company().worker.standard;
+  it("一覧の行: 種類の割り当てを展開し、両階層のロールを入れる（ARN のパスはロールの階層）", () => {
+    const w = company().worker;
     const svcC = w.accounts.find((a) => a.accountId === "444444444444");
     expect(svcC).toEqual({
       accountId: "444444444444",
@@ -115,6 +124,12 @@ describe("Worker 用の生成物（階層ごと）", () => {
       boundary: "managed",
       kind: "C",
       roles: [
+        {
+          role: "admin",
+          roleArn: "arn:aws:iam::444444444444:role/awsbridge-console/admin/FederatedAdministrator",
+          teams: ["infra-elevated"],
+          sessionSeconds: 3600,
+        },
         {
           role: "developer",
           roleArn: "arn:aws:iam::444444444444:role/awsbridge-console/std/FederatedDeveloper",
@@ -129,42 +144,22 @@ describe("Worker 用の生成物（階層ごと）", () => {
         },
       ],
     });
-    const admin = company().worker.admin;
-    expect(admin?.accounts.find((a) => a.accountId === "444444444444")?.roles).toEqual([
-      {
-        role: "admin",
-        roleArn: "arn:aws:iam::444444444444:role/awsbridge-console/admin/FederatedAdministrator",
-        teams: ["infra-elevated"],
-        sessionSeconds: 3600,
-      },
-    ]);
   });
 
-  it("Standard のファイルに Admin の行・チーム・AUD・issuer がなく、Admin のファイルに Standard のものがない", () => {
-    const { standard, admin } = company().worker;
-    const s = JSON.stringify(standard);
-    const a = JSON.stringify(admin);
-    for (const leak of [
-      "FederatedAdministrator",
-      "infra-elevated",
-      "dev-elevated",
-      "4".repeat(64),
-      "7".repeat(64),
-      "https://admin-id.example.com/admin",
-    ]) {
-      expect(s, leak).not.toContain(leak);
-    }
-    for (const leak of [
-      "FederatedViewer",
-      "FederatedDeveloper",
-      '"dev"',
-      "1".repeat(64),
-      "6".repeat(64),
-      "https://id.example.com/standard",
-      "partner-x",
-    ]) {
-      expect(a, leak).not.toContain(leak);
-    }
+  it("行のチームはすべてその行のロールと同じ階層（row_team_tier を生成器でも作らない）", () => {
+    const w = company().worker;
+    const teamTier = new Map(w.teams.map((t) => [t.name, t.tier]));
+    const roleTier = new Map(w.roles.map((r) => [r.name, r.tier]));
+    for (const a of w.accounts)
+      for (const r of a.roles)
+        for (const t of r.teams)
+          expect(teamTier.get(t), `${a.accountId}:${r.role}:${t}`).toBe(roleTier.get(r.role));
+  });
+
+  it("Admin の階層のロールの行は managed の境界にだけある（admin_boundary）", () => {
+    const w = company().worker;
+    for (const a of w.accounts)
+      if (a.roles.some((r) => r.role === "admin")) expect(a.boundary).toBe("managed");
   });
 
   it("種類の定義（kinds）・Entra のグループの Object ID・Access のポリシー ID・権限ポリシーを入れない", () => {
@@ -180,11 +175,13 @@ describe("Worker 用の生成物（階層ごと）", () => {
     expect(all).not.toContain("inventoryRoleArn");
     expect(all).not.toContain("00000000-0000-4000-8000-");
     expect(all).not.toContain("arn:aws:iam::aws:policy/");
+    // 退役したチーム名の台帳は発行用に入れない
+    expect(all).not.toContain("retiredTeams");
   });
 
   it("停止中のアカウントは出さず、どの種類の OU にも属さないアカウントは出さずに件数を警告する", () => {
     const r = company();
-    const ids = r.worker.standard.accounts.map((a) => a.accountId);
+    const ids = r.worker.accounts.map((a) => a.accountId);
     expect(ids).toEqual(["333333333333", "444444444444", "222222222222"]);
     expect(r.warnings).toContainEqual(
       expect.objectContaining({
@@ -195,60 +192,61 @@ describe("Worker 用の生成物（階層ごと）", () => {
     );
   });
 
-  it("その階層のロールが 1 つもないアカウントの行は入れない", () => {
-    const admin = company().worker.admin;
-    expect(admin?.accounts.map((a) => a.accountId)).toEqual(["333333333333", "444444444444"]);
+  it("ロールが 1 つもないアカウントの行は入れない", () => {
+    const c = companyConfig();
+    c.kinds[3].assign = { readonly: ["sa"] };
+    c.organizations[1].accounts.push({ accountId: "777777777777", name: "x", kind: "A" });
+    c.kinds[0].assign = {};
+    const ids = gen(c, { auds: companyAuds(), inventory: companyInventory() }).worker.accounts.map(
+      (a) => a.accountId,
+    );
+    expect(ids).not.toContain("333333333333");
+    expect(ids).not.toContain("777777777777");
   });
 
   it("placement: ou の Organization のインベントリがなければ行を作らず警告する", () => {
     const r = gen(companyConfig(), { auds: companyAuds() });
-    expect(r.worker.standard.accounts.map((a) => a.accountId)).toEqual(["222222222222"]);
+    expect(r.worker.accounts.map((a) => a.accountId)).toEqual(["222222222222"]);
     expect(r.warnings).toContainEqual(issue("inventory.org-main", "inventory_missing"));
   });
 
   it("organizations には行に現れる Organization の表示名だけを入れる", () => {
-    expect(company().worker.standard.organizations).toEqual([
+    expect(company().worker.organizations).toEqual([
       { name: "org-main", displayName: "本体" },
       { name: "partner-x", displayName: "先方 X" },
-    ]);
-    expect(company().worker.admin?.organizations).toEqual([
-      { name: "org-main", displayName: "本体" },
     ]);
   });
 });
 
 describe("Worker 用の生成物: 契約の印（purpose）と SourceIdentity の出どころ", () => {
-  it("purpose は issue。SourceIdentity の出どころは既定 email で、設定の値が両方の階層に入る", () => {
+  it("purpose は issue。SourceIdentity の出どころは既定 email で、設定の値が入る", () => {
     const r = company();
-    expect(r.worker.standard.purpose).toBe("issue");
-    expect(r.worker.admin?.purpose).toBe("issue");
-    expect(r.worker.standard.identity).toEqual({ sourceIdentity: "email" });
-    expect(r.worker.admin?.identity).toEqual({ sourceIdentity: "email" });
+    expect(r.worker.purpose).toBe("issue");
+    expect(r.worker.identity).toEqual({ sourceIdentity: "email" });
     const c = companyConfig();
     c.identity = { sourceIdentity: "custom.employee_id" };
     const custom = gen(c, { auds: companyAuds(), inventory: companyInventory() });
-    expect(custom.worker.standard.identity).toEqual({ sourceIdentity: "custom.employee_id" });
-    expect(custom.worker.admin?.identity).toEqual({ sourceIdentity: "custom.employee_id" });
+    expect(custom.worker.identity).toEqual({ sourceIdentity: "custom.employee_id" });
   });
 });
 
-describe("表示用の生成物（display.standard.json。U2・P1'）", () => {
+describe("表示用の生成物（display.json。U2）", () => {
   const display = () => company().display;
 
-  it("Standard のデプロイにだけ渡す表示用の印と、遷移先のオリジンを持つ", () => {
+  it("表示用の印と、同じオリジンを持つ（Admin のオリジンは無い）", () => {
     expect(display()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       purpose: "display",
-      tier: "standard",
       generatedAt: AT,
       sourceRevision: "abc",
       portal: {
         origin: "https://portal.example.com",
-        adminOrigin: "https://admin-portal.example.com",
         routing: "path",
         supportUrl: "https://support.example.com/aws",
       },
     });
+    expect(display().portal).not.toHaveProperty("adminOrigin");
+    expect(display()).not.toHaveProperty("tier");
   });
 
   it("Administrator の行（表示用だけ）を持つ。アカウント・ロール・チームはあるが、email と roleArn はない", () => {
@@ -322,12 +320,13 @@ describe("表示用の生成物（display.standard.json。U2・P1'）", () => {
     expect(p.teams).toEqual([{ name: "me", displayName: "自分", tier: "standard" }]);
   });
 
-  it("AUD・Access のポリシー ID・issuer・タグのキー・roleArn・種類の定義・権限ポリシーを持たない（Admin のチームの AUD も）", () => {
+  it("AUD・Access のポリシー ID・issuer・タグのキー・roleArn・種類の定義・権限ポリシー・台帳を持たない（Admin のチームの AUD も）", () => {
     const c = companyConfig();
     c.teams[2].access = { policyIds: [uuid(77)] };
+    c.retiredTeams = [{ name: "ops", tier: "standard" }];
     const auds = companyAuds();
     const all = JSON.stringify(gen(c, { auds, inventory: companyInventory() }).display);
-    for (const aud of [...Object.values(auds.teams), ...Object.values(auds.entry)])
+    for (const aud of [...Object.values(auds.teams), auds.entry])
       expect(all, String(aud)).not.toContain(aud as string);
     for (const leak of [
       '"aud"',
@@ -345,6 +344,8 @@ describe("表示用の生成物（display.standard.json。U2・P1'）", () => {
       "inventoryRoleArn",
       "ou-abcd-",
       "sourceIdentity",
+      "retiredTeams",
+      '"ops"',
     ])
       expect(all, leak).not.toContain(leak);
   });
@@ -354,24 +355,21 @@ describe("表示用の生成物（display.standard.json。U2・P1'）", () => {
     expect(all).not.toContain("a".repeat(64));
   });
 
-  it("check（AUD なし）でも作れる。個人用（Admin なし）には Administrator の行も adminOrigin もない", () => {
+  it("check（AUD なし）でも作れる。個人用（Admin なし）には Administrator の行が無い", () => {
     const r = gen(personalConfig(), { mode: "check" });
     expect(r.display.accounts.every((a) => a.tier === "standard")).toBe(true);
-    expect(r.display.portal.adminOrigin).toBeUndefined();
     expect(gen(companyConfig(), { mode: "check" }).display.purpose).toBe("display");
   });
 
-  it("Worker 用の Standard の生成物には、Administrator の行も Object ID も入らない（発行用と表示用は別のファイル）", () => {
-    const s = JSON.stringify(company().worker.standard);
+  it("発行用の生成物には Object ID が入らない（発行用と表示用は別のファイル）", () => {
+    const s = JSON.stringify(company().worker);
     expect(s).not.toContain("00000000-0000-4000-8000-");
-    expect(s).not.toContain('"tier":"admin"');
-    expect(s).not.toContain("infra-elevated");
   });
 });
 
 describe("アカウントの email（inventory.accountEmail。§5.6）", () => {
   const emailOf = (r: ConsoleArtifacts, id: string) =>
-    r.worker.standard.accounts.find((a) => a.accountId === id)?.email;
+    r.worker.accounts.find((a) => a.accountId === id)?.email;
 
   it("既定（full）では管理下・管理外ともそのまま入れる", () => {
     const r = company();
@@ -384,7 +382,7 @@ describe("アカウントの email（inventory.accountEmail。§5.6）", () => {
     c.inventory = { accountEmail: { managed: "masked", partner: "hidden" } };
     const r = gen(c, { auds: companyAuds(), inventory: companyInventory() });
     expect(emailOf(r, "333333333333")).toBe("aw***@example.com");
-    const partner = r.worker.standard.accounts.find((a) => a.accountId === "222222222222");
+    const partner = r.worker.accounts.find((a) => a.accountId === "222222222222");
     expect(partner).toBeDefined();
     expect(partner && "email" in partner).toBe(false);
     const all = JSON.stringify(r);
@@ -422,42 +420,50 @@ describe("AUD（Terraform の出力と手書き）", () => {
     expect(paths.join("\n")).not.toContain("e".repeat(16));
   });
 
-  it("deploy: Standard はチームが 2 つ以上なら入口の AUD が要る（なければ entry_aud_missing）", () => {
+  it("deploy: Standard の階層のチームが 2 つ以上なら入口の AUD が要る（なければ entry_aud_missing。ポータルの流れの決裁）", () => {
     const auds = companyAuds();
     delete auds.entry;
     expect(issuesOf(() => gen(companyConfig(), { auds }))).toContainEqual(
-      issue("portal.entryAud.standard", "entry_aud_missing"),
+      issue("portal.entryAud", "entry_aud_missing"),
     );
   });
 
-  it("deploy: Admin のチームが 2 つ以上でも admin の入口の AUD は要らない（G-6 が決まるまで。entry_aud_missing にしない）", () => {
-    const auds = companyAuds();
-    delete auds.entry.admin;
-    // 会社用の設定は Admin のチームが 2 つ（infra-elevated・dev-elevated）
+  it("deploy: Standard の階層のチームが 1 つなら、Admin のチームが 2 つあっても入口の AUD は要らない", () => {
     const c = companyConfig();
-    expect(c.teams.filter((t: Raw) => t.tier === "admin")).toHaveLength(2);
-    const r = gen(c, { auds });
-    expect(r.worker.admin?.portal.entryAud).toBeUndefined();
-    // 入口の AUD を全部省いても、誤りは Standard の分だけ
+    c.teams = c.teams.filter((t: Raw) => t.name !== "dev" && t.name !== "sa");
+    c.kinds = [
+      { name: "A", assign: { admin: ["infra-elevated", "dev-elevated"], readonly: ["infra"] } },
+    ];
+    c.organizations[0].kindOus = { A: ["ou-abcd-11111111"] };
+    c.organizations.pop();
+    c.boundaries.pop();
+    c.roles = c.roles.filter((r: Raw) => r.name !== "developer");
+    const auds = companyAuds();
     delete auds.entry;
-    const found = issuesOf(() => gen(companyConfig(), { auds }));
-    expect(found).toContainEqual(issue("portal.entryAud.standard", "entry_aud_missing"));
-    expect(found).not.toContainEqual(issue("portal.entryAud.admin", "entry_aud_missing"));
+    delete auds.teams.dev;
+    delete auds.teams.sa;
+    const r = gen(c, { auds });
+    expect(r.worker.portal.entryAud).toBeUndefined();
   });
 
-  it("admin の入口の AUD を渡したときは、これまでどおり Admin の生成物に入る（受け付ける。重複は誤り）", () => {
-    expect(company().worker.admin?.portal.entryAud).toBe("7".repeat(64));
+  it("入口の AUD は 1 つの文字列（階層ごとのオブジェクトは type）", () => {
+    expect(company().worker.portal.entryAud).toBe("6".repeat(64));
+    const auds = companyAuds();
+    auds.entry = { standard: "6".repeat(64), admin: "7".repeat(64) };
+    expect(issuesOf(() => gen(companyConfig(), { auds }))).toContainEqual(
+      issue("auds.entry", "type"),
+    );
   });
 
   it("check: AUD がなくても誤りにしない（PR の検査。§11.5 の順）", () => {
     const r = gen(companyConfig(), { mode: "check" });
-    expect(r.worker.standard.teams[0]).toEqual({ name: "infra", displayName: "インフラ" });
-    expect(r.worker.standard.portal.entryAud).toBeUndefined();
+    expect(r.worker.teams[0]).toEqual({ name: "infra", displayName: "インフラ", tier: "standard" });
+    expect(r.worker.portal.entryAud).toBeUndefined();
   });
 
   it("手書きの AUD は Terraform の出力がなくても使う（個人用）", () => {
-    expect(gen(personalConfig()).worker.standard.teams).toEqual([
-      { name: "me", displayName: "自分", aud: "a".repeat(64) },
+    expect(gen(personalConfig()).worker.teams).toEqual([
+      { name: "me", displayName: "自分", tier: "standard", aud: "a".repeat(64) },
     ]);
   });
 
@@ -478,10 +484,10 @@ describe("AUD（Terraform の出力と手書き）", () => {
   it("AUD の重複（チーム同士・入口との間）は duplicate", () => {
     const auds = companyAuds();
     auds.teams.dev = auds.teams.infra;
-    auds.entry.admin = auds.teams.sa;
+    auds.entry = auds.teams.sa;
     const found = issuesOf(() => gen(companyConfig(), { auds }));
     expect(found).toContainEqual(issue("auds.teams.dev", "duplicate"));
-    expect(found).toContainEqual(issue("auds.entry.admin", "duplicate"));
+    expect(found).toContainEqual(issue("auds.entry", "duplicate"));
   });
 
   it("AUD の入力の形が違えば type / unknown_key", () => {
@@ -553,20 +559,13 @@ describe("StackSets 用の生成物", () => {
     });
   });
 
-  it("基盤の StackSet: Organization ごとに境界の issuer（Standard・Admin）", () => {
+  it("基盤の StackSet: Organization ごとに境界の issuer（1 つ。階層で分けない）", () => {
     expect(company().stacksets.providers).toEqual([
-      {
-        organization: "org-main",
-        boundary: "managed",
-        issuers: {
-          standard: "https://id.example.com/standard",
-          admin: "https://admin-id.example.com/admin",
-        },
-      },
+      { organization: "org-main", boundary: "managed", issuer: "https://id.example.com/console" },
       {
         organization: "partner-x",
         boundary: "partner:partner-x",
-        issuers: { standard: "https://id.example.com/partner-x" },
+        issuer: "https://id.example.com/p/partner-x/console",
       },
     ]);
   });
@@ -620,11 +619,9 @@ describe("Access の検査用の生成物（Terraform との突き合わせ）",
   it("チームごとの階層・ポリシーの元・AUD と、ポータルのオリジン", () => {
     const a = company().access;
     expect(a.routing).toBe("path");
-    expect(a.origins).toEqual({
-      standard: "https://portal.example.com",
-      admin: "https://admin-portal.example.com",
-    });
-    expect(a.entryAud).toEqual({ standard: "6".repeat(64), admin: "7".repeat(64) });
+    expect(a.origin).toBe("https://portal.example.com");
+    expect(a).not.toHaveProperty("origins");
+    expect(a.entryAud).toBe("6".repeat(64));
     expect(a.teams[0]).toEqual({
       name: "infra",
       tier: "standard",
@@ -664,5 +661,189 @@ describe("署名を置くアカウント（signing.accountIds。cto の決裁 (5
     const c = companyConfig();
     c.signing = { accountIds: ["666666666666"] };
     expect(() => gen(c, { auds: companyAuds(), inventory: companyInventory() })).not.toThrow();
+  });
+});
+
+// P2（B）の設計メモ §7.1: 退役したチーム名の台帳。台帳から名前を消せないことを、前回の生成物（stacksets.json の
+// teams・retiredTeams）と比べて生成器で守る（cto の決裁 2026-11-17）。生成物は gitignore なので、前回が無いときは警告する。
+describe("退役したチーム名の台帳（前回の生成物との比較）", () => {
+  const prevOf = (r: ConsoleArtifacts): Raw => JSON.parse(JSON.stringify(r.stacksets));
+  const withRetired = (retired: Raw[]) => {
+    const c = companyConfig();
+    c.retiredTeams = retired;
+    return c;
+  };
+  const opts = () => ({ auds: companyAuds(), inventory: companyInventory() });
+
+  it("StackSets 用の生成物に、今のチームと台帳（name・tier）を持つ", () => {
+    const r = gen(withRetired([{ name: "ops", tier: "standard" }]), opts());
+    expect(r.stacksets.teams).toEqual([
+      { name: "infra", tier: "standard" },
+      { name: "dev", tier: "standard" },
+      { name: "sa", tier: "standard" },
+      { name: "infra-elevated", tier: "admin" },
+      { name: "dev-elevated", tier: "admin" },
+    ]);
+    expect(r.stacksets.retiredTeams).toEqual([{ name: "ops", tier: "standard" }]);
+  });
+
+  it("c1: 前回の生成物が無い deploy は ledger_previous_missing の誤り（警告にしない）。check では黙る", () => {
+    expect(issuesOf(() => gen(companyConfig(), { ...opts(), ledgerInit: false }))).toEqual([
+      issue("previous", "ledger_previous_missing"),
+    ]);
+    expect(gen(companyConfig(), { mode: "check" }).warnings).toEqual([]);
+    expect(() => gen(companyConfig(), { ...opts(), previous: prevOf(company()) })).not.toThrow();
+  });
+
+  it("c1: 前回に台帳の項目が無い（P2 より前の形）deploy は ledger_previous_legacy の誤り。check では今のまま（警告）", () => {
+    const prev = prevOf(company());
+    delete prev.teams;
+    delete prev.retiredTeams;
+    expect(issuesOf(() => gen(companyConfig(), { ...opts(), previous: prev }))).toEqual([
+      issue("previous", "ledger_previous_legacy"),
+    ]);
+    expect(gen(companyConfig(), { mode: "check", previous: prev }).warnings).toContainEqual(
+      issue("previous", "ledger_previous_missing"),
+    );
+  });
+
+  it("c2・c3: 初回の指定（ledgerInit）は、前回も baseline も無いときに通し、stacksets.json の meta に残す", () => {
+    const r = gen(withRetired([{ name: "ops", tier: "standard" }]), {
+      ...opts(),
+      ledgerInit: true,
+    });
+    expect(r.stacksets.ledgerInit).toBe(true);
+    expect(r.ledgerInit).toEqual({
+      teams: ["infra", "dev", "sa", "infra-elevated", "dev-elevated"],
+      retiredTeams: ["ops"],
+    });
+    // 次の生成（前回あり・指定なし）では消える
+    const next = gen(companyConfig(), { ...opts(), previous: prevOf(company()) });
+    expect(next.stacksets.ledgerInit).toBeUndefined();
+    expect(next.ledgerInit).toBeUndefined();
+    // P2 より前の形の前回（比べる台帳が無い）も、初回の指定で通す（移行の経路）
+    const legacy = prevOf(company());
+    delete legacy.teams;
+    delete legacy.retiredTeams;
+    expect(
+      gen(companyConfig(), { ...opts(), previous: legacy, ledgerInit: true }).stacksets.ledgerInit,
+    ).toBe(true);
+  });
+
+  it("c2: 前回か baseline に台帳があるのに初回の指定を付けたら ledger_init_not_allowed", () => {
+    const prev = prevOf(company());
+    expect(
+      issuesOf(() => gen(companyConfig(), { ...opts(), previous: prev, ledgerInit: true })),
+    ).toEqual([issue("previous", "ledger_init_not_allowed")]);
+    expect(
+      issuesOf(() => gen(companyConfig(), { ...opts(), baseline: prev, ledgerInit: true })),
+    ).toEqual([issue("baseline", "ledger_init_not_allowed")]);
+  });
+
+  it("c4: baseline が読めない・形が違う・台帳の項目が無いなら ledger_baseline", () => {
+    const legacy = prevOf(company());
+    delete legacy.teams;
+    delete legacy.retiredTeams;
+    for (const bad of [null, [], { teams: "x" }, legacy])
+      expect(
+        issuesOf(() =>
+          gen(companyConfig(), { ...opts(), previous: prevOf(company()), baseline: bad }),
+        ),
+        JSON.stringify(bad),
+      ).toContainEqual(issue("baseline", "ledger_baseline"));
+  });
+
+  it("c4・c6: baseline と前回の両方と比べる。片方だけに違反があっても誤り", () => {
+    const withOps = prevOf(gen(withRetired([{ name: "ops", tier: "standard" }]), opts()));
+    const plain = prevOf(company());
+    const now = withRetired([]);
+    // 前回は台帳に ops が無いので通るが、baseline では ops を台帳から消している
+    expect(issuesOf(() => gen(now, { ...opts(), previous: plain, baseline: withOps }))).toEqual([
+      issue("baseline.retiredTeams", "retired_team_removed"),
+    ]);
+    // 逆: baseline は通るが、前回では ops を台帳から消している
+    expect(issuesOf(() => gen(now, { ...opts(), previous: withOps, baseline: plain }))).toEqual([
+      issue("retiredTeams", "retired_team_removed"),
+    ]);
+    // 両方に通れば通る
+    expect(() =>
+      gen(withRetired([{ name: "ops", tier: "standard" }]), {
+        ...opts(),
+        previous: plain,
+        baseline: withOps,
+      }),
+    ).not.toThrow();
+  });
+
+  it("c4: 前回が無くても baseline に台帳があれば、baseline と比べて通す（新しいチェックアウト）", () => {
+    const withOps = prevOf(gen(withRetired([{ name: "ops", tier: "standard" }]), opts()));
+    expect(() =>
+      gen(withRetired([{ name: "ops", tier: "standard" }]), { ...opts(), baseline: withOps }),
+    ).not.toThrow();
+    expect(issuesOf(() => gen(withRetired([]), { ...opts(), baseline: withOps }))).toEqual([
+      issue("baseline.retiredTeams", "retired_team_removed"),
+    ]);
+  });
+
+  it("前回の台帳の名前が今の台帳に無ければ retired_team_removed（台帳から名前を消せない）", () => {
+    const prev = prevOf(gen(withRetired([{ name: "ops", tier: "standard" }]), opts()));
+    expect(issuesOf(() => gen(withRetired([]), { ...opts(), previous: prev }))).toContainEqual(
+      issue("retiredTeams", "retired_team_removed"),
+    );
+    // 台帳に残せば通る（足すのは自由）
+    expect(() =>
+      gen(
+        withRetired([
+          { name: "ops", tier: "standard" },
+          { name: "qa", tier: "admin" },
+        ]),
+        {
+          ...opts(),
+          previous: prev,
+        },
+      ),
+    ).not.toThrow();
+  });
+
+  it("前回のチームを消すなら台帳へ移す（移さなければ team_removed_not_retired）", () => {
+    const prev = prevOf(company());
+    const auds = companyAuds();
+    delete auds.teams.sa;
+    const noSa = () => ({ auds, inventory: companyInventory(), previous: prev });
+    const removed = withRetired([]);
+    removed.teams = removed.teams.filter((t: Raw) => t.name !== "sa");
+    for (const k of removed.kinds) delete k.assign.readonly;
+    expect(issuesOf(() => gen(removed, noSa()))).toEqual([
+      issue("teams", "team_removed_not_retired"),
+    ]);
+    const moved = withRetired([{ name: "sa", tier: "standard" }]);
+    moved.teams = moved.teams.filter((t: Raw) => t.name !== "sa");
+    for (const k of moved.kinds) delete k.assign.readonly;
+    expect(() => gen(moved, noSa())).not.toThrow();
+  });
+
+  it("前回と同じ名前のチームの階層を変えたら team_tier_changed（階層を変えるときは新しい名前にする）", () => {
+    const prev = prevOf(company());
+    const c = companyConfig();
+    c.teams[2].tier = "admin"; // sa を Admin に
+    c.kinds = c.kinds.map((k: Raw) => ({ ...k, assign: { ...k.assign, readonly: ["infra"] } }));
+    c.kinds[0].assign.admin = ["infra-elevated", "sa"];
+    expect(issuesOf(() => gen(c, { ...opts(), previous: prev }))).toContainEqual(
+      issue("teams[2].tier", "team_tier_changed"),
+    );
+  });
+
+  it("前回の生成物が壊れていれば ledger_previous（比べられないまま通さない）。値は出さない", () => {
+    for (const bad of [[], { teams: "x" }, { teams: [{ name: 1 }] }, { retiredTeams: [{}] }])
+      expect(
+        issuesOf(() => gen(companyConfig(), { ...opts(), previous: bad })),
+        JSON.stringify(bad),
+      ).toContainEqual(issue("previous", "ledger_previous"));
+  });
+
+  it("前回の生成物に台帳の項目が無い（P2 より前の形）なら、チームだけを比べる", () => {
+    const prev = prevOf(company());
+    delete prev.retiredTeams;
+    expect(() => gen(companyConfig(), { ...opts(), previous: prev })).not.toThrow();
   });
 });

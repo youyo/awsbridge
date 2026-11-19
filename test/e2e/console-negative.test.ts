@@ -1,48 +1,48 @@
-// コンソールログインの負の試験（Standard・Admin の Worker を wrangler dev で起動し、実プロセスに HTTP を送る）。
+// コンソールログインの負の試験（1 つの Worker を wrangler dev で起動し、実プロセスに HTTP を送る。P2（B）の設計メモ §2.7・§7.3）。
+// P2 で Admin の Worker を消したので、2 つの Worker に送っていた負の試験を、同じ Worker の Standard のチーム（infra）と
+// Admin の階層のチーム（infra-elevated。同じオリジンの /t/infra-elevated）に送る形に書き直した。件数は減らさない。
 // 擬似の Access（certs）・STS・getSigninToken を相手にし、どのケースでも「STS も getSigninToken も呼ばれない」ことを
 // 擬似サーバーの受信数で確かめる（afterEach）。ケースの一覧は describe と it の名前がそのまま一覧になる:
 //
-//   1. 陽性の対照            同じ道具で正しい要求を送ると発行の段まで進む（Standard は 302、Admin は鍵があれば 302・無ければ 9 段目の 503）。
-//                            受信数の確認が空振りしていない証拠。Admin の負の試験は鍵のある Worker に送る（断られなければ 302 になる）
-//   2. 両階層に共通           Access JWT（偽・別のチームドメイン・期限切れ・aud の形・入口の AUD・チームの食い違い・大きさの上限）、Origin・Sec-Fetch-Site・
-//                             Content-Type、CSRF（別チーム・期限切れ・改ざん・別の利用者）、行（entry）、本文の大きさ、GET・HEAD・OPTIONS・PUT など
-//   3. Standard 固有          Admin の行（not_listed）、Admin の AUD、issuer のホストからポータルの経路に届かない、チーム以外のパス、
+//   1. 陽性の対照            同じ道具で正しい要求を送ると発行の段まで進む（両階層のチームで 302。X16 の同じチームの別の行も 302）。
+//                            受信数の確認が空振りしていない証拠。境界の鍵が無ければ 9 段目の 503（X14）
+//   2. 両階層に共通           Access JWT（偽・別のチームドメイン・期限切れ・aud の形・入口の AUD・もう一方の階層のチームの AUD・チームの食い違い・
+//                             大きさの上限）、Origin・Sec-Fetch-Site・Content-Type、CSRF（別チーム・期限切れ・改ざん・別の利用者）、行（entry）、
+//                             本文の大きさ、GET・HEAD・OPTIONS・PUT など
+//   3. Standard のチーム       Admin の行（X1）、Admin のチームのパス（X2）、issuer のホストからポータルの経路に届かない、チーム以外のパス、
 //                            鍵が vars の公開鍵と合わなければ 503・鍵が無ければ 500、デプロイ後の確認（key-check）は Access の検証の後ろ
-//   4. Admin 固有             チームのパス以外は 404（処理の最初。JWT・入口の AUD によらない）、Standard の AUD は 403、
-//                            issuer の文書は Admin の issuer のホストの 2 つのパスだけ、Access JWT の iat が古ければ 401、
-//                            鍵が vars の公開鍵と合わなければ 503、デプロイ後の確認（key-check）は Access の検証の後ろ
-//   5. 停止スイッチ           両階層（LOGIN_DISABLED=true）
-//   6. Access アプリの無いチーム  AUD が設定にないチームのパスは必ず断る（JWT 無しは 401、ほかは 403）
-//   7. secret が壊れている    CSRF の鍵が短いとき、発行しない（500 server_misconfigured）。Admin はチームのパス以外を env を読む前に 404
+//   4. Admin の階層のチーム    X2〜X6・X11〜X13（X13 は a・b・c に分ける）、既知の経路以外は env を読む前に 404（Worker 全体）、鍵が合わなければ 503
+//   5. 停止スイッチ           LOGIN_DISABLED（全体。両階層）と ADMIN_LOGIN_DISABLED（Admin の階層だけ。X10）
+//   6. Access アプリの無いチーム  AUD が設定にないチームのパスは必ず断る（両階層のチーム noapp・noapp-admin）
+//   7. secret が壊れている    CSRF の鍵が短いとき、発行しない（500 server_misconfigured）。既知の経路以外は env を読む前に 404
+//   8. ホスト方式（X15）      Host → チーム → AUD の対応は 1 つだけ
 //
-// 設計: docs/specs/console-login-portal.md §9.3・§9.4・§10、cto の G-6（Admin はチームのパス以外を 404、入口の AUD は発行に受けない）。
-// 設定はリポジトリの wrangler.console-{standard,admin}.jsonc を読み、main を E2E 用のエントリ（fixtures/。外向きの通信だけを擬似に向ける）にし、
+// 設計: docs/specs/console-login-portal.md §9.3・§9.4・§10、cto の G-6（入口の AUD は発行に受けない）、P2（B）の設計メモ §5・§7。
+// 設定はリポジトリの wrangler.console.jsonc を読み、main を E2E 用のエントリ（fixtures/。外向きの通信だけを擬似に向ける）にし、
 // routes を外し（手元では Host ヘッダーで振り分ける）、alias を試験用の生成物に、vars に鍵と擬似の宛先を足した一時ファイルで起動する。
-// 試験用の生成物は、会社用の fixture の生成物にチーム noapp（Access アプリが無い。aud なし）を足したもの。
+// 試験用の生成物は、会社用の fixture の生成物に、Access アプリが無い（aud なし）チーム noapp（Standard）・noapp-admin（Admin）を足したもの。
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { decodeJwt, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { TEAM_TAG_KEY } from "../../src/console/constants";
 import { ACCESS_JWT_MAX_LENGTH } from "../../src/console/issue/access";
+import { AWS_TAGS_CLAIM } from "../../src/console/issue/claims";
 import { createCsrfToken, importCsrfKey } from "../../src/console/issue/csrf";
 import { MAX_BODY_BYTES } from "../../src/console/portal/login";
 import type { WorkerConfig } from "../../src/console/types";
 import {
   ADMIN_ENTRY,
-  ADMIN_HOST,
-  ADMIN_ISSUER_HOST,
-  ADMIN_PORTAL,
   AUDS,
-  adminConfig,
   displayConfig,
   ENTRY,
   ISSUER_HOST,
   PORTAL,
   PORTAL_HOST,
-  standardConfig,
   stsXml,
-} from "../unit/console-standard-harness";
+  workerConfig,
+} from "../unit/console-worker-harness";
 import {
   type FakeServer,
   type HttpResult,
@@ -61,6 +61,9 @@ const EMAIL = "user@example.com";
 const SUB = "e2e00000-0000-4000-8000-0000000000aa";
 const OTHER_SUB = "e2e00000-0000-4000-8000-0000000000bb";
 const NOAPP = "noapp";
+const NOAPP_ADMIN = "noapp-admin";
+/** P2 より前の Admin のポータルのホスト（今は無い。知らないホストとして 404 になる）。 */
+const OLD_ADMIN_HOST = "admin-portal.example.com";
 /** Access アプリが無いチームの、設定にない AUD（形だけ正しい。どのチームにも対応しない）。 */
 const UNKNOWN_AUD = `unknownaud${"9".repeat(40)}`;
 // 鍵・トークンの形の文字列は実行時に組む（gitleaks の誤検知を避ける）
@@ -68,17 +71,24 @@ const CSRF_SECRET = ["e2e", "csrf", "n".repeat(40)].join("-");
 const ACCESS_KEY_ID = ["ASIA", "N".repeat(16)].join("");
 const SIGNIN_TOKEN = ["signin", "n".repeat(24)].join("-");
 
+// P2: Worker は 1 つ。std は Standard のチームの送り先、stdAdmin は同じ設定の別のプロセスで、Admin の階層のチームの送り先
+// （1 つのプロセスに両階層の負の試験を送ると、「Content-Length つきの大きな本文 → 413」が wrangler dev のプロキシの 503
+//  （Your worker restarted mid-request）でときどき落ちた。P2 より前は 2 つの Worker に分かれていた負荷の形に戻す回避策。
+//  同じ Worker の両階層をまたぐ試験（X2 など）は、どちらのプロセスでも同じ設定・同じコードなので結果は変わらない）
 let std: Instance;
+let stdAdmin: Instance;
+/** LOGIN_DISABLED=true（全体の停止）。 */
 let stdStopped: Instance;
-let admin: Instance;
-let adminNoKey: Instance;
-let adminMismatch: Instance;
+/** ADMIN_LOGIN_DISABLED=true（Admin の階層だけの停止。X10）。 */
 let adminStopped: Instance;
 let stdBroken: Instance;
 let stdMismatch: Instance;
 let stdNoKey: Instance;
-let adminBroken: Instance;
-// Access JWT の大きさの上限の試験の送り先（ほかの試験と別の wrangler dev）。これらの試験を std・admin に送ると、あとの
+/** managed の境界の今の鍵が無い（公開鍵だけ）。X14。 */
+let stdNoManaged: Instance;
+/** ホスト方式（routing: host）の生成物で起動したもの。X15。 */
+let stdHost: Instance;
+// Access JWT の大きさの上限の試験の送り先（ほかの試験と別の wrangler dev。階層ごとに分ける）。これらの試験を std に送ると、あとの
 // 「Content-Length つきの大きな本文 → 413」の試験が wrangler dev のプロキシの 503（Your worker restarted mid-request）で
 // ときどき落ちた。原因は特定できていない（上限を 8 KiB にしても揺れたので、ヘッダーの大きさだけでは説明できない）。
 // 分けてからは再現していない（回避策）
@@ -158,17 +168,18 @@ async function hs256Jwt(aud: string): Promise<string> {
     .sign(new TextEncoder().encode("x".repeat(48)));
 }
 
-// ---- 階層ごとの対象 ----
+// ---- 階層ごとの対象（同じ Worker・同じオリジンの、Standard のチームと Admin の階層のチーム）----
 
 type Target = {
   label: string;
   inst: () => Instance;
+  /** LOGIN_DISABLED=true の Worker（全体の停止。両階層とも止まる）。 */
   stopped: () => Instance;
   host: string;
   origin: string;
-  /** もう一方の階層のポータルのオリジン。 */
-  otherOrigin: string;
   team: string;
+  /** Access アプリの無い（AUD の無い）同じ階層のチーム。 */
+  noapp: string;
   aud: string;
   /** 同じ階層の別のチーム（AUD あり）。 */
   peerTeam: string;
@@ -177,21 +188,21 @@ type Target = {
   entry: string;
   /** この階層のチームの行として存在しない entry（もう一方の階層の行・他チームの行）。 */
   foreignRows: [string, string][];
-  /** 入口のアプリの AUD（この階層のもの・もう一方のもの）。発行には受けない。 */
+  /** 入口のアプリの AUD（1 つ）。発行には受けない。 */
   entryAuds: [string, string][];
-  /** もう一方の階層のチームの AUD。 */
+  /** もう一方の階層のチームの AUD（同じ Worker なので既知の AUD。パスのチームと食い違うので 403 team_mismatch）。 */
   otherTierAuds: [string, string][];
   s2: string;
 };
 
 const stdT: Target = {
-  label: "Standard",
+  label: "Standard のチーム",
   inst: () => std,
   stopped: () => stdStopped,
   host: PORTAL_HOST,
   origin: PORTAL,
-  otherOrigin: ADMIN_PORTAL,
   team: "infra",
+  noapp: NOAPP,
   aud: AUDS.teams.infra as string,
   peerTeam: "dev",
   peerAud: AUDS.teams.dev as string,
@@ -200,10 +211,7 @@ const stdT: Target = {
     ["Admin の行（333333333333:admin）", ADMIN_ENTRY],
     ["他チームの行（dev の 444444444444:developer）", "444444444444:developer"],
   ],
-  entryAuds: [
-    ["Standard の入口の AUD", AUDS.entry.standard],
-    ["Admin の入口の AUD", AUDS.entry.admin],
-  ],
+  entryAuds: [["入口の AUD", AUDS.entry]],
   otherTierAuds: [
     ["Admin のチーム（infra-elevated）の AUD", AUDS.teams["infra-elevated"] as string],
     ["Admin のチーム（dev-elevated）の AUD", AUDS.teams["dev-elevated"] as string],
@@ -212,25 +220,22 @@ const stdT: Target = {
 };
 
 const adminT: Target = {
-  label: "Admin",
-  inst: () => admin,
-  stopped: () => adminStopped,
-  host: ADMIN_HOST,
-  origin: ADMIN_PORTAL,
-  otherOrigin: PORTAL,
+  label: "Admin の階層のチーム",
+  inst: () => stdAdmin,
+  stopped: () => stdStopped,
+  host: PORTAL_HOST,
+  origin: PORTAL,
   team: "infra-elevated",
+  noapp: NOAPP_ADMIN,
   aud: AUDS.teams["infra-elevated"] as string,
   peerTeam: "dev-elevated",
   peerAud: AUDS.teams["dev-elevated"] as string,
   entry: ADMIN_ENTRY,
   foreignRows: [
-    ["Standard の行（333333333333:readonly）", ENTRY],
+    ["X4: Viewer の行（333333333333:readonly）", ENTRY],
     ["他階層の他チームの行（444444444444:developer）", "444444444444:developer"],
   ],
-  entryAuds: [
-    ["Admin の入口の AUD", AUDS.entry.admin],
-    ["Standard の入口の AUD", AUDS.entry.standard],
-  ],
+  entryAuds: [["入口の AUD", AUDS.entry]],
   otherTierAuds: [
     ["Standard のチーム（infra）の AUD", AUDS.teams.infra as string],
     ["Standard のチーム（dev）の AUD", AUDS.teams.dev as string],
@@ -324,7 +329,14 @@ async function csrfFrom(t: Target, team: string, aud: string): Promise<string> {
 // ---- 起動 ----
 
 function withNoappTeam(c: WorkerConfig): WorkerConfig {
-  return { ...c, teams: [...c.teams, { name: NOAPP, displayName: "アプリなし" }] };
+  return {
+    ...c,
+    teams: [
+      ...c.teams,
+      { name: NOAPP, displayName: "アプリなし", tier: "standard" },
+      { name: NOAPP_ADMIN, displayName: "アプリなし（Admin）", tier: "admin" },
+    ],
+  };
 }
 
 beforeAll(async () => {
@@ -344,12 +356,17 @@ beforeAll(async () => {
     writeFileSync(p, JSON.stringify(v));
     return p;
   };
-  const stdJson = write("worker.standard.json", withNoappTeam(standardConfig()));
-  const displayJson = write("display.standard.json", displayConfig());
-  const adminJson = write("worker.admin.json", withNoappTeam(adminConfig()));
+  const workerJson = write("worker.json", withNoappTeam(workerConfig()));
+  const displayJson = write("display.json", displayConfig());
+  const hostWorker = withNoappTeam(workerConfig());
+  hostWorker.portal.routing = "host";
+  const hostDisplay = displayConfig();
+  hostDisplay.portal.routing = "host";
+  const hostWorkerJson = write("worker.host.json", hostWorker);
+  const hostDisplayJson = write("display.host.json", hostDisplay);
 
-  const wranglerConfig = (kind: "standard" | "admin", entry = `console-${kind}-entry.ts`) => {
-    const config = readJsonc(join(root, `wrangler.console-${kind}.jsonc`));
+  const wranglerConfig = (name: string, worker = workerJson, display = displayJson) => {
+    const config = readJsonc(join(root, "wrangler.console.jsonc"));
     expect(config.workers_dev).toBe(false);
     expect(config.preview_urls).toBe(false);
     delete config.routes; // 手元では Host ヘッダーで振り分ける（routes があると wrangler dev が Host を書き換える）
@@ -357,47 +374,42 @@ beforeAll(async () => {
       ...r,
       simple: { ...r.simple, limit: 100000 },
     }));
-    return write(`wrangler.${kind}.${entry}.json`, {
+    return write(`wrangler.${name}.json`, {
       ...config,
       $schema: undefined,
-      main: join(root, `test/e2e/fixtures/${entry}`),
-      alias:
-        kind === "standard"
-          ? { "awsbridge:console-worker": stdJson, "awsbridge:console-display": displayJson }
-          : { "awsbridge:console-worker-admin": adminJson },
+      main: join(root, "test/e2e/fixtures/console-entry.ts"),
+      alias: { "awsbridge:console-worker": worker, "awsbridge:console-display": display },
       ratelimits,
       vars: {
         ...(config.vars as Record<string, string>),
         ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
-        // 署名鍵は E2E 用のエントリが Worker の中で作る（Standard は境界ごと、Admin は鍵ありのエントリだけ。どちらも取り出せない CryptoKey）
+        // 署名鍵は E2E 用のエントリが Worker の中で境界ごとに作る（取り出せない CryptoKey）
         CONSOLE_CSRF_KEY: CSRF_SECRET,
         E2E_FAKE_BASE: fake.base,
       },
     });
   };
-  const stdConfig = wranglerConfig("standard");
-  const adminConfigPath = wranglerConfig("admin");
-  const adminKeyConfigPath = wranglerConfig("admin", "console-admin-key-entry.ts");
+  const stdConfig = wranglerConfig("console");
+  const hostConfig = wranglerConfig("console-host", hostWorkerJson, hostDisplayJson);
   const stdReady = async (i: Instance) =>
-    (await send(i, { host: ISSUER_HOST, path: "/standard/.well-known/jwks.json" })).status === 200;
-  const adminReady = async (i: Instance) =>
-    // Access の JWT が無いチームのパスは 401（Worker が応答している印）
-    (await send(i, { host: ADMIN_HOST, path: "/t/infra-elevated/" })).status === 401;
+    (await send(i, { host: ISSUER_HOST, path: "/console/.well-known/jwks.json" })).status === 200;
+  const brokenReady = async (i: Instance) =>
+    (await send(i, { host: ISSUER_HOST, path: "/console/.well-known/jwks.json" })).status === 500;
   [
     std,
+    stdAdmin,
     stdStopped,
-    admin,
-    adminNoKey,
-    adminMismatch,
     adminStopped,
     stdBroken,
-    adminBroken,
     stdMismatch,
     stdNoKey,
+    stdNoManaged,
     stdBig,
     adminBig,
+    stdHost,
   ] = await Promise.all([
     startWrangler({ name: "std", configPath: stdConfig, stateDir: tmp, ready: stdReady }),
+    startWrangler({ name: "std-admin", configPath: stdConfig, stateDir: tmp, ready: stdReady }),
     startWrangler({
       name: "std-stopped",
       configPath: stdConfig,
@@ -405,52 +417,22 @@ beforeAll(async () => {
       vars: { LOGIN_DISABLED: "true" },
       ready: stdReady,
     }),
-    // 鍵あり（Admin の負の試験の送り先）・鍵なし（503 の対照）・鍵と公開鍵が合わない
-    startWrangler({
-      name: "admin",
-      configPath: adminKeyConfigPath,
-      stateDir: tmp,
-      ready: adminReady,
-    }),
-    startWrangler({
-      name: "admin-nokey",
-      configPath: adminConfigPath,
-      stateDir: tmp,
-      ready: adminReady,
-    }),
-    startWrangler({
-      name: "admin-mismatch",
-      configPath: adminKeyConfigPath,
-      stateDir: tmp,
-      vars: { E2E_KEY_MODE: "mismatch" },
-      ready: adminReady,
-    }),
     startWrangler({
       name: "admin-stopped",
-      configPath: adminConfigPath,
+      configPath: stdConfig,
       stateDir: tmp,
-      vars: { LOGIN_DISABLED: "true" },
-      ready: adminReady,
+      vars: { ADMIN_LOGIN_DISABLED: "true" },
+      ready: stdReady,
     }),
-    // CSRF の鍵が短い（secret が壊れている）。どの経路も 500 になる印で起動を待つ
+    // CSRF の鍵が短い（secret が壊れている）。既知の経路は 500 になる印で起動を待つ
     startWrangler({
       name: "std-broken",
       configPath: stdConfig,
       stateDir: tmp,
       vars: { CONSOLE_CSRF_KEY: "short" },
-      ready: async (i) =>
-        (await send(i, { host: ISSUER_HOST, path: "/standard/.well-known/jwks.json" })).status ===
-        500,
+      ready: brokenReady,
     }),
-    startWrangler({
-      name: "admin-broken",
-      configPath: adminConfigPath,
-      stateDir: tmp,
-      vars: { CONSOLE_CSRF_KEY: "short" },
-      ready: async (i) =>
-        (await send(i, { host: ADMIN_HOST, path: "/t/infra-elevated/" })).status === 500,
-    }),
-    // Standard: managed のバインディングの鍵が公開鍵と合わない（鍵だけ替えて vars を替え忘れた）
+    // managed のバインディングの鍵が公開鍵と合わない（鍵だけ替えて vars を替え忘れた）
     startWrangler({
       name: "std-mismatch",
       configPath: stdConfig,
@@ -458,23 +440,26 @@ beforeAll(async () => {
       vars: { E2E_KEY_MODE: "mismatch" },
       ready: stdReady,
     }),
-    // Standard: 鍵の vars もバインディングも無い（鍵の投入前）。どの経路も 500 になる印で起動を待つ
+    // 鍵の vars もバインディングも無い（鍵の投入前）。既知の経路は 500 になる印で起動を待つ
     startWrangler({
       name: "std-nokey",
       configPath: stdConfig,
       stateDir: tmp,
       vars: { E2E_KEY_MODE: "none" },
-      ready: async (i) =>
-        (await send(i, { host: ISSUER_HOST, path: "/standard/.well-known/jwks.json" })).status ===
-        500,
+      ready: brokenReady,
+    }),
+    // managed の境界の今の鍵が無い（X14）
+    startWrangler({
+      name: "std-nomanaged",
+      configPath: stdConfig,
+      stateDir: tmp,
+      vars: { E2E_KEY_MODE: "no-managed" },
+      ready: stdReady,
     }),
     startWrangler({ name: "std-big", configPath: stdConfig, stateDir: tmp, ready: stdReady }),
-    startWrangler({
-      name: "admin-big",
-      configPath: adminKeyConfigPath,
-      stateDir: tmp,
-      ready: adminReady,
-    }),
+    startWrangler({ name: "admin-big", configPath: stdConfig, stateDir: tmp, ready: stdReady }),
+    // ホスト方式（X15）
+    startWrangler({ name: "std-host", configPath: hostConfig, stateDir: tmp, ready: stdReady }),
   ]);
 
   // 正しい CSRF トークン（画面から取る。同じ利用者・10 分の有効期限の中で使い回す）
@@ -488,17 +473,16 @@ beforeAll(async () => {
 afterAll(() => {
   for (const i of [
     std,
+    stdAdmin,
     stdStopped,
-    admin,
-    adminNoKey,
-    adminMismatch,
     adminStopped,
     stdBroken,
-    adminBroken,
     stdMismatch,
     stdNoKey,
+    stdNoManaged,
     stdBig,
     adminBig,
+    stdHost,
   ])
     stopWrangler(i);
   fake?.close();
@@ -518,7 +502,7 @@ const noIssue = () => {
 // ---- 1. 陽性の対照 ----
 
 describe("陽性の対照（同じ道具で正しい要求を送ると、発行の段まで進む。以降の負の試験の確認が空振りしていない証拠）", () => {
-  it("Standard: 正しい POST は 302 で、STS と getSigninToken が 1 回ずつ呼ばれる", async () => {
+  it("Standard のチーム: 正しい POST は 302 で、STS と getSigninToken が 1 回ずつ呼ばれる", async () => {
     const r = await post(stdT);
     expect(r.status, r.body).toBe(302);
     expect(String(r.headers.location)).toContain("https://signin.aws.amazon.com/federation");
@@ -526,18 +510,28 @@ describe("陽性の対照（同じ道具で正しい要求を送ると、発行�
     expect(fake.seen.signin).toHaveLength(1);
   });
 
-  it("Admin（鍵あり）: 正しい POST は 302 で、STS と getSigninToken が 1 回ずつ呼ばれる（Admin の負の試験の送り先）", async () => {
+  it("Admin の階層のチーム（同じ Worker・同じ境界の鍵）: 正しい POST は 302 で、STS と getSigninToken が 1 回ずつ呼ばれる（Admin の負の試験の送り先）", async () => {
     const r = await post(adminT);
     expect(r.status, r.body).toBe(302);
     expect(String(r.headers.location)).toContain("https://signin.aws.amazon.com/federation");
     expect(fake.seen.sts).toHaveLength(1);
     expect(fake.seen.signin).toHaveLength(1);
+    expect(fake.seen.sts[0]?.get("RoleArn")).toContain(":role/awsbridge-console/admin/");
   });
 
-  it("Admin（鍵なし）: 正しい POST は 9 段目の 503 signing_unavailable まで進む（STS は呼ばない）", async () => {
-    const r = await post(adminT, { inst: adminNoKey });
-    denied(r, 503, "signing_unavailable");
+  it("X14: 行の境界（managed）の今の鍵が無ければ、両階層のチームとも 9 段目の 503 signing_unavailable まで進む（ほかの境界の鍵で代用しない。STS は呼ばない）", async () => {
+    for (const t of [stdT, adminT]) {
+      denied(await post(t, { inst: stdNoManaged }), 503, "signing_unavailable");
+    }
     noIssue();
+  });
+
+  it("X16: Admin の確認画面（S2）の CSRF は、同じチームの別の行（444444444444:admin）の POST に使える（仕様。CSRF は行に束縛しない）", async () => {
+    const r = await post(adminT, { entry: "444444444444:admin" });
+    expect(r.status, r.body).toBe(302);
+    expect(fake.seen.sts[0]?.get("RoleArn")).toBe(
+      "arn:aws:iam::444444444444:role/awsbridge-console/admin/FederatedAdministrator",
+    );
   });
 
   it("両階層: 大きさの上限の内側の、正しく署名した大きな JWT なら 302 まで進む（上限の試験が手前で断られていない証拠）", async () => {
@@ -557,9 +551,89 @@ describe("陽性の対照（同じ道具で正しい要求を送ると、発行�
   });
 });
 
+// ---- 1b. 同じプロセスで両階層（交互・並行・Admin だけの停止） ----
+
+/** 擬似 STS が受けた要求の（ロールのパスの階層, タグのチーム）。同じプロセスで階層が混ざらないことを見る。 */
+const issuedPairs = () =>
+  fake.seen.sts.map((p) => {
+    const arn = p.get("RoleArn") ?? "";
+    const tags = decodeJwt(p.get("WebIdentityToken") ?? "")[AWS_TAGS_CLAIM] as {
+      principal_tags: Record<string, string[]>;
+    };
+    return {
+      tier: arn.includes(":role/awsbridge-console/admin/") ? "admin" : "standard",
+      team: tags.principal_tags[TEAM_TAG_KEY]?.join(","),
+    };
+  });
+
+describe("同じ wrangler dev のプロセス（std）で、Standard と Admin の階層のチームを交互・並行に送る", () => {
+  const onStd = (t: Target) => ({ ...t, inst: () => std });
+  const S = onStd(stdT);
+  const A = onStd(adminT);
+
+  it("交互: Standard・Admin・階層をまたぐ誤り（403 team_mismatch）を交互に送っても、発行は送った順に正しい階層とチームで行う", async () => {
+    const expected: { tier: string; team: string }[] = [];
+    for (let i = 0; i < 3; i++) {
+      const s = await post(S);
+      expect(s.status, s.body).toBe(302);
+      expected.push({ tier: "standard", team: S.team });
+      denied(await post(A, { jwt: await accessJwt(S.aud) }), 403, "team_mismatch");
+      const a = await post(A);
+      expect(a.status, a.body).toBe(302);
+      expected.push({ tier: "admin", team: A.team });
+      denied(await post(S, { jwt: await accessJwt(A.aud) }), 403, "team_mismatch");
+    }
+    expect(issuedPairs()).toEqual(expected);
+    expect(fake.seen.signin).toHaveLength(expected.length);
+  });
+
+  it("並行（Promise.all）: 両階層の正しい要求と階層をまたぐ誤りを同時に送っても、結果と発行の階層・チームが混ざらない", async () => {
+    const plan: { t: Target; cross: boolean }[] = [];
+    for (let i = 0; i < 4; i++) plan.push({ t: S, cross: false }, { t: A, cross: false });
+    plan.push({ t: A, cross: true }, { t: S, cross: true });
+    const results = await Promise.all(
+      plan.map(async ({ t, cross }) =>
+        post(t, cross ? { jwt: await accessJwt(t === A ? S.aud : A.aud) } : {}),
+      ),
+    );
+    results.forEach((r, i) => {
+      if (plan[i]?.cross) denied(r, 403, "team_mismatch");
+      else expect(r.status, r.body).toBe(302);
+    });
+    const pairs = issuedPairs();
+    expect(pairs).toHaveLength(8);
+    expect(fake.seen.signin).toHaveLength(8);
+    // 階層とタグのチームは必ず対になる（Standard のロールに Admin のチーム、またはその逆が無い）
+    for (const p of pairs)
+      expect(p, JSON.stringify(p)).toEqual(
+        p.tier === "admin" ? { tier: "admin", team: A.team } : { tier: "standard", team: S.team },
+      );
+    expect(pairs.filter((p) => p.tier === "admin")).toHaveLength(4);
+  });
+
+  it("ADMIN_LOGIN_DISABLED の同じプロセス（admin-stopped）: 交互と並行のどちらでも、Admin だけが 503 login_disabled で、Standard は発行する", async () => {
+    const SS = { ...stdT, inst: () => adminStopped };
+    const AS = { ...adminT, inst: () => adminStopped };
+    for (let i = 0; i < 2; i++) {
+      const s = await post(SS);
+      expect(s.status, s.body).toBe(302);
+      denied(await post(AS), 503, "login_disabled");
+    }
+    const results = await Promise.all([post(AS), post(SS), post(AS), post(SS), post(AS), post(SS)]);
+    results.forEach((r, i) => {
+      if (i % 2 === 0) denied(r, 503, "login_disabled");
+      else expect(r.status, r.body).toBe(302);
+    });
+    const pairs = issuedPairs();
+    expect(pairs).toHaveLength(5);
+    for (const p of pairs) expect(p).toEqual({ tier: "standard", team: SS.team });
+    expect(fake.seen.signin).toHaveLength(5);
+  });
+});
+
 // ---- 2. 両階層に共通 ----
 
-describe.each([stdT, adminT])("$label の Worker: 負の試験（両階層に共通）", (t) => {
+describe.each([stdT, adminT])("$label: 負の試験（両階層に共通）", (t) => {
   afterEach(noIssue);
 
   describe("Access JWT", () => {
@@ -640,9 +714,10 @@ describe.each([stdT, adminT])("$label の Worker: 負の試験（両階層に共
             "unknown_audience",
           ] as [string, () => Promise<string | null>, number, string],
       ),
+      // P2: もう一方の階層のチームの AUD も同じ Worker の既知の AUD。パスのチームと食い違うので team_mismatch（X2）
       ...t.otherTierAuds.map(
         ([name, aud]) =>
-          [`もう一方の階層の ${name}`, () => accessJwt(aud), 403, "unknown_audience"] as [
+          [`X2: もう一方の階層の ${name}`, () => accessJwt(aud), 403, "team_mismatch"] as [
             string,
             () => Promise<string | null>,
             number,
@@ -680,7 +755,7 @@ describe.each([stdT, adminT])("$label の Worker: 負の試験（両階層に共
       ["Origin が無い", null],
       ['Origin が "null"（sandbox の iframe・リダイレクトの経由）', "null"],
       ["Origin が別のオリジン（攻撃者のサイト）", "https://evil.example.com"],
-      ["Origin が もう一方の階層のオリジン", t.otherOrigin],
+      ["Origin が P2 より前の Admin のオリジン（今は無い）", `https://${OLD_ADMIN_HOST}`],
       ["Origin の末尾にスラッシュ", `${t.origin}/`],
       ["Origin が空", ""],
     ];
@@ -893,31 +968,34 @@ describe.each([stdT, adminT])("$label の Worker: 負の試験（両階層に共
   });
 });
 
-// ---- 3. Standard 固有 ----
+// ---- 3. Standard のチーム ----
 
-describe("Standard の Worker: 負の試験（Standard 固有）", () => {
+describe("Standard のチーム: 負の試験", () => {
   afterEach(noIssue);
   const t = stdT;
 
-  it("Admin の行（333333333333:admin）は 404 not_listed（Standard は Admin の行を発行しない。7 段目）", async () => {
+  it("X1: Admin の行（333333333333:admin）を Standard のチームのパスに POST は 404 not_listed（7 段目）", async () => {
     denied(await post(t, { entry: ADMIN_ENTRY }), 404, "not_listed");
   });
 
-  it("Admin のチーム（infra-elevated）のパスは Standard にない（404）。Admin のチームの AUD でも同じ", async () => {
-    const aud = AUDS.teams["infra-elevated"] as string;
+  it("X2: Admin のチーム（infra-elevated）のパスは同じ Worker にある。Standard のチームの AUD では GET も POST も 403 team_mismatch", async () => {
     for (const method of ["GET", "POST"]) {
       const r = await send(std, {
         method,
         host: PORTAL_HOST,
         path: "/t/infra-elevated/login",
         headers: {
-          "Cf-Access-Jwt-Assertion": await accessJwt(aud),
+          "Cf-Access-Jwt-Assertion": await accessJwt(t.aud),
           Origin: PORTAL,
           "Content-Type": "application/x-www-form-urlencoded",
         },
-        ...(method === "POST" ? { body: "entry=333333333333%3Aadmin" } : {}),
+        ...(method === "POST"
+          ? {
+              body: `entry=333333333333%3Aadmin&csrf=${encodeURIComponent(csrfs.get(t.team) ?? "")}`,
+            }
+          : {}),
       });
-      denied(r, 404, "not_found");
+      denied(r, 403, "team_mismatch");
     }
   });
 
@@ -928,7 +1006,7 @@ describe("Standard の Worker: 負の試験（Standard 固有）", () => {
   it("署名鍵（vars とバインディング）が無い Worker は、正しい POST・issuer の JWKS・画面とも 500 server_misconfigured", async () => {
     denied(await post(t, { inst: stdNoKey }), 500, "server_misconfigured");
     denied(
-      await get(t, "/standard/.well-known/jwks.json", { host: ISSUER_HOST, inst: stdNoKey }),
+      await get(t, "/console/.well-known/jwks.json", { host: ISSUER_HOST, inst: stdNoKey }),
       500,
       "server_misconfigured",
     );
@@ -941,20 +1019,16 @@ describe("Standard の Worker: 負の試験（Standard 固有）", () => {
 
   describe("デプロイ後の確認（key-check）は Access の検証の後ろ（外から叩けない）", () => {
     const path = `${teamBase(t.team)}/key-check`;
-    it("JWT なし 401、偽の JWT 401、Admin のチーム・入口の AUD 403、別の Standard のチーム 403", async () => {
+    it("JWT なし 401、偽の JWT 401、入口の AUD 403 unknown_audience、Admin のチーム・別の Standard のチーム 403 team_mismatch", async () => {
       denied(await get(t, path), 401, "unauthorized");
       denied(
         await get(t, path, { jwt: await accessJwt(t.aud, { key: attackerKeys.privateKey }) }),
         401,
         "unauthorized",
       );
-      for (const aud of [
-        AUDS.teams["infra-elevated"] as string,
-        AUDS.entry.admin,
-        AUDS.entry.standard,
-      ])
-        denied(await get(t, path, { jwt: await accessJwt(aud) }), 403, "unknown_audience");
-      denied(await get(t, path, { jwt: await accessJwt(t.peerAud) }), 403, "team_mismatch");
+      denied(await get(t, path, { jwt: await accessJwt(AUDS.entry) }), 403, "unknown_audience");
+      for (const aud of [AUDS.teams["infra-elevated"] as string, t.peerAud])
+        denied(await get(t, path, { jwt: await accessJwt(aud) }), 403, "team_mismatch");
     });
     it("POST は 405、issuer のホストは 404", async () => {
       expect((await get(t, path, { method: "POST", jwt: await accessJwt(t.aud) })).status).toBe(
@@ -966,7 +1040,7 @@ describe("Standard の Worker: 負の試験（Standard 固有）", () => {
         "not_found",
       );
     });
-    it("陽性の対照: Standard のチームの JWT なら 200 で、境界ごとの鍵の性質だけを返す（鍵の中身は返さない）", async () => {
+    it("陽性の対照: Standard のチームの JWT なら 200 で、そのチームの行の境界ごとの鍵の性質だけを返す（鍵の中身は返さない）", async () => {
       const r = await get(t, path, { jwt: await accessJwt(t.aud) });
       expect(r.status, r.body).toBe(200);
       const body = JSON.parse(r.body) as { boundaries: Record<string, unknown> };
@@ -993,11 +1067,17 @@ describe("Standard の Worker: 負の試験（Standard 固有）", () => {
       ["GET", "/t/infra/a/333333333333/cli", "S3"],
       ["GET", "/t/infra/login", "GET /login"],
       ["GET", "/t/infra/assets/portal.css", "チームの静的なファイル"],
-      ["GET", "/admin/.well-known/jwks.json", "Admin の issuer の JWKS（Standard は出さない）"],
-      ["GET", "/admin/.well-known/openid-configuration", "Admin の issuer の discovery"],
-      ["GET", "/standard/", "issuer のパスの直下"],
-      ["GET", "/standard/.well-known/other.json", "issuer のパスの下の別の文書"],
-      ["GET", "/standard/.well-known/jwks.json/", "末尾にスラッシュ"],
+      ["GET", "/t/infra-elevated/", "Admin のチームの一覧（S1）"],
+      ["GET", "/admin/.well-known/jwks.json", "P2 より前の Admin の issuer の JWKS（無い）"],
+      [
+        "GET",
+        "/admin/.well-known/openid-configuration",
+        "P2 より前の Admin の issuer の discovery",
+      ],
+      ["GET", "/standard/.well-known/jwks.json", "P2 より前の issuer のパス"],
+      ["GET", "/console/", "issuer のパスの直下"],
+      ["GET", "/console/.well-known/other.json", "issuer のパスの下の別の文書"],
+      ["GET", "/console/.well-known/jwks.json/", "末尾にスラッシュ"],
       ["GET", "/.well-known/jwks.json", "パスの接頭辞がない"],
     ];
     for (const [method, path, what] of hostCases) {
@@ -1007,33 +1087,44 @@ describe("Standard の Worker: 負の試験（Standard 固有）", () => {
       });
     }
 
-    it("issuer のホストの POST /t/infra/login は、正しい JWT・Origin・CSRF・行でも 404（発行しない）", async () => {
+    it("issuer のホストの POST /t/infra/login・/t/infra-elevated/login は、正しい JWT・Origin・CSRF・行でも 404（発行しない）", async () => {
       denied(await post(t, { host: ISSUER_HOST }), 404, "not_found");
       denied(await post(t, { host: ISSUER_HOST, origin: PORTAL }), 404, "not_found");
+      denied(await post(adminT, { host: ISSUER_HOST }), 404, "not_found");
     });
 
     it("issuer の文書は GET・HEAD だけ（POST・PUT・OPTIONS は 405）", async () => {
       for (const method of ["POST", "PUT", "OPTIONS", "DELETE"]) {
         for (const doc of ["jwks.json", "openid-configuration"]) {
-          const r = await get(t, `/standard/.well-known/${doc}`, { host: ISSUER_HOST, method });
+          const r = await get(t, `/console/.well-known/${doc}`, { host: ISSUER_HOST, method });
           denied(r, 405, "method_not_allowed");
           expect(r.headers.allow).toBe("GET, HEAD");
         }
       }
     });
 
-    it("未知のホスト・Admin のポータルのホストは、どの経路も 404（Host ヘッダーで振り分ける）", async () => {
-      for (const host of ["evil.example.com", ADMIN_HOST, "portal.example.com.evil.example.com"]) {
-        for (const path of ["/", "/t/infra/", "/standard/.well-known/jwks.json"]) {
+    it("未知のホスト・P2 より前の Admin のポータルのホストは、どの経路も 404（Host ヘッダーで振り分ける）", async () => {
+      for (const host of [
+        "evil.example.com",
+        OLD_ADMIN_HOST,
+        "portal.example.com.evil.example.com",
+      ]) {
+        for (const path of [
+          "/",
+          "/t/infra/",
+          "/t/infra-elevated/",
+          "/console/.well-known/jwks.json",
+        ]) {
           const r = await get(t, path, { host, jwt: await accessJwt(t.aud) });
           denied(r, 404, "not_found");
         }
         denied(await post(t, { host }), 404, "not_found");
+        denied(await post(adminT, { host }), 404, "not_found");
       }
     });
   });
 
-  describe("チーム以外のパス・未知のチーム（Standard）", () => {
+  describe("チーム以外のパス・未知のチーム", () => {
     const paths = [
       "/t",
       "/t/nosuch/",
@@ -1059,19 +1150,19 @@ describe("Standard の Worker: 負の試験（Standard 固有）", () => {
   describe("入口の一覧（S0）の負の試験", () => {
     it("入口は GET・HEAD だけ（POST・PUT・OPTIONS は 405）", async () => {
       for (const method of ["POST", "PUT", "OPTIONS", "DELETE"]) {
-        const r = await post(t, { method, path: "/", jwt: await accessJwt(AUDS.entry.standard) });
+        const r = await post(t, { method, path: "/", jwt: await accessJwt(AUDS.entry) });
         denied(r, 405, "method_not_allowed");
         expect(r.headers.allow).toBe("GET, HEAD");
       }
     });
-    it("入口は入口のアプリの JWT が必要（JWT 無しは 401、チームの AUD は 403、Admin の入口の AUD は 403）", async () => {
+    it("入口は入口のアプリの JWT が必要（JWT 無しは 401、Standard・Admin のチームの AUD は 403）", async () => {
       expect((await get(t, "/")).status).toBe(401);
       expect((await get(t, "/", { jwt: await accessJwt(t.aud) })).status).toBe(403);
-      expect((await get(t, "/", { jwt: await accessJwt(AUDS.entry.admin) })).status).toBe(403);
+      expect((await get(t, "/", { jwt: await accessJwt(adminT.aud) })).status).toBe(403);
       expect((await get(t, "/", { jwt: await accessJwt(UNKNOWN_AUD) })).status).toBe(403);
     });
     it("入口も、大きさの上限を超える入口の AUD の JWT は 401（上限の内側なら 200）", async () => {
-      const entry = AUDS.entry.standard;
+      const entry = AUDS.entry;
       const over = await paddedJwt(entry, ACCESS_JWT_MAX_LENGTH + 100);
       const under = await paddedJwt(entry, ACCESS_JWT_MAX_LENGTH - 200);
       expect((await get(t, "/", { jwt: over, inst: stdBig })).status).toBe(401);
@@ -1080,47 +1171,80 @@ describe("Standard の Worker: 負の試験（Standard 固有）", () => {
   });
 });
 
-// ---- 4. Admin 固有 ----
+// ---- 4. Admin の階層のチーム ----
 
-describe("Admin の Worker: 負の試験（Admin 固有。チームのパス以外は 404 を処理の最初に返す）", () => {
+describe("Admin の階層のチーム: 負の試験（階層をまたぐもの）", () => {
   afterEach(noIssue);
   const t = adminT;
 
-  it("Standard のチームの AUD（infra・dev）は、Admin のチームのパスでも 403 unknown_audience", async () => {
+  it("X2: Standard のチームの AUD（infra・dev）は、Admin のチームのパスで 403 team_mismatch", async () => {
     for (const aud of [AUDS.teams.infra as string, AUDS.teams.dev as string]) {
-      denied(await post(t, { jwt: await accessJwt(aud) }), 403, "unknown_audience");
+      denied(await post(t, { jwt: await accessJwt(aud) }), 403, "team_mismatch");
     }
   });
 
-  it("Origin が Standard のオリジンなら 403 forbidden_origin", async () => {
-    denied(await post(t, { origin: PORTAL }), 403, "forbidden_origin");
+  it("X3: Standard のチームのページの CSRF を付けて、Admin のチームの AUD で POST は 403 csrf_failed（CSRF は aud に束縛）", async () => {
+    denied(await post(t, { csrf: csrfs.get(stdT.team) ?? "" }), 403, "csrf_failed");
   });
 
-  describe("チームのパス以外は、JWT・入口の AUD・メソッドによらず 404（env も JWT も見ない）", () => {
+  it("X5: 入口の AUD で Admin のチームのパスに POST は 403 unknown_audience", async () => {
+    denied(await post(t, { jwt: await accessJwt(AUDS.entry) }), 403, "unknown_audience");
+  });
+
+  it("X13a: 同じ階層の別のチーム（dev-elevated）の AUD で infra-elevated のパスに POST は 403 team_mismatch", async () => {
+    denied(await post(t, { jwt: await accessJwt(t.peerAud) }), 403, "team_mismatch");
+  });
+
+  it("X13b: dev-elevated の自分のパスに infra-elevated だけの行は 404 not_listed", async () => {
+    denied(
+      await post(t, {
+        jwt: await accessJwt(t.peerAud),
+        path: `${teamBase(t.peerTeam)}/login`,
+        csrf: csrfs.get(t.peerTeam) ?? "",
+      }),
+      404,
+      "not_listed",
+    );
+  });
+
+  it("X13c: 本文・クエリに infra-elevated のチームを書いても、署名するチームは差し替わらない（dev-elevated のパスで 404 not_listed）", async () => {
+    denied(
+      await post(t, {
+        jwt: await accessJwt(t.peerAud),
+        path: `${teamBase(t.peerTeam)}/login?team=${t.team}`,
+        fields: [
+          ["entry", t.entry],
+          ["region", "ap-northeast-1"],
+          ["csrf", csrfs.get(t.peerTeam) ?? ""],
+          ["team", t.team],
+          ["tier", "admin"],
+          ["awsbridge_team", t.team],
+        ],
+      }),
+      404,
+      "not_listed",
+    );
+  });
+
+  describe("X12: 既知の経路以外は、JWT・入口の AUD・メソッドによらず 404（Worker 全体。env も JWT も見ない）", () => {
     const paths = [
-      "/",
       "/x",
       "/t",
       "/t/",
-      "/t/infra/",
-      "/t/infra/login",
       "/t/nosuch/",
-      "/assets/portal.js",
+      "/t/infra-elevatedx/",
+      "/t/infra-elevatedx/login",
+      "/t/infra-elevated/x",
       "/assets/other.js",
       "/login",
       "/admin/.well-known/jwks.json",
       "/admin/.well-known/openid-configuration",
-      "/standard/.well-known/jwks.json",
+      "/console/.well-known/jwks.json",
       "/.well-known/openid-configuration",
     ];
     for (const path of paths) {
       it(`${path}: JWT なし・チームの JWT・入口の AUD の JWT・各メソッドのどれでも 404 not_found`, async () => {
-        for (const jwt of [
-          null,
-          await accessJwt(t.aud),
-          await accessJwt(AUDS.entry.admin),
-          await accessJwt(AUDS.entry.standard),
-        ]) {
+        for (const jwt of [null, await accessJwt(t.aud), await accessJwt(AUDS.entry)]) {
           denied(await get(t, path, { jwt }), 404, "not_found");
         }
         for (const method of ["POST", "PUT", "OPTIONS", "HEAD"]) {
@@ -1132,15 +1256,17 @@ describe("Admin の Worker: 負の試験（Admin 固有。チームのパス以�
     }
   });
 
-  it("鍵だけ替えて公開鍵（vars）を替え忘れた（バインディングの鍵が公開鍵と合わない）Worker は、正しい POST でも 503 signing_unavailable", async () => {
-    denied(await post(t, { inst: adminMismatch }), 503, "signing_unavailable");
+  it("鍵だけ替えて公開鍵（vars）を替え忘れた（managed のバインディングの鍵が公開鍵と合わない）Worker は、正しい POST でも 503 signing_unavailable", async () => {
+    denied(await post(t, { inst: stdMismatch }), 503, "signing_unavailable");
   });
 
-  it("Access JWT の iat が 15 分より前なら、POST も画面も 401（Access の exp の内でも）", async () => {
+  it("X6: Access JWT の iat が 15 分より前なら、POST も画面も key-check も 401（Access の exp の内でも）。同じ古さの Standard のチームの画面は 200（対照）", async () => {
     const old = await accessJwt(t.aud, { iatAgo: 901, expIn: 600 });
     denied(await post(t, { jwt: old }), 401, "unauthorized");
     denied(await get(t, t.s2, { jwt: old }), 401, "unauthorized");
     denied(await get(t, `${teamBase(t.team)}/key-check`, { jwt: old }), 401, "unauthorized");
+    const stdOld = await accessJwt(stdT.aud, { iatAgo: 901, expIn: 600 });
+    expect((await get(stdT, stdT.s2, { jwt: stdOld })).status).toBe(200);
   });
 
   it("Access JWT の iat が未来（30 秒を超える）なら 401", async () => {
@@ -1149,97 +1275,38 @@ describe("Admin の Worker: 負の試験（Admin 固有。チームのパス以�
 
   describe("デプロイ後の確認（key-check）は Access の検証の後ろ（外から叩けない）", () => {
     const path = `${teamBase(t.team)}/key-check`;
-    it("JWT なし 401、偽の JWT 401、Standard のチーム・入口の AUD 403、別の Admin のチーム 403", async () => {
+    it("X11: JWT なし 401、偽の JWT 401、入口の AUD 403 unknown_audience、Standard のチーム・別の Admin のチーム 403 team_mismatch", async () => {
       denied(await get(t, path), 401, "unauthorized");
       denied(
         await get(t, path, { jwt: await accessJwt(t.aud, { key: attackerKeys.privateKey }) }),
         401,
         "unauthorized",
       );
-      for (const aud of [AUDS.teams.infra as string, AUDS.entry.admin, AUDS.entry.standard])
-        denied(await get(t, path, { jwt: await accessJwt(aud) }), 403, "unknown_audience");
-      denied(await get(t, path, { jwt: await accessJwt(t.peerAud) }), 403, "team_mismatch");
+      denied(await get(t, path, { jwt: await accessJwt(AUDS.entry) }), 403, "unknown_audience");
+      for (const aud of [AUDS.teams.infra as string, t.peerAud])
+        denied(await get(t, path, { jwt: await accessJwt(aud) }), 403, "team_mismatch");
     });
     it("POST は 405、ポータル以外のホストは 404", async () => {
       expect((await get(t, path, { method: "POST", jwt: await accessJwt(t.aud) })).status).toBe(
         405,
       );
-      for (const host of [ADMIN_ISSUER_HOST, ISSUER_HOST, PORTAL_HOST])
+      for (const host of [ISSUER_HOST, OLD_ADMIN_HOST])
         denied(await get(t, path, { host, jwt: await accessJwt(t.aud) }), 404, "not_found");
     });
-    it("陽性の対照: Admin のチームの JWT なら 200 で、鍵の中身は返さない", async () => {
+    it("陽性の対照: Admin のチームの JWT なら 200 で、そのチームの行の境界（managed だけ）の鍵の性質を返す（鍵の中身は返さない）", async () => {
       const r = await get(t, path, { jwt: await accessJwt(t.aud) });
       expect(r.status, r.body).toBe(200);
-      expect(JSON.parse(r.body)).toMatchObject({ usable: true, exportKey: "rejected" });
+      const body = JSON.parse(r.body) as { boundaries: Record<string, unknown> };
+      expect(Object.keys(body.boundaries)).toEqual(["managed"]);
+      expect(body.boundaries.managed).toMatchObject({ usable: true, exportKey: "rejected" });
       expect(r.body).not.toMatch(/[A-Za-z0-9_-]{100,}/);
-    });
-  });
-
-  describe("Admin の issuer のホストは 2 つの文書のパスだけ（A-3 = I-B）", () => {
-    it("陽性の対照: /admin/.well-known/openid-configuration と jwks.json は 200（GET・HEAD）", async () => {
-      for (const doc of ["openid-configuration", "jwks.json"]) {
-        for (const method of ["GET", "HEAD"]) {
-          const r = await get(t, `/admin/.well-known/${doc}`, { host: ADMIN_ISSUER_HOST, method });
-          expect(r.status, `${method} ${doc}`).toBe(200);
-        }
-      }
-    });
-    const paths = [
-      "/",
-      "/admin",
-      "/admin/x",
-      "/.well-known/jwks.json",
-      "/standard/.well-known/jwks.json",
-      "/t/infra-elevated/",
-      "/t/infra-elevated/login",
-      "/t/infra-elevated/key-check",
-      "/t/infra-elevated/a/333333333333",
-    ];
-    for (const path of paths) {
-      it(`${ADMIN_ISSUER_HOST}${path} は JWT があっても 404`, async () => {
-        denied(
-          await get(t, path, { host: ADMIN_ISSUER_HOST, jwt: await accessJwt(t.aud) }),
-          404,
-          "not_found",
-        );
-      });
-    }
-    it("文書のパスへの POST は 405、正しい要求の POST /t/infra-elevated/login も 404", async () => {
-      const r = await post(t, { host: ADMIN_ISSUER_HOST, path: "/admin/.well-known/jwks.json" });
-      expect(r.status).toBe(405);
-      denied(await post(t, { host: ADMIN_ISSUER_HOST }), 404, "not_found");
-    });
-  });
-
-  describe("Admin の issuer の文書はポータルのホスト・Standard の issuer のホストでは出さない（404）", () => {
-    const targets: [string, string][] = [
-      [ADMIN_HOST, "/admin/.well-known/jwks.json"],
-      [ADMIN_HOST, "/admin/.well-known/openid-configuration"],
-      [ISSUER_HOST, "/admin/.well-known/jwks.json"],
-      [ISSUER_HOST, "/admin/.well-known/openid-configuration"],
-      [ISSUER_HOST, "/standard/.well-known/jwks.json"],
-      [ISSUER_HOST, "/standard/.well-known/openid-configuration"],
-      [ISSUER_HOST, "/t/infra-elevated/"],
-      [PORTAL_HOST, "/t/infra-elevated/"],
-      ["evil.example.com", "/t/infra-elevated/"],
-      [`${ADMIN_HOST}.evil.example.com`, "/t/infra-elevated/"],
-    ];
-    for (const [host, path] of targets) {
-      it(`${host}${path} → 404`, async () => {
-        denied(await get(t, path, { host, jwt: await accessJwt(t.aud) }), 404, "not_found");
-      });
-    }
-    it("issuer のホスト・Standard のホストへの POST /t/infra-elevated/login は、正しい JWT・Origin・CSRF・行でも 404", async () => {
-      denied(await post(t, { host: ISSUER_HOST }), 404, "not_found");
-      denied(await post(t, { host: PORTAL_HOST }), 404, "not_found");
-      denied(await post(t, { host: PORTAL_HOST, origin: PORTAL }), 404, "not_found");
     });
   });
 });
 
 // ---- 5. 停止スイッチ ----
 
-describe.each([stdT, adminT])("$label の Worker: 停止スイッチ（LOGIN_DISABLED=true）", (t) => {
+describe.each([stdT, adminT])("$label: 停止スイッチ（LOGIN_DISABLED=true。全体）", (t) => {
   afterEach(noIssue);
 
   it("正しい POST は 503 login_disabled（STS を呼ばない）", async () => {
@@ -1272,13 +1339,41 @@ describe.each([stdT, adminT])("$label の Worker: 停止スイッチ（LOGIN_DIS
   });
 });
 
+describe("X10: Admin の階層だけの停止スイッチ（ADMIN_LOGIN_DISABLED=true）", () => {
+  it("Admin のチームの正しい POST は 503 login_disabled（STS を呼ばない）。要求が不正でも 503", async () => {
+    denied(await post(adminT, { inst: adminStopped }), 503, "login_disabled");
+    denied(await post(adminT, { inst: adminStopped, jwt: "not-a-jwt" }), 503, "login_disabled");
+    noIssue();
+  });
+
+  it("Admin のチームの S2 に停止中の案内を出し、Standard のチームの S2 には出さない", async () => {
+    const a = await get(adminT, adminT.s2, {
+      inst: adminStopped,
+      jwt: await accessJwt(adminT.aud),
+    });
+    expect(a.status, a.body).toBe(200);
+    expect(a.body).toContain("一時停止");
+    const s = await get(stdT, stdT.s2, { inst: adminStopped, jwt: await accessJwt(stdT.aud) });
+    expect(s.status, s.body).toBe(200);
+    expect(s.body).not.toContain("一時停止");
+    noIssue();
+  });
+
+  it("対照: 同じ Worker の Standard のチームの正しい POST は 302（止めない）", async () => {
+    const csrf = await csrfFrom({ ...stdT, inst: () => adminStopped }, stdT.team, stdT.aud);
+    const r = await post(stdT, { inst: adminStopped, csrf });
+    expect(r.status, r.body).toBe(302);
+    expect(fake.seen.sts).toHaveLength(1);
+  });
+});
+
 // ---- 6. Access アプリの無いチーム ----
 
 describe.each([stdT, adminT])(
-  "$label の Worker: Access アプリの無いチームのパス（チーム noapp は AUD が設定にない）",
+  "$label: Access アプリの無い同じ階層のチームのパス（AUD が設定にない）",
   (t) => {
     afterEach(noIssue);
-    const base = teamBase(NOAPP);
+    const base = teamBase(t.noapp);
 
     it("JWT が無ければ 401（S1・S2・S3・GET /login・静的なファイル）", async () => {
       for (const path of [
@@ -1294,8 +1389,8 @@ describe.each([stdT, adminT])(
 
     it("どのチームの JWT でも断る（設定にある AUD は別のチームなので 403 team_mismatch、設定にない AUD は 403 unknown_audience）", async () => {
       for (const path of [`${base}/`, `${base}/a/333333333333`, `${base}/login`]) {
-        denied(await get(t, path, { jwt: await accessJwt(t.aud) }), 403, "team_mismatch");
-        denied(await get(t, path, { jwt: await accessJwt(t.peerAud) }), 403, "team_mismatch");
+        for (const aud of [t.aud, t.peerAud, ...t.otherTierAuds.map(([, a]) => a)])
+          denied(await get(t, path, { jwt: await accessJwt(aud) }), 403, "team_mismatch");
         denied(await get(t, path, { jwt: await accessJwt(UNKNOWN_AUD) }), 403, "unknown_audience");
         for (const [, aud] of t.entryAuds)
           denied(await get(t, path, { jwt: await accessJwt(aud) }), 403, "unknown_audience");
@@ -1318,10 +1413,10 @@ describe.each([stdT, adminT])(
 describe("secret が壊れているとき（CSRF の鍵が短い）は発行せず、500 server_misconfigured を返す（fail-closed）", () => {
   afterEach(noIssue);
 
-  it("Standard: 正しい POST でも 500 server_misconfigured（STS を呼ばない）。issuer の文書・画面も 500", async () => {
+  it("Standard のチーム: 正しい POST でも 500 server_misconfigured（STS を呼ばない）。issuer の文書・画面も 500", async () => {
     denied(await post(stdT, { inst: stdBroken }), 500, "server_misconfigured");
     denied(
-      await get(stdT, "/standard/.well-known/jwks.json", { host: ISSUER_HOST, inst: stdBroken }),
+      await get(stdT, "/console/.well-known/jwks.json", { host: ISSUER_HOST, inst: stdBroken }),
       500,
       "server_misconfigured",
     );
@@ -1332,19 +1427,71 @@ describe("secret が壊れているとき（CSRF の鍵が短い）は発行せ�
     );
   });
 
-  it("Admin: チームのパスは 500 server_misconfigured（正しい POST でも発行しない）", async () => {
-    denied(await post(adminT, { inst: adminBroken }), 500, "server_misconfigured");
+  it("Admin の階層のチーム: チームのパスは 500 server_misconfigured（正しい POST でも発行しない）", async () => {
+    denied(await post(adminT, { inst: stdBroken }), 500, "server_misconfigured");
     denied(
-      await get(adminT, adminT.s2, { inst: adminBroken, jwt: await accessJwt(adminT.aud) }),
+      await get(adminT, adminT.s2, { inst: stdBroken, jwt: await accessJwt(adminT.aud) }),
       500,
       "server_misconfigured",
     );
   });
 
-  it("Admin: チームのパス以外は、env が壊れていても 404（処理の最初に返し、env を読まない。G-6）", async () => {
-    for (const path of ["/", "/x", "/t/infra/", "/t/nosuch/", "/assets/portal.js"]) {
-      denied(await get(adminT, path, { inst: adminBroken }), 404, "not_found");
+  it("既知の経路以外は、env が壊れていても 404（処理の最初に返し、env を読まない。Worker 全体）", async () => {
+    for (const path of ["/x", "/t/nosuch/", "/t/infra-elevatedx/", "/assets/other.js", "/login"]) {
+      denied(await get(adminT, path, { inst: stdBroken }), 404, "not_found");
     }
-    denied(await post(adminT, { inst: adminBroken, path: "/login" }), 404, "not_found");
+    denied(await post(adminT, { inst: stdBroken, path: "/login" }), 404, "not_found");
+    denied(
+      await get(adminT, "/console/.well-known/x", { host: ISSUER_HOST, inst: stdBroken }),
+      404,
+      "not_found",
+    );
+  });
+});
+
+// ---- 8. ホスト方式（X15）----
+
+describe("X15: ホスト方式（routing: host）。Host → チーム → AUD の対応は 1 つだけ", () => {
+  afterEach(noIssue);
+  const teamHost = `infra-elevated.${PORTAL_HOST}`;
+  const hostPost = (host: string, aud: string) =>
+    (async () =>
+      send(stdHost, {
+        method: "POST",
+        host,
+        path: "/login",
+        headers: {
+          "Cf-Access-Jwt-Assertion": await accessJwt(aud),
+          "Content-Type": "application/x-www-form-urlencoded",
+          Origin: `https://${host}`,
+        },
+        body: new URLSearchParams({
+          entry: ADMIN_ENTRY,
+          csrf: await createCsrfToken(csrfKey, { aud, sub: SUB }),
+        }).toString(),
+      }))();
+
+  it("チーム A（infra-elevated）のホストに、チーム B（dev-elevated）・Standard のチーム（infra）の AUD は 403 team_mismatch", async () => {
+    for (const aud of [AUDS.teams["dev-elevated"] as string, AUDS.teams.infra as string])
+      denied(await hostPost(teamHost, aud), 403, "team_mismatch");
+  });
+
+  it("設定に無いホスト（別名・チームに似た名前）は 404。ホスト方式ではパス方式の経路も 404", async () => {
+    for (const host of [`x${teamHost}`, `nope.${PORTAL_HOST}`, `infra-elevated.evil.example.com`])
+      denied(await hostPost(host, AUDS.teams["infra-elevated"] as string), 404, "not_found");
+    const r = await send(stdHost, { host: PORTAL_HOST, path: "/t/infra-elevated/" });
+    denied(r, 404, "not_found");
+  });
+
+  it("陽性の対照: そのチームのホストに、そのチームの AUD の JWT なら画面を返す", async () => {
+    const r = await send(stdHost, {
+      host: teamHost,
+      path: "/a/333333333333",
+      headers: {
+        "Cf-Access-Jwt-Assertion": await accessJwt(AUDS.teams["infra-elevated"] as string),
+      },
+    });
+    expect(r.status, r.body).toBe(200);
+    expect(r.body).toContain(`value="${ADMIN_ENTRY}"`);
   });
 });

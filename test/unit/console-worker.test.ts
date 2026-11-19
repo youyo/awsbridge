@@ -4,12 +4,12 @@
 import { createLocalJWKSet, decodeJwt, decodeProtectedHeader, jwtVerify } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AUDIENCE } from "../../src/console/constants";
-import { createStandardWorker } from "../../src/console/standard/worker";
 import type { WorkerConfig } from "../../src/console/types";
+import { createConsoleWorker } from "../../src/console/worker/worker";
+import { issueEgressCalls, resetEgressCalls } from "./console-egress-spy";
 import {
   ACCESS_KEY_ID,
   AUDS,
-  adminConfig,
   baseEnv,
   CSRF_SECRET,
   createHarness,
@@ -23,16 +23,24 @@ import {
   PORTAL_HOST,
   SIGNIN_TOKEN,
   STD_ISSUER,
-  standardConfig,
   standardKeyEnv,
   stsErrorXml,
   type TestKey,
-} from "./console-standard-harness";
+  workerConfig,
+} from "./console-worker-harness";
+
+// egress への呼び出しを数える（「STS を呼ばない」を egress の spy で確かめる。console-egress-spy.ts）
+vi.mock("../../src/console/issue/egress", async (orig) =>
+  (await import("./console-egress-spy")).spyEgressModule(
+    await orig<typeof import("../../src/console/issue/egress")>(),
+  ),
+);
 
 let h: Harness;
 let logs: string[];
 
 beforeEach(async () => {
+  resetEgressCalls();
   h = await createHarness();
   logs = [];
   vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
@@ -53,8 +61,8 @@ afterEach(() => {
 const INFRA = AUDS.teams.infra as string;
 const DEV = AUDS.teams.dev as string;
 
-function worker(config: unknown = standardConfig()) {
-  return createStandardWorker(config, { getAccessKey: h.getAccessKey, fetch: h.fetch });
+function worker(config: unknown = workerConfig()) {
+  return createConsoleWorker(config, { getAccessKey: h.getAccessKey, fetch: h.fetch });
 }
 
 type PostOpts = Partial<Parameters<typeof loginRequest>[0]> & {
@@ -91,6 +99,11 @@ async function get(
 }
 
 const noIssue = () => {
+  // egress への呼び出しそのもの（断られた試みも数える）で、STS と getSigninToken を呼ばないことを確かめる
+  expect(issueEgressCalls(), "egress への STS・getSigninToken の呼び出し").toEqual({
+    sts: 0,
+    federation: 0,
+  });
   expect(h.seen.sts).toHaveLength(0);
   expect(h.seen.signin).toHaveLength(0);
 };
@@ -111,6 +124,8 @@ describe("POST /t/<team>/login: Access JWT の aud（最初の Red）", () => {
     expect(loc.searchParams.get("Action")).toBe("login");
     expect(h.seen.sts).toHaveLength(1);
     expect(h.seen.signin).toHaveLength(1);
+    // 陽性の対照: egress の spy が発行の経路の呼び出しを数えている（noIssue の確認が空振りしない）
+    expect(issueEgressCalls()).toEqual({ sts: 1, federation: 1 });
   });
 });
 
@@ -132,7 +147,7 @@ describe("POST /t/<team>/login: 通る経路の中身", () => {
   it("STS に渡す JWT は境界の issuer・audience・チームのタグ・SourceIdentity を持ち、issuer の JWKS で検証できる", async () => {
     await post();
     const jwt = h.seen.sts[0]?.get("WebIdentityToken") ?? "";
-    const jwksRes = await get("/standard/.well-known/jwks.json", { host: ISSUER_HOST });
+    const jwksRes = await get("/console/.well-known/jwks.json", { host: ISSUER_HOST });
     expect(jwksRes.status).toBe(200);
     const jwks = createLocalJWKSet((await jwksRes.json()) as { keys: [] });
     const { payload } = await jwtVerify(jwt, jwks, { issuer: STD_ISSUER, audience: AUDIENCE });
@@ -196,17 +211,17 @@ describe("POST /t/<team>/login: 通る経路の中身", () => {
 
 describe("POST /t/<team>/login: 負の試験（代表）", () => {
   it("入口の AUD での POST は 403 unknown_audience", async () => {
-    const res = await post({ aud: AUDS.entry.standard, csrfAud: AUDS.entry.standard });
+    const res = await post({ aud: AUDS.entry, csrfAud: AUDS.entry });
     expect(res.status).toBe(403);
     expect(await res.text()).toContain("unknown_audience");
     noIssue();
   });
 
-  it("Admin の階層のチームの AUD は Standard では未知（403 unknown_audience）", async () => {
+  it("Admin の階層のチームの AUD で Standard のチームのパスに POST は 403 team_mismatch（同じ Worker なので AUD は既知）", async () => {
     const admin = AUDS.teams["infra-elevated"] as string;
     const res = await post({ aud: admin, csrfAud: admin });
     expect(res.status).toBe(403);
-    expect(await res.text()).toContain("unknown_audience");
+    expect(await res.text()).toContain("team_mismatch");
     noIssue();
   });
 
@@ -283,7 +298,7 @@ describe("POST /t/<team>/login: 負の試験（代表）", () => {
       const none = await get(path);
       expect(none.status, path).toBe(401);
       expect(await none.text()).not.toContain("もう一度選んでください</h1>");
-      const entry = await get(path, { jwt: await h.accessJwt({ aud: AUDS.entry.standard }) });
+      const entry = await get(path, { jwt: await h.accessJwt({ aud: AUDS.entry }) });
       expect(entry.status, path).toBe(403);
       expect(await entry.text()).toContain("unknown_audience");
       const other = await get(path, { jwt: await h.accessJwt({ aud: DEV }) });
@@ -346,7 +361,7 @@ describe("POST /t/<team>/login: 負の試験（代表）", () => {
     }
   });
 
-  it("Admin の行（このアカウントの Admin のロール）の entry は 404 not_listed", async () => {
+  it("X1: Admin の行（このアカウントの Admin のロール）の entry を Standard のチームのパスに POST は 404 not_listed", async () => {
     const csrf = await h.csrf(INFRA);
     const res = await post({ form: { entry: "333333333333:admin", csrf } });
     expect(res.status).toBe(404);
@@ -434,31 +449,42 @@ describe("POST /t/<team>/login: 負の試験（代表）", () => {
 
 describe("生成物と secret の検査（fail-closed）", () => {
   const mutate = (f: (c: WorkerConfig & Record<string, unknown>) => void) => {
-    const c = standardConfig() as WorkerConfig & Record<string, unknown>;
+    const c = workerConfig() as WorkerConfig & Record<string, unknown>;
     f(c);
     return c;
   };
 
   it.each([
     ["purpose が issue でない", mutate((c) => Object.assign(c, { purpose: "display" }))],
-    ["Admin の階層の生成物", adminConfig()],
     [
-      "Admin の行が混ざっている",
+      "P2 より前の階層ごとの生成物（tier を持つ）",
+      mutate((c) => Object.assign(c, { tier: "standard" })),
+    ],
+    [
+      "X7: Admin のロールの行に Standard のチーム（row_team_tier）",
       mutate((c) => {
-        c.accounts.push(...adminConfig().accounts);
+        const r = c.accounts[0]?.roles.find((x) => x.role === "admin");
+        r?.teams.push("infra");
       }),
     ],
     [
-      "行の ARN が他の階層のパス",
+      "Standard のロールの行に Admin のチーム（row_team_tier）",
       mutate((c) => {
-        const r = c.accounts[0]?.roles[0];
+        const r = c.accounts[0]?.roles.find((x) => x.role === "readonly");
+        r?.teams.push("infra-elevated");
+      }),
+    ],
+    [
+      "X8: Standard のロールの行の ARN が Admin のパス（row_tier）",
+      mutate((c) => {
+        const r = c.accounts[0]?.roles.find((x) => x.role === "readonly");
         if (r) r.roleArn = r.roleArn.replace("/std/", "/admin/");
       }),
     ],
     [
-      "行のチームが表にない（他の階層のチーム）",
+      "行のチームが表にない",
       mutate((c) => {
-        c.accounts[0]?.roles[0]?.teams.push("infra-elevated");
+        c.accounts[0]?.roles[0]?.teams.push("ghost");
       }),
     ],
     [
@@ -466,7 +492,7 @@ describe("生成物と secret の検査（fail-closed）", () => {
       mutate((c) => Object.assign(c.portal, { entryAud: INFRA })),
     ],
     ["壊れている（オブジェクトでない）", "not json"],
-    ["schemaVersion が違う", mutate((c) => Object.assign(c, { schemaVersion: 2 }))],
+    ["schemaVersion が違う（1）", mutate((c) => Object.assign(c, { schemaVersion: 1 }))],
     [
       "オリジンが https でない",
       mutate((c) => Object.assign(c.portal, { origin: "http://portal.example.com" })),
@@ -476,7 +502,7 @@ describe("生成物と secret の検査（fail-closed）", () => {
     expect(login.status).toBe(500);
     expect(await login.text()).toContain("server_misconfigured");
     const doc = await get(
-      "/standard/.well-known/jwks.json",
+      "/console/.well-known/jwks.json",
       { host: ISSUER_HOST },
       baseEnv(h),
       config,
@@ -488,10 +514,10 @@ describe("生成物と secret の検査（fail-closed）", () => {
   });
 
   it.each([
-    ["今の署名鍵の vars の JSON が壊れている", { STANDARD_CURRENT_KEYS: "{" }],
-    ["今の署名鍵の vars がない", { STANDARD_CURRENT_KEYS: undefined }],
-    ["公開鍵の vars がない", { STANDARD_PUBLIC_JWKS: undefined }],
-    ["公開鍵の vars の JSON が壊れている", { STANDARD_PUBLIC_JWKS: "[" }],
+    ["今の署名鍵の vars の JSON が壊れている", { CONSOLE_CURRENT_KEYS: "{" }],
+    ["今の署名鍵の vars がない", { CONSOLE_CURRENT_KEYS: undefined }],
+    ["公開鍵の vars がない", { CONSOLE_PUBLIC_JWKS: undefined }],
+    ["公開鍵の vars の JSON が壊れている", { CONSOLE_PUBLIC_JWKS: "[" }],
     ["CSRF の鍵が短い", { CONSOLE_CSRF_KEY: "short" }],
     ["チームドメインがない", { ACCESS_TEAM_DOMAIN: undefined }],
     ["チームドメインが https でない", { ACCESS_TEAM_DOMAIN: "http://unit.cloudflareaccess.com" }],
@@ -513,18 +539,18 @@ describe("生成物と secret の検査（fail-closed）", () => {
     expect(res.status).toBe(503);
     expect(await res.text()).toContain("signing_unavailable");
     noIssue();
-    expect((await get("/standard/.well-known/jwks.json", { host: ISSUER_HOST }, env)).status).toBe(
+    expect((await get("/console/.well-known/jwks.json", { host: ISSUER_HOST }, env)).status).toBe(
       500,
     );
-    expect((await get("/partner-x/.well-known/jwks.json", { host: ISSUER_HOST }, env)).status).toBe(
-      200,
-    );
+    expect(
+      (await get("/p/partner-x/console/.well-known/jwks.json", { host: ISSUER_HOST }, env)).status,
+    ).toBe(200);
   });
 
   it("STS のリージョンは設定（STS_REGION）で地域の endpoint を選べる", async () => {
     const seen: string[] = [];
     const inner = h.fetch;
-    const w = createStandardWorker(standardConfig(), {
+    const w = createConsoleWorker(workerConfig(), {
       getAccessKey: h.getAccessKey,
       fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input instanceof Request ? input.url : input);
@@ -549,18 +575,19 @@ describe("生成物と secret の検査（fail-closed）", () => {
 
 describe("Host での振り分け", () => {
   it("issuer のホストでは、境界の issuer の discovery と JWKS だけを返す", async () => {
-    const d = await get("/standard/.well-known/openid-configuration", { host: ISSUER_HOST });
+    const d = await get("/console/.well-known/openid-configuration", { host: ISSUER_HOST });
     expect(d.status).toBe(200);
     const doc = (await d.json()) as { issuer: string; jwks_uri: string };
     expect(doc.issuer).toBe(STD_ISSUER);
     expect(doc.jwks_uri).toBe(`${STD_ISSUER}/.well-known/jwks.json`);
-    const j = await get("/standard/.well-known/jwks.json", { host: ISSUER_HOST });
+    const j = await get("/console/.well-known/jwks.json", { host: ISSUER_HOST });
     const jwks = (await j.json()) as { keys: Record<string, unknown>[] };
     expect(jwks.keys).toHaveLength(1);
     expect(jwks.keys[0]).not.toHaveProperty("d");
     expect(jwks.keys[0]?.kid).toBeTypeOf("string");
     expect(
-      (await get("/partner-x/.well-known/openid-configuration", { host: ISSUER_HOST })).status,
+      (await get("/p/partner-x/console/.well-known/openid-configuration", { host: ISSUER_HOST }))
+        .status,
     ).toBe(200);
   });
 
@@ -574,8 +601,8 @@ describe("Host での振り分け", () => {
       "/t/infra/login",
       "/t/infra/a/333333333333",
       "/admin/.well-known/openid-configuration",
-      "/standard/.well-known/openid-configuration/x",
-      "/standard",
+      "/console/.well-known/openid-configuration/x",
+      "/console",
       "/.well-known/openid-configuration",
     ]) {
       expect((await get(path, { host: ISSUER_HOST })).status, path).toBe(404);
@@ -583,9 +610,9 @@ describe("Host での振り分け", () => {
   });
 
   it("issuer の文書は GET・HEAD だけ", async () => {
-    const res = await get("/standard/.well-known/jwks.json", { host: ISSUER_HOST, method: "POST" });
+    const res = await get("/console/.well-known/jwks.json", { host: ISSUER_HOST, method: "POST" });
     expect(res.status).toBe(405);
-    const head = await get("/standard/.well-known/jwks.json", {
+    const head = await get("/console/.well-known/jwks.json", {
       host: ISSUER_HOST,
       method: "HEAD",
     });
@@ -595,20 +622,31 @@ describe("Host での振り分け", () => {
 
   it("知らないホスト・ポータルのホストの issuer のパスは 404", async () => {
     expect((await post({ host: "evil.example.com" })).status).toBe(404);
-    expect((await get("/standard/.well-known/jwks.json")).status).toBe(404);
+    expect((await get("/console/.well-known/jwks.json")).status).toBe(404);
     noIssue();
   });
 
-  it("ポータルのホストで、設定にないチーム・Admin の階層のチーム・知らないパスは 404", async () => {
-    for (const path of ["/t/nope/login", "/t/infra-elevated/login", "/t/INFRA/login", "/x"]) {
+  it("ポータルのホストで、設定にないチーム・Admin のチームに似た名前・知らないパスは 404（X12）", async () => {
+    for (const path of ["/t/nope/login", "/t/infra-elevatedx/login", "/t/INFRA/login", "/x"]) {
       const res = await post({ path });
       expect(res.status, path).toBe(404);
     }
     noIssue();
   });
 
+  it("X2: Admin の階層のチームのパスは同じ Worker にある。Standard のチームの AUD での POST は 403 team_mismatch", async () => {
+    const csrf = await h.csrf(INFRA);
+    const res = await post({
+      path: "/t/infra-elevated/login",
+      form: { entry: "333333333333:admin", csrf },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain("team_mismatch");
+    noIssue();
+  });
+
   it("ホスト方式（routing: host）: <team>.<ホスト> の /login で発行し、Origin と Issuer はチームのホスト", async () => {
-    const config = standardConfig();
+    const config = workerConfig();
     config.portal.routing = "host";
     const teamOrigin = "https://infra.portal.example.com";
     const res = await post(
@@ -653,7 +691,7 @@ describe("画面（S2・S4・S5 と経路の枠）", () => {
   });
 
   it("S2: リージョンの選択は許可リストだけ。設定の値はエスケープする", async () => {
-    const config = standardConfig();
+    const config = workerConfig();
     const a = config.accounts.find((x) => x.accountId === "333333333333");
     if (a) a.name = '<img src=x onerror="alert(1)">';
     const html = await (

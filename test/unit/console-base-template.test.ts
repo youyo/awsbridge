@@ -1,4 +1,4 @@
-// コンソールログインの必須のスタック（infra/aws/console/base.yaml）: Standard の OIDC プロバイダーと、階層ごとの守りの部品。
+// コンソールログインの必須のスタック（infra/aws/console/base.yaml）: コンソールの OIDC プロバイダー（1 つ。P2）と、階層ごとの守りの部品。
 // 設計: docs/specs/console-login.md §4.2・§4.4・§4.7・§4.8・§6.3。ロールのテンプレート（PR8）はこのスタックの Export を読む。
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -56,55 +56,42 @@ function defaults(): Params {
   );
 }
 
-describe("Admin の階層のパラメーター（Conditions）", () => {
-  it("AdminIssuerHost が空（既定）なら、Admin のプロバイダー・部品とその Output は作られない", () => {
-    const off = created({ AdminIssuerHost: "" });
-    expect(off.resources).not.toContain("AdminGuardPolicy");
-    expect(off.resources).not.toContain("AdminProvider");
-    expect(off.outputs).not.toContain("AdminGuardPolicyArn");
-    expect(off.outputs).not.toContain("AdminProviderArn");
-    expect(off.resources).toContain("StandardGuardPolicy");
-    expect(off.resources).toContain("StandardProvider");
-    expect(created({}).resources).not.toContain("AdminGuardPolicy");
-    expect(created({}).resources).not.toContain("AdminProvider");
-  });
-
-  it("AdminIssuerHost を渡せば、Admin のプロバイダー・部品とその Output が作られる", () => {
-    const on = created({ AdminIssuerHost: ADMIN_HOST });
-    expect(on.resources).toContain("AdminGuardPolicy");
-    expect(on.resources).toContain("AdminProvider");
-    expect(on.outputs).toContain("AdminGuardPolicyArn");
-    expect(on.outputs).toContain("AdminProviderArn");
+// P2（B）の設計メモ §6.2（決裁で P-1）: Admin の部品と Export は条件を外していつも作る。Admin のプロバイダーは無い
+describe("Admin の部品はいつも作る（Conditions なし）", () => {
+  it("パラメーターによらず、プロバイダー 1 つと 2 つの部品とその Output が作られる", () => {
+    const all = created({});
+    expect(all.resources).toEqual(["AdminGuardPolicy", "ConsoleProvider", "StandardGuardPolicy"]);
+    expect(all.outputs).toEqual([
+      "AdminGuardPolicyArn",
+      "ConsoleProviderArn",
+      "StandardGuardPolicyArn",
+    ]);
+    expect(tpl.Conditions).toBeUndefined();
+    for (const r of Object.values(tpl.Resources as Record<string, Json>))
+      expect(r.Condition).toBeUndefined();
   });
 });
 
 const HOST = "awsbridge-oidc-console.example.com";
-const ADMIN_HOST = "awsbridge-oidc-admin-console.example.com";
 const ACCOUNT = "123456789012";
-/** Admin の階層あり（Admin を配るアカウント）。 */
 const PARAMS: Params = {
   IssuerHost: HOST,
-  StandardPath: "standard",
+  IssuerPath: "console",
   Audience: AUDIENCE,
-  AdminIssuerHost: ADMIN_HOST,
-  AdminPath: "admin",
   "AWS::Partition": "aws",
   "AWS::AccountId": ACCOUNT,
 };
-/** Admin の階層なし（Standard だけのアカウント）。 */
-const STD_ONLY: Params = { ...PARAMS, AdminIssuerHost: "" };
 
 const ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/awsbridge-console/*`;
 const PROVIDER_ARN = `arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/*`;
-const ADMIN_PROVIDER_ARN = `arn:aws:iam::${ACCOUNT}:oidc-provider/${ADMIN_HOST}/*`;
 const GUARD_ARN = `arn:aws:iam::${ACCOUNT}:policy/awsbridge-console/*`;
 const REMOTE_ARN = `arn:aws:signin:*:${ACCOUNT}:oauth2/public-client/remote`;
 
 /**
  * 守りの部品（Standard / Admin の両方）に共通の文。Sid ごとに Action・Resource を固定する（Condition は無い）。
- * コンソール用のプロバイダーの Deny は、Standard のホストと、Admin の階層があれば Admin のホストの両方を守る。
+ * コンソール用のプロバイダーの Deny は、1 つのホスト（IssuerHost。管理外の先方の /p/<id>/... も同じホストの下）を守る（§6.1）。
  */
-const commonStatements = (admin: boolean) => [
+const commonStatements = () => [
   {
     Sid: "DenyRoleChaining",
     Effect: "Deny",
@@ -143,7 +130,7 @@ const commonStatements = (admin: boolean) => [
       "iam:UntagOpenIDConnectProvider",
       "iam:UpdateOpenIDConnectProviderThumbprint",
     ],
-    Resource: admin ? [PROVIDER_ARN, ADMIN_PROVIDER_ARN] : [PROVIDER_ARN],
+    Resource: [PROVIDER_ARN],
   },
   {
     Sid: "DenyGuardPolicyWrites",
@@ -220,130 +207,63 @@ describe("Parameters", () => {
     ])
       expect(re.test(ng), ng).toBe(false);
   });
-  it("IssuerHost と StandardPath の MaxLength は、URL 全体（https://<host>/<path>）を 255 文字以内に収める", () => {
+  it("IssuerHost と IssuerPath の MaxLength は、URL 全体（https://<host>/<path>）を 255 文字以内に収める", () => {
     const hostMax: number = p.IssuerHost.MaxLength;
-    const pathMax: number = p.StandardPath.MaxLength;
+    const pathMax: number = p.IssuerPath.MaxLength;
     expect(hostMax).toBeGreaterThan(0);
     expect(pathMax).toBeGreaterThan(0);
     expect("https://".length + hostMax + "/".length + pathMax).toBeLessThanOrEqual(255);
   });
-  it("StandardPath は既定 standard、§3.1 のパスの規則（先頭・末尾のスラッシュなし、小文字・数字・-）", () => {
-    expect(p.StandardPath.Default).toBe("standard");
-    const re = new RegExp(p.StandardPath.AllowedPattern);
-    for (const ok of ["standard", "p/p01/standard", "standard-2"])
-      expect(re.test(ok), ok).toBe(true);
+  it("IssuerPath は既定 console（§3.1 の決定）、パスの規則（先頭・末尾のスラッシュなし、小文字・数字・-）", () => {
+    expect(p.IssuerPath.Default).toBe("console");
+    const re = new RegExp(p.IssuerPath.AllowedPattern);
+    for (const ok of ["console", "p/p01/console", "console-2"]) expect(re.test(ok), ok).toBe(true);
     for (const ng of [
-      "/standard",
-      "standard/",
-      "STANDARD",
+      "/console",
+      "console/",
+      "CONSOLE",
       "",
-      "standard//x",
-      "standard?x",
-      "standard#x",
+      "console//x",
+      "console?x",
+      "console#x",
     ])
       expect(re.test(ng), ng).toBe(false);
   });
-  it("Audience は上流の定数 AUDIENCE だけ", () => {
+  it("Audience は上流の定数 AUDIENCE だけ（P2 でも 1 つ）", () => {
     expect(p.Audience.Default).toBe(AUDIENCE);
     expect(p.Audience.AllowedValues).toEqual([AUDIENCE]);
   });
-  it("AdminIssuerHost は既定が空で、空か IssuerHost と同じ規則のホスト名だけ", () => {
-    expect(p.AdminIssuerHost.Default).toBe("");
-    expect(p.AdminIssuerHost.MaxLength).toBe(p.IssuerHost.MaxLength);
-    const re = new RegExp(p.AdminIssuerHost.AllowedPattern);
-    for (const ok of ["", ADMIN_HOST, "a", "id-1.ex-ample.co"]) expect(re.test(ok), ok).toBe(true);
-    for (const ng of [
-      `https://${ADMIN_HOST}`,
-      `${ADMIN_HOST}/`,
-      `${ADMIN_HOST}/admin`,
-      'a"b.example.com',
-      "Admin.example.com",
-      "a..b",
-      "-a.b",
-      " ",
-    ])
-      expect(re.test(ng), ng).toBe(false);
+  it("パラメーターは issuer の 2 つと Audience だけ（AdminIssuerHost・AdminPath・StandardPath は無い）", () => {
+    expect(Object.keys(p).sort()).toEqual(["Audience", "IssuerHost", "IssuerPath"]);
   });
-  it("AdminPath は既定 admin、StandardPath と同じ規則（世代つきのパスに移れるよう固定にしない）", () => {
-    expect(p.AdminPath.Default).toBe("admin");
-    expect(p.AdminPath.AllowedPattern).toBe(p.StandardPath.AllowedPattern);
-    expect(p.AdminPath.MaxLength).toBe(p.StandardPath.MaxLength);
-    expect(p.AdminPath.AllowedValues).toBeUndefined();
-    const re = new RegExp(p.AdminPath.AllowedPattern);
-    for (const ok of ["admin", "admin-2", "p/p01/admin"]) expect(re.test(ok), ok).toBe(true);
-    for (const ng of ["/admin", "admin/", "ADMIN", "", 'admin"'])
-      expect(re.test(ng), ng).toBe(false);
-  });
-  it("AdminIssuerHost と AdminPath の MaxLength も、URL 全体を 255 文字以内に収める", () => {
-    const hostMax: number = p.AdminIssuerHost.MaxLength;
-    const pathMax: number = p.AdminPath.MaxLength;
-    expect("https://".length + hostMax + "/".length + pathMax).toBeLessThanOrEqual(255);
-  });
-  it("パラメーターは issuer の 4 つと Audience だけ（EnableAdminTier は無い）", () => {
-    expect(Object.keys(p).sort()).toEqual(
-      ["AdminIssuerHost", "AdminPath", "Audience", "IssuerHost", "StandardPath"].sort(),
-    );
-  });
-});
-
-describe("Rules（D3: Admin の issuer は Standard と別のホスト）", () => {
-  /** Rules の Assert をパラメーターで評価する（すべての Assert が真ならスタックの作成・更新が進む）。 */
-  const asserts = (params: Params) => {
-    const full: Params = { ...defaults(), ...params };
-    return Object.values(tpl.Rules as Record<string, Json>).flatMap((rule) => {
-      // RuleCondition が偽なら、その規則は検査しない
-      if (rule.RuleCondition !== undefined && !evalCondition(rule.RuleCondition, full)) return [];
-      return (rule.Assertions as Json[]).map((a) => evalCondition(a.Assert, full));
-    });
-  };
-  it("AdminIssuerHost が IssuerHost と同じなら通らない", () => {
-    expect(asserts({ ...PARAMS, AdminIssuerHost: HOST })).toContain(false);
-  });
-  it("別のホストと空（Admin の階層なし）は通る", () => {
-    expect(asserts(PARAMS).every(Boolean)).toBe(true);
-    expect(asserts(STD_ONLY).every(Boolean)).toBe(true);
-  });
-  it("Assert には理由の説明がある", () => {
-    for (const rule of Object.values(tpl.Rules as Record<string, Json>))
-      for (const a of rule.Assertions as Json[]) expect(a.AssertDescription).toBeTruthy();
+  it("Rules（D3: Admin の issuer は別のホスト）を持たない（比べる相手が無い）", () => {
+    expect(tpl.Rules).toBeUndefined();
   });
 });
 
 describe("Resources", () => {
-  it("2 つのプロバイダー（Admin は条件つき）と 2 つの部品だけを持ち、ロールは作らない", () => {
+  it("1 つのプロバイダーと 2 つの部品だけを持ち、ロールは作らない", () => {
     expect(Object.keys(tpl.Resources).sort()).toEqual(
-      ["AdminGuardPolicy", "AdminProvider", "StandardGuardPolicy", "StandardProvider"].sort(),
+      ["AdminGuardPolicy", "ConsoleProvider", "StandardGuardPolicy"].sort(),
     );
     const types = Object.values(tpl.Resources as Record<string, Json>).map((r) => r.Type);
-    expect(types.filter((t) => t === "AWS::IAM::OIDCProvider")).toHaveLength(2);
+    expect(types.filter((t) => t === "AWS::IAM::OIDCProvider")).toHaveLength(1);
     expect(types).not.toContain("AWS::IAM::Role");
   });
 
-  it("Admin のプロバイダー: https://<AdminIssuerHost>/<AdminPath>、client ID は audience、Admin の階層のタグ、条件つき", () => {
-    const r = tpl.Resources.AdminProvider;
-    expect(r.Type).toBe("AWS::IAM::OIDCProvider");
-    expect(r.Condition).toBe("AdminTierEnabled");
-    const props = evaluate(r.Properties, { ...PARAMS, AdminPath: "admin-2" });
-    expect(props.Url).toBe(`https://${ADMIN_HOST}/admin-2`);
-    expect(props.ClientIdList).toEqual([AUDIENCE]);
-    expect(props.ThumbprintList).toBeUndefined();
-    expect(props.Tags).toEqual([
-      { Key: "project", Value: "awsbridge" },
-      { Key: "awsbridge-console-tier", Value: "admin" },
-    ]);
-  });
-
-  it("Standard のプロバイダー: https://<IssuerHost>/<StandardPath>、client ID は audience、thumbprint なし", () => {
-    const r = tpl.Resources.StandardProvider;
+  it("コンソールのプロバイダー: https://<IssuerHost>/<IssuerPath>、client ID は audience、thumbprint なし、階層のタグなし", () => {
+    const r = tpl.Resources.ConsoleProvider;
     expect(r.Type).toBe("AWS::IAM::OIDCProvider");
     expect(r.Condition).toBeUndefined();
-    const props = evaluate(r.Properties, { ...PARAMS, StandardPath: "p/p01/standard" });
-    expect(props.Url).toBe(`https://${HOST}/p/p01/standard`);
+    const props = evaluate(r.Properties, { ...PARAMS, IssuerPath: "p/p01/console" });
+    expect(props.Url).toBe(`https://${HOST}/p/p01/console`);
     expect(props.ClientIdList).toEqual([AUDIENCE]);
     expect(props.ThumbprintList).toBeUndefined();
+    // プロバイダーは階層を持たない（§3.1）
+    expect(props.Tags).toEqual([{ Key: "project", Value: "awsbridge" }]);
   });
 
-  it("部品は予約した名前とパスの顧客管理ポリシー", () => {
+  it("部品は予約した名前とパスの顧客管理ポリシーで、どちらも条件なし", () => {
     for (const [name, tier] of [
       ["StandardGuardPolicy", "standard"],
       ["AdminGuardPolicy", "admin"],
@@ -354,46 +274,37 @@ describe("Resources", () => {
       expect(r.Properties.Path, name).toBe(GUARD_POLICY_PATH);
       // 部品をロールに付けるのはロールのテンプレート（PR8）。このスタックは付けない
       expect(r.Properties.Roles, name).toBeUndefined();
+      expect(r.Condition, name).toBeUndefined();
     }
-    expect(tpl.Resources.StandardGuardPolicy.Condition).toBeUndefined();
-    expect(tpl.Resources.AdminGuardPolicy.Condition).toBe("AdminTierEnabled");
   });
 });
 
 describe("守りの部品の文", () => {
   it("Standard の部品: ロールチェーンの禁止・コンソール用のロールとプロバイダーと部品への書き込みの Deny だけ", () => {
-    for (const [params, admin] of [
-      [PARAMS, true],
-      [STD_ONLY, false],
-    ] as const) {
-      const doc = guardDoc("StandardGuardPolicy", params);
-      expect(doc.Version).toBe("2012-10-17");
-      expect(normalize(doc), `admin=${admin}`).toEqual(
-        normalize({ Statement: commonStatements(admin) }),
-      );
-    }
+    const doc = guardDoc("StandardGuardPolicy");
+    expect(doc.Version).toBe("2012-10-17");
+    expect(normalize(doc)).toEqual(normalize({ Statement: commonStatements() }));
   });
 
   it("Admin の部品: Standard と同じ文に、aws login --remote の明示の Deny を足したもの", () => {
     const doc = guardDoc("AdminGuardPolicy");
     expect(doc.Version).toBe("2012-10-17");
     expect(normalize(doc)).toEqual(
-      normalize({ Statement: [...commonStatements(true), REMOTE_STATEMENT] }),
+      normalize({ Statement: [...commonStatements(), REMOTE_STATEMENT] }),
     );
   });
 
-  it("穴の回帰: Admin の階層があれば、両方の部品のプロバイダーの Deny が Admin のホストも守る", () => {
+  it("両方の部品のプロバイダーの Deny は、1 つのホスト oidc-provider/<IssuerHost>/* だけ（§6.1。書き直した文は M3 で測るまで未検証）", () => {
     for (const name of ["StandardGuardPolicy", "AdminGuardPolicy"] as const) {
       const st = (guardDoc(name).Statement as Json[]).find(
         (x) => x.Sid === "DenyConsoleProviderWrites",
       );
-      expect(st.Resource, name).toContain(ADMIN_PROVIDER_ARN);
-      expect(st.Resource, name).toContain(PROVIDER_ARN);
+      expect(st.Resource, name).toEqual([PROVIDER_ARN]);
     }
-    const std = (guardDoc("StandardGuardPolicy", STD_ONLY).Statement as Json[]).find(
-      (x) => x.Sid === "DenyConsoleProviderWrites",
+    // 管理外の先方の issuer（/p/<id>/console）も同じホストの下なので、この 1 つで覆う
+    expect(`arn:aws:iam::${ACCOUNT}:oidc-provider/${HOST}/p/p01/console`).toMatch(
+      new RegExp(`^${PROVIDER_ARN.replace(/[.]/g, "\\.").replace("*", ".*")}$`),
     );
-    expect(std.Resource).toEqual([PROVIDER_ARN]);
   });
 
   it("remote の Deny は Admin の部品にだけあり、Standard の部品には signin の文が無い", () => {
@@ -438,45 +349,34 @@ describe("守りの部品の文", () => {
   });
 
   it("部品のポリシーは管理ポリシーの上限（6,144 文字。空白を除く）に収まる", () => {
-    // 最悪の長さ: パラメーターの MaxLength いっぱいのホストとパス、長いパーティション名
+    // 最悪の長さ: パラメーターの MaxLength いっぱいのホストとパス、長いパーティション名（ホストは 1 つ）
     const hostMax: number = tpl.Parameters.IssuerHost.MaxLength;
-    const pathMax: number = tpl.Parameters.StandardPath.MaxLength;
+    const pathMax: number = tpl.Parameters.IssuerPath.MaxLength;
     expect(hostMax).toBeGreaterThan(0);
     expect(pathMax).toBeGreaterThan(0);
-    // Admin のホストが 1 つ増える分も含めて、Admin の有り無しの両方で測る
-    const adminHostMax: number = tpl.Parameters.AdminIssuerHost.MaxLength;
     const long: Params = {
       ...PARAMS,
       IssuerHost: "a".repeat(hostMax),
-      StandardPath: "s".repeat(pathMax),
-      AdminIssuerHost: "b".repeat(adminHostMax),
+      IssuerPath: "s".repeat(pathMax),
       "AWS::Partition": "aws-iso-b",
     };
-    for (const params of [long, { ...long, AdminIssuerHost: "" }])
-      for (const name of ["StandardGuardPolicy", "AdminGuardPolicy"] as const) {
-        const size = JSON.stringify(guardDoc(name, params)).length;
-        expect(size, `${name} admin=${params.AdminIssuerHost !== ""}`).toBeLessThanOrEqual(
-          MANAGED_POLICY_MAX_CHARS,
-        );
-      }
+    for (const name of ["StandardGuardPolicy", "AdminGuardPolicy"] as const) {
+      const size = JSON.stringify(guardDoc(name, long)).length;
+      expect(size, name).toBeLessThanOrEqual(MANAGED_POLICY_MAX_CHARS);
+    }
     expect(MANAGED_POLICY_MAX_CHARS).toBe(6144);
   });
 });
 
 describe("Outputs と Export（ロールのテンプレートに部品の ARN を渡す）", () => {
   const o = tpl.Outputs;
-  it("部品の ARN を予約した Export 名で出す。Admin の部品は Admin の階層を使うときだけ", () => {
+  it("部品の ARN を予約した Export 名で出す。Admin の部品もいつも Export する（§6.2）", () => {
     expect(o.StandardGuardPolicyArn.Value).toEqual({ Ref: "StandardGuardPolicy" });
     expect(o.StandardGuardPolicyArn.Export.Name).toBe(BASE_EXPORT_NAME.standardGuardPolicyArn);
     expect(o.StandardGuardPolicyArn.Condition).toBeUndefined();
     expect(o.AdminGuardPolicyArn.Value).toEqual({ Ref: "AdminGuardPolicy" });
     expect(o.AdminGuardPolicyArn.Export.Name).toBe(BASE_EXPORT_NAME.adminGuardPolicyArn);
-    expect(o.AdminGuardPolicyArn.Condition).toBe("AdminTierEnabled");
-  });
-  it("Admin のプロバイダーの ARN も Output に出すが Export しない（世代つきのパスで ARN が変わるため）", () => {
-    expect(o.AdminProviderArn.Value).toEqual({ Ref: "AdminProvider" });
-    expect(o.AdminProviderArn.Export).toBeUndefined();
-    expect(o.AdminProviderArn.Condition).toBe("AdminTierEnabled");
+    expect(o.AdminGuardPolicyArn.Condition).toBeUndefined();
   });
   it("Export 名はスタック名に依存しない（StackSets のスタック名は自動で付く）", () => {
     for (const n of Object.values(BASE_EXPORT_NAME))
@@ -485,8 +385,8 @@ describe("Outputs と Export（ロールのテンプレートに部品の ARN �
       if (v.Export) expect(typeof v.Export.Name).toBe("string");
   });
   it("プロバイダーの ARN は Output に出すが Export しない（issuer のパスを替えるときに import が更新を止めないように）", () => {
-    expect(o.StandardProviderArn.Value).toEqual({ Ref: "StandardProvider" });
-    expect(o.StandardProviderArn.Export).toBeUndefined();
+    expect(o.ConsoleProviderArn.Value).toEqual({ Ref: "ConsoleProvider" });
+    expect(o.ConsoleProviderArn.Export).toBeUndefined();
   });
 });
 

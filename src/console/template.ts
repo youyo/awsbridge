@@ -8,11 +8,11 @@
 //     すべてのロールの <Name>Teams を渡すため。割り当てのないロールは空文字）。ロールは Conditions で、
 //     <Name>Teams が空でないときだけ作る。<Name>Teams の AllowedPattern は、その種類でそのロールに割り当てたチームの
 //     組み合わせだけを受け付ける（割り当てのないロールは空だけ）。信頼ポリシーの JSON に差し込む値の形も、これで絞る
-//   - Standard の階層: Principal は https://<IssuerHost>/<StandardPath> のプロバイダー（必須のスタックと同じパラメーター。
-//     base.yaml はプロバイダーの ARN を Export しない）
-//   - Admin の階層: Principal は https://<AdminIssuerHost>/<AdminPath> のプロバイダー（必須のスタックと同じパラメーター。
-//     ARN はアカウント ID を AWS::AccountId から組むので、StackSet で 1 つの値にできる）。AdminIssuerHost が空なら
-//     Admin の階層のロールは作らない（cto の決裁 2026-11-13 の P-A）
+//   - どちらの階層も、Principal は https://<IssuerHost>/<IssuerPath> のコンソールのプロバイダー（P2（B）。必須のスタックと
+//     同じパラメーター。base.yaml はプロバイダーの ARN を Export しない。ARN はアカウント ID を AWS::AccountId から組むので、
+//     StackSet で 1 つの値にできる）。Viewer と Administrator を分けるのは信頼ポリシーのチームの条件だけ（受容 d）なので、
+//     <Name>Teams の AllowedPattern（その種類でそのロールに割り当てたチームだけ）が、Admin のロールに Standard のチームを
+//     渡せないテンプレート側の守りになる（設計メモ §7.1）。Admin の階層のロールは <Name>Teams が空でないときに作る
 //   - 権限: 設定の AWS 管理ポリシー、その階層の守りの部品（必須のスタックの Export を ImportValue）、aws login の Allow
 //     （Standard は localhost と remote、Admin は localhost だけ）、Standard の階層は秘密値の読み取りの Deny（§4.7）、
 //     下流のポリシー文書（permissions.inlinePolicyFiles。中身は呼び出し側が読んで渡す）
@@ -55,10 +55,6 @@ const roleKey = (role: ConsoleRole) => teamsParameterName(role.name).replace(/Te
 
 const ISSUER_HOST_PATTERN = "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$";
 const ISSUER_PATH_PATTERN = "^[a-z0-9-]+(/[a-z0-9-]+)*$";
-/** Admin の issuer のホスト。空（Admin の階層なし）か、IssuerHost と同じ規則のホスト名。 */
-const ADMIN_ISSUER_HOST_PATTERN = `^$|${ISSUER_HOST_PATTERN}`;
-
-const HAS_ADMIN_PROVIDER = "HasAdminProvider";
 /** Fn::Sub の変数の参照（${Name}）。 */
 const v = (name: string) => `\${${name}}`;
 const LOGIN_ACTIONS = ["signin:AuthorizeOAuth2Access", "signin:CreateOAuth2Token"];
@@ -135,19 +131,12 @@ function trustPolicy(teamsParam: string, issuer: unknown, principal: unknown) {
   };
 }
 
-/** 階層ごとの issuer のホストとパスのパラメーター（必須のスタック base.yaml と同じ名前）。 */
-const ISSUER_PARAMS: Record<Tier, { host: string; path: string }> = {
-  standard: { host: "IssuerHost", path: "StandardPath" },
-  admin: { host: "AdminIssuerHost", path: "AdminPath" },
-};
-
-/** 階層ごとの Principal（プロバイダーの ARN）と、条件キーの issuer（<host>/<path>）。 */
-function provider(tier: Tier): { issuer: unknown; principal: unknown } {
-  const { host, path } = ISSUER_PARAMS[tier];
+/** Principal（コンソールのプロバイダーの ARN）と、条件キーの issuer（<host>/<path>）。階層によらず同じ（P2）。 */
+function provider(): { issuer: unknown; principal: unknown } {
   return {
-    issuer: { "Fn::Sub": `${v(host)}/${v(path)}` },
+    issuer: { "Fn::Sub": `${v("IssuerHost")}/${v("IssuerPath")}` },
     principal: {
-      "Fn::Sub": `arn:${v("AWS::Partition")}:iam::${v("AWS::AccountId")}:oidc-provider/${v(host)}/${v(path)}`,
+      "Fn::Sub": `arn:${v("AWS::Partition")}:iam::${v("AWS::AccountId")}:oidc-provider/${v("IssuerHost")}/${v("IssuerPath")}`,
     },
   };
 }
@@ -181,47 +170,25 @@ function resolveInline(config: ConsoleConfig, options: TemplateOptions): Map<num
 function build(config: ConsoleConfig, kind: string, inline: Map<number, unknown[]>): CfnTemplate {
   const k = config.kinds.find((x) => x.name === kind);
   if (!k) throw new ConsoleConfigError([{ path: "kind", code: "unknown_kind" }]);
-  const tiers = new Set(config.roles.map((r) => r.tier));
-
-  const parameters: CfnTemplate = {};
-  const conditions: CfnTemplate = {};
-  const resources: CfnTemplate = {};
-  if (tiers.has("standard")) {
-    parameters.IssuerHost = {
+  const parameters: CfnTemplate = {
+    IssuerHost: {
       Type: "String",
       Description:
         "Host of the console login issuer, without scheme, path or trailing slash. Same value as the base stack.",
       AllowedPattern: ISSUER_HOST_PATTERN,
       MaxLength: 180,
-    };
-    parameters.StandardPath = {
+    },
+    IssuerPath: {
       Type: "String",
-      Default: "standard",
-      Description: "Path of the Standard tier issuer. Same value as the base stack.",
-      AllowedPattern: ISSUER_PATH_PATTERN,
-      MaxLength: 64,
-    };
-  }
-  if (tiers.has("admin")) {
-    parameters.AdminIssuerHost = {
-      Type: "String",
-      Default: "",
+      Default: "console",
       Description:
-        "Host of the Admin tier issuer (separate from IssuerHost). Same value as the base stack. Empty: the Admin tier roles are not created.",
-      AllowedPattern: ADMIN_ISSUER_HOST_PATTERN,
-      MaxLength: 180,
-    };
-    parameters.AdminPath = {
-      Type: "String",
-      Default: "admin",
-      Description: "Path of the Admin tier issuer. Same value as the base stack.",
+        "Path of the console issuer (shared by the Standard and Admin tiers). Same value as the base stack.",
       AllowedPattern: ISSUER_PATH_PATTERN,
       MaxLength: 64,
-    };
-    conditions[HAS_ADMIN_PROVIDER] = {
-      "Fn::Not": [{ "Fn::Equals": [{ Ref: "AdminIssuerHost" }, ""] }],
-    };
-  }
+    },
+  };
+  const conditions: CfnTemplate = {};
+  const resources: CfnTemplate = {};
 
   config.roles.forEach((role, i) => {
     const key = roleKey(role);
@@ -233,14 +200,10 @@ function build(config: ConsoleConfig, kind: string, inline: Map<number, unknown[
       Description: `Comma separated teams allowed to assume ${role.roleName}. Empty: the role is not created.`,
       AllowedPattern: teamsPattern(teams),
     };
-    const hasTeams = { "Fn::Not": [{ "Fn::Equals": [{ Ref: teamsParam }, ""] }] };
     const condition = `Create${key}Role`;
-    conditions[condition] =
-      role.tier === "admin"
-        ? { "Fn::And": [hasTeams, { Condition: HAS_ADMIN_PROVIDER }] }
-        : hasTeams;
+    conditions[condition] = { "Fn::Not": [{ "Fn::Equals": [{ Ref: teamsParam }, ""] }] };
 
-    const { issuer, principal } = provider(role.tier);
+    const { issuer, principal } = provider();
     const policies: CfnTemplate[] = [
       {
         PolicyName: "AwsLogin",
@@ -277,8 +240,8 @@ function build(config: ConsoleConfig, kind: string, inline: Map<number, unknown[
         Path: rolePath(role.tier),
         // Admin はちょうど 3600（AWS が強制できる最短）、Standard は sessionSeconds（G2 の決裁の論点 5）
         MaxSessionDuration: roleMaxSessionDuration(role),
-        // 守りの部品は、その種類で割り当てのあるロールにだけ付ける。割り当てのないロールは AllowedPattern で作られず、
-        // ImportValue を置くと Admin の Export の無い基盤（AdminIssuerHost が空）で解決に失敗しうるため出さない
+        // 守りの部品は、その種類で割り当てのあるロールにだけ付ける（割り当てのないロールは AllowedPattern で作られないので、
+        // 作られないロールに参照を置かない。Admin の部品の Export は P2 ではいつもある）
         ManagedPolicyArns: [
           ...role.managedPolicyArns,
           ...(teams.length > 0 ? [{ "Fn::ImportValue": GUARD_EXPORT[role.tier] }] : []),

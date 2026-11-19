@@ -15,8 +15,13 @@ import type { AssumeEvent, ReconRecord } from "../../src/console/reconcile-input
 
 const ACCOUNT = "333333333333";
 const OTHER = "444444444444";
-const STD_ISSUER = "https://awsbridge-oidc-console.example.com/standard";
-const ADMIN_ISSUER = "https://awsbridge-oidc-admin-console.example.com/admin";
+/** 境界の issuer（P2: Standard と Admin の階層で同じ issuer・同じプロバイダー）。 */
+const ISSUER = "https://awsbridge-oidc-console.example.com/console";
+/** 設定のチームの階層（記録のチームの階層を調べる）。 */
+const TEAMS = [
+  { name: "infra", tier: "standard" as const },
+  { name: "infra-elevated", tier: "admin" as const },
+];
 const STD_ROLE = `arn:aws:iam::${ACCOUNT}:role/awsbridge-console/std/FederatedViewer`;
 const ADMIN_ROLE = `arn:aws:iam::${ACCOUNT}:role/awsbridge-console/admin/FederatedAdministrator`;
 const MCP_ROLE = `arn:aws:iam::${ACCOUNT}:role/FederatedAwsBridgeMcpViewer`;
@@ -35,7 +40,8 @@ const rec = (over: Partial<ReconRecord> = {}): ReconRecord => ({
   result: "ok",
   at: NOW - 60 * MIN,
   tier: "standard",
-  team: "infra",
+  // 記録のチームは記録の階層のチーム（Admin の記録は Admin のチーム）
+  team: over.tier === "admin" ? "infra-elevated" : "infra",
   accountId: ACCOUNT,
   roleArn: STD_ROLE,
   stsRegion: "us-east-1",
@@ -54,7 +60,7 @@ const evFor = (r: ReconRecord, over: Partial<AssumeEvent> = {}): AssumeEvent => 
   region: r.stsRegion,
   accountId: ACCOUNT,
   roleArn: r.roleArn ?? STD_ROLE,
-  provider: providerArn(r.tier === "admin" ? ADMIN_ISSUER : STD_ISSUER),
+  provider: providerArn(ISSUER),
   ...(r.jti !== undefined ? { tokenId: r.jti } : {}),
   sourceIdentity: "a***@***.com",
   accessKeyId: "ASIA…QQQQ",
@@ -69,10 +75,8 @@ const input = (over: Partial<ReconcileInput> = {}): ReconcileInput => ({
   window: { since: NOW - 6 * DAY, until: NOW },
   now: NOW,
   accountId: ACCOUNT,
-  issuers: [
-    { url: STD_ISSUER, tier: "standard" },
-    { url: ADMIN_ISSUER, tier: "admin" },
-  ],
+  issuers: [{ url: ISSUER }],
+  teams: TEAMS,
   regions: { read: ["us-east-1", "ap-northeast-1"], unread: [] },
   lines: { truncated: [], unreadable: [], total: 0 },
   source: "file",
@@ -135,7 +139,7 @@ describe("reconcile: コンソールの引き受けだけに絞る", () => {
       time: NOW - 10 * MIN,
       region: "us-east-1",
       roleArn: `arn:aws:iam::${ACCOUNT}:role/HandMade`,
-      provider: providerArn(STD_ISSUER),
+      provider: providerArn(ISSUER),
       tokenId: jti(),
     };
     const r = reconcile(input({ events: [e] }));
@@ -160,7 +164,7 @@ describe("reconcile: コンソールの引き受けだけに絞る", () => {
 
   it("プロバイダーは ARN の形でも、URL のホストとパスの形でも読む", () => {
     const a = rec();
-    const bare = evFor(a, { provider: "awsbridge-oidc-console.example.com/standard" });
+    const bare = evFor(a, { provider: "awsbridge-oidc-console.example.com/console" });
     expect(codes(reconcile(input({ records: [a], events: [bare] })))).toEqual([]);
   });
 });
@@ -178,15 +182,42 @@ describe("reconcile: jti の重複・階層・補助のキー", () => {
   });
 
   it("記録の tier とロールのパスの階層が違えば tier_mismatch（誤り）", () => {
-    const a = rec({ tier: "admin", roleArn: STD_ROLE });
-    const e = evFor(a, { provider: providerArn(STD_ISSUER) });
-    expect(codes(reconcile(input({ records: [a], events: [e] })))).toEqual(["error:tier_mismatch"]);
+    const a = rec({ tier: "admin", team: "infra-elevated", roleArn: STD_ROLE });
+    const e = evFor(a);
+    expect(codes(reconcile(input({ records: [a], events: [e] })))).toContain("error:tier_mismatch");
   });
 
-  it("プロバイダーの階層とロールのパスの階層が違えば tier_mismatch（誤り。記録が無くても）", () => {
-    const a = rec({ tier: "admin", roleArn: ADMIN_ROLE });
-    const e = evFor(a, { provider: providerArn(STD_ISSUER) });
-    expect(codes(reconcile(input({ records: [a], events: [e] })))).toEqual(["error:tier_mismatch"]);
+  // P2（B）の設計メモ §9.1: プロバイダーは階層を持たない（プロバイダーの階層とロールのパスの比較は無い）。代わりに、
+  // 記録のチームが設定でどの階層かを調べ、記録の tier・ロールのパスの階層と違えば誤り。設定に無いチームの記録も誤り
+  it("記録のチームの階層が記録の tier と違えば team_tier_mismatch（誤り）", () => {
+    const a = rec({ tier: "admin", team: "infra", roleArn: ADMIN_ROLE });
+    expect(codes(reconcile(input({ records: [a], events: [evFor(a)] })))).toEqual([
+      "error:team_tier_mismatch",
+    ]);
+  });
+
+  it("記録のチームの階層がロールのパスの階層と違えば team_tier_mismatch（記録の tier と合っていても）", () => {
+    const a = rec({ tier: "standard", team: "infra", roleArn: ADMIN_ROLE });
+    const found = codes(reconcile(input({ records: [a], events: [evFor(a)] })));
+    expect(found).toContain("error:team_tier_mismatch");
+    expect(found).toContain("error:tier_mismatch");
+  });
+
+  it("設定に無いチームの記録は team_not_in_config（誤り。引き受けが無くても）", () => {
+    const a = rec({ team: "ghost" });
+    expect(codes(reconcile(input({ records: [a], events: [evFor(a)] })))).toEqual([
+      "error:team_not_in_config",
+    ]);
+    const { accessKeyId: _drop, ...noKey } = rec({ team: "ghost", result: "sts_denied" });
+    const b: ReconRecord = noKey;
+    expect(codes(reconcile(input({ records: [b] })))).toContain("error:team_not_in_config");
+  });
+
+  it("陽性の対照: 同じプロバイダーで Standard と Admin の階層の引き受けが対になれば、所見は無い", () => {
+    const a = rec();
+    const b = rec({ tier: "admin", roleArn: ADMIN_ROLE });
+    expect(evFor(a).provider).toBe(evFor(b).provider);
+    expect(codes(reconcile(input({ records: [a, b], events: [evFor(a), evFor(b)] })))).toEqual([]);
   });
 
   it("記録のロール ARN と引き受けたロールが違えば role_mismatch（誤り）", () => {
@@ -660,14 +691,16 @@ describe("reconcile: Administrator の階層（admin）で SourceIdentity を比
     expect(formatReconcileReport(r)).toContain("identity: compared 0, not compared 1 (admin 0)");
   });
 
-  it("階層は記録の tier・ロールのパス・プロバイダーのどれかが admin なら admin とみなす（食い違いで比べ漏れを隠さない）", () => {
+  it("階層は記録の tier・記録のチームの階層・ロールのパスのどれかが admin なら admin とみなす（食い違いで比べ漏れを隠さない）", () => {
     // 記録は standard だが、引き受けたロールは Admin のパス
     const a = noIdentity({ roleArn: ADMIN_ROLE });
-    const r = reconcile(
-      input({ records: [a], events: [evFor(a, { provider: providerArn(ADMIN_ISSUER) })] }),
-    );
+    const r = reconcile(input({ records: [a], events: [evFor(a)] }));
     expect(codes(r)).toContain("error:identity_not_compared_admin");
     expect(r.summary.identityNotComparedAdmin).toBe(1);
+    // 記録の tier もロールのパスも standard だが、記録のチームが Admin の階層
+    const b = noIdentity({ team: "infra-elevated" });
+    const rb = reconcile(input({ records: [b], events: [evFor(b)] }));
+    expect(codes(rb)).toContain("error:identity_not_compared_admin");
   });
 });
 

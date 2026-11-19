@@ -1,14 +1,15 @@
-// コンソールログイン（Standard の Worker）: Host での振り分け・issuer の文書・ポータルの経路・発行（9 段）。
-// 設計: docs/specs/console-login-portal.md §3・§9・§10・§11。エントリ（index.ts）は生成物を渡してこの工場を呼ぶだけ。
-// 経路・画面・発行の振り分けは階層に共通の工場（portal/worker.ts）に任せ、ここは Standard だけのもの
-// （境界ごとの secret_key の鍵での署名・issuer の文書・デプロイ後の確認）を渡す。
+// コンソールログイン（コンソールの Worker。1 つ）: Host での振り分け・issuer の文書・ポータルの経路・発行（9 段）。
+// 設計: docs/specs/console-login-portal.md §3・§9・§10・§11、P2（B）の設計メモ §2.1・§5。エントリ（index.ts）は生成物を渡してこの工場を呼ぶだけ。
+// P2: Standard と Admin の両方のチームを 1 つの Worker・境界ごとの 1 つの issuer と鍵で受ける（Admin の Worker は無い）。
+// 経路・画面・発行の振り分けは工場（portal/worker.ts）に任せ、ここは境界ごとの secret_key の鍵での署名・issuer の文書・
+// デプロイ後の確認・Admin の階層のチームの Access JWT の経過時間の上限（ADMIN_ACCESS_MAX_AGE_SECONDS）を渡す。
 //
 //   issuer のホスト   境界の issuer の /<path>/.well-known/openid-configuration と jwks.json だけ。それ以外は 404
 //   ポータルのホスト  ポータルの経路（portal/routes.ts。パス方式 R-P が既定、設定でホスト方式 R-H）
 //   それ以外のホスト  404
 //
 // 署名鍵（cto の決裁「Standard も secret_key に揃える」）: 境界ごとの Workers の secret_key 型のバインディング（取り出せない CryptoKey）。
-//   vars STANDARD_CURRENT_KEYS（境界 → 今の鍵 {binding, kid}）と STANDARD_PUBLIC_JWKS（境界 → 公開鍵。新旧 2 つまで）が指す（standard/key.ts）。
+//   vars CONSOLE_CURRENT_KEYS（境界 → 今の鍵 {binding, kid}）と CONSOLE_PUBLIC_JWKS（境界 → 公開鍵。新旧 2 つまで）が指す（standard/key.ts）。
 //   vars が無い・壊れている → どの経路も 500 server_misconfigured（従来の「署名鍵の secret が無い・壊れている」と同じ）。
 //   その境界の今の鍵が無い・バインディングが無い・使えない（取り出せる・用途が違う）・vars の公開鍵で自己検証が通らない → 503 signing_unavailable。
 //   JWKS はその境界の vars の公開鍵だけ（無ければ 500）。文字列の秘密鍵の secret は読まない。
@@ -16,10 +17,10 @@
 //   （取り出せない・exportKey が失敗する・自己検証）と kid だけを返す。
 //
 // 生成物と env は最初の要求で検査し、壊れていればどの経路も 500 server_misconfigured（ログは種別だけ）。
-// 試験用の差し替え（StandardOverrides）は E2E・unit のためのもので、本番のエントリは何も渡さない。
+// 試験用の差し替え（ConsoleOverrides）は E2E・unit のためのもので、本番のエントリは何も渡さない。
 import { createEntryHandler } from "../display/entry";
 import type { IdentityGroupsSource } from "../display/groups";
-import { createStandardSigner, type StandardBoundaryKey } from "../issue/sign-standard";
+import { type BoundaryKey, createBoundarySigner } from "../issue/sign-boundary";
 import {
   createPortalWorker,
   EnvError,
@@ -32,19 +33,34 @@ import {
 import type { PublicJwk } from "../signing/key";
 import type { WorkerConfig } from "../types";
 import { discoveryDocument, jwksDocument, matchIssuerDoc } from "./issuer";
-import { parseStandardKeys, type StandardKeys } from "./key";
+import { type ConsoleKeys, parseConsoleKeys } from "./key";
 
 export { DEFAULT_STS_REGION, isLoginDisabled } from "../portal/worker";
 
-/** Standard の Worker の変数・secret・binding（wrangler.console-standard.jsonc）。 */
-export type StandardEnv = PortalEnv & {
-  /** vars: 境界の名前 → 今の署名鍵（{"binding": "STANDARD_KEY_…", "kid": "…"}）の JSON。 */
-  STANDARD_CURRENT_KEYS?: string;
+/** コンソールの Worker の変数・secret・binding（wrangler.console.jsonc）。 */
+export type ConsoleEnv = PortalEnv & {
+  /** vars: 境界の名前 → 今の署名鍵（{"binding": "CONSOLE_KEY_…", "kid": "…"}）の JSON。 */
+  CONSOLE_CURRENT_KEYS?: string;
   /** vars: 境界の名前 → 公開鍵 JWK の配列（新旧 2 つまで）の JSON。 */
-  STANDARD_PUBLIC_JWKS?: string;
+  CONSOLE_PUBLIC_JWKS?: string;
+  /** vars: Admin の階層のチームの Access JWT の iat からの経過時間の上限（秒。60〜86400。既定 900）。 */
+  ADMIN_ACCESS_MAX_AGE_SECONDS?: string;
 };
 
-export type StandardOverrides = PortalOverrides & {
+/** Admin の階層のチームの Access JWT の経過時間の上限の既定（秒）。Admin のチームの Access のセッションの長さ（15 分）に合わせる。 */
+export const DEFAULT_ADMIN_ACCESS_MAX_AGE_SECONDS = 900;
+const MAX_AGE_MIN = 60;
+const MAX_AGE_MAX = 86_400;
+
+function readMaxAge(v: unknown): number {
+  if (v === undefined || v === "") return DEFAULT_ADMIN_ACCESS_MAX_AGE_SECONDS;
+  if (typeof v !== "string" || !/^\d{1,6}$/.test(v)) throw new EnvError("admin_access_max_age");
+  const n = Number(v);
+  if (n < MAX_AGE_MIN || n > MAX_AGE_MAX) throw new EnvError("admin_access_max_age");
+  return n;
+}
+
+export type ConsoleOverrides = PortalOverrides & {
   /**
    * 入口の一覧（S0。U2）の身元の Entra グループの取り方。取り方（Access の get-identity など）は未確定で、
    * 本番のエントリは渡さない（そのときは「分からない」→ 全チームの S1 へのリンクに落とす）。
@@ -78,9 +94,9 @@ function issuerHandler(
 function boundaryKeys(
   env: Record<string, unknown>,
   config: WorkerConfig,
-  keys: StandardKeys,
-): Record<string, StandardBoundaryKey> {
-  const out: Record<string, StandardBoundaryKey> = {};
+  keys: ConsoleKeys,
+): Record<string, BoundaryKey> {
+  const out: Record<string, BoundaryKey> = {};
   for (const b of config.boundaries) {
     const current = Object.hasOwn(keys.current, b.name) ? keys.current[b.name] : undefined;
     if (!current) continue;
@@ -92,31 +108,41 @@ function boundaryKeys(
 }
 
 /**
- * @param rawConfig 発行用の生成物（worker.standard.json）
- * @param rawDisplay 表示用の生成物（display.standard.json）。入口（S0）の画面だけが読む。壊れていれば入口だけが 500
+ * @param rawConfig 発行用の生成物（worker.json）
+ * @param rawDisplay 表示用の生成物（display.json）。入口（S0）の画面だけが読む。壊れていれば入口だけが 500
  */
-export function createStandardWorker(
+export function createConsoleWorker(
   rawConfig: unknown,
-  o: StandardOverrides = {},
+  o: ConsoleOverrides = {},
   rawDisplay?: unknown,
 ) {
   const { identityGroups, ...portalOverrides } = o;
-  return createPortalWorker<StandardEnv>(
+  return createPortalWorker<ConsoleEnv>(
     rawConfig,
     {
-      tier: "standard",
       serveEntry: createEntryHandler(rawDisplay, { identityGroups }),
-      async buildTier(env, config) {
-        let keys: StandardKeys;
+      isIssuerDoc: (url, config) => {
+        const doc = matchIssuerDoc(url, config);
+        return doc !== undefined && doc.kind !== "not_found";
+      },
+      async buildPart(env, config) {
+        let keys: ConsoleKeys;
         try {
-          keys = await parseStandardKeys(env.STANDARD_CURRENT_KEYS, env.STANDARD_PUBLIC_JWKS);
+          keys = await parseConsoleKeys(env.CONSOLE_CURRENT_KEYS, env.CONSOLE_PUBLIC_JWKS);
         } catch {
           throw new EnvError("signing_keys");
         }
+        const adminAccessMaxAgeSeconds = readMaxAge(env.ADMIN_ACCESS_MAX_AGE_SECONDS);
         const boundaries = boundaryKeys(env as Record<string, unknown>, config, keys);
-        const signer = createStandardSigner({ boundaries, log: (line) => console.log(line) });
+        const teamTiers = Object.fromEntries(config.teams.map((t) => [t.name, t.tier]));
+        const signer = createBoundarySigner({
+          boundaries,
+          teamTiers,
+          log: (line) => console.log(line),
+        });
         return {
           signer,
+          adminAccessMaxAgeSeconds,
           serveIssuer: issuerHandler(config, keys.publicJwks),
           keyCheck: async ({ team }) => {
             // そのチームの行がある境界だけ（ほかの境界の名前と kid を出さない）

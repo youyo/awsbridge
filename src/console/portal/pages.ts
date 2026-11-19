@@ -218,10 +218,8 @@ export function dataElement(value: unknown): string {
   return `<div id="portal-data" data-json="${esc(JSON.stringify(value))}" hidden></div>`;
 }
 
-/** 入口の一覧（S0）へのリンク。Standard のパス方式は /、ホスト方式は設定のオリジン、Admin は Standard のオリジン。 */
-export function entryHref(config: WorkerConfig, tier: Tier): string | undefined {
-  if (tier === "admin")
-    return config.portal.peerOrigin !== undefined ? `${config.portal.peerOrigin}/` : undefined;
+/** 入口の一覧（S0）へのリンク。パス方式は /、ホスト方式は設定のオリジン（P2: どちらの階層のチームも同じオリジンの入口）。 */
+export function entryHref(config: WorkerConfig): string {
   return config.portal.routing === "host" ? `${config.portal.origin}/` : "/";
 }
 
@@ -285,7 +283,6 @@ export function matchesServerQuery(row: ListRow, q: string): boolean {
 
 export type ListPageOptions = {
   config: WorkerConfig;
-  tier: Tier;
   team: string;
   teamBase: string;
   /** ?q= の値（切り詰め済み）。 */
@@ -299,7 +296,7 @@ export function listPage(o: ListPageOptions): string {
   const teamLabel = `${team?.displayName || o.team} (${o.team})`;
   const all = teamRows(o.config, o.team);
   const shown = all.filter((r) => matchesServerQuery(r, o.q));
-  const entry = entryHref(o.config, o.tier);
+  const entry = entryHref(o.config);
   const tr = shown
     .map((r) => {
       const links = r.roles

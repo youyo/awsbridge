@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 1,
-  "portal": { "standardOrigin": "https://awsbridge-console.example.com" },
+  "schemaVersion": 2,
+  "portal": { "origin": "https://awsbridge-console.example.com" },
   "teams": [
     {
       "name": "me",
@@ -21,7 +21,7 @@
   "boundaries": [
     {
       "name": "managed",
-      "issuers": { "standard": "https://awsbridge-oidc-console.example.com/standard" }
+      "issuer": "https://awsbridge-oidc-console.example.com/console"
     }
   ],
   "organizations": [

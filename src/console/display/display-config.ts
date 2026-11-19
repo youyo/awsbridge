@@ -1,4 +1,4 @@
-// コンソールログイン（表示用）: 表示用の生成物（display.standard.json）の検査（docs/specs/console-login-portal.md §5.2・§9.10）。
+// コンソールログイン（表示用）: 表示用の生成物（display.json）の検査（docs/specs/console-login-portal.md §5.2・§9.10）。
 // 入口の一覧（S0。U2）の表示だけに使う。発行の経路（portal/login.ts・issue/*）はこのモジュールを import しない。
 // 壊れている・取り違えている（purpose が display でない、発行用の値が混ざっている）ときは DisplayConfigError（種別だけ）。
 // 表示用の生成物の誤りは入口の画面だけを止め、チームのページと発行には影響させない（発行が表示用の値に依存しないように）。
@@ -40,15 +40,15 @@ const ISSUE_ONLY_KEYS = ["aud", "roleArn", "issuer", "entryAud", "tagKey", "boun
 export function readDisplayConfig(raw: unknown): DisplayConfig {
   check(isObj(raw), "not_object");
   check(raw.purpose === "display", "purpose");
-  check(raw.tier === "standard", "tier");
+  // P2 より前の形（Standard のデプロイだけに渡す印 tier: standard・Admin のオリジン）は受けない
+  check(!Object.hasOwn(raw, "tier"), "tier");
   check(raw.schemaVersion === CONSOLE_SCHEMA_VERSION, "schema_version");
   for (const k of ISSUE_ONLY_KEYS) check(!Object.hasOwn(raw, k), "issue_value");
 
   const portal = raw.portal;
   check(isObj(portal), "portal");
   check(isHttpsOrigin(portal.origin), "portal_origin");
-  check(portal.adminOrigin === undefined || isHttpsOrigin(portal.adminOrigin), "admin_origin");
-  check(portal.adminOrigin !== portal.origin, "admin_origin");
+  check(!Object.hasOwn(portal, "adminOrigin"), "admin_origin");
   check(portal.routing === "path" || portal.routing === "host", "portal_routing");
   check(!Object.hasOwn(portal, "entryAud"), "issue_value");
 

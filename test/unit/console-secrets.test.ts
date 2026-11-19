@@ -1,18 +1,18 @@
-// コンソールログイン（Standard）の CSRF の鍵の投入（scripts/console/secrets-lib.ts。mise タスク console:secrets:standard）。
-// 署名鍵は secret_key（console:standard-key:put）に移ったので、この道具は CONSOLE_CSRF_KEY（secret_text のまま）だけを入れる。
+// コンソールログイン（Standard）の CSRF の鍵の投入（scripts/console/secrets-lib.ts。mise タスク console:secrets）。
+// 署名鍵は secret_key（console:key:put）に移ったので、この道具は CONSOLE_CSRF_KEY（secret_text のまま）だけを入れる。
 // 鍵は道具の中で作り（32 バイトの乱数）、Cloudflare API の PUT .../secrets（secret_text）で入れる。ファイルに書かない・出力しない。
-// --yes が無ければ表示だけ。同じ名前が secret_text 以外（secret_key など）なら入れない。トークンは Standard 用（standard-key と同じ）。
+// --yes が無ければ表示だけ。同じ名前が secret_text 以外（secret_key など）なら入れない。トークンは Standard 用（console:key と同じ）。
 import { describe, expect, it } from "vitest";
+import type { Deps, Settings } from "../../scripts/console/key-lib";
 import { CSRF_SECRET_NAME, runCsrfPut } from "../../scripts/console/secrets-lib";
-import type { Deps, Settings } from "../../scripts/console/standard-key-lib";
 
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
-const SCRIPT = "awsbridge-console-standard";
+const SCRIPT = "awsbridge-console";
 const TOKEN = ["cf", "token", "c".repeat(32)].join("-");
 const API = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/workers/scripts/${SCRIPT}/secrets`;
 
 const s: Settings = {
-  wranglerConfigPath: "wrangler.console-standard.jsonc",
+  wranglerConfigPath: "wrangler.console.jsonc",
   scriptName: SCRIPT,
   accountId: ACCOUNT,
   apiBase: "https://api.cloudflare.com/client/v4",
@@ -44,7 +44,7 @@ function fakeDeps(handler: (c: Call) => Response) {
 }
 const cfJson = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status });
 
-describe("console:secrets:standard（CONSOLE_CSRF_KEY だけ）", () => {
+describe("console:secrets（CONSOLE_CSRF_KEY だけ）", () => {
   it("--yes が無ければ表示だけ（API・トークンを使わない）", async () => {
     const f = fakeDeps(() => cfJson({}));
     expect(await runCsrfPut(s, f.d, { yes: false })).toBe(0);
@@ -53,7 +53,7 @@ describe("console:secrets:standard（CONSOLE_CSRF_KEY だけ）", () => {
     const text = f.out.join("\n");
     expect(text).toContain(CSRF_SECRET_NAME);
     expect(text).toContain("--yes");
-    expect(text).toContain("console:standard-key:put");
+    expect(text).toContain("console:key:put");
   });
 
   it("--yes: 一覧を確かめてから PUT（secret_text・32 バイトの乱数）。値とトークンは出力しない", async () => {

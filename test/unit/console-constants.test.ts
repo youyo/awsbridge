@@ -25,7 +25,8 @@ const root = new URL("../../", import.meta.url).pathname;
 
 describe("定数", () => {
   it("固定の約束（スキーマの版・タグのキー・audience・ロールのパス・階層・セッションの長さ）", () => {
-    expect(CONSOLE_SCHEMA_VERSION).toBe(1);
+    // P2（B）: 1 つの Worker の形（portal.origin・boundaries[].issuer・worker.json）
+    expect(CONSOLE_SCHEMA_VERSION).toBe(2);
     expect(TEAM_TAG_KEY).toBe("awsbridge_team");
     expect(AUDIENCE).toBe("awsbridge-console");
     expect(ROLE_PATH_PREFIX).toBe("/awsbridge-console/");

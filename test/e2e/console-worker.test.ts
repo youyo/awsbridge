@@ -3,7 +3,7 @@
 // 負の試験（断るケース）は console-negative.test.ts に集めてある（重複を持たない）。
 // 入口の身元のグループの取り方は未確定なので、本物のエントリ（normal）は全チームの S1 へのリンクに落ちる経路を通り、
 // 試験用のエントリの変数 E2E_IDENTITY_GROUPS を渡したもの（grouped）が所属するチームの行の経路を通る。
-// 設定はリポジトリの wrangler.console-standard.jsonc を読み、main を E2E 用のエントリ（外向きの通信だけを擬似に向ける）にし、
+// 設定はリポジトリの wrangler.console.jsonc を読み、main を E2E 用のエントリ（外向きの通信だけを擬似に向ける）にし、
 // routes を外し（手元では Host ヘッダーで振り分ける）、alias を試験用の生成物に、vars に擬似の宛先を足した一時ファイルで起動する。
 // 署名鍵は E2E 用のエントリが Worker の中で境界ごとに取り出せない鍵を作る（本番の secret_key と同じ CryptoKey の形）。
 // 実 AWS・Cloudflare は呼ばない。
@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify, SignJWT } from "jose";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AUDIENCE } from "../../src/console/constants";
-import { AUDS, displayConfig, standardConfig, stsXml } from "../unit/console-standard-harness";
+import { AUDS, displayConfig, stsXml, workerConfig } from "../unit/console-worker-harness";
 import { readJsonc } from "./jsonc";
 
 const root = new URL("../../", import.meta.url).pathname;
@@ -24,12 +24,12 @@ const TEAM_DOMAIN = "https://e2e-team.cloudflareaccess.com";
 const PORTAL = "https://portal.example.com";
 const PORTAL_HOST = "portal.example.com";
 const ISSUER_HOST = "id.example.com";
-const STD_ISSUER = "https://id.example.com/standard";
+const STD_ISSUER = "https://id.example.com/console";
 const EMAIL = "user@example.com";
 const SUB = "e2e00000-0000-4000-8000-000000000001";
 const INFRA = AUDS.teams.infra as string;
 const DEV = AUDS.teams.dev as string;
-const ENTRY_AUD = AUDS.entry.standard;
+const ENTRY_AUD = AUDS.entry;
 const GROUP_INFRA = "00000000-0000-4000-8000-000000000001";
 const GROUP_INFRA_ELEVATED = "00000000-0000-4000-8000-000000000004";
 // 鍵・トークンの形の文字列は実行時に組む（gitleaks の誤検知を避ける）
@@ -103,7 +103,7 @@ async function waitReady(inst: Instance): Promise<void> {
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     try {
-      const r = await send(inst, { host: ISSUER_HOST, path: "/standard/.well-known/jwks.json" });
+      const r = await send(inst, { host: ISSUER_HOST, path: "/console/.well-known/jwks.json" });
       if (r.status === 200) return;
     } catch {}
     await new Promise((r) => setTimeout(r, 500));
@@ -205,11 +205,11 @@ beforeAll(async () => {
   fakeBase = `http://127.0.0.1:${fakePort}`;
 
   tmp = mkdtempSync(join(tmpdir(), "awsbridge-console-std-e2e-"));
-  const generated = join(tmp, "worker.standard.json");
-  writeFileSync(generated, JSON.stringify(standardConfig()));
-  const generatedDisplay = join(tmp, "display.standard.json");
+  const generated = join(tmp, "worker.json");
+  writeFileSync(generated, JSON.stringify(workerConfig()));
+  const generatedDisplay = join(tmp, "display.json");
   writeFileSync(generatedDisplay, JSON.stringify(displayConfig()));
-  const config = readJsonc(join(root, "wrangler.console-standard.jsonc"));
+  const config = readJsonc(join(root, "wrangler.console.jsonc"));
   expect(config.workers_dev).toBe(false);
   expect(config.preview_urls).toBe(false);
   delete config.routes; // 手元では Host ヘッダーで振り分ける（routes があると wrangler dev が Host を書き換える）
@@ -223,7 +223,7 @@ beforeAll(async () => {
     JSON.stringify({
       ...config,
       $schema: undefined,
-      main: join(root, "test/e2e/fixtures/console-standard-entry.ts"),
+      main: join(root, "test/e2e/fixtures/console-entry.ts"),
       alias: {
         "awsbridge:console-worker": generated,
         "awsbridge:console-display": generatedDisplay,
@@ -317,7 +317,7 @@ const noIssue = () => {
   expect(seen.signin).toHaveLength(0);
 };
 
-describe("Standard の Worker（wrangler dev）: 通しの経路", () => {
+describe("コンソールの Worker（wrangler dev）: 通しの経路", () => {
   it("S2 のフォーム → POST /t/infra/login → 302（ログイン URL）。STS には行の ARN と行のセッションの長さが届く", async () => {
     const csrf = await csrfFrom(normal, "infra", "333333333333", INFRA);
     const r = await postLogin(normal, {
@@ -344,7 +344,7 @@ describe("Standard の Worker（wrangler dev）: 通しの経路", () => {
     expect(seen.signin[0]?.get("SessionDuration")).toBe("43200");
 
     // STS に渡した JWT は、Worker の issuer のホストが出す JWKS で検証できる
-    const jwks = await send(normal, { host: ISSUER_HOST, path: "/standard/.well-known/jwks.json" });
+    const jwks = await send(normal, { host: ISSUER_HOST, path: "/console/.well-known/jwks.json" });
     expect(jwks.status).toBe(200);
     const { payload } = await jwtVerify(
       sts.get("WebIdentityToken") ?? "",
@@ -357,11 +357,11 @@ describe("Standard の Worker（wrangler dev）: 通しの経路", () => {
   it("issuer のホストは discovery と JWKS を返す（ポータルの経路に届かないことは console-negative.test.ts）", async () => {
     const d = await send(normal, {
       host: ISSUER_HOST,
-      path: "/standard/.well-known/openid-configuration",
+      path: "/console/.well-known/openid-configuration",
     });
     expect(d.status).toBe(200);
     expect(JSON.parse(d.body).issuer).toBe(STD_ISSUER);
-    const j = await send(normal, { host: ISSUER_HOST, path: "/standard/.well-known/jwks.json" });
+    const j = await send(normal, { host: ISSUER_HOST, path: "/console/.well-known/jwks.json" });
     expect(j.status).toBe(200);
   });
 
@@ -393,16 +393,14 @@ async function page(inst: Instance, path: string, aud: string | null): Promise<H
 
 const hrefs = (html: string) => [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1] as string);
 
-describe("Standard の Worker（wrangler dev）: 入口の一覧（S0）から発行までの通し", () => {
-  it("所属するチームの行（grouped）: S0 の行のリンク → S2 → POST → 302。Administrator の行は Admin のオリジンへ [ADMIN]", async () => {
+describe("コンソールの Worker（wrangler dev）: 入口の一覧（S0）から発行までの通し", () => {
+  it("所属するチームの行（grouped）: S0 の行のリンク → S2 → POST → 302。Administrator の行は同じオリジンの Admin のチームのパスへ [ADMIN]", async () => {
     const s0 = await page(grouped, "/", ENTRY_AUD);
     expect(s0.status, s0.body).toBe(200);
     expect(s0.headers["cache-control"]).toBe("no-store");
     expect(String(s0.headers["content-security-policy"])).toContain("script-src 'self'");
     expect(s0.body).toContain("あなたが入れるもの");
-    expect(s0.body).toContain(
-      'href="https://admin-portal.example.com/t/infra-elevated/a/333333333333?role=admin"',
-    );
+    expect(s0.body).toContain('href="/t/infra-elevated/a/333333333333?role=admin"');
     expect(s0.body).toContain("[ADMIN]");
     // 所属しないチームの割り当て・アカウントの email・AUD は出さない
     expect(s0.body).not.toContain("/t/dev/");
@@ -430,7 +428,7 @@ describe("Standard の Worker（wrangler dev）: 入口の一覧（S0）から�
     expect(s0.body).toContain("所属を確かめられませんでした");
     expect(s0.body).not.toContain("svc-a-prod");
     expect(hrefs(s0.body)).toContain("/t/infra/");
-    expect(hrefs(s0.body)).toContain("https://admin-portal.example.com/t/infra-elevated/");
+    expect(hrefs(s0.body)).toContain("/t/infra-elevated/");
 
     const s1 = await page(normal, "/t/infra/", INFRA);
     expect(s1.status, s1.body).toBe(200);
@@ -458,7 +456,7 @@ describe("Standard の Worker（wrangler dev）: 入口の一覧（S0）から�
   });
 });
 
-describe("Standard の Worker（wrangler dev）: S1・S3・静的なファイル", () => {
+describe("コンソールの Worker（wrangler dev）: S1・S3・静的なファイル", () => {
   it("S1 は他のチームの行・AUD を出さず、inline の script・style を使わない。?q= はサーバー側で絞る", async () => {
     const dev = await page(normal, "/t/dev/", DEV);
     expect(dev.status).toBe(200);

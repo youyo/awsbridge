@@ -26,8 +26,8 @@ const CF_ACCOUNT = "0123456789abcdef0123456789abcdef";
 // トークン・AWS のキーの形の文字列は実行時に組む（gitleaks の誤検知を避ける）
 const TOKEN = ["e2e", "logs", "token", "z".repeat(24)].join("-");
 const ACCESS_KEY_ID = ["ASIA", "Q".repeat(16)].join("");
-const STD_ISSUER_ID = "id.example.com/standard";
-const ADMIN_ISSUER_ID = "admin-id.example.com/admin";
+/** 境界の issuer（P2: Standard と Admin の階層で同じ issuer・同じプロバイダー）。 */
+const ISSUER_ID = "id.example.com/console";
 const STD_ROLE = `arn:aws:iam::${ACCOUNT}:role/awsbridge-console/std/FederatedViewer`;
 const ADMIN_ROLE = `arn:aws:iam::${ACCOUNT}:role/awsbridge-console/admin/FederatedAdministrator`;
 const EMAIL = "alice@example.com";
@@ -160,7 +160,7 @@ function issue(o: {
       role: tier === "admin" ? "administrator" : "viewer",
       roleArn: tier === "admin" ? ADMIN_ROLE : STD_ROLE,
       boundary: "managed",
-      issuer: `https://${tier === "admin" ? ADMIN_ISSUER_ID : STD_ISSUER_ID}`,
+      issuer: `https://${ISSUER_ID}`,
     },
     jwt: {
       jti: o.jti,
@@ -184,7 +184,6 @@ function trail(
   r: ReturnType<typeof issue>,
   o: { afterIssueSeconds?: number; sourceIdentity?: string | null } = {},
 ) {
-  const admin = r.tier === "admin";
   return {
     EventId: `ev-${r.jwt.jti}`,
     EventName: "AssumeRoleWithWebIdentity",
@@ -193,7 +192,7 @@ function trail(
       userIdentity: {
         type: "WebIdentityUser",
         userName: EMAIL,
-        identityProvider: `arn:aws:iam::${ACCOUNT}:oidc-provider/${admin ? ADMIN_ISSUER_ID : STD_ISSUER_ID}`,
+        identityProvider: `arn:aws:iam::${ACCOUNT}:oidc-provider/${ISSUER_ID}`,
       },
       eventTime: new Date(r.jwt.iat * 1000 + (o.afterIssueSeconds ?? 2) * 1000)
         .toISOString()
@@ -432,7 +431,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
     apiEvents = [
       {
         $metadata: { id: "e1" },
-        $workers: { scriptName: "awsbridge-console-standard", eventType: "fetch" },
+        $workers: { scriptName: "awsbridge-console", eventType: "fetch" },
         dataset: "cloudflare-workers",
         timestamp: Date.parse(a.at),
         source: a,
@@ -471,7 +470,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
   });
   const logEvent = (r: ReturnType<typeof issue>, id: string) => ({
     $metadata: { id },
-    $workers: { scriptName: "awsbridge-console-standard", eventType: "fetch" },
+    $workers: { scriptName: "awsbridge-console", eventType: "fetch" },
     dataset: "cloudflare-workers",
     timestamp: Date.parse(r.at),
     source: r,
@@ -484,7 +483,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
     // 記録でない行（他のログ）も混ぜる。同じ $metadata.id の行もある（実物でも一意でない）
     const noise = Array.from({ length: 30 }, (_, i) => ({
       $metadata: { id: `n${i % 20}` },
-      $workers: { scriptName: "awsbridge-console-standard", eventType: "fetch" },
+      $workers: { scriptName: "awsbridge-console", eventType: "fetch" },
       dataset: "cloudflare-workers",
       timestamp: now() - (4 * 24 * 60 - i * 13) * MIN,
       source: { message: "GET /" },

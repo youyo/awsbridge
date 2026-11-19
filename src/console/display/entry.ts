@@ -4,7 +4,7 @@
 //   2. 身元の Entra グループを差し込み口からサーバー側で取る（ブラウザが送る値は使わない）
 //   3. 表示用の対応表（Object ID → チーム）と小文字で照合し、所属するチームの行の 1 つの一覧を描く。分からなければ全チームの S1 へのリンク
 // 表示のためだけで、発行の認可には使わない。発行の経路（portal/login.ts・issue/*）はこのモジュールを import しない。
-// Standard のエントリだけがこの処理を作る（Admin のバンドルには表示用の照合のコードと生成物を入れない）。
+// コンソールの Worker のエントリがこの処理を作る（発行の経路はこのモジュールを import しない）。
 import { verifyConsoleAccess } from "../issue/access";
 import { assetResponse } from "../portal/assets";
 import { errorPage, htmlResponse } from "../portal/pages";
@@ -54,6 +54,7 @@ export function createEntryHandler(rawDisplay: unknown, o: EntryOptions = {}): E
       { teamDomain: ctx.accessTeamDomain, teams: [{ name: ENTRY, aud: entryAud }] },
       {
         ...(ctx.getAccessKey ? { getKey: ctx.getAccessKey } : {}),
+        fetch: ctx.fetch,
         now: Math.floor(ctx.now() / 1000),
       },
     );
@@ -74,10 +75,7 @@ export function createEntryHandler(rawDisplay: unknown, o: EntryOptions = {}): E
     // 発行用の生成物との取り違え（別の設定から作ったもの）を弾く
     if (
       display.portal.origin !== config.portal.origin ||
-      display.portal.routing !== config.portal.routing ||
-      (display.portal.adminOrigin !== undefined &&
-        config.portal.peerOrigin !== undefined &&
-        display.portal.adminOrigin !== config.portal.peerOrigin)
+      display.portal.routing !== config.portal.routing
     )
       return misconfigured("portal_mismatch");
 

@@ -12,7 +12,7 @@
 //   --logs-api                            発行記録を Cloudflare の API（Workers Logs。保持 7 日）から読む:
 //     AWSBRIDGE_CONSOLE_LOGS_TOKEN        API のトークン（環境変数だけ。wrangler の OAuth は使わない）
 //     AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID   Cloudflare のアカウント ID（32 桁の 16 進）
-//     AWSBRIDGE_CONSOLE_LOGS_WORKERS      Worker の名前（カンマ区切り。既定 awsbridge-console-standard,awsbridge-console-admin）
+//     AWSBRIDGE_CONSOLE_LOGS_WORKERS      Worker の名前（カンマ区切り。既定 awsbridge-console）
 //     AWSBRIDGE_CONSOLE_LOGS_API_BASE     試験用（http://127.0.0.1:<port> だけ）
 //     窓ごとに件数（calculations の count）を先に数え、行数が届くまで窓を割って読む（長い窓は読み取りの時点で間引かれるため。
 //     reconcile-cf.ts の冒頭）。届かない窓は誤り record_read_incomplete（終了コード 1）。api count は件数の合計
@@ -34,7 +34,6 @@ import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 import { gunzipSync } from "node:zlib";
 import { ConsoleConfigError, formatIssue, parseConsoleConfig } from "../../src/console/config";
-import { TIERS, type Tier } from "../../src/console/constants";
 import {
   DEFAULT_CLOCK_SKEW_SECONDS,
   DEFAULT_LAG_SECONDS,
@@ -78,7 +77,8 @@ const ACCOUNT_RE = /^\d{12}$/;
 const WORKER_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 /** 確認済みの区間の状態ファイルの既定（.secrets/ は gitignore）。 */
 const DEFAULT_STATE_FILE = ".secrets/console-reconcile-state.json";
-const DEFAULT_WORKERS = ["awsbridge-console-standard", "awsbridge-console-admin"];
+/** 既定の Worker の名前（P2: コンソールの Worker は 1 つ）。 */
+const DEFAULT_WORKERS = ["awsbridge-console"];
 /** 記録は CloudTrail の期間より少し広く読む（期間の端の発行と引き受けを取りこぼさない）。 */
 const RECORD_MARGIN_MS = 15 * 60_000;
 
@@ -228,16 +228,12 @@ async function main(): Promise<number> {
   if (!(since < until) || until > now + 60_000)
     throw new InputError("--since < --until <= 今 にする");
 
-  // 設定の issuer（プロバイダー）と階層
+  // 設定の issuer（プロバイダー。境界ごとに 1 つ）とチームの階層
   const configPath = process.env.AWSBRIDGE_CONSOLE_CONFIG || "config/console.json";
   if (!existsSync(configPath)) throw new InputError(`設定ファイルがありません: ${configPath}`);
   const { config } = parseConsoleConfig(readFileSync(configPath, "utf8"));
-  const issuers: { url: string; tier: Tier }[] = config.boundaries.flatMap((b) =>
-    TIERS.flatMap((t) => {
-      const url = b.issuers[t];
-      return url !== undefined ? [{ url, tier: t }] : [];
-    }),
-  );
+  const issuers = config.boundaries.map((b) => ({ url: b.issuer }));
+  const teams = config.teams.map((t) => ({ name: t.name, tier: t.tier }));
 
   const workers = workerNames(process.env);
   // API の入力は aws を呼ぶ前に確かめる（トークンを外へ送らない・空の読み取りにしない）
@@ -298,6 +294,7 @@ async function main(): Promise<number> {
     now,
     accountId,
     issuers,
+    teams,
     regions: { read: trail.read, unread: trail.unread },
     lines: { truncated: read.truncated, unreadable: read.unreadable, total: read.lines },
     incompleteReads,

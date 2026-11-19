@@ -1,14 +1,11 @@
-// console:secrets:standard と console:secrets:admin の本体（CLI は secrets.ts と secrets-admin.ts）。コンソールログインの
-// Standard / Admin の Worker の CSRF の鍵（CONSOLE_CSRF_KEY）を入れる。Admin の分は cto の決裁 G2 の論点 5 で足した。
-// 署名鍵は境界ごとの secret_key（console:standard-key:put）に移した（cto の決裁「Standard も secret_key に揃える」）。CSRF の鍵は secret_text のまま。
+// console:secrets の本体（CLI は secrets.ts）。コンソールログインの Worker（1 つ。P2）の CSRF の鍵（CONSOLE_CSRF_KEY）を入れる。
+// 署名鍵は境界ごとの secret_key（console:key:put）に移した（cto の決裁「Standard も secret_key に揃える」）。CSRF の鍵は secret_text のまま。
 // 鍵はこの道具の中で作り（32 バイトの乱数を 16 進 64 文字に）、Cloudflare API の PUT .../secrets（secret_text）で入れる。
 // ファイルに書かない・出力しない。--yes が無ければ表示だけ（API・トークンを使わない）。同じ名前が secret_text 以外なら入れない。
-// トークンと宛先は、その階層の署名鍵の道具と同じ（Standard は AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN、Admin は
-// AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN）。どちらの CLI も、もう一方の階層の変数を読まない。値は実行のたびに新しく作るので、
-// Standard と Admin の Worker の CSRF の鍵は別の値になる。
+// トークンと宛先は、署名鍵の道具（console:key）と同じ（AWSBRIDGE_CONSOLE_CF_API_TOKEN）。値は実行のたびに新しく作る。
 import { cfApi, cfErrors, isObj, type ToolDeps } from "./key-tool-common";
 
-/** 入れる先（両階層の Settings に共通の項目）。 */
+/** 入れる先。 */
 export type CsrfTarget = {
   wranglerConfigPath: string;
   scriptName: string;
@@ -16,37 +13,23 @@ export type CsrfTarget = {
   apiBase: string;
 };
 
-export type CsrfTier = "standard" | "admin";
-
 export const CSRF_SECRET_NAME = "CONSOLE_CSRF_KEY";
 /** CSRF の鍵のバイト数（src/console/issue/csrf.ts の下限 32 バイト）。 */
 const CSRF_BYTES = 32;
 
-/** 署名鍵を入れる道具の案内（階層ごと）。 */
-const SIGNING_KEY_HINT: Record<CsrfTier, string> = {
-  standard:
-    "署名鍵はこの道具では入れない。境界ごとに mise run console:standard-key:put（secret_key）",
-  admin: "署名鍵はこの道具では入れない。mise run console:admin-key:put（secret_key）",
-};
+/** 署名鍵を入れる道具の案内。 */
+const SIGNING_KEY_HINT =
+  "署名鍵はこの道具では入れない。境界ごとに mise run console:key:put（secret_key）";
 
-export async function runCsrfPut(
-  s: CsrfTarget,
-  d: ToolDeps,
-  o: { yes: boolean; tier?: CsrfTier },
-): Promise<number> {
-  const tier = o.tier ?? "standard";
+export async function runCsrfPut(s: CsrfTarget, d: ToolDeps, o: { yes: boolean }): Promise<number> {
   const target = `Worker ${s.scriptName}（${s.wranglerConfigPath}）`;
   if (!o.yes) {
-    d.print(`console:secrets:${tier}（表示だけ。--yes を付けると実行する）:`);
+    d.print("console:secrets（表示だけ。--yes を付けると実行する）:");
     d.print(
       `  ${CSRF_SECRET_NAME}: ${CSRF_BYTES} バイトの乱数をこの道具の中で作り、Cloudflare API で ${target} に secret_text として入れる（ファイルに書かない・表示しない）`,
     );
-    if (tier === "admin")
-      d.print(
-        "  実行のたびに新しい乱数を作るので、Standard の Worker の CSRF の鍵と別の値になる（同じ値を手で入れない）",
-      );
     d.print("  作り直すと、開いている画面の CSRF トークンは使えなくなる（画面を開き直せば戻る）");
-    d.print(SIGNING_KEY_HINT[tier]);
+    d.print(SIGNING_KEY_HINT);
     return 0;
   }
   const url = `${s.apiBase}/accounts/${s.accountId}/workers/scripts/${s.scriptName}/secrets`;

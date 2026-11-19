@@ -3,7 +3,7 @@
 // 子プロセスには NODE_EXTRA_CA_CERTS で信頼させる。証明書の検査は止めない）を立てる。実 DNS・実 Cloudflare・実 AWS は使わない。
 // 確かめること: 終了コード（0 一致 / 1 不一致 / 2 実行できない）、出力（[OK] / [NG]・結論）、
 // 名前は DoH で引き、接続は IP でも SNI・Host はもとのホスト名、リダイレクトを追わない、証明書を信頼できなければ誤り、
-// Admin の設定が無ければ Standard だけ、トークンの類（Authorization）を送らない。
+// 境界ごとの issuer だけを取る（P2: Admin の issuer は無い）、トークンの類（Authorization）を送らない。
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingMessage, type Server } from "node:http";
@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { calculateJwkThumbprint } from "jose";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PublicJwk } from "../../src/console/signing/key";
-import { adminConfig, standardConfig } from "../unit/console-standard-harness";
+import { workerConfig } from "../unit/console-worker-harness";
 import { freePort, root } from "./console-e2e-kit";
 
 type Doc = { status?: number; location?: string; body?: unknown; raw?: string };
@@ -24,12 +24,12 @@ type Seen = {
   auth: string | undefined;
 };
 
-const std = standardConfig();
-const adm = adminConfig();
+const std = workerConfig();
 const boundaries = std.boundaries as { name: string; issuer: string }[];
-const adminIssuer = (adm.boundaries[0] as { issuer: string }).issuer;
+/** 管理外の先方の境界の issuer（2 つ目の境界。managed と同じホストの別のパス）。 */
+const partnerIssuer = (boundaries[1] as { issuer: string }).issuer;
 const hostOf = (issuer: string) => new URL(issuer).host;
-const HOSTS = [...new Set([...boundaries.map((b) => hostOf(b.issuer)), hostOf(adminIssuer)])];
+const HOSTS = [...new Set(boundaries.map((b) => hostOf(b.issuer)))];
 
 let dir = "";
 let certPath = "";
@@ -65,7 +65,7 @@ function bindingOf(kid: string): string {
   const bytes = Uint8Array.from(atob(t + "=".repeat((4 - (t.length % 4)) % 4)), (c) =>
     c.charCodeAt(0),
   );
-  return `STANDARD_KEY_${[...bytes.slice(0, 8)]
+  return `CONSOLE_KEY_${[...bytes.slice(0, 8)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("")
     .toUpperCase()}`;
@@ -79,7 +79,7 @@ function correct(issuer: string, path: string): Doc | undefined {
   return undefined;
 }
 
-const allIssuers = () => [...boundaries.map((b) => b.issuer), adminIssuer];
+const allIssuers = () => boundaries.map((b) => b.issuer);
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "awsbridge-exposure-cli-"));
@@ -121,9 +121,9 @@ beforeAll(async () => {
     boundaries.map((b) => [b.name, keys[b.issuer] as PublicJwk[]]),
   );
   writeFileSync(
-    join(dir, "wrangler.console-standard.jsonc"),
+    join(dir, "wrangler.console.jsonc"),
     `{\n  // 試験用\n  "name": "std",\n  "vars": ${JSON.stringify({
-      STANDARD_CURRENT_KEYS: JSON.stringify(
+      CONSOLE_CURRENT_KEYS: JSON.stringify(
         Object.fromEntries(
           Object.entries(byBoundary).map(([b, ks]) => [
             b,
@@ -131,16 +131,11 @@ beforeAll(async () => {
           ]),
         ),
       ),
-      STANDARD_PUBLIC_JWKS: JSON.stringify(byBoundary),
+      CONSOLE_PUBLIC_JWKS: JSON.stringify(byBoundary),
     })}\n}\n`,
   );
-  writeFileSync(
-    join(dir, "wrangler.console-admin.jsonc"),
-    `{\n  "name": "adm",\n  "vars": ${JSON.stringify({ ADMIN_PUBLIC_JWKS: JSON.stringify(keys[adminIssuer]) })}\n}\n`,
-  );
   mkdirSync(join(dir, ".generated/console"), { recursive: true });
-  writeFileSync(join(dir, ".generated/console/worker.standard.json"), JSON.stringify(std));
-  writeFileSync(join(dir, ".generated/console/worker.admin.json"), JSON.stringify(adm));
+  writeFileSync(join(dir, ".generated/console/worker.json"), JSON.stringify(std));
 
   // 偽の issuer（HTTPS）。Host ごとに、issuer のパスの文書を返す
   https = createHttpsServer(
@@ -267,10 +262,10 @@ describe("console:exposure-check", () => {
     }
   });
 
-  it("Admin の JWKS に鍵が増えていれば 1（Standard は一致でも）", async () => {
+  it("管理外の先方の境界の JWKS に鍵が増えていれば 1（managed の境界は一致でも）", async () => {
     const extra = await makeJwk();
-    override[`${adminIssuer}/.well-known/jwks.json`] = {
-      body: { keys: [...(keys[adminIssuer] as PublicJwk[]), extra] },
+    override[`${partnerIssuer}/.well-known/jwks.json`] = {
+      body: { keys: [...(keys[partnerIssuer] as PublicJwk[]), extra] },
     };
     const r = await exec();
     expect(r.status).toBe(1);
@@ -279,7 +274,7 @@ describe("console:exposure-check", () => {
     expect(r.out).not.toContain(extra.n);
   });
 
-  it("Standard の鍵の中身（n）が違えば 1", async () => {
+  it("境界の鍵の中身（n）が違えば 1", async () => {
     const b = boundaries[1] as { issuer: string };
     const k = (keys[b.issuer] as PublicJwk[])[0] as PublicJwk;
     override[`${b.issuer}/.well-known/jwks.json`] = { body: { keys: [{ ...k, n: "AAAA" }] } };
@@ -297,24 +292,22 @@ describe("console:exposure-check", () => {
   });
 
   it("リダイレクトは追わずに 1（行き先に要求を送らない）", async () => {
-    override[`${adminIssuer}/.well-known/jwks.json`] = {
+    override[`${partnerIssuer}/.well-known/jwks.json`] = {
       status: 302,
       location: `${boundaries[0]?.issuer}/.well-known/jwks.json`,
-      body: { keys: keys[adminIssuer] },
+      body: { keys: keys[partnerIssuer] },
     };
     const r = await exec();
     expect(r.status).toBe(1);
     expect(r.out).toContain("リダイレクト");
-    // Admin の JWKS を 1 回だけ取った（行き先を追って取り直していない）
-    expect(
-      seen.filter((s) => s.host === hostOf(adminIssuer) && s.url.endsWith("jwks.json")),
-    ).toHaveLength(1);
+    // その JWKS を 1 回だけ取った（行き先を追って取り直していない）
+    expect(seen.filter((s) => s.url.endsWith("jwks.json"))).toHaveLength(boundaries.length);
   });
 
   it("JSON でない・404・DoH の失敗は 1（一致にしない）", async () => {
-    override[`${adminIssuer}/.well-known/jwks.json`] = { raw: "<html>login</html>" };
+    override[`${partnerIssuer}/.well-known/jwks.json`] = { raw: "<html>login</html>" };
     expect((await exec()).status).toBe(1);
-    override = { [`${adminIssuer}/.well-known/openid-configuration`]: { status: 404, body: {} } };
+    override = { [`${partnerIssuer}/.well-known/openid-configuration`]: { status: 404, body: {} } };
     expect((await exec()).status).toBe(1);
     override = {};
     dohBroken = true;
@@ -330,29 +323,29 @@ describe("console:exposure-check", () => {
     expect(r.out).toContain("tls");
   });
 
-  it("Admin の設定（worker.admin.json）が無ければ Standard だけ確かめて、その旨を出す", async () => {
-    const saved = readFileSync(join(dir, ".generated/console/worker.admin.json"), "utf8");
-    rmSync(join(dir, ".generated/console/worker.admin.json"));
+  it("P2 より前の Admin の生成物・wrangler の設定が残っていても読まず、Admin の issuer を取りにいかない", async () => {
+    writeFileSync(join(dir, ".generated/console/worker.admin.json"), "{ broken");
+    writeFileSync(join(dir, "wrangler.console-admin.jsonc"), "{ broken");
     try {
       const r = await exec();
       expect(r.status).toBe(0);
-      expect(r.out).toContain("Admin: 設定が無い");
-      expect(seen.every((s) => s.host !== hostOf(adminIssuer))).toBe(true);
+      expect(r.out).not.toContain("Admin");
+      expect(seen.every((s) => HOSTS.includes(s.host ?? ""))).toBe(true);
+      expect(seen).toHaveLength(boundaries.length * 2);
     } finally {
-      writeFileSync(join(dir, ".generated/console/worker.admin.json"), saved);
+      rmSync(join(dir, ".generated/console/worker.admin.json"));
+      rmSync(join(dir, "wrangler.console-admin.jsonc"));
     }
   });
 
   it("設定が読めなければ 2（wrangler の設定なし・vars が空）。要求は 1 つも送らない", async () => {
-    const r = await exec({ AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG: "nope.jsonc" });
+    const r = await exec({ AWSBRIDGE_CONSOLE_WRANGLER_CONFIG: "nope.jsonc" });
     expect(r.status).toBe(2);
     expect(r.out).toContain("error:");
     expect(seen).toHaveLength(0);
     expect(dohSeen).toHaveLength(0);
     writeFileSync(join(dir, "empty.jsonc"), '{ "name": "x", "vars": {} }');
-    expect((await exec({ AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG: "empty.jsonc" })).status).toBe(
-      2,
-    );
+    expect((await exec({ AWSBRIDGE_CONSOLE_WRANGLER_CONFIG: "empty.jsonc" })).status).toBe(2);
   });
 
   it("DoH の宛先の上書きは手元（127.0.0.1）の http だけ。それ以外は 2", async () => {

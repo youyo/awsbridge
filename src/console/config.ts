@@ -46,7 +46,11 @@ export type ConsoleKind = {
   assign: { role: string; teams: string[] }[];
 };
 
-export type ConsoleBoundary = { name: string; issuers: { standard: string; admin?: string } };
+/** 境界（managed・partner:<id>）。issuer と鍵は境界ごとに 1 つで、階層をまたいで同じ（P2）。 */
+export type ConsoleBoundary = { name: string; issuer: string };
+
+/** 退役したチーム名の台帳の 1 件（P2 の設計メモ §7.1）。同じ名前を、どの階層でも使い直さない。 */
+export type RetiredTeam = { name: string; tier: Tier };
 
 export type ConsoleAccount = { accountId: string; name: string; kind: string; email?: string };
 
@@ -63,17 +67,17 @@ export type ConsoleAccountsOrganization = OrganizationBase & {
 export type ConsoleOrganization = ConsoleOuOrganization | ConsoleAccountsOrganization;
 
 export type ConsolePortal = {
-  standardOrigin: string;
-  adminOrigin?: string;
+  /** ポータルのオリジン（入口・一覧・Standard と Admin の発行が同じオリジン。P2 の受容 c）。 */
+  origin: string;
   routing: Routing;
   regions?: { allowed: string[]; default: string };
   supportUrl?: string;
-  /** 入口のアプリの AUD（Terraform を使わない構成で手書きする。階層ごと）。 */
-  entryAud: { standard?: string; admin?: string };
+  /** 入口のアプリの AUD（Terraform を使わない構成で手書きする。1 つ）。 */
+  entryAud?: string;
 };
 
 export type ConsoleConfig = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   /** SourceIdentity の値の出どころ（省略すると email）。 */
   identity: { sourceIdentity: SourceIdentitySource };
   portal: ConsolePortal;
@@ -83,6 +87,8 @@ export type ConsoleConfig = {
   boundaries: ConsoleBoundary[];
   organizations: ConsoleOrganization[];
   inventory: { accountEmail: { managed: EmailMode; partner: EmailMode } };
+  /** 退役したチーム名の台帳（省略すると空）。今のチームの名前を入れたら誤り。 */
+  retiredTeams: RetiredTeam[];
   /**
    * 署名を置くアカウント（Admin の署名の鍵・署名役・JWKS を置くアカウント。cto の決裁 (5)(b)）。
    * ここにはコンソールログインのプロバイダーとロールを配らない（配る先に含めたら誤り）。省略すると空。
@@ -103,9 +109,7 @@ export type ConsoleConfigIssueCode =
   | "url"
   | "origin"
   | "workers_dev"
-  | "origin_same"
   | "issuer_host_overlaps_portal"
-  | "admin_origin_missing"
   | "region_default"
   | "access_shape"
   | "unknown_team"
@@ -114,11 +118,17 @@ export type ConsoleConfigIssueCode =
   | "unknown_boundary"
   | "unknown_organization"
   | "duplicate"
-  | "admin_issuer_path"
-  | "admin_issuer_multiple"
-  | "admin_issuer_host_shared"
   | "tier_mismatch"
-  | "boundary_tier_missing"
+  | "admin_boundary"
+  | "team_retired"
+  | "retired_team_removed"
+  | "team_removed_not_retired"
+  | "team_tier_changed"
+  | "ledger_previous"
+  // 台帳（cto の決裁 2026-11-17: deploy では前回の無いこと・P2 より前の形を誤りにする）
+  | "ledger_previous_legacy"
+  | "ledger_init_not_allowed"
+  | "ledger_baseline"
   | "placement"
   | "param_collision"
   | "aud_missing"
@@ -133,7 +143,9 @@ export type ConsoleConfigIssueCode =
   | "unassigned_team"
   | "unassigned_role"
   | "unassigned_accounts"
-  | "inventory_missing";
+  | "inventory_missing"
+  // deploy では誤り、check（P2 より前の形の前回）では警告
+  | "ledger_previous_missing";
 
 /** 誤り・警告の 1 件。path はキーのパス（例 teams[1].name）。値は持たない。 */
 export type ConsoleConfigIssue = { path: string; code: ConsoleConfigIssueCode; count?: number };
@@ -141,11 +153,22 @@ export type ConsoleConfigIssue = { path: string; code: ConsoleConfigIssueCode; c
 export const formatIssue = (i: ConsoleConfigIssue): string =>
   `${i.path}: ${i.code}${i.count !== undefined ? ` (${i.count})` : ""}`;
 
+/**
+ * schemaVersion の誤りのときに添える案内（1 の設定を黙って読み替えない。P2 の設計メモ §2.3）。
+ * 値を含めない固定の文。
+ */
+export const SCHEMA_VERSION_HINT =
+  "schemaVersion 2 (P2): portal.standardOrigin/adminOrigin -> portal.origin, " +
+  "portal.entryAud { standard, admin } -> portal.entryAud (one string), " +
+  "boundaries[].issuers { standard, admin } -> boundaries[].issuer (one per boundary), " +
+  "optional retiredTeams [{ name, tier }]";
+
 /** 設定の誤り。メッセージはキーのパスと種別だけで、設定の値を含めない（ログに出してよい）。 */
 export class ConsoleConfigError extends Error {
   readonly issues: ConsoleConfigIssue[];
   constructor(issues: ConsoleConfigIssue[]) {
-    super(`invalid console config:\n${issues.map((i) => `  ${formatIssue(i)}`).join("\n")}`);
+    const hint = issues.some((i) => i.code === "schema_version") ? `\n${SCHEMA_VERSION_HINT}` : "";
+    super(`invalid console config:\n${issues.map((i) => `  ${formatIssue(i)}`).join("\n")}${hint}`);
     this.name = "ConsoleConfigError";
     this.issues = issues;
   }
@@ -379,17 +402,12 @@ function parsePortal(raw: unknown, out: IssueList): ConsolePortal | undefined {
     out.add("portal", "required");
     return undefined;
   }
-  const keys = ["standardOrigin", "adminOrigin", "routing", "regions", "supportUrl", "entryAud"];
+  const keys = ["origin", "routing", "regions", "supportUrl", "entryAud"];
   const o = readObj(raw, "portal", keys, out);
   if (!o) return undefined;
-  const standardOrigin = checkOrigin(
-    readStr(o, "standardOrigin", "portal", out, { required: true }),
-    "portal.standardOrigin",
-    out,
-  );
-  const adminOrigin = checkOrigin(
-    readStr(o, "adminOrigin", "portal", out),
-    "portal.adminOrigin",
+  const origin = checkOrigin(
+    readStr(o, "origin", "portal", out, { required: true }),
+    "portal.origin",
     out,
   );
   const routing = readEnum(o, "routing", "portal", ["path", "host"] as const, out) ?? "path";
@@ -414,24 +432,14 @@ function parsePortal(raw: unknown, out: IssueList): ConsolePortal | undefined {
       if (allowed && def !== undefined) regions = { allowed, default: def };
     }
   }
-  const entryAud: ConsolePortal["entryAud"] = {};
-  if (o.entryAud !== undefined) {
-    const e = readObj(o.entryAud, "portal.entryAud", TIERS, out);
-    if (e) {
-      for (const t of TIERS) {
-        const a = readStr(e, t, "portal.entryAud", out, { re: AUD_RE });
-        if (a !== undefined) entryAud[t] = a;
-      }
-    }
-  }
-  if (standardOrigin === undefined) return undefined;
+  const entryAud = readStr(o, "entryAud", "portal", out, { re: AUD_RE });
+  if (origin === undefined) return undefined;
   return {
-    standardOrigin,
-    ...(adminOrigin !== undefined ? { adminOrigin } : {}),
+    origin,
     routing,
     ...(regions !== undefined ? { regions } : {}),
     ...(supportUrl !== undefined ? { supportUrl } : {}),
-    entryAud,
+    ...(entryAud !== undefined ? { entryAud } : {}),
   };
 }
 
@@ -535,27 +543,36 @@ function parseKind(raw: unknown, p: string, out: IssueList): ConsoleKind | undef
 }
 
 function parseBoundary(raw: unknown, p: string, out: IssueList): ConsoleBoundary | undefined {
-  const o = readObj(raw, p, ["name", "issuers"], out);
+  const o = readObj(raw, p, ["name", "issuer"], out);
   if (!o) return undefined;
   const name = readStr(o, "name", p, out, { required: true, re: BOUNDARY_RE });
-  const ip = join(p, "issuers");
-  let issuers: ConsoleBoundary["issuers"] | undefined;
-  if (o.issuers === undefined) out.add(ip, "required");
-  else {
-    const i = readObj(o.issuers, ip, TIERS, out);
-    if (i) {
-      const standard = checkHttpsUrl(
-        readStr(i, "standard", ip, out, { required: true }),
-        join(ip, "standard"),
-        out,
-        true,
-      );
-      const admin = checkHttpsUrl(readStr(i, "admin", ip, out), join(ip, "admin"), out, true);
-      if (standard !== undefined) issuers = { standard, ...(admin !== undefined ? { admin } : {}) };
-    }
+  const issuer = checkHttpsUrl(
+    readStr(o, "issuer", p, out, { required: true }),
+    join(p, "issuer"),
+    out,
+    true,
+  );
+  if (name === undefined || issuer === undefined) return undefined;
+  return { name, issuer };
+}
+
+function parseRetiredTeam(raw: unknown, p: string, out: IssueList): RetiredTeam | undefined {
+  const o = readObj(raw, p, ["name", "tier"], out);
+  if (!o) return undefined;
+  const name = readStr(o, "name", p, out, { required: true, re: NAME_RE });
+  const tier = readEnum(o, "tier", p, TIERS, out);
+  if (o.tier === undefined) out.add(join(p, "tier"), "required");
+  if (name === undefined || tier === undefined) return undefined;
+  return { name, tier };
+}
+
+function parseRetiredTeams(raw: unknown, out: IssueList): (RetiredTeam | undefined)[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    out.add("retiredTeams", "type");
+    return [];
   }
-  if (name === undefined || issuers === undefined) return undefined;
-  return { name, issuers };
+  return raw.map((r, i) => parseRetiredTeam(r, `retiredTeams[${i}]`, out));
 }
 
 function parseAccount(raw: unknown, p: string, out: IssueList): ConsoleAccount | undefined {
@@ -687,6 +704,7 @@ const TOP_KEYS = [
   "boundaries",
   "organizations",
   "inventory",
+  "retiredTeams",
   "signing",
 ];
 
@@ -722,13 +740,18 @@ export function parseConsoleConfig(input: unknown): {
   const organizations = collect(o, "organizations", out, parseOrganization).items;
   const inventory = parseInventory(o.inventory, out);
   const signing = parseSigning(o.signing, out);
+  const retiredTeams = parseRetiredTeams(o.retiredTeams, out);
 
   const warnings = new IssueList();
-  crossCheck({ portal, teams, roles, kinds, boundaries, organizations, signing }, out, warnings);
+  crossCheck(
+    { portal, teams, roles, kinds, boundaries, organizations, signing, retiredTeams },
+    out,
+    warnings,
+  );
 
   if (out.items.length > 0 || !portal) throw new ConsoleConfigError(out.items);
   const config: ConsoleConfig = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     identity,
     portal,
     teams: teams as ConsoleTeam[],
@@ -737,6 +760,7 @@ export function parseConsoleConfig(input: unknown): {
     boundaries: boundaries as ConsoleBoundary[],
     organizations: organizations as ConsoleOrganization[],
     inventory,
+    retiredTeams: retiredTeams as RetiredTeam[],
     signing,
   };
   return { config, warnings: warnings.items };
@@ -750,6 +774,7 @@ type ParsedParts = {
   boundaries: (ConsoleBoundary | undefined)[];
   organizations: (ConsoleOrganization | undefined)[];
   signing: ConsoleConfig["signing"];
+  retiredTeams: (RetiredTeam | undefined)[];
 };
 
 function crossCheck(c: ParsedParts, out: IssueList, warnings: IssueList): void {
@@ -765,6 +790,12 @@ function crossCheck(c: ParsedParts, out: IssueList, warnings: IssueList): void {
   dup(c.kinds, "kinds", (k) => k.name);
   dup(c.boundaries, "boundaries", (b) => b.name);
   dup(c.organizations, "organizations", (o) => o.name);
+  dup(c.retiredTeams, "retiredTeams", (t) => t.name);
+  // 退役したチーム名は使い直さない（同じ階層でも別の階層でも。古いスタックの信頼ポリシーに残った名前が、別の人を通すため）
+  const retired = new Set(c.retiredTeams.flatMap((t) => (t ? [t.name] : [])));
+  c.teams.forEach((t, i) => {
+    if (t && retired.has(t.name)) out.add(`teams[${i}].name`, "team_retired");
+  });
   const roleNames = new Names();
   c.roles.forEach((r, i) => {
     if (r) roleNames.check(r.roleName, `roles[${i}].roleName`, out);
@@ -795,63 +826,21 @@ function crossCheck(c: ParsedParts, out: IssueList, warnings: IssueList): void {
   c.teams.forEach((t, i) => {
     if (t && "aud" in t.access) auds.check(t.access.aud, `teams[${i}].access.aud`, out);
   });
-  for (const t of TIERS) {
-    const a = c.portal?.entryAud[t];
-    if (a !== undefined) auds.check(a, `portal.entryAud.${t}`, out);
-  }
+  if (c.portal?.entryAud !== undefined) auds.check(c.portal.entryAud, "portal.entryAud", out);
 
-  // issuer の URL の重複（境界 × 階層で鍵を分けるため。cto の D3）
+  // issuer の URL の重複（鍵と issuer は境界ごと。P2）
   const issuers = new Names();
   c.boundaries.forEach((b, i) => {
-    if (!b) return;
-    for (const t of TIERS) {
-      const u = b.issuers[t];
-      if (u !== undefined) issuers.check(u, `boundaries[${i}].issuers.${t}`, out);
-    }
+    if (b) issuers.check(b.issuer, `boundaries[${i}].issuer`, out);
   });
 
   // issuer のホストとポータル（とチーム）のホストは分ける（G-8）。同じホスト・入れ子は Bypass・Cookie・ホスト方式のチームのホストが重なる
   if (c.portal) {
-    const portalHosts = [c.portal.standardOrigin, c.portal.adminOrigin].flatMap((o) =>
-      o === undefined ? [] : [hostOf(o)],
-    );
+    const portalHost = hostOf(c.portal.origin);
     c.boundaries.forEach((b, i) => {
-      if (!b) return;
-      for (const t of TIERS) {
-        const u = b.issuers[t];
-        if (u === undefined) continue;
-        const h = hostOf(u);
-        if (portalHosts.some((p) => hostsOverlap(h, p)))
-          out.add(`boundaries[${i}].issuers.${t}`, "issuer_host_overlaps_portal");
-      }
+      if (b && hostsOverlap(hostOf(b.issuer), portalHost))
+        out.add(`boundaries[${i}].issuer`, "issuer_host_overlaps_portal");
     });
-  }
-
-  // Admin の issuer（X1 の決裁 (a)・(h)、A-3 = I-B）: Cloudflare の別のホストの /admin。Admin の Worker が discovery と JWKS を出す。
-  // Admin の鍵と JWKS は 1 組なので、Admin の issuer を持つ境界は 1 つだけ。ホストは Standard の issuer のどれとも分ける（同じ・入れ子は不可）
-  const stdIssuerHosts = c.boundaries.flatMap((b) =>
-    b?.issuers.standard === undefined ? [] : [hostOf(b.issuers.standard)],
-  );
-  let adminIssuers = 0;
-  c.boundaries.forEach((b, i) => {
-    const u = b?.issuers.admin;
-    if (u === undefined) return;
-    const p = `boundaries[${i}].issuers.admin`;
-    if (new URL(u).pathname !== "/admin") out.add(p, "admin_issuer_path");
-    adminIssuers += 1;
-    if (adminIssuers > 1) out.add(p, "admin_issuer_multiple");
-    const h = hostOf(u);
-    if (stdIssuerHosts.some((s) => hostsOverlap(h, s))) out.add(p, "admin_issuer_host_shared");
-  });
-
-  // ポータルのオリジンと Admin の階層
-  const usesAdmin =
-    c.teams.some((t) => t?.tier === "admin") || c.roles.some((r) => r?.tier === "admin");
-  if (c.portal) {
-    if (usesAdmin && c.portal.adminOrigin === undefined)
-      out.add("portal.adminOrigin", "admin_origin_missing");
-    if (c.portal.adminOrigin !== undefined && c.portal.adminOrigin === c.portal.standardOrigin)
-      out.add("portal.adminOrigin", "origin_same");
   }
 
   // kinds[].assign の参照と階層
@@ -917,16 +906,12 @@ function crossCheck(c: ParsedParts, out: IssueList, warnings: IssueList): void {
         else usedKinds.push(a.kind);
       });
     }
-    // 境界にない階層の issuer が要る割り当て（例: 管理外の先方の種類に Admin のロール）
-    if (boundary) {
-      const needs = new Set<Tier>();
-      for (const kn of usedKinds)
-        for (const { role } of kindByName.get(kn)?.assign ?? []) {
-          const r = roleByName.get(role);
-          if (r) needs.add(r.tier);
-        }
-      if ([...needs].some((t) => boundary.issuers[t] === undefined))
-        out.add(p, "boundary_tier_missing");
-    }
+    // Admin の階層のロールが届く境界は managed だけ（P2 の設計メモ §2.3 の admin_boundary。boundary_tier_missing の置き換え）。
+    // 保証は Admin の階層に分類したロールについてだけ。Standard に分類した強いロールを管理外へ配ることは止めない
+    // （tier は権限の強さを保証しない）。境界の名前は形の検査を通ったもの（未知の境界でも名前で判定する）
+    const reachesAdmin = usedKinds.some((kn) =>
+      (kindByName.get(kn)?.assign ?? []).some(({ role }) => roleByName.get(role)?.tier === "admin"),
+    );
+    if (reachesAdmin && org.boundary !== "managed") out.add(p, "admin_boundary");
   });
 }

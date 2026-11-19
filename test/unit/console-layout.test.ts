@@ -72,7 +72,7 @@ describe("MCP 用 Worker との分離（静的な import）", () => {
       "src/console/issue/federation.ts",
       "src/console/issue/identity.ts",
       "src/console/issue/record.ts",
-      "src/console/issue/sign-standard.ts",
+      "src/console/issue/sign-boundary.ts",
       "src/console/issue/signer.ts",
     ]) {
       const g = importGraph(join(root, f));
@@ -153,11 +153,7 @@ describe("検査の道具（src/console/inspect.ts）の置き場所", () => {
 
 describe("突き合わせの道具（src/console/reconcile*.ts）の置き場所", () => {
   it("どの Worker のエントリ（wrangler の main）からも届かない", () => {
-    for (const entry of [
-      "src/index.ts",
-      "src/console/standard/index.ts",
-      "src/console/admin/index.ts",
-    ]) {
+    for (const entry of ["src/index.ts", "src/console/worker/index.ts"]) {
       const files = importGraph(join(root, entry)).files.map((f) => relative(root, f));
       // 陽性の対照: コンソールの Worker は発行記録の部品（record.ts）に届いている
       if (entry !== "src/index.ts") expect(files, entry).toContain("src/console/issue/record.ts");
@@ -232,7 +228,7 @@ describe("設定の例（config/console*.example.json）", () => {
     });
   });
 
-  it("会社用の例（Admin のチームが 2 つ）は admin の入口の AUD なしで deploy 生成できる", () => {
+  it("会社用の例（Admin のチームが 2 つ）は 1 つの入口の AUD で deploy 生成でき、発行用の生成物は両階層のチームを持つ", () => {
     const { config } = parseConsoleConfig(read("config/console.company.example.json"));
     expect(config.teams.filter((t) => t.tier === "admin")).toHaveLength(2);
     const teams = Object.fromEntries(
@@ -240,10 +236,11 @@ describe("設定の例（config/console*.example.json）", () => {
     );
     const r = generateConsoleArtifacts(config, {
       mode: "deploy",
+      ledgerInit: true, // 台帳を扱わない試験。前回の無い deploy を初回の指定で明示して通す
       generatedAt: "x",
-      auds: { teams, entry: { standard: "a".repeat(64) } },
+      auds: { teams, entry: "a".repeat(64) },
     });
-    expect(r.worker.admin?.teams).toHaveLength(2);
+    expect(r.worker.teams.filter((t) => t.tier === "admin")).toHaveLength(2);
     expect(r.display.groups).toHaveLength(5);
   });
 

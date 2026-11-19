@@ -109,6 +109,8 @@ export function parseSigninTokenResponse(body: string): string | undefined {
 /**
  * getSigninToken を呼ぶ（POST。認証情報を URL に出さない）。
  * 5xx・ネットワークエラーは temporarily_unavailable、それ以外の失敗は signin_failed（portal §9.4）。
+ * Worker は fetch に外への通信の関数（issue/egress.ts）を渡す。そこでは 3xx を追わずに例外（EgressError）にするので、
+ * 3xx は「ネットワークエラー」の側に入り temporarily_unavailable になる（種別は内部ログ console_egress に出る）。
  * 例外の詳細には、応答の本文・認証情報を入れない。
  */
 export async function fetchSigninToken(opts: {
@@ -127,7 +129,8 @@ export async function fetchSigninToken(opts: {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: body.toString(),
-      // リダイレクトは追わない（認証情報を含む本文を別の宛先に再送しない）。3xx は失敗（signin_failed）として扱う
+      // リダイレクトは追わない（認証情報を含む本文を別の宛先に再送しない）。egress を通すと 3xx は例外になり temporarily_unavailable。
+      // egress を通さない呼び出し（単体の試験）で 3xx の応答が届いたときは、ok でないので signin_failed
       redirect: "manual",
     });
     text = await res.text();

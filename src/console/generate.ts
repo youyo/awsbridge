@@ -1,12 +1,13 @@
-// コンソールログイン: 1 つの設定ファイルから、Worker 用（階層ごと）・StackSets 用・Access の検査用の生成物を作る。
-// 設計: docs/specs/console-login-portal.md §5.2（一覧の形）・§9.10（分離）・§11.4（生成するもの）・§11.5（検査の順）・§11.6（誤りの扱い）。
+// コンソールログイン: 1 つの設定ファイルから、Worker 用・表示用・StackSets 用・Access の検査用の生成物を作る。
+// 設計: docs/specs/console-login-portal.md §5.2（一覧の形）・§9.10（分離）・§11.4（生成するもの）・§11.5（検査の順）・§11.6（誤りの扱い）、
+// P2（B）の設計メモ §2.4（Worker は 1 つ。発行用は worker.json 1 つで、チームとロールに tier を付ける）。
 // 副作用のない純粋関数だけを置く（ファイルの読み書きは scripts/console/config.ts）。MCP 用 Worker からは import しない。
 //
-// 分離の約束（§9.10・§11.2）: 発行用（worker.<tier>.json）には、その階層のチーム・ロール・境界の issuer・一覧の行だけを入れる。
-// 種類の定義（kinds）・Entra のグループの Object ID・Access のポリシー ID・権限ポリシー・OU・他の階層の AUD は入れない。
-// 2026-11-12 の決裁（P1'・U2）で、Standard のデプロイにだけ渡す表示用の生成物（display.standard.json）を別に作る。
-// 表示用は、入口の一覧のための Administrator の行（表示用だけ。email なし）と Entra グループの Object ID → チームの対応表を持つ。
-// AUD・Access のポリシー ID・issuer・roleArn は持たない（発行には使えない）。型は types.ts（契約）。
+// 分離の約束（§9.10・§11.2）: 発行用（worker.json）には、チーム（AUD・tier）・ロール（tier）・境界の issuer・一覧の行だけを入れる。
+// 種類の定義（kinds）・Entra のグループの Object ID・Access のポリシー ID・権限ポリシー・OU・退役したチーム名の台帳は入れない。
+// 表示用の生成物（display.json）は、入口の一覧のための Administrator の行（表示用だけ。email なし）と Entra グループの
+// Object ID → チームの対応表を持つ。AUD・Access のポリシー ID・issuer・roleArn は持たない（発行には使えない）。型は types.ts（契約）。
+// 退役したチーム名の台帳（§7.1）は StackSets 用の生成物に今のチームと一緒に残し、次の生成で前回と比べる（台帳から名前を消せない）。
 
 import {
   type ConsoleConfig,
@@ -50,10 +51,27 @@ export type GenerateOptions = {
   mode: GenerateMode;
   generatedAt: string;
   sourceRevision?: string;
-  /** Terraform の出力: { teams: { <チーム>: <AUD> }, entry?: { standard?, admin? } }。渡すと check でも AUD の対応まで検査する。 */
+  /** Terraform の出力: { teams: { <チーム>: <AUD> }, entry?: <AUD> }。渡すと check でも AUD の対応まで検査する。 */
   auds?: unknown;
   /** placement: ou の Organization のアカウント: { <Organization>: [{ accountId, name, email?, ouPath, status? }] }。 */
   inventory?: unknown;
+  /**
+   * 前回の StackSets 用の生成物（出力先の stacksets.json）。台帳（teams・retiredTeams）を比べ、台帳から名前を消していないか・
+   * 消したチームを台帳へ移したか・同じ名前の階層を変えていないかを確かめる。
+   * deploy では、比べる台帳（前回か baseline）が無ければ誤り（ledger_previous_missing・ledger_previous_legacy）。
+   * check では、無ければ黙り、P2 より前の形なら警告（ledger_previous_missing）。
+   */
+  previous?: unknown;
+  /**
+   * 保管しておいた台帳（--ledger-baseline <path> の stacksets.json）。渡したら前回と baseline の両方と比べ、どちらにも
+   * 通ることを要する。読めない（null）・形が違う・台帳の項目が無いなら ledger_baseline。
+   */
+  baseline?: unknown;
+  /**
+   * 初回の指定（--ledger-init）。比べる台帳（前回も baseline も）が無いときだけ通し、stacksets.json の meta に
+   * ledgerInit を残す。前回か baseline に台帳があるのに付けたら ledger_init_not_allowed。
+   */
+  ledgerInit?: boolean;
 };
 
 export type StackSetsRole = {
@@ -68,6 +86,8 @@ export type StackSetsRole = {
   /** 種類の StackSet で、このロールの信頼ポリシーが受け付けるチームを渡すパラメーターの名前。 */
   teamsParameter: string;
 };
+/** 台帳の 1 件（チームの名前と階層）。 */
+export type LedgerTeam = { name: string; tier: Tier };
 export type StackSetsParams = Meta & {
   tagKey: string;
   /** OIDC プロバイダーの ClientIdList と信頼ポリシーの <issuer>:aud に入れる値。 */
@@ -75,12 +95,12 @@ export type StackSetsParams = Meta & {
   /** ロールのパスの接頭辞（停止用の SCP の条件に使う）。ロールごとのパスは roles[].rolePath。 */
   rolePathPrefix: string;
   roles: StackSetsRole[];
-  /** 基盤の StackSet（Organization ごとの OIDC プロバイダー）。 */
-  providers: {
-    organization: string;
-    boundary: string;
-    issuers: { standard: string; admin?: string };
-  }[];
+  /** 基盤の StackSet（Organization ごとの OIDC プロバイダー。issuer は境界ごとに 1 つ）。 */
+  providers: { organization: string; boundary: string; issuer: string }[];
+  /** 今のチーム（名前と階層）。次の生成で台帳と比べる。 */
+  teams: LedgerTeam[];
+  /** 退役したチーム名の台帳（設定の retiredTeams）。次の生成で、ここにある名前が消えていないかを比べる。 */
+  retiredTeams: LedgerTeam[];
   /** 種類の StackSet（種類 × Organization ごと）。値はチーム名のカンマ区切り。割り当てのないロールは空文字。 */
   assignments: {
     organization: string;
@@ -101,29 +121,33 @@ export type AccessTeam = {
 };
 export type AccessSummary = Meta & {
   routing: Routing;
-  origins: { standard: string; admin?: string };
-  entryAud: { standard?: string; admin?: string };
+  /** ポータルのオリジン（1 つ。チームのアプリは同じホストの /t/<チーム>）。 */
+  origin: string;
+  entryAud?: string;
   teams: AccessTeam[];
 };
 
 export type ConsoleArtifacts = {
-  worker: { standard: WorkerConfig; admin?: WorkerConfig };
-  /** 表示用（Standard のデプロイにだけ渡す。display.standard.json）。 */
+  /** 発行用（worker.json）。 */
+  worker: WorkerConfig;
+  /** 表示用（display.json）。 */
   display: DisplayConfig;
   stacksets: StackSetsParams;
   access: AccessSummary;
   warnings: ConsoleConfigIssue[];
+  /** 初回の指定で通したときだけ: 台帳に書いたチームの名前（標準出力に出す。チーム名以外の値は持たない）。 */
+  ledgerInit?: { teams: string[]; retiredTeams: string[] };
 };
 
 // ---- AUD ----
 
-type ResolvedAuds = { teams: Map<string, string>; entry: { standard?: string; admin?: string } };
+type ResolvedAuds = { teams: Map<string, string>; entry?: string };
 
 function parseAudInput(
   raw: unknown,
   out: IssueList,
-): { teams: Map<string, string>; entry: Partial<Record<Tier, string>> } {
-  const result = { teams: new Map<string, string>(), entry: {} as Partial<Record<Tier, string>> };
+): { teams: Map<string, string>; entry?: string } {
+  const result: { teams: Map<string, string>; entry?: string } = { teams: new Map() };
   const o = readObj(raw, "auds", ["teams", "entry"], out);
   if (!o) return result;
   if (o.teams !== undefined) {
@@ -133,14 +157,8 @@ function parseAudInput(
       if (aud !== undefined) result.teams.set(name, aud);
     }
   }
-  if (o.entry !== undefined) {
-    const e = readObj(o.entry, "auds.entry", TIERS, out);
-    if (e)
-      for (const t of TIERS) {
-        const aud = readStr(e, t, "auds.entry", out, { re: AUD_RE });
-        if (aud !== undefined) result.entry[t] = aud;
-      }
-  }
+  const entry = readStr(o, "entry", "auds", out, { re: AUD_RE });
+  if (entry !== undefined) result.entry = entry;
   return result;
 }
 
@@ -150,13 +168,13 @@ function resolveAuds(
   requireAud: boolean,
   out: IssueList,
 ): ResolvedAuds {
-  const input =
-    raw === undefined ? { teams: new Map<string, string>(), entry: {} } : parseAudInput(raw, out);
+  const input: { teams: Map<string, string>; entry?: string } =
+    raw === undefined ? { teams: new Map<string, string>() } : parseAudInput(raw, out);
   const known = new Set(config.teams.map((t) => t.name));
   for (const name of input.teams.keys())
     if (!known.has(name)) out.add(join("auds.teams", name), "unknown_team");
 
-  const resolved: ResolvedAuds = { teams: new Map(), entry: {} };
+  const resolved: ResolvedAuds = { teams: new Map() };
   const seen = new Set<string>();
   const use = (aud: string, path: string) => {
     if (seen.has(aud)) out.add(path, "duplicate");
@@ -175,22 +193,19 @@ function resolveAuds(
     use(aud, fromTf !== undefined ? join("auds.teams", t.name) : `teams[${i}].access.aud`);
     resolved.teams.set(t.name, aud);
   });
-  for (const tier of TIERS) {
-    const manual = config.portal.entryAud[tier];
-    const fromTf = input.entry[tier];
-    if (manual !== undefined && fromTf !== undefined && manual !== fromTf)
-      out.add(`portal.entryAud.${tier}`, "aud_mismatch");
-    const aud = fromTf ?? manual;
-    const teamCount = config.teams.filter((t) => t.tier === tier).length;
-    if (aud === undefined) {
-      // 入口のアプリは Standard のチームが 2 つ以上のときだけ要る（1 つならそのチームのアプリで守る。§11.7）。
-      // Admin の入口の AUD は要求しない（入口は共通で Standard に置く。Admin の入口のアプリの扱いは G-6 が決まるまで未決）。
-      if (requireAud && tier === "standard" && teamCount >= 2)
-        out.add(`portal.entryAud.${tier}`, "entry_aud_missing");
-      continue;
-    }
-    use(aud, fromTf !== undefined ? `auds.entry.${tier}` : `portal.entryAud.${tier}`);
-    resolved.entry[tier] = aud;
+  const manual = config.portal.entryAud;
+  const fromTf = input.entry;
+  if (manual !== undefined && fromTf !== undefined && manual !== fromTf)
+    out.add("portal.entryAud", "aud_mismatch");
+  const entry = fromTf ?? manual;
+  if (entry === undefined) {
+    // 入口のアプリは Standard の階層のチームが 2 つ以上のときだけ要る（1 つならそのチームのアプリで守る。§11.7。
+    // ポータルの流れの決裁）。Admin の階層のチームの数は数えない
+    const standardTeams = config.teams.filter((t) => t.tier === "standard").length;
+    if (requireAud && standardTeams >= 2) out.add("portal.entryAud", "entry_aud_missing");
+  } else {
+    use(entry, fromTf !== undefined ? "auds.entry" : "portal.entryAud");
+    resolved.entry = entry;
   }
   return resolved;
 }
@@ -318,9 +333,16 @@ const roleArn = (accountId: string, role: ConsoleRole) =>
 
 // ---- 生成 ----
 
-/** その階層のロールだけで、一覧の行（アカウント × ロール）を展開する。ロールが 1 つもないアカウントは入れない。 */
-function buildAccounts(config: ConsoleConfig, tier: Tier, listed: Listed[]): WorkerAccount[] {
-  const roles = config.roles.filter((r) => r.tier === tier);
+/**
+ * 一覧の行（アカウント × ロール）を展開する。tier を渡せばその階層のロールだけ（表示用の階層ごとの行）。
+ * ロールが 1 つもないアカウントは入れない。
+ */
+function buildAccounts(
+  config: ConsoleConfig,
+  tier: Tier | undefined,
+  listed: Listed[],
+): WorkerAccount[] {
+  const roles = tier === undefined ? config.roles : config.roles.filter((r) => r.tier === tier);
   const kinds = new Map(config.kinds.map((k) => [k.name, k]));
   const accounts: WorkerAccount[] = [];
   for (const a of listed) {
@@ -363,57 +385,50 @@ const shownOrganizations = (config: ConsoleConfig, accounts: { orgLabel: string 
 
 function buildWorker(
   config: ConsoleConfig,
-  tier: Tier,
   auds: ResolvedAuds,
   listed: Listed[],
   meta: Meta,
 ): WorkerConfig {
   const { portal } = config;
-  const origin = tier === "standard" ? portal.standardOrigin : (portal.adminOrigin as string);
-  const peer = tier === "standard" ? portal.adminOrigin : portal.standardOrigin;
-  const accounts = buildAccounts(config, tier, listed);
-  const entryAud = auds.entry[tier];
+  const accounts = buildAccounts(config, undefined, listed);
   return {
     ...meta,
     purpose: "issue",
-    tier,
     tagKey: TEAM_TAG_KEY,
     identity: { sourceIdentity: config.identity.sourceIdentity },
     portal: {
-      origin,
-      ...(peer !== undefined ? { peerOrigin: peer } : {}),
+      origin: portal.origin,
       routing: portal.routing,
       ...(portal.regions !== undefined
         ? { regions: { allowed: [...portal.regions.allowed], default: portal.regions.default } }
         : {}),
       ...(portal.supportUrl !== undefined ? { supportUrl: portal.supportUrl } : {}),
-      ...(entryAud !== undefined ? { entryAud } : {}),
+      ...(auds.entry !== undefined ? { entryAud: auds.entry } : {}),
     },
-    teams: config.teams
-      .filter((t) => t.tier === tier)
-      .map((t) => {
-        const aud = auds.teams.get(t.name);
-        return { name: t.name, displayName: t.displayName, ...(aud !== undefined ? { aud } : {}) };
-      }),
-    roles: config.roles
-      .filter((r) => r.tier === tier)
-      .map((r) => ({
-        name: r.name,
-        roleName: r.roleName,
-        displayName: r.displayName,
-        sessionSeconds: r.sessionSeconds,
-      })),
-    boundaries: config.boundaries.flatMap((b) => {
-      const issuer = b.issuers[tier];
-      return issuer !== undefined ? [{ name: b.name, issuer }] : [];
+    teams: config.teams.map((t) => {
+      const aud = auds.teams.get(t.name);
+      return {
+        name: t.name,
+        displayName: t.displayName,
+        tier: t.tier,
+        ...(aud !== undefined ? { aud } : {}),
+      };
     }),
+    roles: config.roles.map((r) => ({
+      name: r.name,
+      roleName: r.roleName,
+      displayName: r.displayName,
+      tier: r.tier,
+      sessionSeconds: r.sessionSeconds,
+    })),
+    boundaries: config.boundaries.map((b) => ({ name: b.name, issuer: b.issuer })),
     organizations: shownOrganizations(config, accounts),
     accounts,
   };
 }
 
 /**
- * 表示用の生成物（Standard のデプロイにだけ渡す）。入口の一覧（U2）の表示だけに使い、発行には使えない形にする:
+ * 表示用の生成物（display.json）。入口の一覧（U2）の表示だけに使い、発行には使えない形にする:
  * AUD・Access のポリシー ID・issuer・タグのキー・roleArn を持たず、Administrator の行（表示用だけ）には email も入れない。
  */
 function buildDisplay(config: ConsoleConfig, listed: Listed[], meta: Meta): DisplayConfig {
@@ -448,10 +463,8 @@ function buildDisplay(config: ConsoleConfig, listed: Listed[], meta: Meta): Disp
   return {
     ...meta,
     purpose: "display",
-    tier: "standard",
     portal: {
-      origin: portal.standardOrigin,
-      ...(portal.adminOrigin !== undefined ? { adminOrigin: portal.adminOrigin } : {}),
+      origin: portal.origin,
       routing: portal.routing,
       ...(portal.supportUrl !== undefined ? { supportUrl: portal.supportUrl } : {}),
     },
@@ -521,9 +534,11 @@ function buildStackSets(config: ConsoleConfig, meta: Meta): StackSetsParams {
     providers: config.organizations.map((o) => ({
       organization: o.name,
       boundary: o.boundary,
-      issuers: { ...(boundaries.get(o.boundary)?.issuers ?? { standard: "" }) },
+      issuer: boundaries.get(o.boundary)?.issuer ?? "",
     })),
     assignments,
+    teams: config.teams.map((t) => ({ name: t.name, tier: t.tier })),
+    retiredTeams: config.retiredTeams.map((t) => ({ name: t.name, tier: t.tier })),
   };
 }
 
@@ -531,11 +546,8 @@ function buildAccess(config: ConsoleConfig, auds: ResolvedAuds, meta: Meta): Acc
   return {
     ...meta,
     routing: config.portal.routing,
-    origins: {
-      standard: config.portal.standardOrigin,
-      ...(config.portal.adminOrigin !== undefined ? { admin: config.portal.adminOrigin } : {}),
-    },
-    entryAud: { ...auds.entry },
+    origin: config.portal.origin,
+    ...(auds.entry !== undefined ? { entryAud: auds.entry } : {}),
     teams: config.teams.map((t) => {
       const aud = auds.teams.get(t.name);
       const source =
@@ -549,9 +561,93 @@ function buildAccess(config: ConsoleConfig, auds: ResolvedAuds, meta: Meta): Acc
   };
 }
 
+// ---- 退役したチーム名の台帳（前回の生成物との比較。§7.1）----
+
+function readLedger(raw: unknown, key: string): LedgerTeam[] | undefined | null {
+  const v = (raw as Record<string, unknown>)[key];
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v)) return null;
+  const out: LedgerTeam[] = [];
+  for (const t of v) {
+    if (typeof t !== "object" || t === null) return null;
+    const { name, tier } = t as Record<string, unknown>;
+    if (typeof name !== "string" || !(TIERS as readonly unknown[]).includes(tier)) return null;
+    out.push({ name, tier: tier as Tier });
+  }
+  return out;
+}
+
+type Ledger = { teams?: LedgerTeam[]; retiredTeams?: LedgerTeam[] };
+
+/** 台帳の生成物を読む。形が違えば "bad"、台帳の項目が 1 つも無ければ "legacy"（P2 より前の形）。 */
+function readLedgerDoc(v: unknown): Ledger | "bad" | "legacy" {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return "bad";
+  const teams = readLedger(v, "teams");
+  const retiredTeams = readLedger(v, "retiredTeams");
+  if (teams === null || retiredTeams === null) return "bad";
+  if (teams === undefined && retiredTeams === undefined) return "legacy";
+  return {
+    ...(teams !== undefined ? { teams } : {}),
+    ...(retiredTeams !== undefined ? { retiredTeams } : {}),
+  };
+}
+
+/** 1 つの台帳と比べる。台帳から名前を消さない・消したチームは台帳へ移す・同じ名前の階層を変えない。 */
+function compareLedger(config: ConsoleConfig, prev: Ledger, prefix: string, out: IssueList) {
+  const retired = new Set(config.retiredTeams.map((t) => t.name));
+  const current = new Map(config.teams.map((t, i) => [t.name, { tier: t.tier, i }]));
+  if ((prev.retiredTeams ?? []).some((t) => !retired.has(t.name)))
+    out.add(`${prefix}retiredTeams`, "retired_team_removed");
+  for (const t of prev.teams ?? []) {
+    const now = current.get(t.name);
+    if (now === undefined) {
+      if (!retired.has(t.name)) out.add(`${prefix}teams`, "team_removed_not_retired");
+    } else if (now.tier !== t.tier) out.add(`${prefix}teams[${now.i}].tier`, "team_tier_changed");
+  }
+}
+
 /**
- * 検証済みの設定から生成物を作る。誤り（AUD の欠落・食い違い・重複、インベントリの不正など）は ConsoleConfigError（全件）。
- * Standard の生成物は常に作り、Admin の生成物は Admin の階層のチームがあるときだけ作る。
+ * 台帳の検査（P2 の設計メモ §7.1、cto の決裁 2026-11-17 の c1〜c5）。生成物は gitignore なので、前回は出力先にしか無い。
+ * - check: 前回が無ければ黙り、あれば比べる（P2 より前の形なら警告）。baseline を渡せば比べる
+ * - deploy: 比べる台帳（前回か baseline）が無ければ誤り。初回の指定（ledgerInit）は、比べる台帳が無いときだけ通す
+ * 返り値は、初回の指定で通したかどうか。
+ */
+function checkLedger(
+  config: ConsoleConfig,
+  options: GenerateOptions,
+  out: IssueList,
+  warnings: IssueList,
+): boolean {
+  const deploy = options.mode === "deploy";
+  const prev = options.previous === undefined ? undefined : readLedgerDoc(options.previous);
+  const hasBaseline = "baseline" in options && options.baseline !== undefined;
+  const base = hasBaseline ? readLedgerDoc(options.baseline) : undefined;
+  if (prev === "bad") out.add("previous", "ledger_previous");
+  if (hasBaseline && (base === "bad" || base === "legacy")) out.add("baseline", "ledger_baseline");
+  const prevLedger = typeof prev === "object" ? prev : undefined;
+  const baseLedger = typeof base === "object" ? base : undefined;
+  if (prevLedger) compareLedger(config, prevLedger, "", out);
+  if (baseLedger) compareLedger(config, baseLedger, "baseline.", out);
+
+  if (options.ledgerInit === true) {
+    // 比べる相手（前回の台帳も baseline も）が無いときだけ通す
+    if (prevLedger) out.add("previous", "ledger_init_not_allowed");
+    if (baseLedger) out.add("baseline", "ledger_init_not_allowed");
+    return prevLedger === undefined && baseLedger === undefined;
+  }
+  if (!deploy) {
+    if (prev === "legacy") warnings.add("previous", "ledger_previous_missing");
+    return false;
+  }
+  if (prev === "legacy") out.add("previous", "ledger_previous_legacy");
+  else if (prev === undefined && baseLedger === undefined)
+    out.add("previous", "ledger_previous_missing");
+  return false;
+}
+
+/**
+ * 検証済みの設定から生成物を作る。誤り（AUD の欠落・食い違い・重複、インベントリの不正、台帳の食い違いなど）は
+ * ConsoleConfigError（全件）。発行用の生成物は 1 つ（両階層）。
  */
 export function generateConsoleArtifacts(
   config: ConsoleConfig,
@@ -560,23 +656,29 @@ export function generateConsoleArtifacts(
   const out = new IssueList();
   const warnings = new IssueList();
   const meta: Meta = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: options.generatedAt,
     ...(options.sourceRevision !== undefined ? { sourceRevision: options.sourceRevision } : {}),
   };
   const requireAud = options.mode === "deploy" || options.auds !== undefined;
   const auds = resolveAuds(config, options.auds, requireAud, out);
   const listed = listAccounts(config, options.inventory, options.mode, out, warnings);
+  const initialized = checkLedger(config, options, out, warnings);
   if (out.items.length > 0) throw new ConsoleConfigError(out.items);
-  const hasAdmin = config.teams.some((t) => t.tier === "admin");
   return {
     display: buildDisplay(config, listed, meta),
-    worker: {
-      standard: buildWorker(config, "standard", auds, listed, meta),
-      ...(hasAdmin ? { admin: buildWorker(config, "admin", auds, listed, meta) } : {}),
-    },
-    stacksets: buildStackSets(config, meta),
+    worker: buildWorker(config, auds, listed, meta),
+    // 初回の指定で通したことは、StackSets 用の生成物（台帳を持つもの）の meta にだけ残す
+    stacksets: buildStackSets(config, initialized ? { ...meta, ledgerInit: true } : meta),
     access: buildAccess(config, auds, meta),
     warnings: warnings.items,
+    ...(initialized
+      ? {
+          ledgerInit: {
+            teams: config.teams.map((t) => t.name),
+            retiredTeams: config.retiredTeams.map((t) => t.name),
+          },
+        }
+      : {}),
   };
 }

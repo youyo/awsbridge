@@ -1,7 +1,11 @@
-// コンソールログイン: Worker が読む発行用の生成物（worker.<tier>.json）の検査（docs/specs/console-login-portal.md §9.10・§11.6）。
-// 生成器（generate.ts）が誤りを止めるので、ここは「生成物が壊れていない・取り違えていない」ことの多重の防御。
-// 壊れている・他の階層の行やチームが混ざっている・purpose が issue でないときは WorkerConfigError（種別だけ。値は持たない）。
+// コンソールログイン: Worker が読む発行用の生成物（worker.json）の検査（docs/specs/console-login-portal.md §9.10・§11.6、
+// P2（B）の設計メモ §2.3・§7.1）。生成器（generate.ts）が誤りを止めるので、ここは「生成物が壊れていない・取り違えていない」ことの多重の防御。
+// 壊れている・行のチームとロールの階層が食い違う（row_team_tier）・行の ARN のパスがロールの階層と違う（row_tier）・
+// Admin の階層のロールの行が managed 以外の境界にある（admin_boundary）・purpose が issue でない・schemaVersion が 2 でない
+// ときは WorkerConfigError（種別だけ。値は持たない）。
 // 設定の解析器（config.ts）・生成器は import しない（Worker のバンドルに引き込まないため）。node の API を使わない。
+
+import type { Tier } from "../constants";
 import {
   ACCOUNT_ID_RE,
   AUD_RE,
@@ -12,7 +16,7 @@ import {
   SESSION_SECONDS_MAX,
   SESSION_SECONDS_MIN,
   TEAM_TAG_KEY,
-  type Tier,
+  TIERS,
 } from "../constants";
 import type { WorkerConfig } from "../types";
 
@@ -77,16 +81,20 @@ function uniq<T>(values: T[], kind: string): void {
   check(new Set(values).size === values.length, kind);
 }
 
+const isTier = (v: unknown): boolean => (TIERS as readonly unknown[]).includes(v);
+
 /**
- * 発行用の生成物を検査して返す。`tier` はこのデプロイの階層（Standard の Worker は "standard"）。
- * 行の ARN は、この階層のロールのパスとロール名から作った値と完全一致すること（他の階層の行の混入を弾く）。
- * 行のチームはこの生成物のチームの表にあること（他の階層のチームの混入を弾く）。
+ * 発行用の生成物を検査して返す。チームとロールは tier（standard / admin）を持つ。
+ * 行の ARN は、その行のロールの階層のパスとロール名から作った値と完全一致すること（row_tier）。
+ * 行のチームはこの生成物のチームの表にあり（row_team）、どれもその行のロールと同じ階層であること（row_team_tier）。
+ * Admin の階層のロールの行は managed の境界にだけ置ける（admin_boundary。設定の検査と同じ規則）。
  */
-export function readWorkerConfig(raw: unknown, tier: Tier): WorkerConfig {
+export function readWorkerConfig(raw: unknown): WorkerConfig {
   check(isObj(raw), "not_object");
   check(raw.purpose === "issue", "purpose");
-  check(raw.tier === tier, "tier");
+  // P2 より前の階層ごとの生成物（schemaVersion 1。tier を持つ）は受けない
   check(raw.schemaVersion === CONSOLE_SCHEMA_VERSION, "schema_version");
+  check(!Object.hasOwn(raw, "tier"), "tier");
   check(isStr(raw.generatedAt), "generated_at");
   check(
     raw.sourceRevision === undefined || typeof raw.sourceRevision === "string",
@@ -98,8 +106,7 @@ export function readWorkerConfig(raw: unknown, tier: Tier): WorkerConfig {
   const portal = raw.portal;
   check(isObj(portal), "portal");
   check(isHttpsOrigin(portal.origin), "portal_origin");
-  check(portal.peerOrigin === undefined || isHttpsOrigin(portal.peerOrigin), "portal_peer_origin");
-  check(portal.peerOrigin !== portal.origin, "portal_peer_origin");
+  check(!Object.hasOwn(portal, "peerOrigin"), "portal_peer_origin");
   check(portal.routing === "path" || portal.routing === "host", "portal_routing");
   if (portal.regions !== undefined) {
     const r = portal.regions;
@@ -129,6 +136,7 @@ export function readWorkerConfig(raw: unknown, tier: Tier): WorkerConfig {
   for (const t of raw.teams) {
     check(isObj(t) && isStr(t.name) && NAME_RE.test(t.name), "team_name");
     check(typeof t.displayName === "string", "team_display_name");
+    check(isTier(t.tier), "team_tier");
     check(t.aud === undefined || (isStr(t.aud) && AUD_RE.test(t.aud)), "team_aud");
     check(t.aud === undefined || t.aud !== portal.entryAud, "team_aud_entry");
   }
@@ -141,7 +149,7 @@ export function readWorkerConfig(raw: unknown, tier: Tier): WorkerConfig {
     teams.flatMap((t) => (t.aud === undefined ? [] : [t.aud])),
     "team_aud_duplicate",
   );
-  const teamNames = new Set(teams.map((t) => t.name as string));
+  const teamTiers = new Map(teams.map((t) => [t.name as string, t.tier as string]));
 
   check(Array.isArray(raw.roles), "roles");
   for (const r of raw.roles) {
@@ -149,6 +157,7 @@ export function readWorkerConfig(raw: unknown, tier: Tier): WorkerConfig {
     check(isStr(r.roleName) && ROLE_NAME_RE.test(r.roleName), "role_iam_name");
     check(typeof r.displayName === "string", "role_display_name");
     check(isSessionSeconds(r.sessionSeconds), "role_session_seconds");
+    check(isTier(r.tier), "role_tier");
   }
   const roles = raw.roles as Obj[];
   uniq(
@@ -193,7 +202,8 @@ export function readWorkerConfig(raw: unknown, tier: Tier): WorkerConfig {
       check(isObj(r) && typeof r.role === "string", "row_role");
       const role = roleByName.get(r.role);
       check(role !== undefined, "row_role_unknown");
-      // 他の階層の行（ロールのパスが違う）や、別のロールの ARN を弾く
+      // ロールの階層と違うパスの ARN や、別のロールの ARN を弾く
+      const tier = role.tier as Tier;
       check(
         r.roleArn === `arn:aws:iam::${a.accountId}:role${rolePath(tier)}${role.roleName as string}`,
         "row_tier",
@@ -201,9 +211,16 @@ export function readWorkerConfig(raw: unknown, tier: Tier): WorkerConfig {
       check(
         Array.isArray(r.teams) &&
           r.teams.length > 0 &&
-          r.teams.every((t) => typeof t === "string" && teamNames.has(t)),
+          r.teams.every((t) => typeof t === "string" && teamTiers.has(t)),
         "row_team",
       );
+      // 行のチームはすべて、その行のロールと同じ階層（Standard のチームが Admin のロールの行に混ざるのを弾く）
+      check(
+        (r.teams as string[]).every((t) => teamTiers.get(t) === tier),
+        "row_team_tier",
+      );
+      // Admin の階層のロールの行は managed の境界だけ（admin_boundary。管理外の先方に Administrator を配らない）
+      check(tier !== "admin" || a.boundary === "managed", "admin_boundary");
       uniq(r.teams as string[], "row_team_duplicate");
       check(r.sessionSeconds === role.sessionSeconds, "row_session_seconds");
     }

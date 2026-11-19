@@ -10,37 +10,29 @@
 # （AWS IAM / STS が認証なしで取りに来る）。ゾーン全体を覆う別の Access アプリがあれば、そのホストを bypass する。
 
 locals {
-  hosts = {
-    standard = var.standard_host
-    admin    = var.admin_host
-  }
   session_duration = {
     standard = var.standard_session_duration
     admin    = var.admin_session_duration
   }
-
-  # 入口のアプリを作る階層: Standard は常に、Admin は Admin の階層のチームがあるときだけ。
-  entry_tiers = toset(distinct(concat(["standard"], [for t in values(var.teams) : t.tier])))
 }
 
-# 入口: ホスト全体。チームのパス（/t/<チーム>）では、より具体的なチームのアプリが優先される。
+# 入口: ホスト全体（1 つ。P2 では入口・一覧・Standard と Admin の発行が同じホスト）。
+# チームのパス（/t/<チーム>）では、より具体的なチームのアプリが優先される。
 # Cookie の設定は portal.md §9.1 の推奨（Binding cookie 有効・SameSite は Lax）。
 resource "cloudflare_zero_trust_access_application" "entry" {
-  for_each = local.entry_tiers
-
   account_id                 = var.account_id
-  name                       = "${var.name}-entry-${each.key}"
+  name                       = "${var.name}-entry"
   type                       = "self_hosted"
   allowed_idps               = var.allowed_idp_ids
   auto_redirect_to_identity  = length(var.allowed_idp_ids) == 1
-  session_duration           = local.session_duration[each.key]
+  session_duration           = var.standard_session_duration
   enable_binding_cookie      = true
   path_cookie_attribute      = true
   same_site_cookie_attribute = "lax"
 
-  destinations = [{ type = "public", uri = local.hosts[each.key] }]
+  destinations = [{ type = "public", uri = var.host }]
   policies = [
-    for i, id in lookup(var.entry_policy_ids, each.key, []) : { id = id, precedence = i + 1 }
+    for i, id in var.entry_policy_ids : { id = id, precedence = i + 1 }
   ]
 
   lifecycle {
@@ -51,7 +43,7 @@ resource "cloudflare_zero_trust_access_application" "entry" {
   }
 }
 
-# チーム: <host>/t/<チーム>。階層のホストの下に置く。
+# チーム: <host>/t/<チーム>（両階層とも同じホスト）。セッションの長さは階層ごと（Admin の階層のチームは短く）。
 resource "cloudflare_zero_trust_access_application" "team" {
   for_each = var.teams
 
@@ -65,7 +57,7 @@ resource "cloudflare_zero_trust_access_application" "team" {
   path_cookie_attribute      = true
   same_site_cookie_attribute = "lax"
 
-  destinations = [{ type = "public", uri = "${local.hosts[each.value.tier]}/t/${each.key}" }]
+  destinations = [{ type = "public", uri = "${var.host}/t/${each.key}" }]
   policies = [
     for i, id in each.value.policy_ids : { id = id, precedence = i + 1 }
   ]

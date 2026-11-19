@@ -62,40 +62,137 @@ describe("README のプロファイル一覧（alias でバンドル）", () => 
   }
 });
 
-describe("README のコンソールログインの Admin の署名鍵（X1 の決裁）", () => {
+describe("README の受容する限界（P2（B）の設計メモ §8.2。cto の決裁 2026-11-17）", () => {
+  // 冒頭の受容の節: 「## デプロイ」/「## Deployment」より前にあること（目立つ所）
+  const top = (f: string, next: string) => {
+    const text = read(f);
+    const j = text.indexOf(next);
+    expect(j, next).toBeGreaterThan(0);
+    return text.slice(0, j);
+  };
+  it("README_ja.md: 警告の文・受容 a〜e・注記を、デプロイの節より前に載せる", () => {
+    const text = top("README_ja.md", "\n## デプロイ");
+    for (const s of [
+      "## コンソールログインを使う前に（受容する限界）",
+      "**コンソールの Worker をデプロイできる者と、その secret・依存物に触れる者は、Administrator を配った全アカウントの全権を持ちます。**",
+      "a. コンソールの Worker 全体が Administrator の発行の権威です。",
+      "Viewer のためだけの変更でも同じです",
+      "b. Worker のデプロイと鍵の操作は、Administrator を発行してよい人だけが行います。",
+      "c. 入口・一覧・画面のスクリプトは、Administrator の発行と同じオリジンで動きます",
+      "確認画面はこれを止めません",
+      "d. Viewer と Administrator を分けるのは、Worker が Access のアプリの AUD から決めたチームと、そのチームを入れたセッションタグ、ロールの信頼ポリシーのチームの条件だけです。",
+      "チームの名前を階層をまたいで使い直さないでください",
+      "e. OIDC プロバイダーを消すと、Viewer も Administrator も止まります。",
+      "Administrator のロールの信頼ポリシーでの拒否と、Administrator のスタックの削除です",
+      "発行記録はこの Worker 自身が書くので",
+      "発行済みのセッションは止めません",
+      "利用者が認証してからの時間ではありません",
+      "Workers Logs を読める人",
+      "`retiredTeams`",
+    ])
+      expect(text, s).toContain(s);
+  });
+  it("README.md: the warning, acceptances a-e and the notes come before the Deployment section", () => {
+    const text = top("README.md", "\n## Deployment");
+    for (const s of [
+      "## Before using console login (accepted limits)",
+      "**Anyone who can deploy the console Worker, or who can touch its secrets or dependencies, holds full control of every account where Administrator is deployed.**",
+      "a. The whole console Worker is the authority that issues Administrator.",
+      "This holds even for a change made only for Viewer",
+      "b. Only people allowed to issue Administrator deploy the Worker and operate the keys.",
+      "c. The scripts of the entry page, the lists, and the screens run on the same origin as Administrator issuance",
+      "The confirmation screen does not stop this",
+      "d. The only things that separate Viewer from Administrator are the team the Worker derives from the Access application's AUD, the session tag that carries that team, and the team condition in the role trust policy.",
+      "Do not reuse a team name across tiers",
+      "e. Deleting the OIDC provider stops both Viewer and Administrator.",
+      "a Deny in the Administrator role's trust policy and deleting the Administrator stack",
+      "The issue records are written by this Worker itself",
+      "they do not stop sessions already issued",
+      "not the time since the user authenticated",
+      "Anyone who can read Workers Logs",
+      "`retiredTeams`",
+    ])
+      expect(text, s).toContain(s);
+  });
   for (const f of ["README.md", "README_ja.md"]) {
-    it(`${f}: put（--yes）・check・retire の手順、secret_key、別の名前での差し替えを載せ、「KMS 相当」と書かない`, () => {
+    it(`${f}: 1 つの Worker に揃え、Admin の Worker・Admin の鍵の道具・Admin の issuer のホストを載せない`, () => {
       const text = read(f);
       for (const s of [
-        "mise run console:admin-key:put -- --yes",
-        "mise run console:admin-key:check",
-        "mise run console:admin-key:retire -- --binding",
-        "secret_key",
-        "ADMIN_KEY_",
-        "ADMIN_CURRENT_KEY",
-        "ADMIN_PUBLIC_JWKS",
-        "AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN",
+        "ADMIN_LOGIN_DISABLED",
+        "ADMIN_ACCESS_MAX_AGE_SECONDS",
+        "`IssuerPath`",
+        "team_tier_mismatch",
+        "team_not_in_config",
+        "trust_team_tier",
+        "trust_team_retired",
       ])
         expect(text, s).toContain(s);
-      expect(text).not.toMatch(/KMS 相当|equivalent to KMS|KMS-equivalent/i);
-    });
-  }
-});
-
-describe("README のコンソールログインの Admin の CSRF の鍵と初回のデプロイの順（cto の決裁 G2 の論点 5）", () => {
-  for (const f of ["README.md", "README_ja.md"]) {
-    it(`${f}: console:secrets:admin（--yes）と、Admin の初回のデプロイの順を載せる`, () => {
-      const text = read(f);
       for (const s of [
-        "mise run console:secrets:admin -- --yes",
-        "mise run console:admin-key:put -- --yes",
-        "mise run console:admin-key:check",
+        "console:admin-key:",
+        "console:secrets:admin",
         "AdminIssuerHost",
+        "AdminPath",
+        "StandardPath",
         "wrangler.console-admin.jsonc",
+        "ADMIN_PUBLIC_JWKS",
+        "ADMIN_CURRENT_KEY",
+        "ADMIN_KEY_",
+        "AWSBRIDGE_CONSOLE_ADMIN_",
+        "worker.admin.json",
+        "worker.standard.json",
+        "awsbridge-console-admin`",
       ])
-        expect(text, s).toContain(s);
+        expect(text, s).not.toContain(s);
     });
   }
+  it("README_ja.md / README.md: 台帳の限界（cto の決裁 2026-11-17 の c8）を受容の節（デプロイの節より前）に書く", () => {
+    const ja = top("README_ja.md", "\n## デプロイ");
+    for (const x of [
+      "台帳は運用者の取り違えを止める守りで、設定を書ける者への守りではありません",
+      "生成物を消して初回の指定（`--ledger-init`）を付ければ外せます",
+      "管理外に出たアカウントの古いロールは `mise run console:inspect` でも見えず、守りは台帳だけです",
+    ])
+      expect(ja, x).toContain(x);
+    const en = top("README.md", "\n## Deployment");
+    for (const x of [
+      "The ledger guards against operator mistakes, not against anyone who can write the config",
+      "deleting the artifacts and passing the first-run flag (`--ledger-init`) removes it",
+      "old roles in an account that has left management are not visible to `mise run console:inspect` either; the ledger is the only guard",
+    ])
+      expect(en, x).toContain(x);
+  });
+
+  it("README_ja.md / README.md: 台帳の手順（c7）。--ledger-init のあとはデプロイの前に inspect、前回の生成物か baseline を保管する", () => {
+    const ja = read("README_ja.md");
+    for (const x of [
+      "`mise run console:config:generate -- --ledger-init`",
+      "`--ledger-init` を使ったら、デプロイの前に `mise run console:inspect` を回します",
+      "`--ledger-baseline <path>`",
+      "前回の生成物（`.generated/console/stacksets.json`）か baseline を保管します",
+    ])
+      expect(ja, x).toContain(x);
+    expect(ja).not.toContain("前回が無いときは警告");
+    const en = read("README.md");
+    for (const x of [
+      "`mise run console:config:generate -- --ledger-init`",
+      "After using `--ledger-init`, run `mise run console:inspect` before you deploy",
+      "`--ledger-baseline <path>`",
+      "Keep the previous artifacts (`.generated/console/stacksets.json`) or a baseline",
+    ])
+      expect(en, x).toContain(x);
+    expect(en).not.toContain("without previous artifacts it warns");
+  });
+
+  it("README_ja.md / README.md: inspect を回す時点（c1）。Administrator のロールを作った直後・チームかロールの設定を変えたあと・段 4", () => {
+    expect(read("README_ja.md")).toContain(
+      "**`mise run console:inspect` は、Administrator のロールを作った直後と、チームかロールの設定を変えたあとに必ず回します**",
+    );
+    expect(read("README.md")).toContain(
+      "**Always run `mise run console:inspect` right after creating the Administrator role and after changing the team or role settings**",
+    );
+    expect(read("README_ja.md")).toContain("段 4（Admin の階層を入れる段）でも回します");
+    expect(read("README.md")).toContain("also at stage 4 (the stage that adds the Admin tier)");
+  });
 });
 
 describe("README のコンソールログインの Standard の署名鍵（cto の決裁「Standard も secret_key に揃える」）", () => {
@@ -103,22 +200,22 @@ describe("README のコンソールログインの Standard の署名鍵（cto �
     it(`${f}: 境界ごとの put（--boundary --yes）・check・retire、CSRF の鍵、secret_key、更新の経路（PoC X1-(h)）を載せ、「KMS 相当」と書かない`, () => {
       const text = read(f);
       for (const s of [
-        "mise run console:standard-key:put -- --boundary",
-        "mise run console:standard-key:check",
-        "mise run console:standard-key:retire -- --binding",
-        "mise run console:secrets:standard -- --yes",
-        "STANDARD_KEY_",
-        "STANDARD_CURRENT_KEYS",
-        "STANDARD_PUBLIC_JWKS",
-        "AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN",
+        "mise run console:key:put -- --boundary",
+        "mise run console:key:check",
+        "mise run console:key:retire -- --binding",
+        "mise run console:secrets -- --yes",
+        "CONSOLE_KEY_",
+        "CONSOLE_CURRENT_KEYS",
+        "CONSOLE_PUBLIC_JWKS",
+        "AWSBRIDGE_CONSOLE_CF_API_TOKEN",
         "CONSOLE_CSRF_KEY",
         "secret bulk",
-        "mise run console:build:standard",
+        "mise run console:build",
         "mise run console:dev",
       ])
         expect(text, s).toContain(s);
-      expect(text).toContain("AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG");
-      expect(text).not.toContain("AWSBRIDGE_CONSOLE_WRANGLER_CONFIG");
+      expect(text).toContain("AWSBRIDGE_CONSOLE_WRANGLER_CONFIG");
+      expect(text).not.toContain("AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG");
       expect(text).not.toContain("console:keygen");
       expect(text).not.toContain("CONSOLE_SIGNING_KEYS");
       expect(text).not.toMatch(/KMS 相当|equivalent to KMS|KMS-equivalent/i);
@@ -295,7 +392,8 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
       "excluded assumes (not console): <n>",
       "MCP を同じアカウントで使っていなければ 0",
       "admin issues: <n>",
-      "発行記録は Admin の Worker 自身が書きます。Admin の Worker に書ける者に対しては、照合は独立の検知ではありません",
+      "発行記録はコンソールの Worker 自身が書きます。コンソールの Worker に書ける者（Viewer だけを扱う人を含む）に対しては、照合は独立の検知ではありません",
+      "`ADMIN_LOGIN_DISABLED`",
       "`LOGIN_DISABLED`",
       "技術の判断者に上げます",
       "誤りが残る間、区間は進みません",
@@ -315,7 +413,8 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
       "excluded assumes (not console): <n>",
       "0 if you do not use MCP in the same account",
       "admin issues: <n>",
-      "The issue records are written by the Admin Worker itself. Against anyone who can write to the Admin Worker, the reconciliation is not independent detection",
+      "The issue records are written by the console Worker itself. Against anyone who can write to the console Worker (including people who handle only Viewer), the reconciliation is not independent detection",
+      "`ADMIN_LOGIN_DISABLED`",
       "`LOGIN_DISABLED`",
       "escalate to your technical decision maker",
       "While an error remains, the interval does not advance",
@@ -325,9 +424,14 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
     expect(text).not.toContain("then raised to errors");
   });
 
-  it("README_ja.md: L2 は G2-A で実測済み。信頼ポリシーの拒否は CloudFormation の外で、止めている間はロールのスタックを更新しない", () => {
-    const text = section(read("README_ja.md"), "### Admin のプロバイダーだけを止める（L2）");
+  it("README_ja.md: L2 は G2-A で実測済み。L2 は Viewer も止める。信頼ポリシーの拒否は CloudFormation の外で、止めている間はロールのスタックを更新しない", () => {
+    const text = section(
+      read("README_ja.md"),
+      "### 発行を Cloudflare に頼らずに止める（L2 と信頼ポリシーの拒否）",
+    );
     for (const s of [
+      "**Administrator だけを止める L2 はありません**",
+      "プロバイダーの削除（L2）は Viewer も止めます",
       "G2-A",
       "`upstream_auth_failed`",
       "`sts_denied`",
@@ -341,8 +445,13 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
     expect(text).not.toContain("まだ実行していない例");
   });
   it("README.md: L2 measured in G2-A; the trust policy Deny is outside CloudFormation", () => {
-    const text = section(read("README.md"), "### Stopping only the Admin provider (L2)");
+    const text = section(
+      read("README.md"),
+      "### Stopping issuance without relying on Cloudflare (L2 and trust policy Deny)",
+    );
     for (const s of [
+      "**There is no L2 that stops only Administrator**",
+      "deleting the provider (L2) also stops Viewer",
       "G2-A",
       "`upstream_auth_failed`",
       "`sts_denied`",
@@ -357,7 +466,7 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
   });
 
   it("README_ja.md / README.md: Administrator を別のスタックで置くときの条件（change set・作成直後の確認・kind-default・中断・スタック名）", () => {
-    const ja = section(read("README_ja.md"), "## コンソールログインの Admin の署名鍵");
+    const ja = section(read("README_ja.md"), "## コンソールログインの署名鍵");
     for (const s of [
       "`AdministratorRole` の `Add` だけ",
       "aws iam get-role",
@@ -367,9 +476,11 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
       "Admin のスタックを消し、かつ設定から Administrator を外して生成し直します",
       "awsbridge-console-admin-default",
       "`awsbridge-console-kind-<kind>`",
+      "Standard のチームは渡せません",
+      "`mise run console:inspect` を回します",
     ])
       expect(ja, s).toContain(s);
-    const en = section(read("README.md"), "## Admin signing key for console login");
+    const en = section(read("README.md"), "## Console login signing keys");
     for (const s of [
       "only an `Add` of `AdministratorRole`",
       "aws iam get-role",
@@ -379,6 +490,8 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
       "delete the Admin stack, and remove Administrator from the config and regenerate",
       "awsbridge-console-admin-default",
       "`awsbridge-console-kind-<kind>`",
+      "a Standard team cannot be passed",
+      "run `mise run console:inspect`",
     ])
       expect(en, s).toContain(s);
   });

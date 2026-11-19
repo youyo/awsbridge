@@ -130,6 +130,11 @@ type TrustExpect = {
   allowedTeams: string[];
   /** 割り当てたのに信頼ポリシーに無ければ警告にするチーム（種類が分からなければ空）。 */
   assignedTeams: string[];
+  /** このロールの階層と、設定のチーム → 階層（P2: 信頼ポリシーのチームの値がロールの階層のチームであること）。 */
+  tier?: Tier;
+  teamTiers?: ReadonlyMap<string, Tier>;
+  /** 退役したチーム名の台帳（信頼ポリシーに残っていれば誤り）。 */
+  retiredTeams?: ReadonlySet<string>;
 };
 
 type Issue = { severity: Severity; code: string; detail?: string };
@@ -183,6 +188,18 @@ function checkAllow(st: Obj, at: string, e: TrustExpect, out: Issue[]): void {
     const aud = asList(eq[audKey]);
     if (!aud || !sameSet(aud, [AUDIENCE])) err("trust_aud", `${at}.Condition.${OP_EQ}.${audKey}`);
     const teams = asList(eq[TEAM_KEY]);
+    // P2: 信頼ポリシーのチームの値は、そのロールの階層のチームだけ（Admin のロールに Standard のチーム・逆向き・どの階層の
+    // チームでもない名前は、階層の誤りとして名指しする）。退役したチーム名の台帳の名前が残っていれば誤り
+    if (teams && e.tier !== undefined && e.teamTiers !== undefined) {
+      const tiers = e.teamTiers;
+      if (teams.some((t) => tiers.get(t) !== e.tier))
+        err("trust_team_tier", `${at}.Condition.${OP_EQ}.${TEAM_KEY}`);
+    }
+    if (teams && e.retiredTeams !== undefined) {
+      const retired = e.retiredTeams;
+      if (teams.some((t) => retired.has(t)))
+        err("trust_team_retired", `${at}.Condition.${OP_EQ}.${TEAM_KEY}`);
+    }
     if (!teams || teams.length === 0 || !teams.every((t) => e.allowedTeams.includes(t)))
       err("trust_team", `${at}.Condition.${OP_EQ}.${TEAM_KEY}`);
     else {
@@ -373,15 +390,8 @@ export function inspectAccount(input: InspectInput): InspectResult {
       ...(detail !== undefined ? { detail } : {}),
     });
 
-  const consoleHosts = [
-    ...new Set(
-      config.boundaries.flatMap((b) =>
-        [b.issuers.standard, b.issuers.admin].flatMap((u) =>
-          u !== undefined ? [hostOf(issuerOf(u))] : [],
-        ),
-      ),
-    ),
-  ];
+  // コンソール用のプロバイダーのホスト（境界ごとの issuer のホスト。P2: 階層で分けない）
+  const consoleHosts = [...new Set(config.boundaries.map((b) => hostOf(issuerOf(b.issuer))))];
   const isConsoleProvider = (arn: string) => {
     const m = /:oidc-provider\/(.+)$/.exec(arn);
     return m?.[1] !== undefined && consoleHosts.includes(hostOf(m[1]));
@@ -410,26 +420,17 @@ export function inspectAccount(input: InspectInput): InspectResult {
     generatedAt: "inspect",
     ...(input.inventory !== undefined ? { inventory: input.inventory } : {}),
   });
-  const rows = TIERS.flatMap((t) =>
-    (art.worker[t]?.accounts ?? []).filter((a) => a.accountId === s.accountId),
-  );
+  const rows = art.worker.accounts.filter((a) => a.accountId === s.accountId);
   const known = rows.length > 0;
   // 設定に無いアカウント: 取り違えたプロファイルで「誤りなし」にしないよう、誤りにする（検査は続ける）
   if (!known) add("error", "account_not_in_config");
   const boundaryName = rows[0]?.boundary;
   const boundaries = config.boundaries.filter((b) => !known || b.name === boundaryName);
-  // 守りの部品のプロバイダーの Deny が守るホストの組（候補）。Admin の階層のあるアカウント（Admin の行があり、境界に
-  // Admin の issuer がある）では [Standard, Admin] の 2 つ、無ければ Standard だけ（base に AdminIssuerHost を渡すのは
-  // Admin を配るアカウントだけ）。設定に無いアカウントは、どの境界のどちらの形も受ける。
-  // Admin の部品は Admin の階層があるときだけ作られるので、いつも Admin のホストを含む形で照合する
-  const hasAdminRow = art.worker.admin?.accounts.some((a) => a.accountId === s.accountId) ?? false;
-  const guardHostSets = boundaries.flatMap((b) => {
-    const std = hostOf(issuerOf(b.issuers.standard));
-    const admin = b.issuers.admin !== undefined ? hostOf(issuerOf(b.issuers.admin)) : undefined;
-    if (admin === undefined) return [[std]];
-    if (!known) return [[std], [std, admin]];
-    return hasAdminRow ? [[std, admin]] : [[std]];
-  });
+  // 守りの部品のプロバイダーの Deny が守るホスト（候補）。P2: 境界の issuer のホスト 1 つで、どちらの部品も同じ形。
+  // 設定に無いアカウントは、どの境界のホストも受ける
+  const guardHosts = [...new Set(boundaries.map((b) => hostOf(issuerOf(b.issuer))))];
+  const teamTiers = new Map(config.teams.map((t) => [t.name, t.tier]));
+  const retiredTeams = new Set(config.retiredTeams.map((t) => t.name));
 
   // このアカウントで期待するロール（種類が分からなければ、設定のすべてのロールを候補にする）
   const expected = new Map<string, Expected>();
@@ -454,11 +455,8 @@ export function inspectAccount(input: InspectInput): InspectResult {
     `arn:${s.partition}:iam::${s.accountId}:oidc-provider/${issuer}`;
   const guardArn = (t: Tier) =>
     `arn:${s.partition}:iam::${s.accountId}:policy${GUARD_POLICY_PATH}${GUARD_POLICY_NAME[t]}`;
-  const tierIssuers = (tier: Tier) =>
-    boundaries.flatMap((b) => {
-      const url = b.issuers[tier];
-      return url !== undefined ? [issuerOf(url)] : [];
-    });
+  // ロールが信頼してよい issuer（境界ごとに 1 つで、階層によらない）
+  const boundaryIssuers = boundaries.map((b) => issuerOf(b.issuer));
 
   const seen = new Set<string>();
   for (const r of s.roles) {
@@ -479,7 +477,7 @@ export function inspectAccount(input: InspectInput): InspectResult {
     if (r.path !== rolePath(tier)) add("error", "path_mismatch", name, rolePath(tier));
 
     // 信頼ポリシー。種類が分からないときは、境界の候補のうち Principal と合うものを選ぶ
-    const issuers = tierIssuers(tier);
+    const issuers = boundaryIssuers;
     const trustText = JSON.stringify(r.trustPolicy);
     const issuer = issuers.find((i) => trustText.includes(`"${providerArn(i)}"`)) ?? issuers[0];
     if (issuer === undefined) add("error", "issuer_unknown", name, tier);
@@ -489,6 +487,9 @@ export function inspectAccount(input: InspectInput): InspectResult {
         issuer,
         allowedTeams: exp.teams,
         assignedTeams: known ? exp.teams : [],
+        tier,
+        teamTiers,
+        retiredTeams,
       }))
         add(i.severity, i.code, name, i.detail);
 
@@ -502,18 +503,16 @@ export function inspectAccount(input: InspectInput): InspectResult {
         const mp = s.managedPolicies.find((p) => p.arn === want);
         if (!mp) add("error", "guard_unreadable", name, GUARD_POLICY_NAME[tier]);
         else if (
-          !guardHostSets
-            .filter((hosts) => tier !== "admin" || hosts.length > 1)
-            .some((issuerHosts) =>
-              samePolicy(
-                mp.document,
-                guardPolicyDocument(tier, {
-                  partition: s.partition,
-                  accountId: s.accountId,
-                  issuerHosts,
-                }),
-              ),
-            )
+          !guardHosts.some((issuerHost) =>
+            samePolicy(
+              mp.document,
+              guardPolicyDocument(tier, {
+                partition: s.partition,
+                accountId: s.accountId,
+                issuerHost,
+              }),
+            ),
+          )
         )
           add(
             "error",
@@ -568,12 +567,12 @@ export function inspectAccount(input: InspectInput): InspectResult {
   if (known) {
     for (const [roleName, exp] of expected)
       if (!seen.has(roleName)) add("error", "role_missing", roleName, exp.role.tier);
-    const tiers = new Set([...expected.values()].map((e) => e.role.tier));
-    for (const tier of TIERS) {
-      if (!tiers.has(tier)) continue;
-      const issuer = tierIssuers(tier)[0];
-      if (issuer !== undefined && !s.providers.includes(providerArn(issuer)))
-        add("error", "provider_missing", undefined, tier);
+    // 境界のプロバイダー（両階層で 1 つ）
+    const boundary = boundaries[0];
+    if (expected.size > 0 && boundary !== undefined) {
+      const issuer = issuerOf(boundary.issuer);
+      if (!s.providers.includes(providerArn(issuer)))
+        add("error", "provider_missing", undefined, boundary.name);
     }
   }
 

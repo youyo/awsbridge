@@ -1,4 +1,4 @@
-// コンソールログインの署名鍵（Workers の secret_key 型）の運用の道具に共通の部品（Admin: admin-key-lib.ts、Standard: standard-key-lib.ts）。
+// コンソールログインの署名鍵（Workers の secret_key 型）の運用の道具に共通の部品（key-lib.ts が使う）。
 // Cloudflare API の呼び出し・エラーの要約・secret_key の本文・鍵の生成・公開の文書の取得・key-check の URL。
 // トークンと鍵の値は戻り値・例外の文に入れない。Cloudflare API の宛先の上書きは手元（127.0.0.1）の試験用だけ。
 import { RS256_ALGORITHM } from "../../src/console/signing/key";

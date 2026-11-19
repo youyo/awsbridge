@@ -1,26 +1,37 @@
 // コンソールログイン: 生成物のうち Worker が読む 2 つの契約の型。型だけを置き、constants.ts 以外を import しない。
 // 生成器（generate.ts）が作り、Worker が読む。形を変えるときは schemaVersion と設計書（console-login-portal.md §5.2・§11.4）を見直す。
+// schemaVersion 2（P2（B）の設計メモ §2.4）: Worker は 1 つで、Standard と Admin の両方のチームを受ける。
+// 階層はデプロイではなく、チーム（teams[].tier）とロール（roles[].tier）に付く。
 //
-//   WorkerConfig  worker.<tier>.json  発行用。その階層のチーム（AUD つき）・ロール・境界の issuer・一覧の行（roleArn つき）。
-//                                     発行の経路（確認・検証・署名）が読む。
-//   DisplayConfig display.standard.json  表示用。Standard のデプロイにだけ渡す。入口の一覧（S0。U2）の表示だけに使い、
-//                                     発行の経路からは読まない（import しない）。Administrator の行（表示用だけ）と
-//                                     Entra グループの Object ID → チームの対応表を持つ。
-//                                     Admin のチームの AUD・Access のポリシー ID・Admin の issuer・鍵の参照・roleArn は持たない。
+//   WorkerConfig  worker.json   発行用。両階層のチーム（AUD・tier つき）・ロール（tier つき）・境界ごとの issuer・
+//                               一覧の行（roleArn つき）。発行の経路（確認・検証・署名）が読む。
+//   DisplayConfig display.json  表示用。入口の一覧（S0。U2）の表示だけに使い、発行の経路からは読まない（import しない）。
+//                               Administrator の行（表示用だけ）と Entra グループの Object ID → チームの対応表を持つ。
+//                               AUD・Access のポリシー ID・issuer・鍵の参照・roleArn は持たない。
 //
 // 2 つのファイルは `purpose` で見分ける（取り違えて渡されたら Worker が起動時に止まれるように）。
 
 import type { Routing, SourceIdentitySource, Tier } from "./constants";
 
-export type Meta = { schemaVersion: 1; generatedAt: string; sourceRevision?: string };
+export type Meta = {
+  schemaVersion: 2;
+  generatedAt: string;
+  sourceRevision?: string;
+  /**
+   * 台帳の初回の指定（--ledger-init）で、比べる相手（前回も baseline も）なしに通した生成（stacksets.json だけに付く。
+   * 次の生成で消える）。cto の決裁 2026-11-17 の c3。
+   */
+  ledgerInit?: true;
+};
 
 // ---- 発行用 ----
 
-export type WorkerTeam = { name: string; displayName: string; aud?: string };
+export type WorkerTeam = { name: string; displayName: string; tier: Tier; aud?: string };
 export type WorkerRole = {
   name: string;
   roleName: string;
   displayName: string;
+  tier: Tier;
   sessionSeconds: number;
 };
 export type WorkerAccountRole = {
@@ -40,14 +51,12 @@ export type WorkerAccount = {
 };
 export type WorkerConfig = Meta & {
   purpose: "issue";
-  tier: Tier;
   tagKey: string;
   /** SourceIdentity の値の出どころ（設定の identity.sourceIdentity。既定 email）。 */
   identity: { sourceIdentity: SourceIdentitySource };
   portal: {
+    /** ポータルのオリジン（入口・一覧・両階層の発行が同じオリジン。P2 の受容 c）。 */
     origin: string;
-    /** もう一方の階層のオリジン（Standard では Administrator の行の遷移先、Admin では一覧への戻り先。§8）。 */
-    peerOrigin?: string;
     routing: Routing;
     regions?: { allowed: string[]; default: string };
     supportUrl?: string;
@@ -83,12 +92,9 @@ export type DisplayAccount = {
 export type DisplayGroup = { objectId: string; teams: string[] };
 export type DisplayConfig = Meta & {
   purpose: "display";
-  /** 表示用は Standard のデプロイにだけ渡す。 */
-  tier: "standard";
   portal: {
+    /** ポータルのオリジン。Administrator の行の遷移先も同じオリジンのチームのパス。 */
     origin: string;
-    /** Administrator の行の遷移先（Admin のオリジン）。Admin の階層がなければない。 */
-    adminOrigin?: string;
     routing: Routing;
     supportUrl?: string;
   };

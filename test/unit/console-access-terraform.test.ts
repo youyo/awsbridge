@@ -51,21 +51,32 @@ describe("infra/cloudflare/console/（Access の Terraform の例）", () => {
     expect(read("variables.tf")).not.toMatch(/path_cookie/);
   });
 
-  it("チームのアプリは for_each で作り、対象は <host>/t/<チーム>。入口はホスト全体", () => {
+  it("チームのアプリは for_each で作り、対象は 1 つのホストの /t/<チーム>（P2: 両階層とも同じホスト）。入口はホスト全体で 1 つ", () => {
     const team = resourceBody(main(), APP, "team");
     expect(team).toContain("for_each");
-    expect(team).toMatch(/\/t\/\$\{each\.key\}/);
+    expect(team).toMatch(/uri\s*=\s*"\$\{var\.host\}\/t\/\$\{each\.key\}"/);
+    // セッションの長さは階層ごと（Admin の階層のチームは短く。admin_session_duration）
+    expect(team).toMatch(/session_duration\s*=\s*local\.session_duration\[each\.value\.tier\]/);
     const entry = resourceBody(main(), APP, "entry");
-    expect(entry).toContain("for_each");
+    expect(entry).not.toContain("for_each");
+    expect(entry).toMatch(/uri\s*=\s*var\.host\b/);
     expect(entry).not.toMatch(/\/t\//);
   });
 
-  it("出力は AWSBRIDGE_CONSOLE_AUD_FILE の形（teams と entry）で、sensitive", () => {
+  it("階層ごとのホスト（standard_host・admin_host）を持たない（P2: ホストは 1 つ）", () => {
+    const vars = read("variables.tf");
+    expect(vars).toMatch(/variable "host"/);
+    expect(vars).not.toMatch(/standard_host|admin_host/);
+    expect(read("terraform.tfvars.example")).not.toMatch(/standard_host|admin_host/);
+    expect(vars).toMatch(/variable "admin_session_duration"/);
+  });
+
+  it("出力は AWSBRIDGE_CONSOLE_AUD_FILE の形（teams と、1 つの entry）で、sensitive", () => {
     const out = read("outputs.tf");
     expect(out).toMatch(/output "console_aud"/);
     expect(out).toMatch(/sensitive\s*=\s*true/);
     expect(out).toMatch(/\bteams\b/);
-    expect(out).toMatch(/\bentry\b/);
+    expect(out).toMatch(/entry\s*=\s*cloudflare_zero_trust_access_application\.entry\.aud/);
   });
 
   it("実在の値を書かない（ドキュメント用のドメイン・全部 0 の ID だけ）", () => {

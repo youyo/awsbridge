@@ -10,6 +10,36 @@ A Cloudflare Worker that converts the identity of a user authenticated by Cloudf
 
 Predecessor: [youyo/aws-mcp-gateway](https://github.com/youyo/aws-mcp-gateway)
 
+## Before using console login (accepted limits)
+
+> **Anyone who can deploy the console Worker, or who can touch its secrets or dependencies, holds full control of every account where Administrator is deployed.**
+>
+> Console login issues Viewer and Administrator from one Worker, one issuer, one signing key, and one OIDC provider (per boundary; separate from the MCP relay). Before using it, accept the following.
+>
+> a. The whole console Worker is the authority that issues Administrator. Any one of the Worker's deploy permission, its secrets (the signing key bindings, the CSRF key), or its dependencies (npm dependencies, build tools) reaches full control of every account where Administrator is deployed. This holds even for a change made only for Viewer.
+> b. Only people allowed to issue Administrator deploy the Worker and operate the keys. Handing this to an agent, CI, or anyone else hands them full control.
+> c. The scripts of the entry page, the lists, and the screens run on the same origin as Administrator issuance (with path routing, the default). A flaw in a screen can trigger Administrator issuance from the browser of a person who has an Access session for an Admin team. The confirmation screen does not stop this.
+> d. The only things that separate Viewer from Administrator are the team the Worker derives from the Access application's AUD, the session tag that carries that team, and the team condition in the role trust policy. On the AWS side, the issuer, the key, and the audience do not distinguish tiers. Do not reuse a team name across tiers.
+> e. Deleting the OIDC provider stops both Viewer and Administrator. The ways to stop only Administrator without relying on Cloudflare are a Deny in the Administrator role's trust policy and deleting the Administrator stack.
+>
+> The issue records are written by this Worker itself, so against anyone who can write to this Worker, the reconciliation with CloudTrail is not independent detection.
+>
+> The ways to stop issuance (the stop switches, removing a kid, deleting the provider, a Deny in the trust policy) only stop new issuance and new assumptions; they do not stop sessions already issued. Revoking the role is what stops sessions already issued.
+>
+> The age limit of the Access JWT for Admin teams (default 15 minutes) is the time since the JWT was issued, not the time since the user authenticated. Whether re-authentication is required is decided by the Access and IdP settings.
+>
+> Anyone who can read Workers Logs can read the issue records (masked). Treat permission to read the logs with the same weight as permission on this Worker.
+>
+> The ledger of retired team names (below): The ledger guards against operator mistakes, not against anyone who can write the config; deleting the artifacts and passing the first-run flag (`--ledger-init`) removes it. The old roles in an account that has left management are not visible to `mise run console:inspect` either; the ledger is the only guard there.
+
+When you change a team's tier, use a new name (do not reuse a name in another tier: a name left in an old stack's trust policy would let people of another tier in). When you remove a team, move it to `retiredTeams` (the ledger of retired team names) in the config. `mise run console:config:generate` treats as an error using a ledger name for a current team, removing a name from the ledger, removing a team without moving it to the ledger, and changing the tier of a team with the same name.
+
+- It compares with the previous artifacts in the output directory (`stacksets.json`) and, when given, with `--ledger-baseline <path>` (a `stacksets.json` you kept). With both, it must pass both. A baseline that cannot be read or has the wrong shape is an error.
+- Generating with no ledger to compare with (no previous artifacts and no baseline, or previous artifacts from before P2) is an error. Only the first generation and the migration from the pre-P2 shape pass, with `mise run console:config:generate -- --ledger-init` (the first-run flag). Passing it while the previous artifacts or the baseline have a ledger is an error. It is recorded on standard output and in the meta of `stacksets.json` (`ledgerInit`; gone after the next generation).
+- After using `--ledger-init`, run `mise run console:inspect` before you deploy (to see that no old or retired team name is left in a trust policy).
+- Keep the previous artifacts (`.generated/console/stacksets.json`) or a baseline (the artifacts are gitignored; in a new checkout, pass it with `--ledger-baseline <path>`).
+- `mise run console:config:check` is unchanged: without previous artifacts it says nothing, and with them it compares.
+
 ## Deployment
 
 The Cloudflare side (Worker) and the AWS side (CloudFormation) are completely separate. Deploying the Worker does not call AWS, and deploying CloudFormation does not call Cloudflare. For each target AWS account, you only need to run CloudFormation.
@@ -290,32 +320,30 @@ This way you can check the old and new deployments side by side before you switc
 
 ## Required stack for console login (base)
 
-[`infra/aws/console/base.yaml`](infra/aws/console/base.yaml) (StackSet `awsbridge-console-base`) creates the IAM OIDC providers for console login and the per-tier guard policies (customer managed, explicit Denies only). It does not create roles (the reference role template is [`infra/aws/console/kind.example.yaml`](infra/aws/console/kind.example.yaml); regenerate it with `mise run console:template:example` after changing the generator). Design: `docs/specs/console-login.md` §4.2 and §4.8.
+[`infra/aws/console/base.yaml`](infra/aws/console/base.yaml) (StackSet `awsbridge-console-base`) creates the IAM OIDC provider for console login (one, shared by Viewer and Administrator) and the per-tier guard policies (customer managed, explicit Denies only). It does not create roles (the reference role template is [`infra/aws/console/kind.example.yaml`](infra/aws/console/kind.example.yaml); regenerate it with `mise run console:template:example` after changing the generator). Design: `docs/specs/console-login.md` §4.2 and §4.8.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `IssuerHost` | none (required) | Host of the Standard issuer (e.g. `awsbridge-oidc-console.example.com`) |
-| `StandardPath` | `standard` | Path of the Standard issuer. Issuer = `https://<IssuerHost>/<StandardPath>` |
-| `AdminIssuerHost` | empty | Host of the Admin issuer (e.g. `awsbridge-oidc-admin-console.example.com`). Empty: the Admin provider and the Admin guard policy are not created. The same value as `IssuerHost` is rejected by `Rules` (the Admin issuer is on a separate host) |
-| `AdminPath` | `admin` | Path of the Admin issuer. Issuer = `https://<AdminIssuerHost>/<AdminPath>` |
+| `IssuerHost` | none (required) | Host of the issuer (e.g. `awsbridge-oidc-console.example.com`) |
+| `IssuerPath` | `console` | Path of the issuer. Issuer = `https://<IssuerHost>/<IssuerPath>` (`p/<id>/console` for a partner) |
 | `Audience` | `awsbridge-console` | Fixed |
 
-- **Pass `AdminIssuerHost` only to the accounts that get Administrator** (a StackSets parameter override: `--parameter-overrides` of `aws cloudformation create-stack-instances` / `update-stack-instances`). Leave it empty for every other account.
-- In accounts with the Admin tier, both the Standard and the Admin guard policies also deny writes to the Admin provider (create, delete, adding a client ID, and so on). The inspection tool (`mise run console:inspect`) expects guard policies that protect both hosts in accounts that get Administrator in the config, and guard policies that protect only the Standard host elsewhere (otherwise `guard_version_mismatch`).
-- Order: publish the Admin issuer (discovery and JWKS of the Admin Worker) first, then pass `AdminIssuerHost`.
-- To stop using the Admin tier: delete the Admin role stacks first (they import the Admin guard policy export), then set `AdminIssuerHost` back to empty. In the other order the export cannot be removed and the stack update fails.
+- There is one provider per boundary, and the roles of both the Standard and the Admin tier trust the same provider. The only thing that separates Viewer from Administrator is the team condition (`aws:RequestTag/awsbridge_team`) in the role trust policy (acceptance d).
+- The Admin guard policy (`AwsbridgeConsoleGuardAdmin`, including the Deny of `aws login --remote`) and its export are always created in every account. Whether Administrator is deployed is decided only by whether the Administrator role stack (a separate stack) is created.
+- Both guard policies deny writes to the console provider (every path under `<IssuerHost>`): create, delete, adding a client ID, and so on. The Deny statement with a single host has not been measured on real AWS yet (unverified; to be measured in the downstream production rollout). The inspection tool (`mise run console:inspect`) expects guard policies of this shape (otherwise `guard_version_mismatch`).
+- **Always run `mise run console:inspect` right after creating the Administrator role and after changing the team or role settings** (in the downstream production rollout, also at stage 4 (the stage that adds the Admin tier)). A team value in a trust policy that is not a team of the role's tier is `trust_team_tier`, and a retired team name left in a trust policy is `trust_team_retired` (both errors).
 - Deploy and update with a principal other than the console-login roles (for example the StackSets execution role). A console-login role session with a guard policy attached cannot update this stack.
-- The provider ARNs are outputs but not exports. The role template builds the ARN from `AdminIssuerHost`, `AdminPath`, and the account ID (`AWS::AccountId`), so the role stack parameters contain no account ID.
+- The provider ARN is an output but not an export. The role template builds the ARN from `IssuerHost`, `IssuerPath`, and the account ID (`AWS::AccountId`), so the role stack parameters contain no account ID.
 
-### Stopping only the Admin provider (L2)
+### Stopping issuance without relying on Cloudflare (L2 and trust policy Deny)
 
-This stops new Administrator assumptions without relying on Cloudflare (`docs/specs/console-login-admin.md` §7). It does not stop AWS sessions that were already issued, so combine it with revoke (L3). **It is done outside CloudFormation.** The deletion and the restore procedure below were run in G2-A of stage 2 with a role of the Admin tier: after the deletion, issuing failed at the portal with `upstream_auth_failed` ("this account is not accepting logins right now"), and a CLI session from before the deletion kept working. Recreating it with the same URL, client ID, and tags gave the same ARN, and the first issuance that arrived after the recreation (about 2 minutes later) succeeded.
+**There is no L2 that stops only Administrator** (acceptance e). Viewer and Administrator share one provider, so deleting the provider (L2) also stops Viewer. The ways to stop only Administrator without relying on Cloudflare are a Deny in the Administrator role's trust policy (below) and deleting the Administrator stack. None of these stops AWS sessions that were already issued, so combine them with revoke (L3). **It is done outside CloudFormation.** The deletion and the restore procedure below were run in G2-A of stage 2 (with the Admin provider from before P2): after the deletion, issuing failed at the portal with `upstream_auth_failed` ("this account is not accepting logins right now"), and a CLI session from before the deletion kept working. Recreating it with the same URL, client ID, and tags gave the same ARN, and the first issuance that arrived after the recreation (about 2 minutes later) succeeded.
 
-1. With a principal other than the console-login roles, delete the Admin provider in the target account (the guard policy Denies only block writes from the console-login roles).
+1. With a principal other than the console-login roles, delete the console provider in the target account (the guard policy Denies only block writes from the console-login roles). Viewer stops too.
 
    ```sh
    aws iam delete-open-id-connect-provider --profile <operator profile> \
-     --open-id-connect-provider-arn arn:aws:iam::<account ID>:oidc-provider/awsbridge-oidc-admin-console.example.com/admin
+     --open-id-connect-provider-arn arn:aws:iam::<account ID>:oidc-provider/awsbridge-oidc-console.example.com/console
    ```
 
 2. **While it is stopped, do not update the base stack (the stack instance for that account).** The provider has drifted from the stack, and what an update does in that state (fail, or recreate the provider) has not been measured. If it is recreated, the stop is undone.
@@ -323,9 +351,9 @@ This stops new Administrator assumptions without relying on Cloudflare (`docs/sp
 
    ```sh
    aws iam create-open-id-connect-provider --profile <operator profile> \
-     --url https://awsbridge-oidc-admin-console.example.com/admin \
+     --url https://awsbridge-oidc-console.example.com/console \
      --client-id-list awsbridge-console \
-     --tags Key=project,Value=awsbridge Key=awsbridge-console-tier,Value=admin
+     --tags Key=project,Value=awsbridge
    ```
 
 4. After recreating it, issue once, run stack drift detection, and confirm there is no difference before you resume stack updates; the recreated provider leaves no drift (in G2-A, the recreated provider's thumbprint also matched the original, and drift detection on the base stack was IN_SYNC).
@@ -334,117 +362,75 @@ Still not measured: what an update of the base stack does while stopped (not don
 
 #### Denying in the role trust policy
 
-The other way to stop issuance without relying on Cloudflare. Add a `Deny` statement for `sts:AssumeRoleWithWebIdentity` to the trust policy of the role you want to stop (by hand, with a principal other than the console-login roles). In G2-A (a role of the Admin tier), issuing after the change failed at the portal with `sts_denied` ("could not enter this role"; CloudTrail shows `AccessDenied`), which is distinguishable from the provider deletion (`upstream_auth_failed`). Existing CLI sessions kept working (revoke is what stops those).
+The other way to stop issuance without relying on Cloudflare, and the way to stop only Administrator. Add a `Deny` statement for `sts:AssumeRoleWithWebIdentity` to the trust policy of the role you want to stop (by hand, with a principal other than the console-login roles). In G2-A (a role of the Admin tier), issuing after the change failed at the portal with `sts_denied` ("could not enter this role"; CloudTrail shows `AccessDenied`), which is distinguishable from the provider deletion (`upstream_auth_failed`). Existing CLI sessions kept working (revoke is what stops those).
 
 - **The trust policy Deny is outside CloudFormation's management. While it is stopped, do not update the role stack. Restore it by hand, and confirm with one issuance and drift detection.**
 - In the two kinds of update measured (an update with no changes, and an update that changes only the stack tags), the Deny was not removed (CloudFormation did not write back the template's trust policy); whether an update that changes the trust policy itself removes the Deny has not been measured (for example a change of team assignments). Because it is not measured, do not update while stopped.
 
 ## Access applications for console login (Cookie Path)
 
-The console-login portal (the entry screen) sits behind Cloudflare Access applications. When teams are separated by path (`portal.routing: path`, the default), **Cookie Path (`path_cookie_attribute`) must be enabled on the entry application and on every team application** (Standard and Admin alike). If it is disabled, the AUD of another application on the same host also lands in the `aud` of the Access JWT, and the Worker's "exactly one `aud`" check rejects it (nobody can log in). When teams are separated by host (`routing: host`), cookies are already separated by host, so this is only a warning. The Worker does not enforce Cookie Path; it is checked in two ways.
+The console-login portal (the entry screen) sits behind Cloudflare Access applications. When teams are separated by path (`portal.routing: path`, the default), **Cookie Path (`path_cookie_attribute`) must be enabled on the entry application and on every team application** (the teams of the Standard and the Admin tier sit on the same host under `/t/<team>`). If it is disabled, the AUD of another application on the same host also lands in the `aud` of the Access JWT, and the Worker's "exactly one `aud`" check rejects it (nobody can log in). When teams are separated by host (`routing: host`), cookies are already separated by host, so this is only a warning. The Worker does not enforce Cookie Path; it is checked in two ways.
 
-- Reference Terraform: [`infra/cloudflare/console/`](infra/cloudflare/console/) (a separate state from the MCP-side `infra/cloudflare/`). It creates the entry and team applications with `for_each` and pins `path_cookie_attribute = true` (not a variable). It is an example that has not been applied. Save `terraform output -json console_aud` as `AWSBRIDGE_CONSOLE_AUD_FILE`.
+- Reference Terraform: [`infra/cloudflare/console/`](infra/cloudflare/console/) (a separate state from the MCP-side `infra/cloudflare/`). It creates the entry application (one) and the team applications (`for_each`) and pins `path_cookie_attribute = true` (not a variable). The applications of teams of the Admin tier get a short session (`admin_session_duration`, default 15 minutes). It is an example that has not been applied. Save `terraform output -json console_aud` as `AWSBRIDGE_CONSOLE_AUD_FILE`.
 - Inspection: `mise run console:access:inspect`. Run `mise run console:config:generate` first to write `access.json`; the tool reads the Cloudflare API (GET only, no writes) and checks that an application exists for each entry and team AUD, that its type is `self_hosted`, that its destination is `<host>/t/<team>`, and that Cookie Path is enabled. With R-P a disabled (false or missing) Cookie Path is an error (exit code 1), and an application under `/t/` that is not in the config is a warning. The output never contains an AUD, a token, or an account ID.
 - Give it a dedicated read-only token (Access: Apps and Policies Read only) in `AWSBRIDGE_CONSOLE_ACCESS_READ_TOKEN` and the account ID in `AWSBRIDGE_CONSOLE_ACCESS_CF_ACCOUNT_ID`, both in `mise.local.toml`. It does not fall back to the `wrangler login` OAuth and does not read the other tools' tokens.
 
-## Standard signing keys for console login
+## Console login signing keys
 
-The Standard Worker for console login (`wrangler.console-standard.jsonc`) signs the JWT it passes to STS with a Workers binding of type `secret_key` (a non-extractable `CryptoKey`; RSASSA-PKCS1-v1_5 / SHA-256, usages `sign` only), one per boundary (`managed`, `partner:<id>`). It works like the Admin signing key, with separate keys, tokens, and Worker. A private JWK stored as a string secret is not used.
+The console-login Worker (`wrangler.console.jsonc`; one Worker that issues both Viewer and Administrator) signs the JWT it passes to STS with a Workers binding of type `secret_key` (a non-extractable `CryptoKey`; RSASSA-PKCS1-v1_5 / SHA-256, usages `sign` only), one per boundary (`managed`, `partner:<id>`). A boundary's key is used for both Viewer and Administrator (acceptance a). A private JWK stored as a string secret is not used.
 
-- `mise run console:standard-key:put -- --boundary <boundary>` creates the key in its own memory and uploads it with the Cloudflare API. It does not write the key to a file or print it, and the key never passes through CI or logs. A person runs it, only from a local machine.
-- The binding name is `STANDARD_KEY_<first 8 bytes of the kid in hex>`, derived from the kid (the boundary name is not part of it). The tool refuses an existing name. A new key always gets a different name.
-- The Worker reads the vars `STANDARD_CURRENT_KEYS` (boundary -> name and kid of the current key) and `STANDARD_PUBLIC_JWKS` (boundary -> public keys, at most old and new). If either is empty or broken, if a current kid is missing from its boundary's public keys, or if one key appears in two boundaries, every route returns `500 server_misconfigured`. Before signing it checks the boundary's binding (a `CryptoKey`, non-extractable, `sign` only, `exportKey` fails), and it verifies each signed JWT with the public key in the vars. If anything does not match, issuing for that boundary returns `503 signing_unavailable`. Each boundary's issuer JWKS serves only that boundary's public keys from the vars.
+- `mise run console:key:put -- --boundary <boundary>` creates the key in its own memory and uploads it with the Cloudflare API. It does not write the key to a file or print it, and the key never passes through CI or logs. A person runs it, only from a local machine. wrangler has no command to upload a `secret_key`.
+- The binding name is `CONSOLE_KEY_<first 8 bytes of the kid in hex>`, derived from the kid (the boundary name is not part of it). The tool refuses an existing name. A new key always gets a different name.
+- The Worker reads the vars `CONSOLE_CURRENT_KEYS` (boundary -> name and kid of the current key) and `CONSOLE_PUBLIC_JWKS` (boundary -> public keys, at most old and new). If either is empty or broken, if a current kid is missing from its boundary's public keys, or if one key appears in two boundaries, every route returns `500 server_misconfigured`. Before signing it checks the boundary's binding (a `CryptoKey`, non-extractable, `sign` only, `exportKey` fails), checks that the tier of the team in the tag matches the tier of the role ARN's path, and verifies each signed JWT with the public key in the vars. If anything does not match, issuing for that boundary returns `503 signing_unavailable`. Each boundary's issuer JWKS serves only that boundary's public keys from the vars.
 - Until the keys are uploaded (while the vars are empty), every route returns `500`. For the first setup, deploy the Worker, upload the keys and the CSRF key, then set the vars and deploy again.
-- The CSRF key `CONSOLE_CSRF_KEY` stays a `secret_text`. `mise run console:secrets:standard -- --yes` creates 32 random bytes locally and uploads them (no file, not printed). After recreating it, open forms need to be reloaded.
-- Tokens: for `AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN`, use a token that can write only the Standard Worker, separate from the Admin token (without it, the `wrangler login` OAuth token is used, in memory only). The tools do not read the Admin variables. Even though the key cannot be extracted, anyone who can change the Worker's code or secrets can sign any JWT.
+- The CSRF key `CONSOLE_CSRF_KEY` stays a `secret_text`. `mise run console:secrets -- --yes` creates 32 random bytes locally and uploads them (no file, not printed). After recreating it, open forms need to be reloaded.
+- Tokens: for `AWSBRIDGE_CONSOLE_CF_API_TOKEN`, use a token that can write only the console Worker (no zone permissions) (without it, the `wrangler login` OAuth token is used, in memory only). **Only people allowed to issue Administrator deploy the Worker and operate the keys** (acceptance b). Even though the key cannot be extracted, anyone who can change the Worker's code or secrets can sign any JWT.
+- Stopping: setting the var `LOGIN_DISABLED` to `true` stops new issuance for everything; setting `ADMIN_LOGIN_DISABLED` to `true` stops it only for teams of the Admin tier (both fail closed: any value other than `false`, `0`, empty, or unset stops). Sessions already issued are not stopped (revoke). The age limit of the Access JWT for teams of the Admin tier is the var `ADMIN_ACCESS_MAX_AGE_SECONDS` (default `900`).
 - Update paths: in a development account we confirmed that a `secret_key` binding survives `wrangler deploy`, `wrangler secret put` / `wrangler secret bulk` / `wrangler secret delete` on other secrets, and `wrangler versions secret put / bulk` followed by `versions deploy` (PoC X1-(h)). Managing the Worker's bindings from the dashboard or Terraform was not measured, so do not use those paths.
-- Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_STANDARD_CF_ACCOUNT_ID` (or `account_id` in the wrangler config), `AWSBRIDGE_CONSOLE_STANDARD_CF_API_TOKEN` (optional), `AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG` (default `wrangler.console-standard.jsonc`), `AWSBRIDGE_CONSOLE_STANDARD_ACCESS_TOKEN` (optional; the Access token used for the key-check in `check`).
+- Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID` (or `account_id` in the wrangler config), `AWSBRIDGE_CONSOLE_CF_API_TOKEN` (optional), `AWSBRIDGE_CONSOLE_WRANGLER_CONFIG` (default `wrangler.console.jsonc`), `AWSBRIDGE_CONSOLE_ACCESS_TOKEN` (optional; the Access token used for the key-check in `check`; with `--team <team>` it also opens on the path of a team of the Admin tier).
 
-Checking the bundle and running locally (neither deploys; run `mise run console:config:generate` first. The wrangler config is `AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG`, default `wrangler.console-standard.jsonc`; the MCP-side `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` are not read):
+Checking the bundle and running locally (neither deploys; run `mise run console:config:generate` first. The wrangler config is `AWSBRIDGE_CONSOLE_WRANGLER_CONFIG`, default `wrangler.console.jsonc`; the MCP-side `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` are not read):
 
 ```bash
-mise run console:build:standard   # wrangler deploy --dry-run --outdir dist/console-standard (bundles even while the key vars are empty)
-mise run console:dev              # wrangler dev (local use; a secret_key binding cannot be created locally, so every route returns 500 while the key vars are empty)
+mise run console:build   # wrangler deploy --dry-run --outdir dist/console (bundles even while the key vars are empty)
+mise run console:dev     # wrangler dev (local use; a secret_key binding cannot be created locally, so every route returns 500 while the key vars are empty)
 # Deploy by hand after you approve it (check the routes and vars first)
-#   e.g. AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-standard.jsonc AWSBRIDGE_WRANGLER_ENV= AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy bash scripts/wrangler.sh deploy
+#   e.g. AWSBRIDGE_WRANGLER_CONFIG=wrangler.console.jsonc AWSBRIDGE_WRANGLER_ENV= AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy bash scripts/wrangler.sh deploy
 ```
 
 First upload (per boundary):
 
 ```bash
-mise run console:standard-key:put -- --boundary managed            # only shows what it would do (no API calls)
-mise run console:standard-key:put -- --boundary managed --yes      # creates the key and uploads it as a secret_key; prints the name, kid, public key, and the vars to set next
+mise run console:key:put -- --boundary managed            # only shows what it would do (no API calls)
+mise run console:key:put -- --boundary managed --yes      # creates the key and uploads it as a secret_key; prints the name, kid, public key, and the vars to set next
 # put reads the vars in the wrangler config and prints them with only this boundary replaced.
-# Before moving to the next boundary, write the printed STANDARD_PUBLIC_JWKS and STANDARD_CURRENT_KEYS into the vars of the wrangler config
-# (if you skip this, the previous boundary is dropped from the next output)
-mise run console:standard-key:put -- --boundary partner:partner-x --yes
+# Before moving to the next boundary, write the printed CONSOLE_PUBLIC_JWKS and CONSOLE_CURRENT_KEYS into the vars of the wrangler config
+mise run console:key:put -- --boundary partner:partner-x --yes
 # again, write the printed vars into the wrangler config
-mise run console:secrets:standard -- --yes                         # the CSRF key (secret_text)
+mise run console:secrets -- --yes                         # the CSRF key (secret_text)
 # once the vars cover every boundary, deploy
-mise run console:standard-key:check     # per boundary: binding type, discovery and JWKS, key-check (non-extractable, exportKey fails, self-verification)
+mise run console:key:check     # per boundary: binding type, discovery and JWKS, key-check (non-extractable, exportKey fails, self-verification)
 ```
 
-Rotation (per boundary; every 90 days or less; always rotate and remove the old kid if a compromise is suspected):
+Rotation (per boundary; every 90 days or less; always rotate and remove the old kid if a compromise is suspected; one key, so it affects both Viewer and Administrator):
 
 ```bash
-mise run console:standard-key:put -- --boundary managed --yes      # 1. upload a new key under a new name
-# 2. set that boundary in vars STANDARD_PUBLIC_JWKS to the old and new keys and deploy (both in the JWKS)
+mise run console:key:put -- --boundary managed --yes      # 1. upload a new key under a new name
+# 2. set that boundary in vars CONSOLE_PUBLIC_JWKS to the old and new keys and deploy (both in the JWKS)
 # -- wait at least 1 hour (24 hours to be safe): until the STS JWKS cache expires --
-# 3. set that boundary in vars STANDARD_CURRENT_KEYS to the new key, deploy, and run mise run console:standard-key:check
-# 4. wait longer than the JWT lifetime (5 minutes), remove the old public key from STANDARD_PUBLIC_JWKS, and deploy
-mise run console:standard-key:retire -- --binding STANDARD_KEY_<old key> --yes   # 5. delete the old key (refuses current keys, keys still in the vars or JWKS, and the CSRF key)
+# 3. set that boundary in vars CONSOLE_CURRENT_KEYS to the new key, deploy, and run mise run console:key:check
+# 4. wait longer than the JWT lifetime (5 minutes), remove the old public key from CONSOLE_PUBLIC_JWKS, and deploy
+mise run console:key:retire -- --binding CONSOLE_KEY_<old key> --yes   # 5. delete the old key (refuses current keys, keys still in the vars or JWKS, and the CSRF key)
 ```
 
-## Admin signing key for console login
+Order for deploying Administrator (**an example that has not been run yet**; to be confirmed in the downstream production rollout): add the teams of the Admin tier (Access applications with a short session) and the role to the config, run `mise run console:config:generate`, deploy the Worker, and then create the Administrator role in a **separate stack** from the Viewer stack (such as `awsbridge-console-kind-default`), from the same kind template (the generated `kind.<kind>.yaml`). The Viewer stack can still be updated while Administrator is stopped, and aborting takes a single stack deletion. Conditions:
 
-The Admin Worker for console login (`wrangler.console-admin.jsonc`) signs the JWT it passes to STS with a Workers binding of type `secret_key` (a non-extractable `CryptoKey`; RSASSA-PKCS1-v1_5 / SHA-256, usages `sign` only). It is a separate Worker from the Standard one, with its own issuer, key, and host.
-
-- `mise run console:admin-key:put` creates the key in its own memory and uploads it with the Cloudflare API. It does not write the key to a file or print it, and the key never passes through CI or logs. A person runs it, only from a local machine. wrangler has no command to upload a `secret_key`.
-- The binding name is `ADMIN_KEY_<first 8 bytes of the kid in hex>`, derived from the kid. Uploading to an existing name replaces the current key at once, so the tool refuses an existing name. A new key always gets a different name.
-- The Worker reads the vars `ADMIN_CURRENT_KEY` (name and kid of the current key) and `ADMIN_PUBLIC_JWKS` (public keys, at most old and new). Before signing it checks the binding (a `CryptoKey`, non-extractable, `sign` only, `exportKey` fails), and it verifies each signed JWT with the public key in the vars. If anything does not match, it does not issue and returns `503 signing_unavailable`. The same Worker serves the Admin issuer's discovery document and JWKS under `/admin` on the Admin issuer host, which is separate from the Standard issuer host and the portal hosts.
-- Tokens: for `AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN`, use a token that can write only the Admin Worker, separate from the token used for the Standard Worker's deployments and secrets (without it, the `wrangler login` OAuth token is used, in memory only). Even though the key cannot be extracted, anyone who can change the Worker's code or secrets can sign any JWT. Keep the Cloudflare account permissions narrow, and deploy the Admin Worker with a separate token from Standard, with an approval step.
-- The CSRF key `CONSOLE_CSRF_KEY` is a `secret_text`. `mise run console:secrets:admin -- --yes` creates 32 random bytes locally and uploads them to the Admin Worker (it does not write them to a file or print them). Each run creates a new value, so it differs from the Standard Worker's CSRF key. It uses the same Admin variables (token, account ID, API base) as the signing key tool and does not read the Standard variables. Recreating it means open forms must be reopened.
-- Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_ADMIN_CF_ACCOUNT_ID` (or `account_id` in the wrangler config), `AWSBRIDGE_CONSOLE_ADMIN_CF_API_TOKEN` (optional), `AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG` (default `wrangler.console-admin.jsonc`), `AWSBRIDGE_CONSOLE_ADMIN_ACCESS_TOKEN` (optional; the Access token used for the key-check in `check`).
-
-Order for the first deployment (**an example that has not been run yet**; to be confirmed in ②). The decided order is "key -> Worker -> provider": publish the Admin issuer (discovery and JWKS) before you deploy the Admin provider (`docs/specs/console-login-admin.md` §2.2).
-
-1. Prepare: generate the artifacts from the config (`mise run console:config:generate`; `worker.admin.json`) and create the Access applications on the Admin portal host (entry and teams; see the Cookie Path section). A downstream repository writes the routes and vars (`ACCESS_TEAM_DOMAIN`, `ACCESS_MAX_AGE_SECONDS`, and so on) in its own `wrangler.<name>-console-admin.jsonc`. Leave the signing key vars (`ADMIN_CURRENT_KEY`, `ADMIN_PUBLIC_JWKS`) empty.
-2. Deploy the Admin Worker. The CSRF key is not there yet, so the team paths and the issuer documents all return `500 server_misconfigured` (after the CSRF key is uploaded, while the key vars are still empty, issuing returns `503 signing_unavailable` and the JWKS returns 404). This creates the Worker that the key and the secret are uploaded to. Whether a key can be uploaded before the Worker exists has not been checked.
-3. Upload the CSRF key and the signing key (commands below).
-4. Put the `ADMIN_PUBLIC_JWKS` and `ADMIN_CURRENT_KEY` printed by `put` into the vars of the wrangler config and deploy again.
-5. Run `mise run console:admin-key:check` to check the binding type, the Admin issuer's discovery and JWKS, and the key-check. IAM reads the discovery document when it creates a provider, so if Access covers the Admin issuer host in your environment, put the two paths (discovery and JWKS) behind an Access Bypass (see the notes in `wrangler.console-admin.jsonc`).
-6. After you confirm the Admin issuer is published, pass `AdminIssuerHost` to the base stack to deploy the Admin provider (see the base section), then deploy the Administrator role. In the personal environment of stage 2, create the Administrator role in a **separate stack** from the Viewer stack (such as `awsbridge-console-kind-default`), from the same kind template (the generated `kind.<kind>.yaml`). This is the shape used in G2-A: the Viewer stack can still be updated while Admin is stopped, and aborting takes a single stack deletion. Conditions:
-   - Give the stack a name that does not match the pattern `awsbridge-console-kind-<kind>` (for example `awsbridge-console-admin-default`). A fake kind name could match the SCP and CI conditions (the name pattern of kind stacks).
-   - In the Admin stack, set only `AdministratorTeams` and leave the other team parameters empty. **In the Viewer stack, keep `AdministratorTeams` empty** (do not create the same role name from two stacks).
-   - Look at the creation change set and confirm it contains **only an `Add` of `AdministratorRole`** before you execute it.
-   - Right after creation and before the first issuance, confirm with `aws iam get-role` that the trust policy names only the Admin provider, and with `aws iam list-attached-role-policies` that the Admin guard policy is attached (the commands in the Administrator inventory section).
-   - Whenever you update the Viewer stack, look at the change set; **if `AdministratorRole` appears, do not execute it** (the Viewer stack's `AdministratorTeams` is no longer empty).
-   - To abort, **delete the Admin stack, and remove Administrator from the config and regenerate** (so that the artifacts and the portal list do not keep Administrator).
-
-```bash
-# 2. deploy by hand after you approve it (check the routes and vars first)
-#   e.g. AWSBRIDGE_WRANGLER_CONFIG=wrangler.console-admin.jsonc AWSBRIDGE_WRANGLER_ENV= AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy bash scripts/wrangler.sh deploy
-mise run console:secrets:admin              # 3. only shows what it would do (no API calls)
-mise run console:secrets:admin -- --yes     #    uploads the CSRF key (secret_text)
-mise run console:admin-key:put              #    only shows what it would do (no API calls)
-mise run console:admin-key:put -- --yes     #    creates the key and uploads it as a secret_key; prints the name, kid, public key, and the vars to set next
-# 4. put the printed ADMIN_PUBLIC_JWKS and ADMIN_CURRENT_KEY into the vars of the wrangler config and deploy
-mise run console:admin-key:check            # 5. binding type, discovery and JWKS, key-check (non-extractable, exportKey fails, self-verification)
-# 6. pass AdminIssuerHost to the base stack (only in accounts that get Administrator), then deploy the Administrator role
-```
-
-Rotation (every 90 days or less; always rotate and remove the old kid if a compromise is suspected):
-
-```bash
-mise run console:admin-key:put -- --yes     # 1. upload a new key under a new name
-# 2. set vars ADMIN_PUBLIC_JWKS to the old and new keys and deploy (both in the JWKS)
-# -- wait at least 1 hour (24 hours to be safe): until the STS JWKS cache expires (its length is not published and was not measured) --
-# 3. set vars ADMIN_CURRENT_KEY to the new key, deploy, and run mise run console:admin-key:check
-# 4. wait longer than the JWT lifetime (5 minutes), remove the old public key from ADMIN_PUBLIC_JWKS, and deploy
-mise run console:admin-key:retire -- --binding ADMIN_KEY_<old key> --yes   # 5. delete the old key (refuses the current key and keys still in the JWKS)
-```
-
-To stop issuing, remove the kid from the JWKS and deploy, or set the var `LOGIN_DISABLED` to `true`.
+- Give the stack a name that does not match the pattern `awsbridge-console-kind-<kind>` (for example `awsbridge-console-admin-default`). A fake kind name could match the SCP and CI conditions (the name pattern of kind stacks).
+- In the Admin stack, set only `AdministratorTeams` and leave the other team parameters empty. **In the Viewer stack, keep `AdministratorTeams` empty** (do not create the same role name from two stacks). The `AllowedPattern` of `AdministratorTeams` accepts only the teams of the Admin tier assigned to Administrator in that kind (a Standard team cannot be passed).
+- Look at the creation change set and confirm it contains **only an `Add` of `AdministratorRole`** before you execute it.
+- Right after creation and before the first issuance, confirm with `aws iam get-role` that the trust policy names the console provider and that its team condition holds only teams of the Admin tier, and with `aws iam list-attached-role-policies` that the Admin guard policy is attached, and run `mise run console:inspect` (the commands in the Administrator inventory section).
+- Whenever you update the Viewer stack, look at the change set; **if `AdministratorRole` appears, do not execute it** (the Viewer stack's `AdministratorTeams` is no longer empty).
+- To abort, **delete the Admin stack, and remove Administrator from the config and regenerate** (so that the artifacts and the portal list do not keep Administrator).
 
 ## Stopping one person for console login
 
@@ -452,7 +438,7 @@ To stop a single person, the person's SourceIdentity (email by default) is writt
 
 - The stop list is a file in the same form as the inspect tool's `--stops` (`{ "sourceIdentities": ["..."] }`), and it is the source of truth for who is stopped. **It contains email addresses, so keep it in `.secrets/` or in your downstream repository, and never commit it to the public repository.**
 - `console:stop:apply` aligns the reserved policy on every target role with the list in the file. The targets are the configured roles that exist in the account, roles under the `/awsbridge-console/` path, and roles outside the path that are not in the config but trust a console provider (the plan marks them as roles not in the config, with the source `unlisted`).
-- Without `--yes` it only shows the plan. It still reads IAM and calls `sts get-caller-identity` to compute the difference from the current state (unlike the Admin key tool, where no API is called without `--yes`). The only writes are `iam put-role-policy` and `iam delete-role-policy`.
+- Without `--yes` it only shows the plan. It still reads IAM and calls `sts get-caller-identity` to compute the difference from the current state (unlike the key tool, where no API is called without `--yes`). The only writes are `iam put-role-policy` and `iam delete-role-policy`.
 - Without `--allow-remove` it only adds: each role's reserved policy becomes the union of its current values and the values in the file. Values on a role that are not in the file are kept, and only their count is shown as extra (`EXTRA`). Extra values alone leave the exit code at 0. A run that has nothing to add and only values to remove (a release only) writes nothing and exits with 2 unless `--allow-remove` is given.
 - With `--allow-remove` it makes every role match the file (releasing a stop). It finishes adding on every role before removing, so a failure on the removing side never blocks the adding side. The tool prints the release conditions from §6.3 (do not remove before the role's `MaxSessionDuration` has passed, the cause is removed, old keys are gone, and new issuance is confirmed impossible). The tool cannot check them, so a person does. It also removes values from roles that are not in the config.
 - In both cases it never halts the whole run for one role. Roles whose reserved policy holds a document that is not a stop document, roles whose inline policies would exceed 10,240 characters in total, and roles where the write fails are reported and left unwritten; the other roles are still written, and the tool exits with 1.
@@ -472,7 +458,7 @@ Exit codes: 0 done (or nothing to change; extra values alone still give 0) / 1 s
 
 ## Reconciling console logins (issue records x CloudTrail)
 
-`mise run console:reconcile` matches the console Workers' issue records (the structured log `console_issue`) against the CloudTrail `AssumeRoleWithWebIdentity` events of the profile's account, using the JWT `jti` (= `requestParameters.webIdentityTokenId`). It reports **assumptions with no issue record** (a forged JWT, or issuance outside the Worker) as errors. Reconciliation is detection material, not proof of completeness (a compromised Worker can also write fake records). **The issue records are written by the Admin Worker itself. Against anyone who can write to the Admin Worker, the reconciliation is not independent detection** (an accepted limit).
+`mise run console:reconcile` matches the console Worker's issue records (the structured log `console_issue`) against the CloudTrail `AssumeRoleWithWebIdentity` events of the profile's account, using the JWT `jti` (= `requestParameters.webIdentityTokenId`). It reports **assumptions with no issue record** (a forged JWT, or issuance outside the Worker) as errors. Reconciliation is detection material, not proof of completeness (a compromised Worker can also write fake records). **The issue records are written by the console Worker itself. Against anyone who can write to the console Worker (including people who handle only Viewer), the reconciliation is not independent detection** (an accepted limit; see the acceptance section at the top).
 
 - One account per run (`--profile` is required). It reads CloudTrail in **all enabled regions** of the account (`account list-regions`; `ec2 describe-regions` if that is not allowed). A region it cannot read is an error.
 - It runs only four read-only aws commands: `sts get-caller-identity`, `account list-regions`, `ec2 describe-regions`, `cloudtrail lookup-events`. The profile needs `sts:GetCallerIdentity`, `account:ListRegions` (or `ec2:DescribeRegions`), and `cloudtrail:LookupEvents`.
@@ -485,12 +471,13 @@ Exit codes: 0 done (or nothing to change; extra values alone still give 0) / 1 s
 - Retention window: the default lookback is 6 days (shorter than the 7-day retention). Assumptions older than the record retention that have no record are counted separately as `unverifiable`. A lookback longer than the retention is a warning (`--retention-days` changes the retention).
 - Truncated record lines (`$cloudflare.truncated` and similar) and unreadable lines are errors; only their positions are printed.
 - Time check: for a matched pair, if the assumption happens later than the issue time (`jwt.iat`, or the record time when absent) by more than "JWT lifetime 300 s + clock skew", it is reported as `assume_time_gap` (error, exit code 1). An assumption earlier than the issue time by more than the clock skew gets the same finding (a clock anomaly, or a record fitted to a forged JWT; the direction is shown as `+NNNs` / `-NNNs` in the detail). The default clock skew is 60 s and `--clock-skew-seconds <n>` changes it. The legitimate differences measured in stage 2 fell within this range, so it was raised from a warning to an error (cto decision, G2-A condition c5). The line `time from issue: standard n=<count> min <s>s max <s>s, admin ...` shows, per tier, the count, minimum, and maximum of the time from issue to assumption for matched pairs (kept as a record for revisiting the threshold).
-- Identity check: only when both the issue record's user (the value used as SourceIdentity) and the CloudTrail SourceIdentity are present, they are compared in their masked form (`a***@***.com`); a difference is `identity_mismatch` (error, exit code 1). Issue records keep the email masked, so the comparison is a weak match (only the first character and the trailing domain): **it can only catch a different domain or a different first letter**, and it cannot tell apart another person with the same first letter and domain (a match does not prove it is the same person). Pairs where either side is missing are not skipped silently: the counts are printed as `identity: compared <n>, not compared <m> (admin <k>)` and as `identity_not_compared` (note). For the Administrator tier (roles of the Admin tier: a pair where the record's tier, the role path `/awsbridge-console/admin/`, or the Admin issuer says Admin), each pair that could not be compared is `identity_not_compared_admin` (error, exit code 1). This tier covers every role of the Admin tier, not only the Administrator: an assumption of a weaker Admin-tier role that cannot be compared is also an error.
+- Identity check: only when both the issue record's user (the value used as SourceIdentity) and the CloudTrail SourceIdentity are present, they are compared in their masked form (`a***@***.com`); a difference is `identity_mismatch` (error, exit code 1). Issue records keep the email masked, so the comparison is a weak match (only the first character and the trailing domain): **it can only catch a different domain or a different first letter**, and it cannot tell apart another person with the same first letter and domain (a match does not prove it is the same person). Pairs where either side is missing are not skipped silently: the counts are printed as `identity: compared <n>, not compared <m> (admin <k>)` and as `identity_not_compared` (note). For the Administrator tier (roles of the Admin tier: a pair where the record's tier, the tier of the record's team, or the role path `/awsbridge-console/admin/` says Admin; the provider is shared by both tiers and does not decide the tier), each pair that could not be compared is `identity_not_compared_admin` (error, exit code 1). This tier covers every role of the Admin tier, not only the Administrator: an assumption of a weaker Admin-tier role that cannot be compared is also an error.
+- Tier checks: a record whose tier differs from the tier of the role path is `tier_mismatch`; a record whose team has a tier in the config that differs from the record's tier or the role path's tier is `team_tier_mismatch`; a record of a team that is not in the config is `team_not_in_config` (all errors).
 - Administrator-tier issuance: `admin issues: <n> (<time> <result>, ...)` shows the number of Admin-tier issue records in the window read, with each time (UTC) and result. In the daily reconciliation, check that there is no issuance you do not recognize. There is no immediate notification of Admin issuance (handled in stage 3).
 - Confirmed interval: per account, the end of the "confirmed interval" is kept in a state file (`--state <file>`, default `.secrets/console-reconcile-state.json`; `.secrets/` is gitignored). If this run starts later than that end (an interval nobody read), it is `coverage_gap` (error, exit code 1). With no file (first run) there is no gap, and the output says `coverage: first run`. The file holds only the account ID and a time; never a token, email, or `jti`. **Only a run with exit code 0 advances the interval** (to "this run's end minus the propagation lag"): advancing on a run with errors or unverifiable assumptions would move them out of the next run's range and bury them. A corrupt state file is not treated as a first run; the tool refuses to run (exit code 2). To clear a gap, investigate and then re-run with `--since` set at or before the previous end (delete the state file only when you decide to accept the gap).
 - The output is redacted (`jti` shows its first 8 characters, no email, account IDs show the last 4 digits). The summary shows the window read, the number of regions, the unverifiable count, truncated lines, and where the records came from (`source: api` or `file`).
 - Exit codes: `0` no errors / `1` errors, or one or more unverifiable assumptions (even with zero errors) / `2` could not run (input, aws, or API failure).
-- Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_LOGS_TOKEN` (API token for `--logs-api`; environment variable only), `AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID` (Cloudflare account ID), `AWSBRIDGE_CONSOLE_LOGS_WORKERS` (optional; Worker names, default `awsbridge-console-standard,awsbridge-console-admin`), `AWSBRIDGE_CONSOLE_CONFIG` (config file).
+- Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_LOGS_TOKEN` (API token for `--logs-api`; environment variable only), `AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID` (Cloudflare account ID), `AWSBRIDGE_CONSOLE_LOGS_WORKERS` (optional; Worker names, default `awsbridge-console`), `AWSBRIDGE_CONSOLE_CONFIG` (config file).
 - Token: a read-only token is preferable, but according to the Cloudflare API specification `telemetry/query` accepts only the "Workers Observability Write" permission. Whether a Read-only token works is to be checked in stage 2. Limit the token to Workers Observability; do not give it permission to write Workers or secrets.
 
 ```bash
@@ -503,7 +490,7 @@ Operations:
 
 - **Run the reconciliation every day, whether or not an Administrator issued anything.** Even if you cannot run it on some day, no verification gap opens as long as you run it within 6 days. Issue records are kept for 7 days, so **an issuance not reconciled within 7 days cannot be verified later**. The tool reports the skipped interval as `coverage_gap` (error, exit code 1).
 - **A run with errors does not advance the interval.** Once you have investigated the errors and settled them, re-run with `--since` set at or before the previous end, which advances the interval. Anything past the 7-day record retention can no longer be verified. If you leave it, `coverage_gap` errors pile up from the next run on.
-- **When `assume_time_gap`, `identity_mismatch`, or `identity_not_compared_admin` appears**: stop issuing with the stop switch (set the var `LOGIN_DISABLED` to `true`; on the Admin Worker for an Admin issuance, on the Standard Worker for a Standard one), investigate the issuance and the assumption (the issue record and the CloudTrail event), and escalate to your technical decision maker. While an error remains, the interval does not advance. Issue records (Workers Logs) are kept for 7 days, and after that the issuance can no longer be investigated, so do not leave it.
+- **When `assume_time_gap`, `identity_mismatch`, or `identity_not_compared_admin` appears**: stop issuing with the stop switch (set the var `ADMIN_LOGIN_DISABLED` to `true` for an Admin issuance, otherwise `LOGIN_DISABLED`), investigate the issuance and the assumption (the issue record and the CloudTrail event), and escalate to your technical decision maker. While an error remains, the interval does not advance. Issue records (Workers Logs) are kept for 7 days, and after that the issuance can no longer be investigated, so do not leave it.
 - **Make `--since` at least 5 minutes longer than your run interval** (the confirmed interval ends at "this run's end minus the propagation lag, 300 s by default", so an exactly matching length leaves a gap). Example: if you run it every day, keep the default of 6 days.
 - The daily run is done outside awsbridge (for example an agent over MCP). awsbridge has no scheduler. Notifications are also outside awsbridge; the operator decides how to do it.
 - At the start of stage 2, check against real data: the shape of the Cloudflare API response (`events`, the `$metadata.id` cursor, what `count` means, whether the truncation flag is `$workers.truncated` or `$cloudflare.truncated`) and the CloudTrail `AssumeRoleWithWebIdentity` field names (`requestParameters.webIdentityTokenId`, `userIdentity.identityProvider`, and so on). If they differ, fix `scripts/console/reconcile-cf.ts`, `src/console/reconcile-input.ts`, and the fixtures.
@@ -512,12 +499,12 @@ Operations:
 
 `mise run console:exposure-check` fetches each console issuer's `/.well-known/openid-configuration` and `jwks.json` from the outside and compares them with the public keys in your configuration. The AWS IAM OIDC providers trust the JWKS served at the issuer host, so if a Route or similar replaces the response of that host, a forged JWT (an Administrator, for example) could be accepted. This is the daily check for "what awsbridge serves is what it should serve". Together with `console:reconcile` it makes the two daily checks: (i) this comparison from the outside, (ii) the reconciliation above.
 
-- **Targets**: every boundary issuer of Standard, and the Admin issuer. If there is no Admin config (no `worker.admin.json`), it checks Standard only and says so. **Without `worker.admin.json` the Admin check is skipped, and the exit code does not tell this apart from a full match** (read the output).
-- **What it compares with**: the public keys in the vars of the wrangler config (`STANDARD_PUBLIC_JWKS` / `ADMIN_PUBLIC_JWKS`, the same files the `console:*-key:check` tools read) and the issuer URLs in the generated `worker.standard.json` / `worker.admin.json`. It does not only compare `kid`: it compares the key contents (`kty`, `n`, `e`, `alg`, `use`, and any extra member), the `issuer` and `jwks_uri` of the discovery document, and the HTTP status (200 only).
+- **Targets**: every boundary issuer (the same issuer for Viewer and Administrator).
+- **What it compares with**: the public keys in the vars of the wrangler config (`CONSOLE_PUBLIC_JWKS`, the same file `console:key:check` reads) and the boundary issuer URLs in the generated `worker.json`. It does not only compare `kid`: it compares the key contents (`kty`, `n`, `e`, `alg`, `use`, and any extra member), the `issuer` and `jwks_uri` of the discovery document, and the HTTP status (200 only).
 - **What is an error** (it says "match" only when everything matches): a status other than 200, a **redirect (not followed; it is an error)**, a fetch failure or timeout, a response that is not JSON or has the wrong shape, an `issuer` / `jwks_uri` that differs, a key that is missing, **an extra key**, a key whose contents differ, a duplicate `kid`.
 - **How it fetches**: so that the local DNS (including its negative cache) cannot affect the result, it resolves the host with public DNS over HTTPS (`https://cloudflare-dns.com/dns-query`, A and AAAA), connects to that IP over TLS, and sends the original host name as the SNI and `Host` (the certificate is verified against the host name). One GET per document, no retry, 10 s timeout. It uses **no Cloudflare or AWS token** and sends no `Authorization` header: it is public HTTP GETs only.
 - **Output and exit codes**: `[OK]` / `[NG]` lines per issuer and a conclusion. Responses' values (`n`, the `kid` of a foreign key) are not printed; account IDs and emails are redacted. `0` all match / `1` some mismatch / `2` could not run (config unreadable, no expected keys, and so on).
-- Variables (the same as the key tools; set them in `mise.local.toml`): `AWSBRIDGE_CONSOLE_OUT_DIR` (default `.generated/console`), `AWSBRIDGE_CONSOLE_STANDARD_WRANGLER_CONFIG` (default `wrangler.console-standard.jsonc`), `AWSBRIDGE_CONSOLE_ADMIN_WRANGLER_CONFIG` (default `wrangler.console-admin.jsonc`; read only when `worker.admin.json` exists). Run `mise run console:config:generate` first.
+- Variables (the same as the key tools; set them in `mise.local.toml`): `AWSBRIDGE_CONSOLE_OUT_DIR` (default `.generated/console`), `AWSBRIDGE_CONSOLE_WRANGLER_CONFIG` (default `wrangler.console.jsonc`). Run `mise run console:config:generate` first.
 
 ```bash
 mise run console:exposure-check
@@ -525,7 +512,7 @@ mise run console:exposure-check
 
 Limits and what the zone owner keeps:
 
-- **Watching the zone's configuration is the zone owner's operation.** awsbridge does not hold a token that can read the zone. What to watch: **there is no Route that hits the four hosts (the portal and the issuer, for Admin and for Standard)**. Count the Routes that hit them through a wildcard such as `*.<zone>/*` too. Example of how to check: use a token with Zone Read or similar on the spot and read **all pages** of `GET /zones/{zone_id}/workers/routes`. **If the list cannot be read, or the read stops partway, do not treat it as 0 Routes.** awsbridge does not keep a token for this at all times. When you change a Custom Domain, check once with the same token you used for the change, before you delete that token.
+- **Watching the zone's configuration is the zone owner's operation.** awsbridge does not hold a token that can read the zone. What to watch: **there is no Route that hits the two console hosts (the portal and the issuer)**. Count the Routes that hit them through a wildcard such as `*.<zone>/*` too. Example of how to check: use a token with Zone Read or similar on the spot and read **all pages** of `GET /zones/{zone_id}/workers/routes`. **If the list cannot be read, or the read stops partway, do not treat it as 0 Routes.** awsbridge does not keep a token for this at all times. When you change a Custom Domain, check once with the same token you used for the change, before you delete that token.
 - **The comparison from the outside is detection, not prevention.** A replacement that remains is found by the next check, but something added and removed between two checks is not found. If a Route is laid over the portal host, an issuance as a logged-in user may be possible, and that issuance looks normal in the reconciliation (a guess; not measured).
 
 ## Inventory of what an Administrator left behind (console login)
@@ -541,7 +528,7 @@ An Administrator has full rights in the target account, so it can leave entry po
    aws iam get-role-policy --role-name FederatedAwsBridgeAdministrator --policy-name <name> --profile <p>
    ```
 
-2. **Providers**: check that the OIDC providers are only the MCP one and the console ones (the Standard and Admin issuers). Compare the URL, client IDs, and tags with what the base stack creates. Check SAML providers too.
+2. **Providers**: check that the OIDC providers are only the MCP one and the console ones (the boundary issuer; one for Viewer and Administrator). Compare the URL, client IDs, and tags with what the base stack creates. Check SAML providers too.
 
    ```sh
    aws iam list-open-id-connect-providers --profile <p>
