@@ -63,15 +63,15 @@ describe("README のプロファイル一覧（alias でバンドル）", () => 
 });
 
 describe("README の受容する限界（P2（B）の設計メモ §8.2。cto の決裁 2026-11-17）", () => {
-  // 冒頭の受容の節: 「## デプロイ」/「## Deployment」より前にあること（目立つ所）
+  // 冒頭の受容の節: 「awsbridge でできること」の直後、「## 上流と下流」/「## Upstream and downstream」より前にあること（目立つ所）
   const top = (f: string, next: string) => {
     const text = read(f);
     const j = text.indexOf(next);
     expect(j, next).toBeGreaterThan(0);
     return text.slice(0, j);
   };
-  it("README_ja.md: 警告の文・受容 a〜e・注記を、デプロイの節より前に載せる", () => {
-    const text = top("README_ja.md", "\n## デプロイ");
+  it("README_ja.md: 警告の文・受容 a〜e・注記を、上流と下流の節より前に載せる", () => {
+    const text = top("README_ja.md", "\n## 上流と下流");
     for (const s of [
       "## コンソールログインを使う前に（受容する限界）",
       "**コンソールの Worker をデプロイできる者と、その secret・依存物に触れる者は、Administrator を配った全アカウントの全権を持ちます。**",
@@ -92,8 +92,8 @@ describe("README の受容する限界（P2（B）の設計メモ §8.2。cto �
     ])
       expect(text, s).toContain(s);
   });
-  it("README.md: the warning, acceptances a-e and the notes come before the Deployment section", () => {
-    const text = top("README.md", "\n## Deployment");
+  it("README.md: the warning, acceptances a-e and the notes come before the Upstream and downstream section", () => {
+    const text = top("README.md", "\n## Upstream and downstream");
     for (const s of [
       "## Before using console login (accepted limits)",
       "**Anyone who can deploy the console Worker, or who can touch its secrets or dependencies, holds full control of every account where Administrator is deployed.**",
@@ -145,15 +145,15 @@ describe("README の受容する限界（P2（B）の設計メモ §8.2。cto �
         expect(text, s).not.toContain(s);
     });
   }
-  it("README_ja.md / README.md: 台帳の限界（cto の決裁 2026-11-17 の c8）を受容の節（デプロイの節より前）に書く", () => {
-    const ja = top("README_ja.md", "\n## デプロイ");
+  it("README_ja.md / README.md: 台帳の限界（cto の決裁 2026-11-17 の c8）を受容の節（上流と下流の節より前）に書く", () => {
+    const ja = top("README_ja.md", "\n## 上流と下流");
     for (const x of [
       "台帳は運用者の取り違えを止める守りで、設定を書ける者への守りではありません",
       "生成物を消して初回の指定（`--ledger-init`）を付ければ外せます",
       "管理外に出たアカウントの古いロールは `mise run console:inspect` でも見えず、守りは台帳だけです",
     ])
       expect(ja, x).toContain(x);
-    const en = top("README.md", "\n## Deployment");
+    const en = top("README.md", "\n## Upstream and downstream");
     for (const x of [
       "The ledger guards against operator mistakes, not against anyone who can write the config",
       "deleting the artifacts and passing the first-run flag (`--ledger-init`) removes it",
@@ -191,7 +191,7 @@ describe("README の受容する限界（P2（B）の設計メモ §8.2。cto �
       "**Always run `mise run console:inspect` right after creating the Administrator role and after changing the team or role settings**",
     );
     expect(read("README_ja.md")).toContain("段 4（Admin の階層を入れる段）でも回します");
-    expect(read("README.md")).toContain("also at stage 4 (the stage that adds the Admin tier)");
+    expect(read("README.md")).toContain("also at step 4 (the step that adds the Admin tier)");
   });
 });
 
@@ -382,7 +382,7 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
   };
 
   it("README_ja.md: 照合（時間・利用者は誤り、Admin の比べ漏れは誤り、除外の件数、Admin の発行、受容、当たったときの扱い）", () => {
-    const text = section(read("README_ja.md"), "## コンソールログインの突き合わせ");
+    const text = section(read("README_ja.md"), "### コンソールログインの突き合わせ", "\n### ");
     for (const s of [
       "`assume_time_gap`（誤り",
       "`identity_mismatch`（誤り",
@@ -403,7 +403,7 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
     expect(text).not.toContain("誤りに上げる予定");
   });
   it("README.md: reconciliation (same points in English)", () => {
-    const text = section(read("README.md"), "## Reconciling console logins");
+    const text = section(read("README.md"), "### Reconciling console logins", "\n### ");
     for (const s of [
       "`assume_time_gap` (error",
       "`identity_mismatch` (error",
@@ -424,7 +424,7 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
     expect(text).not.toContain("then raised to errors");
   });
 
-  it("README_ja.md: L2 は G2-A で実測済み。L2 は Viewer も止める。信頼ポリシーの拒否は CloudFormation の外で、止めている間はロールのスタックを更新しない", () => {
+  it("README_ja.md: L2 は段階 2 の個人の環境で実測済み（内部の呼び名 G2-A は書かない）。L2 は Viewer も止める。信頼ポリシーの拒否は CloudFormation の外で、止めている間はロールのスタックを更新しない", () => {
     const text = section(
       read("README_ja.md"),
       "### 発行を Cloudflare に頼らずに止める（L2 と信頼ポリシーの拒否）",
@@ -432,7 +432,7 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
     for (const s of [
       "**Administrator だけを止める L2 はありません**",
       "プロバイダーの削除（L2）は Viewer も止めます",
-      "G2-A",
+      "下の削除と戻す手順は、段階 2 の個人の環境で",
       "`upstream_auth_failed`",
       "`sts_denied`",
       "作り直したプロバイダーはドリフトが残りません",
@@ -443,8 +443,9 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
     ])
       expect(text, s).toContain(s);
     expect(text).not.toContain("まだ実行していない例");
+    expect(text).not.toContain("G2-A");
   });
-  it("README.md: L2 measured in G2-A; the trust policy Deny is outside CloudFormation", () => {
+  it("README.md: L2 measured in the personal environment of stage 2 (without the internal label); the trust policy Deny is outside CloudFormation", () => {
     const text = section(
       read("README.md"),
       "### Stopping issuance without relying on Cloudflare (L2 and trust policy Deny)",
@@ -452,7 +453,7 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
     for (const s of [
       "**There is no L2 that stops only Administrator**",
       "deleting the provider (L2) also stops Viewer",
-      "G2-A",
+      "The deletion and the restore procedure below were run in the personal environment of stage 2",
       "`upstream_auth_failed`",
       "`sts_denied`",
       "the recreated provider leaves no drift",
@@ -463,10 +464,11 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
     ])
       expect(text, s).toContain(s);
     expect(text).not.toContain("have not been run yet");
+    expect(text).not.toContain("G2-A");
   });
 
   it("README_ja.md / README.md: Administrator を別のスタックで置くときの条件（change set・作成直後の確認・kind-default・中断・スタック名）", () => {
-    const ja = section(read("README_ja.md"), "## コンソールログインの署名鍵");
+    const ja = section(read("README_ja.md"), "### Admin の階層と Administrator を足す", "\n### ");
     for (const s of [
       "`AdministratorRole` の `Add` だけ",
       "aws iam get-role",
@@ -480,7 +482,11 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
       "`mise run console:inspect` を回します",
     ])
       expect(ja, s).toContain(s);
-    const en = section(read("README.md"), "## Console login signing keys");
+    const en = section(
+      read("README.md"),
+      "### Adding the Admin tier and the Administrator role",
+      "\n### ",
+    );
     for (const s of [
       "only an `Add` of `AdministratorRole`",
       "aws iam get-role",
@@ -512,5 +518,127 @@ describe("cto の決裁 G2-A 条件 c5 の文面", () => {
     ])
       expect(spec, s).toContain(s);
     expect(spec).not.toContain("**まず警告**");
+  });
+});
+
+// README の作り直し（#51 の並び）を P2（B）の構成（1 つの Worker・1 つの issuer・1 つのプロバイダー）に合わせたもの
+describe("README の並びと P2（B）の構成", () => {
+  const order = (f: string, hs: string[]) => {
+    const text = read(f);
+    let at = -1;
+    for (const h of hs) {
+      const i = text.indexOf(`\n${h}\n`);
+      expect(i, h).toBeGreaterThan(at);
+      at = i;
+    }
+  };
+  it("README.md: できること → 受容 → 上流と下流 → 構成 → 下流 → デプロイの経路 → MCP → コンソール → 日々の運用 → 停止 → 棚卸し → 移行 → 開発", () =>
+    order("README.md", [
+      "## What awsbridge does",
+      "## Before using console login (accepted limits)",
+      "## Upstream and downstream",
+      "## Architecture",
+      "## Operating in a downstream repository",
+      "## How the Worker is deployed (default route and explicit route)",
+      "## MCP relay setup",
+      "## Console login setup",
+      "## Daily operations",
+      "## Stopping issuance (console login)",
+      "## Inventory of what an Administrator left behind (console login)",
+      "## Migrating an existing MCP deployment",
+      "## Development",
+    ]));
+  it("README_ja.md: 同じ並び", () =>
+    order("README_ja.md", [
+      "## awsbridge でできること",
+      "## コンソールログインを使う前に（受容する限界）",
+      "## 上流と下流",
+      "## 構成",
+      "## 下流リポジトリでの運用",
+      "## Worker のデプロイの経路（既定と明示）",
+      "## MCP の中継のセットアップ",
+      "## コンソールログインのセットアップ",
+      "## 日々の運用",
+      "## 発行を止める（コンソールログイン）",
+      "## コンソールログインの Administrator の残った権限の棚卸し",
+      "## MCP の中継の既存のデプロイの移行",
+      "## 開発",
+    ]));
+
+  for (const f of ["README.md", "README_ja.md"]) {
+    it(`${f}: コンソールのホストは 2 つ（ポータルと issuer）、issuer は /console、生成物は worker.json と display.json`, () => {
+      const text = read(f);
+      for (const s of [
+        "wrangler.console.jsonc",
+        "awsbridge-console.example.com",
+        "awsbridge-oidc-console.example.com/console",
+        "`worker.json`",
+        "`display.json`",
+        "`stacksets.json`",
+        "`access.json`",
+        "wrangler.<name>-console.jsonc",
+        "](docs/console-production-rollout",
+      ])
+        expect(text, s).toContain(s);
+      for (const s of [
+        "awsbridge-admin-console.",
+        "awsbridge-oidc-admin-console.",
+        "wrangler.console-standard.jsonc",
+        "wrangler.<name>-console-admin.jsonc",
+        "display.standard.json",
+        "console:standard-key:",
+        "console:secrets:standard",
+        "console:build:standard",
+        "STANDARD_KEY_",
+        "STANDARD_PUBLIC_JWKS",
+        "STANDARD_CURRENT_KEYS",
+        "AWSBRIDGE_CONSOLE_STANDARD_",
+      ])
+        expect(text, s).not.toContain(s);
+      // Admin の Worker だけにあった vars（今は ADMIN_ACCESS_MAX_AGE_SECONDS）
+      expect(text).not.toMatch(/(?<!ADMIN_)ACCESS_MAX_AGE_SECONDS/);
+      // AUD のファイルの入口は 1 つ（{ teams, entry }）
+      expect(text).toMatch(/"entry": <AUD>/);
+      expect(text).not.toMatch(/"entry": \{ "standard"/);
+    });
+
+    it(`${f}: 初回のデプロイは明示の経路（AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy）、Access のアプリができるまで AWSBRIDGE_ACCESS_AUD は仮の値`, () => {
+      const text = read(f);
+      expect(text).toContain("AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy mise run deploy:worker");
+      expect(text).toContain("AWSBRIDGE_ACCESS_AUD");
+      expect(text).toMatch(/`pending`/);
+    });
+
+    it(`${f}: 内部の呼び名を書かない`, () => {
+      const text = read(f);
+      for (const re of [
+        /G2-/,
+        /②|③/,
+        /\bpt4\b|private-test4/,
+        /X1-\(/,
+        /\bcto\b/i,
+        /\bSol\b/,
+        /\b[KN]\d{1,2}\b/,
+        /\bP2\b/,
+      ])
+        expect(text, String(re)).not.toMatch(re);
+    });
+  }
+
+  it("英日でバッククォートの語の多重集合が一致する（コードブロックの外）", () => {
+    const spans = (p: string) => {
+      let inFence = false;
+      const lines: string[] = [];
+      for (const line of read(p).split("\n")) {
+        if (/^\s*```/.test(line)) inFence = !inFence;
+        else if (!inFence) lines.push(line);
+      }
+      // プレースホルダー（<…>）や日本語を含む語は訳すので比べない
+      return [...lines.join("\n").matchAll(/`([^`\n]+)`/g)]
+        .map((m) => m[1] as string)
+        .filter((s) => !/[<>…]|[^ -~]/.test(s))
+        .sort();
+    };
+    expect(spans("README_ja.md")).toEqual(spans("README.md"));
   });
 });
