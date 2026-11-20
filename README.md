@@ -69,6 +69,44 @@ The setup order for a downstream repository is in "Operating in a downstream rep
 
 The Cloudflare side (Workers) and the AWS side (CloudFormation) are completely separate. Deploying a Worker does not call AWS, and deploying CloudFormation does not call Cloudflare. For each target AWS account, you only need to run CloudFormation. An AWS account trusts an issuer only through its IAM OIDC provider, and each issuer host is served by one Worker.
 
+The whole picture (each flow is detailed below):
+
+```mermaid
+flowchart LR
+  client["MCP client<br/>(for example Claude)"]
+  person["Person<br/>(browser or terminal)"]
+  subgraph cf["Cloudflare"]
+    portal["MCP Server Portal"]
+    accessMcp["Access<br/>(MCP connection host)"]
+    accessConsole["Access<br/>(entry and one application per team)"]
+    mcpWorker["MCP Worker<br/>wrangler.jsonc"]
+    consoleWorker["Console Worker<br/>wrangler.console.jsonc"]
+    logs[("Workers Logs<br/>issue records")]
+  end
+  subgraph aws["Each target AWS account"]
+    sts["STS<br/>AssumeRoleWithWebIdentity"]
+    mcpRoles["OIDC provider and MCP roles<br/>infra/aws/awsbridge.yaml"]
+    consoleRoles["OIDC provider and team roles<br/>infra/aws/console/"]
+    trail[("CloudTrail")]
+  end
+  awsMcp["AWS MCP Server<br/>(calls the AWS APIs of the target account)"]
+  federation["AWS sign-in federation<br/>getSigninToken"]
+  console["AWS Management Console"]
+  client --> portal --> accessMcp --> mcpWorker
+  mcpWorker -- "5-minute JWT" --> sts
+  mcpWorker -- "SigV4" --> awsMcp
+  person --> accessConsole --> consoleWorker
+  consoleWorker -- "5-minute JWT with the team tag" --> sts
+  consoleWorker -- "temporary credentials" --> federation
+  person -. "login URL" .-> console
+  sts --- mcpRoles
+  sts --- consoleRoles
+  sts -. "reads the issuer documents" .-> mcpWorker
+  sts -. "reads the issuer documents" .-> consoleWorker
+  consoleWorker --> logs
+  logs -. "mise run console:reconcile" .- trail
+```
+
 ### MCP relay
 
 ```
