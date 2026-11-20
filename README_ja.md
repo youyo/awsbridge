@@ -69,6 +69,44 @@ MCP 用のロール（`FederatedAwsBridgeMcpViewer` / `FederatedAwsBridgeMcpDebu
 
 Cloudflare 側（Worker）と AWS 側（CloudFormation）は完全に分かれています。Worker のデプロイは AWS を呼ばず、CloudFormation のデプロイは Cloudflare を呼びません。対象の AWS アカウントには CloudFormation だけを流せば足ります。AWS のアカウントが issuer を信頼するのは IAM の OIDC プロバイダーを通してだけで、issuer のホストは 1 つの Worker が出します。
 
+全体像（それぞれの流れの詳細は下にあります）:
+
+```mermaid
+flowchart LR
+  client["MCP クライアント<br/>（例: Claude）"]
+  person["人<br/>（ブラウザーか端末）"]
+  subgraph cf["Cloudflare"]
+    portal["MCP Server Portal"]
+    accessMcp["Access<br/>（MCP の接続用ホスト）"]
+    accessConsole["Access<br/>（入口とチームごとのアプリケーション）"]
+    mcpWorker["MCP Worker<br/>wrangler.jsonc"]
+    consoleWorker["コンソール Worker<br/>wrangler.console.jsonc"]
+    logs[("Workers Logs<br/>発行記録")]
+  end
+  subgraph aws["対象の各 AWS アカウント"]
+    sts["STS<br/>AssumeRoleWithWebIdentity"]
+    mcpRoles["OIDC プロバイダーと MCP のロール<br/>infra/aws/awsbridge.yaml"]
+    consoleRoles["OIDC プロバイダーとチームのロール<br/>infra/aws/console/"]
+    trail[("CloudTrail")]
+  end
+  awsMcp["AWS MCP Server<br/>（対象アカウントの AWS API を呼ぶ）"]
+  federation["AWS サインインのフェデレーション<br/>getSigninToken"]
+  console["AWS マネジメントコンソール"]
+  client --> portal --> accessMcp --> mcpWorker
+  mcpWorker -- "5 分の JWT" --> sts
+  mcpWorker -- "SigV4" --> awsMcp
+  person --> accessConsole --> consoleWorker
+  consoleWorker -- "チームのタグ付きの 5 分の JWT" --> sts
+  consoleWorker -- "一時認証情報" --> federation
+  person -. "ログイン URL" .-> console
+  sts --- mcpRoles
+  sts --- consoleRoles
+  sts -. "Issuer の文書を読む" .-> mcpWorker
+  sts -. "Issuer の文書を読む" .-> consoleWorker
+  consoleWorker --> logs
+  logs -. "mise run console:reconcile" .- trail
+```
+
 ### MCP の中継
 
 ```

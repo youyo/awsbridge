@@ -962,3 +962,27 @@ describe("突き合わせの文書: cto 続き 6 の s4（受け入れの実行�
     );
   });
 });
+
+describe("README の構成の節の全体図（Mermaid）", () => {
+  // 見出しの節の本文のうち、最初の「### 」より前の部分
+  const intro = (f: string, h: string): string => {
+    const text = read(f);
+    const i = text.indexOf(`\n${h}\n`);
+    expect(i, h).toBeGreaterThan(0);
+    const rest = text.slice(i + h.length + 2);
+    const j = rest.indexOf("\n### ");
+    expect(j, `### after ${h}`).toBeGreaterThan(0);
+    return rest.slice(0, j);
+  };
+  const mermaid = (s: string) => /```mermaid\n([\s\S]*?)\n```/.exec(s)?.[1];
+  const cases: [string, string, string[]][] = [
+    ["README.md", "## Architecture", ["MCP Worker", "Console Worker", "STS", "AWS MCP Server"]],
+    ["README_ja.md", "## 構成", ["MCP Worker", "コンソール Worker", "STS", "AWS MCP Server"]],
+  ];
+  for (const [f, h, words] of cases)
+    it(`${f}: ${h} の冒頭（最初の「### 」より前）に Mermaid の全体図があり、主な要素を含む`, () => {
+      const diagram = mermaid(intro(f, h));
+      expect(diagram, "mermaid block").toBeDefined();
+      for (const w of words) expect(diagram, w).toContain(w);
+    });
+});
