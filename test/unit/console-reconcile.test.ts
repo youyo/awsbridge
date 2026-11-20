@@ -3,20 +3,35 @@
 // 設定に無いプロバイダーでの引き受けは誤り。
 import { describe, expect, it } from "vitest";
 import {
+  acceptedAccountState,
+  applyAcceptance,
   DEFAULT_CLOCK_SKEW_SECONDS,
   DEFAULT_LOOKBACK_DAYS,
   DEFAULT_OVERLAP_SECONDS,
   decideReadStart,
   formatReconcileReport,
+  formatStateLines,
   JWT_LIFETIME_SECONDS,
   MIN_OVERLAP_SECONDS,
+  nextAccountState,
   nextCoveredUntil,
   oldestErrorAt,
   type ReconcileInput,
   reconcile,
   reconcileExitCode,
+  TIMED_ERROR_CODES,
+  UNTIMED_ERROR_CODES,
 } from "../../src/console/reconcile";
 import type { AssumeEvent, ReconRecord } from "../../src/console/reconcile-input";
+import {
+  type AccountState,
+  type Anchors,
+  accountStateOf,
+  MAX_CODE_COUNT,
+  parseReconcileState,
+  serializeReconcileState,
+  withAccountState,
+} from "../../src/console/reconcile-state";
 
 const ACCOUNT = "333333333333";
 const OTHER = "444444444444";
@@ -789,7 +804,7 @@ describe("終了コード 1 のとき、時刻を持つ誤りの最も古い時�
     expect(reconcileExitCode(r)).toBe(1);
     expect(oldestErrorAt(r)).toBe(older.time);
     expect(formatReconcileReport(r)).toContain(
-      `oldest error finding: ${iso(older.time)} (it leaves the default window of 6d after ${iso(older.time + 6 * DAY)}; record the findings outside the tool today)`,
+      `oldest error finding: ${iso(older.time)} (it leaves the default window of 6d after ${iso(older.time + 6 * DAY)}; the state keeps it until a run reads it with no errors or a person accepts it)`,
     );
   });
   it("記録の側の誤り（設定に無いチーム）の時刻も数える", () => {
@@ -1007,5 +1022,1071 @@ describe("reconcile: Administrator の階層の発行の件数と各時刻（UTC
     expect(formatReconcileReport(reconcile(input({ records: [rec()] })))).toContain(
       "admin issues: 0",
     );
+  });
+});
+
+// ---- 所見の保持（cto の決裁 2026-11-19 h1〜h5・q3・q1・q2・i3）----
+const iso = (t: number) => new Date(t).toISOString();
+const HOUR = 3_600_000;
+const noIdentity = (e: AssumeEvent): AssumeEvent => {
+  const { sourceIdentity: _drop, ...rest } = e;
+  return rest;
+};
+const anchorsOf = (
+  oldestAt: number,
+  newestAt: number,
+  codes: Record<string, number> = { assume_without_record: 1 },
+): Anchors => ({
+  oldestAt,
+  newestAt,
+  firstSeenAt: NOW - HOUR,
+  codes,
+  criteria: { clockSkewSeconds: 60, lagSeconds: 300 },
+});
+
+describe("時刻を持つ誤り（錨にする）と持たない誤り（件数だけ）の一覧（q3）", () => {
+  it("一覧は確定した code で、重ならない", () => {
+    expect([...TIMED_ERROR_CODES].sort()).toEqual(
+      [
+        "assume_time_gap",
+        "assume_without_record",
+        "identity_mismatch",
+        "identity_not_compared_admin",
+        "provider_not_in_config",
+        "role_mismatch",
+        "team_not_in_config",
+        "team_tier_mismatch",
+        "tier_mismatch",
+      ].sort(),
+    );
+    expect([...UNTIMED_ERROR_CODES].sort()).toEqual(
+      [
+        "coverage_gap",
+        "record_line_truncated",
+        "record_line_unreadable",
+        "record_read_incomplete",
+        "region_unread",
+        "unconfirmed_not_covered",
+        "untimed_not_covered",
+        "unresolved_criteria_looser",
+        "unresolved_not_covered",
+        "unresolved_out_of_window",
+      ].sort(),
+    );
+    expect(TIMED_ERROR_CODES.filter((c) => UNTIMED_ERROR_CODES.includes(c))).toEqual([]);
+  });
+
+  it("reconcile が出すすべての誤りで、時刻（at）を持つのは一覧の時刻を持つ code だけ。一覧の外の誤りは無い", () => {
+    const a = rec();
+    const tier = rec({ tier: "admin" });
+    const role = rec({ roleArn: `arn:aws:iam::${ACCOUNT}:role/awsbridge-console/std/Other` });
+    const gap = rec();
+    const ident = rec();
+    const admin = rec({ tier: "admin", roleArn: ADMIN_ROLE });
+    const team = rec({ team: "nope" });
+    const prov = rec();
+    const results = [
+      reconcile(input({ events: [evFor(a)] })),
+      reconcile(
+        input({
+          records: [prov],
+          events: [evFor(prov, { provider: providerArn("https://other.example.com/x") })],
+        }),
+      ),
+      reconcile(input({ records: [tier], events: [evFor(tier)] })),
+      reconcile(input({ records: [role], events: [evFor(role, { roleArn: STD_ROLE })] })),
+      reconcile(input({ records: [gap], events: [evFor(gap, { time: gap.at + 1000 * 1000 })] })),
+      reconcile(
+        input({ records: [ident], events: [evFor(ident, { sourceIdentity: "b***@***.org" })] }),
+      ),
+      reconcile(input({ records: [admin], events: [noIdentity(evFor(admin))] })),
+      reconcile(input({ records: [team], events: [evFor(team)] })),
+      reconcile(
+        input({
+          regions: { read: ["us-east-1"], unread: ["eu-west-1"] },
+          lines: { truncated: ["a:1"], unreadable: ["a:2"], total: 3 },
+          incompleteReads: ["w"],
+          previousCoveredUntil: NOW - 7 * DAY,
+        }),
+      ),
+      reconcile(input({ anchors: anchorsOf(NOW - 7 * DAY, NOW - 7 * DAY) })),
+      reconcile(
+        input({
+          window: { since: NOW - DAY, until: NOW },
+          anchors: anchorsOf(NOW - 2 * DAY, NOW - 2 * DAY),
+        }),
+      ),
+      reconcile(
+        input({
+          window: { since: NOW - DAY, until: NOW },
+          coverageBasis: "unconfirmed",
+          watchStart: NOW - 6 * DAY,
+        }),
+      ),
+      reconcile(input({ anchors: anchorsOf(NOW - 2 * DAY, NOW - 2 * DAY), clockSkewSeconds: 120 })),
+      reconcile(input({ coverageBasis: "unconfirmed", watchStart: NOW - 7 * DAY })),
+    ];
+    const seen = new Set<string>();
+    for (const r of results)
+      for (const f of r.findings.filter((x) => x.severity === "error")) {
+        seen.add(f.code);
+        expect(f.at !== undefined, f.code).toBe(TIMED_ERROR_CODES.includes(f.code));
+        expect([...TIMED_ERROR_CODES, ...UNTIMED_ERROR_CODES], f.code).toContain(f.code);
+      }
+    expect([...seen].sort()).toEqual([...TIMED_ERROR_CODES, ...UNTIMED_ERROR_CODES].sort());
+  });
+});
+
+describe("未解決の錨の読み直し（q3: 読み始め > 最も古い錨 なら誤り）", () => {
+  it("窓が錨を含めば unresolved_* は出ない", () => {
+    const r = reconcile(input({ anchors: anchorsOf(NOW - 3 * DAY, NOW - DAY) }));
+    expect(codes(r)).toEqual([]);
+  });
+  it("読み始めが最も古い錨より後で、錨が今 − 6 日より新しければ unresolved_not_covered（誤り）", () => {
+    const r = reconcile(
+      input({
+        window: { since: NOW - DAY, until: NOW },
+        anchors: anchorsOf(NOW - DAY - 1, NOW - HOUR),
+      }),
+    );
+    expect(codes(r)).toEqual(["error:unresolved_not_covered"]);
+    expect(r.findings[0]?.detail).toContain(iso(NOW - DAY - 1));
+    expect(reconcileExitCode(r)).toBe(1);
+    // ちょうど錨なら含む
+    expect(
+      codes(
+        reconcile(
+          input({
+            window: { since: NOW - DAY, until: NOW },
+            anchors: anchorsOf(NOW - DAY, NOW - HOUR),
+          }),
+        ),
+      ),
+    ).toEqual([]);
+  });
+  it("錨が今 − 6 日より前なら（6 日の窓では読めないので）毎回 unresolved_out_of_window（誤り）", () => {
+    for (const now of [NOW, NOW + DAY, NOW + 30 * DAY]) {
+      const r = reconcile(
+        input({
+          now,
+          window: { since: now - 6 * DAY, until: now },
+          anchors: anchorsOf(NOW - 6 * DAY - 1, NOW - 6 * DAY - 1),
+        }),
+      );
+      expect(codes(r)).toEqual(["error:unresolved_out_of_window"]);
+      expect(reconcileExitCode(r)).toBe(1);
+    }
+  });
+  it("--until が最も新しい錨より前でも unresolved_not_covered（その時刻を含む窓を読んでいない）", () => {
+    const r = reconcile(
+      input({
+        window: { since: NOW - 3 * DAY, until: NOW - 2 * DAY },
+        anchors: anchorsOf(NOW - 3 * DAY, NOW - DAY),
+      }),
+    );
+    expect(codes(r)).toEqual(["error:unresolved_not_covered"]);
+  });
+});
+
+describe("decideReadStart: 未解決の錨があれば min(通常, 最も古い錨 − 重なり) を今 − 6 日で切る（h3・q3・i3）", () => {
+  it("最も古い錨 − 重なりが通常より前ならそこから。出力に決め方を出す", () => {
+    const coveredUntil = NOW - 2 * HOUR;
+    const oldestAnchor = NOW - 2 * DAY;
+    const s = decideReadStart({ now: NOW, coveredUntil, oldestAnchor });
+    expect(s).toEqual({
+      basis: "unresolved",
+      since: oldestAnchor - DAY,
+      oldestAnchor,
+      overlapSeconds: 86_400,
+      coveredUntil,
+    });
+    expect(formatReconcileReport(reconcile(input()), { start: s })).toContain(
+      `read start: ${iso(oldestAnchor - DAY)} (from the unresolved findings: oldest ${iso(oldestAnchor)} minus overlap 86400s)`,
+    );
+    // 通常の方が前なら通常（今までの形）
+    expect(decideReadStart({ now: NOW, coveredUntil, oldestAnchor: NOW - HOUR })).toEqual(
+      decideReadStart({ now: NOW, coveredUntil }),
+    );
+  });
+  it("重なりを縮めても錨の時刻は読む（読み始め ≤ 最も古い錨）", () => {
+    const oldestAnchor = NOW - 4 * HOUR;
+    const s = decideReadStart({
+      now: NOW,
+      coveredUntil: NOW - 2 * HOUR,
+      oldestAnchor,
+      overlapSeconds: 3_600,
+    });
+    expect(s.since).toBe(oldestAnchor - HOUR);
+    expect(
+      codes(
+        reconcile(
+          input({
+            window: { since: s.since, until: NOW },
+            anchors: anchorsOf(oldestAnchor, oldestAnchor),
+          }),
+        ),
+      ),
+    ).toEqual([]);
+  });
+  it("今 − 6 日で切る。錨がそれより前なら毎回 unresolved_out_of_window", () => {
+    const oldestAnchor = NOW - 6 * DAY - HOUR;
+    const s = decideReadStart({ now: NOW, coveredUntil: NOW - 7 * DAY, oldestAnchor });
+    expect(s).toEqual({
+      basis: "lookback",
+      since: NOW - 6 * DAY,
+      lookbackDays: 6,
+      coveredUntil: NOW - 7 * DAY,
+      oldestAnchor,
+    });
+    expect(formatReconcileReport(reconcile(input()), { start: s })).toContain(
+      `the oldest unresolved finding is ${iso(oldestAnchor)}`,
+    );
+    expect(
+      codes(
+        reconcile(
+          input({
+            window: { since: s.since, until: NOW },
+            anchors: anchorsOf(oldestAnchor, oldestAnchor),
+          }),
+        ),
+      ),
+    ).toContain("error:unresolved_out_of_window");
+  });
+  it("coveredUntil の無い行: 錨があれば 最も古い錨 − 重なり（6 日が下限）。時刻なしの誤りだけの行は 6 日（i3・q3）", () => {
+    const oldestAnchor = NOW - 3 * DAY;
+    expect(decideReadStart({ now: NOW, oldestAnchor })).toEqual({
+      basis: "unresolved",
+      since: oldestAnchor - DAY,
+      oldestAnchor,
+      overlapSeconds: 86_400,
+    });
+    expect(decideReadStart({ now: NOW, lookbackRequired: true })).toEqual({
+      basis: "lookback",
+      since: NOW - 6 * DAY,
+      lookbackDays: 6,
+    });
+    // 時刻なしの誤りと錨の両方があれば 6 日（時刻なしの誤りの窓を読み直す）
+    expect(
+      decideReadStart({ now: NOW, oldestAnchor: NOW - HOUR, lookbackRequired: true }).since,
+    ).toBe(NOW - 6 * DAY);
+  });
+  it("--since が勝つ。錨より後から始めれば unresolved_not_covered", () => {
+    const s = decideReadStart({
+      now: NOW,
+      since: NOW - HOUR,
+      coveredUntil: NOW - 2 * HOUR,
+      oldestAnchor: NOW - 3 * HOUR,
+    });
+    expect(s).toEqual({ basis: "option", since: NOW - HOUR });
+    expect(
+      codes(
+        reconcile(
+          input({
+            window: { since: s.since, until: NOW },
+            anchors: anchorsOf(NOW - 3 * HOUR, NOW - 3 * HOUR),
+          }),
+        ),
+      ),
+    ).toEqual(["error:unresolved_not_covered"]);
+  });
+});
+
+describe("受け入れた区間の中の時刻を持つ誤りは以後の実行でも note（accepted）。区間の外と時刻なしは下げない（q1）", () => {
+  it("区間の中は note、外の同じ code は誤り、時刻なしの誤りは下げない", () => {
+    const inside = evFor(rec({ at: NOW - 2 * DAY }));
+    const outside = evFor(rec({ at: NOW - DAY }));
+    const accepted = [{ from: NOW - 2 * DAY - HOUR, until: NOW - 2 * DAY + HOUR }];
+    const r = reconcile(input({ events: [inside], accepted }));
+    expect(codes(r)).toEqual(["note:assume_without_record"]);
+    expect(r.findings[0]?.detail).toContain("(accepted)");
+    expect(reconcileExitCode(r)).toBe(0);
+    const r2 = reconcile(input({ events: [inside, outside], accepted }));
+    expect(codes(r2)).toEqual(["error:assume_without_record", "note:assume_without_record"]);
+    expect(reconcileExitCode(r2)).toBe(1);
+    const r3 = reconcile(
+      input({
+        events: [inside],
+        accepted,
+        regions: { read: ["us-east-1"], unread: ["eu-west-1"] },
+      }),
+    );
+    expect(codes(r3)).toEqual(["error:region_unread", "note:assume_without_record"]);
+  });
+});
+
+describe("applyAcceptance（受け入れは照合の実行と一体。q1・q2）", () => {
+  it("前の実行までに記録された錨を受け入れる: 窓の中で読み直した同じ所見は note になり 0。区間は [最も古い錨, 最も新しい錨]", () => {
+    const e = evFor(rec({ at: NOW - 2 * DAY }));
+    const anchors = anchorsOf(e.time, e.time);
+    const r = reconcile(input({ events: [e], anchors, previousCoveredUntil: NOW - 3 * DAY }));
+    expect(reconcileExitCode(r)).toBe(1);
+    const a = applyAcceptance(r, { anchors, coveredUntil: NOW - 3 * DAY });
+    expect(a.status).toBe("applied");
+    if (a.status !== "applied") return;
+    expect(a.interval).toEqual({
+      from: e.time,
+      until: e.time,
+      codes: { assume_without_record: 1 },
+    });
+    expect(reconcileExitCode(a.result)).toBe(0);
+    expect(codes(a.result)).toEqual(["note:assume_without_record"]);
+  });
+  it("区間の外に今回初めての誤りがあれば、下げても 1 で受け入れを適用しない（結果は下げる前のまま）", () => {
+    const e = evFor(rec({ at: NOW - 2 * DAY }));
+    const fresh = evFor(rec({ at: NOW - HOUR }));
+    const anchors = anchorsOf(e.time, e.time);
+    const r = reconcile(input({ events: [e, fresh], anchors }));
+    const a = applyAcceptance(r, { anchors });
+    expect(a.status).toBe("rejected");
+    if (a.status !== "rejected") return;
+    expect(codes(a.result)).toEqual(["error:assume_without_record", "error:assume_without_record"]);
+  });
+  it("区間の中でも、記録に無い code や記録より多い件数は今回初めての誤りとして下げない", () => {
+    const e = evFor(rec({ at: NOW - 2 * DAY }));
+    const e2 = evFor(rec({ at: NOW - 2 * DAY + MIN }));
+    const anchors = anchorsOf(e.time, e2.time, { identity_mismatch: 1 });
+    expect(applyAcceptance(reconcile(input({ events: [e], anchors })), { anchors }).status).toBe(
+      "rejected",
+    );
+    const one = anchorsOf(e.time, e2.time, { assume_without_record: 1 });
+    expect(
+      applyAcceptance(reconcile(input({ events: [e, e2], anchors: one })), { anchors: one }).status,
+    ).toBe("rejected");
+  });
+  it("今回の coverage_gap を受け入れる: 区間は [coveredUntil, 今回の読み始め]（間を読んでいない）", () => {
+    const covered = NOW - 8 * DAY;
+    const r = reconcile(input({ previousCoveredUntil: covered }));
+    const a = applyAcceptance(r, { coveredUntil: covered });
+    expect(a.status).toBe("applied");
+    if (a.status !== "applied") return;
+    expect(a.interval).toEqual({ from: covered, until: NOW - 6 * DAY, codes: { coverage_gap: 1 } });
+    expect(codes(a.result)).toEqual(["note:coverage_gap"]);
+  });
+  it("窓の外の錨（unresolved_out_of_window）を受け入れる: 区間は [最も古い錨, max(最も新しい錨, 読み始め)]", () => {
+    const old = NOW - 7 * DAY;
+    const anchors = anchorsOf(old, old);
+    const r = reconcile(input({ anchors, previousCoveredUntil: NOW - 2 * DAY }));
+    expect(codes(r)).toEqual(["error:unresolved_out_of_window"]);
+    const a = applyAcceptance(r, { anchors, coveredUntil: NOW - 2 * DAY });
+    expect(a.status).toBe("applied");
+    if (a.status !== "applied") return;
+    expect(a.interval).toEqual({
+      from: old,
+      until: NOW - 6 * DAY,
+      codes: { assume_without_record: 1 },
+    });
+    expect(reconcileExitCode(a.result)).toBe(0);
+  });
+  it("時刻を持たない誤り（region_unread）は受け入れで下げない（1 のまま・適用しない）", () => {
+    const anchors = anchorsOf(NOW - 7 * DAY, NOW - 7 * DAY);
+    const r = reconcile(
+      input({ anchors, regions: { read: ["us-east-1"], unread: ["eu-west-1"] } }),
+    );
+    expect(applyAcceptance(r, { anchors }).status).toBe("rejected");
+  });
+  it("錨を窓の中で読み直して誤り 0（何も下げない）なら resolved: 受け入れた区間は作らない（h4 の「誤り 0 で消える」に盲点を作らない）", () => {
+    const anchors = anchorsOf(NOW - 2 * DAY, NOW - 2 * DAY);
+    const r = reconcile(input({ anchors, previousCoveredUntil: NOW - 3 * DAY }));
+    expect(reconcileExitCode(r)).toBe(0);
+    const a = applyAcceptance(r, { anchors, coveredUntil: NOW - 3 * DAY });
+    expect(a.status).toBe("resolved");
+  });
+  it("受け入れるもの（錨も今回の coverage_gap も）が無ければ nothing", () => {
+    expect(
+      applyAcceptance(reconcile(input({ previousCoveredUntil: NOW - DAY })), {
+        coveredUntil: NOW - DAY,
+      }).status,
+    ).toBe("nothing");
+  });
+});
+
+describe("nextAccountState（終了コード 0 でない実行は錨と時刻なしの件数を書き、coveredUntil は進めない。h2・q3・続き 4 の (2)〜(4)・B1・続き 5 の R2・R4）", () => {
+  const W6 = NOW - 6 * DAY;
+  it("誤りの実行: 時刻を持つ誤りは錨（最も古い・新しい・件数・最初に見つけた時刻・判定条件）、時刻なしは件数と読もうとした範囲、coverage_gap は保存しない", () => {
+    const e1 = evFor(rec({ at: NOW - 3 * DAY }));
+    const e2 = evFor(rec({ at: NOW - DAY }));
+    const r = reconcile(
+      input({
+        events: [e1, e2],
+        regions: { read: ["us-east-1"], unread: ["eu-west-1"] },
+        previousCoveredUntil: NOW - 6 * DAY - 1,
+      }),
+    );
+    const row = nextAccountState({ coveredUntil: NOW - 6 * DAY - 1 }, r, { now: NOW });
+    expect(row).toEqual({
+      coveredUntil: NOW - 6 * DAY - 1,
+      unresolved: {
+        oldestAt: e1.time,
+        newestAt: e2.time,
+        firstSeenAt: NOW,
+        codes: { assume_without_record: 2 },
+        criteria: { clockSkewSeconds: 60, lagSeconds: 300 },
+      },
+      untimed: { codes: { region_unread: 1 }, firstWindowStart: W6, settledUntil: NOW - 300_000 },
+    });
+  });
+  it("既にある錨と合わせる: 最も古いは前へ進めない・最も新しいは後へ・最初に見つけた時刻は保つ・件数は code ごとの最大・判定条件は厳しい方", () => {
+    const prev: AccountState = {
+      coveredUntil: NOW - 2 * DAY,
+      unresolved: {
+        oldestAt: NOW - 4 * DAY,
+        newestAt: NOW - 3 * DAY,
+        firstSeenAt: NOW - DAY,
+        codes: { assume_without_record: 3, identity_mismatch: 1 },
+        criteria: { clockSkewSeconds: 30, lagSeconds: 600 },
+      },
+      untimed: {
+        codes: { region_unread: 1 },
+        firstWindowStart: NOW - 5 * DAY,
+        settledUntil: NOW - DAY,
+      },
+      accepted: [
+        {
+          from: NOW - 9 * DAY,
+          until: NOW - 8 * DAY,
+          acceptedAt: NOW - 7 * DAY,
+          reasonGiven: true,
+          codes: { coverage_gap: 1 },
+        },
+      ],
+    };
+    const e = evFor(rec({ at: NOW - HOUR }));
+    const row = nextAccountState(prev, reconcile(input({ events: [e] })), { now: NOW });
+    expect(row).toEqual({
+      coveredUntil: NOW - 2 * DAY,
+      unresolved: {
+        oldestAt: NOW - 4 * DAY,
+        newestAt: e.time,
+        firstSeenAt: NOW - DAY,
+        codes: { assume_without_record: 3, identity_mismatch: 1 },
+        criteria: { clockSkewSeconds: 30, lagSeconds: 300 },
+      },
+      // 時刻なしの件数は誤り 0 の実行でだけ消える（今回の所見に無くても残す。(2)）。範囲はそのまま
+      untimed: prev.untimed,
+      accepted: prev.accepted,
+    });
+    // 時刻なしの誤りだけの実行は錨を保ち、件数は code ごとの最大（足し合わせない）。範囲は始まりの最も古い・終わりの最も新しい
+    const untimedOnly = nextAccountState(
+      prev,
+      reconcile(
+        input({
+          incompleteReads: ["w"],
+          regions: { read: ["us-east-1"], unread: ["eu-west-1", "ap-south-1"] },
+        }),
+      ),
+      { now: NOW },
+    );
+    expect(untimedOnly.unresolved).toEqual(prev.unresolved);
+    expect(untimedOnly.untimed).toEqual({
+      codes: { record_read_incomplete: 1, region_unread: 2 },
+      firstWindowStart: W6,
+      settledUntil: NOW - 300_000,
+    });
+    const again = nextAccountState(
+      untimedOnly,
+      reconcile(input({ window: { since: NOW - DAY, until: NOW - HOUR }, incompleteReads: ["w"] })),
+      { now: NOW },
+    );
+    expect(again.untimed).toEqual(untimedOnly.untimed);
+  });
+  it("検証できない引き受けだけの実行（終了コード 1）は時刻なしの件数 unverifiable を書く", () => {
+    const old = rec({ at: NOW - 8 * DAY });
+    const r = reconcile(
+      input({ window: { since: NOW - 10 * DAY, until: NOW }, events: [evFor(old)] }),
+    );
+    expect(nextAccountState(undefined, r, { now: NOW, watchStart: NOW })).toEqual({
+      watchStart: NOW,
+      untimed: {
+        codes: { unverifiable: 1 },
+        firstWindowStart: NOW - 10 * DAY,
+        settledUntil: NOW - 300_000,
+      },
+    });
+  });
+  it("件数は上限（MAX_CODE_COUNT）で飽和させて書く。書いたものは読める（(4)）", () => {
+    const old = rec({ at: NOW - 8 * DAY });
+    const r0 = reconcile(
+      input({ window: { since: NOW - 10 * DAY, until: NOW }, events: [evFor(old)] }),
+    );
+    const r = { ...r0, summary: { ...r0.summary, unverifiable: MAX_CODE_COUNT * 3 } };
+    const row = nextAccountState(
+      {
+        watchStart: NOW - 10 * DAY,
+        untimed: {
+          codes: { unverifiable: MAX_CODE_COUNT },
+          firstWindowStart: NOW - 10 * DAY,
+          settledUntil: NOW - 300_000,
+        },
+      },
+      r,
+      { now: NOW },
+    );
+    expect(row.untimed?.codes).toEqual({ unverifiable: MAX_CODE_COUNT });
+    const text = serializeReconcileState(
+      withAccountState(parseReconcileState(undefined), ACCOUNT, row),
+    );
+    expect(accountStateOf(parseReconcileState(text, NOW), ACCOUNT)).toEqual(row);
+  });
+  it("終了コード 0: coveredUntil を進め、判定した範囲が錨と時刻なしの範囲を含めば消し、accepted は残す", () => {
+    const prev: AccountState = {
+      coveredUntil: NOW - 2 * DAY,
+      unresolved: anchorsOf(NOW - DAY, NOW - DAY),
+      untimed: {
+        codes: { region_unread: 1 },
+        firstWindowStart: NOW - 3 * DAY,
+        settledUntil: NOW - DAY,
+      },
+      accepted: [
+        { from: 1, until: 2, acceptedAt: 3, reasonGiven: true, codes: { coverage_gap: 1 } },
+      ],
+    };
+    const r = reconcile(input({ previousCoveredUntil: NOW - 2 * DAY }));
+    expect(nextAccountState(prev, r, { now: NOW })).toEqual({
+      coveredUntil: NOW - 300_000,
+      accepted: prev.accepted,
+    });
+    // 行の無い --init の実行で 0 なら coveredUntil だけ
+    expect(nextAccountState(undefined, reconcile(input()), { now: NOW })).toEqual({
+      coveredUntil: NOW - 300_000,
+    });
+  });
+  it("終了コード 0 でも、判定した範囲（読み始めから --until − lag まで）が錨を含まなければ錨は消さない（(3)・R2）", () => {
+    const prev: AccountState = {
+      coveredUntil: NOW - 2 * DAY,
+      unresolved: anchorsOf(NOW - 3 * DAY, NOW - DAY),
+    };
+    // 錨を reconcile に渡さずに作った短い窓の成功結果
+    const late = reconcile(
+      input({ window: { since: NOW - 2 * DAY, until: NOW }, previousCoveredUntil: NOW - 2 * DAY }),
+    );
+    expect(reconcileExitCode(late)).toBe(0);
+    expect(nextAccountState(prev, late, { now: NOW }).unresolved).toEqual(prev.unresolved);
+    const early = reconcile(
+      input({
+        window: { since: NOW - 4 * DAY, until: NOW - 2 * DAY },
+        previousCoveredUntil: NOW - 2 * DAY,
+      }),
+    );
+    expect(nextAccountState(prev, early, { now: NOW }).unresolved).toEqual(prev.unresolved);
+    // 最も新しい錨が lag（既定 300 秒）の内: pending で判定していないので消さない
+    const inLag = reconcile(
+      input({
+        window: { since: NOW - 3 * DAY, until: NOW - DAY + 60_000 },
+        previousCoveredUntil: NOW - 2 * DAY,
+      }),
+    );
+    expect(reconcileExitCode(inLag)).toBe(0);
+    expect(nextAccountState(prev, inLag, { now: NOW }).unresolved).toEqual(prev.unresolved);
+    const whole = reconcile(
+      input({
+        window: { since: NOW - 3 * DAY, until: NOW - DAY + 300_000 },
+        previousCoveredUntil: NOW - 2 * DAY,
+      }),
+    );
+    expect(nextAccountState(prev, whole, { now: NOW }).unresolved).toBeUndefined();
+  });
+  it("終了コード 0 でも、時刻なしの誤りを記録した実行が読もうとした範囲を読み直していなければ untimed は消さない（R4）", () => {
+    const untimed = {
+      codes: { record_read_incomplete: 1 },
+      firstWindowStart: NOW - 3 * DAY,
+      settledUntil: NOW - DAY,
+    };
+    const prev: AccountState = { coveredUntil: NOW - 2 * DAY, untimed };
+    const at = (since: number, until: number) =>
+      nextAccountState(
+        prev,
+        reconcile(input({ window: { since, until }, previousCoveredUntil: NOW - 2 * DAY })),
+        { now: NOW },
+      );
+    // --until を過去にした（until − lag が記録した終わりより前）
+    expect(at(NOW - 3 * DAY, NOW - DAY).untimed).toEqual(untimed);
+    // --since を後ろにした
+    expect(at(NOW - 2 * DAY, NOW).untimed).toEqual(untimed);
+    // 両方を含めば消える
+    expect(at(NOW - 3 * DAY, NOW - DAY + 300_000).untimed).toBeUndefined();
+    // 確認済みの区間の無い行は、見張りの始まり（watchStart）以前から読んだ誤り 0 の実行だけが消して確認済みにする（続き 5 の w2）
+    const unconfirmed: AccountState = {
+      watchStart: NOW - 6 * DAY,
+      untimed: { ...untimed, firstWindowStart: NOW - 7 * DAY },
+    };
+    const r6 = reconcile(input({ coverageBasis: "unconfirmed", watchStart: NOW - 6 * DAY }));
+    expect(reconcileExitCode(r6)).toBe(0);
+    expect(nextAccountState(unconfirmed, r6, { now: NOW })).toEqual({
+      coveredUntil: NOW - 300_000,
+    });
+    const r6past = reconcile(
+      input({
+        window: { since: NOW - 6 * DAY, until: NOW - 2 * DAY },
+        coverageBasis: "unconfirmed",
+        watchStart: NOW - 6 * DAY,
+      }),
+    );
+    // 読み始めは見張りの始まり以前なので確認済みにはなるが、終わりの側を読み直していないので untimed は残る
+    expect(nextAccountState(unconfirmed, r6past, { now: NOW })).toEqual({
+      coveredUntil: NOW - 2 * DAY - 300_000,
+      untimed: unconfirmed.untimed,
+    });
+    // 読み始めが見張りの始まりより後の結果（watchStart を渡さずに作った）は、状態の側でも確認済みにしない
+    const later: AccountState = { ...unconfirmed, watchStart: NOW - 7 * DAY };
+    expect(nextAccountState(later, r6, { now: NOW })).toEqual(later);
+  });
+  it("受け入れによる削除は別の関数（acceptedAccountState）: 受け入れの結果（applied）を受け、錨を消し、受け入れた区間を追記し、coveredUntil は通常どおり進める。applied でなければ例外", () => {
+    const anchors = anchorsOf(NOW - 7 * DAY, NOW - 7 * DAY);
+    const prev: AccountState = {
+      coveredUntil: NOW - 2 * DAY,
+      unresolved: anchors,
+      accepted: [
+        { from: 1, until: 2, acceptedAt: 3, reasonGiven: true, codes: { coverage_gap: 1 } },
+      ],
+    };
+    const r = reconcile(input({ anchors, previousCoveredUntil: NOW - 2 * DAY }));
+    const outcome = applyAcceptance(r, { anchors, coveredUntil: NOW - 2 * DAY });
+    expect(outcome.status).toBe("applied");
+    expect(acceptedAccountState(prev, outcome, { acceptedAt: NOW })).toEqual({
+      coveredUntil: NOW - 300_000,
+      accepted: [
+        ...(prev.accepted ?? []),
+        {
+          from: NOW - 7 * DAY,
+          until: NOW - 6 * DAY,
+          acceptedAt: NOW,
+          reasonGiven: true,
+          codes: { assume_without_record: 1 },
+        },
+      ],
+    });
+    // 受け入れの結果が applied でなければ使えない（状態の側でも確かめる。cto の見解）
+    const rejected = applyAcceptance(reconcile(input({ events: [evFor(rec())], anchors })), {
+      anchors,
+    });
+    expect(rejected.status).toBe("rejected");
+    expect(() => acceptedAccountState(prev, rejected, { acceptedAt: NOW })).toThrow();
+    const resolved = applyAcceptance(
+      reconcile(input({ anchors: anchorsOf(NOW - 2 * DAY, NOW - 2 * DAY) })),
+      { anchors: anchorsOf(NOW - 2 * DAY, NOW - 2 * DAY) },
+    );
+    expect(resolved.status).toBe("resolved");
+    expect(() => acceptedAccountState(prev, resolved, { acceptedAt: NOW })).toThrow();
+  });
+});
+
+describe("coverage の表示（i3・i4）と状態の行（q1: 毎回 accepted intervals の数と最新の区間）", () => {
+  it("--init の実行は first run (explicit --init)、coveredUntil の無い行は unconfirmed（first run ではない）", () => {
+    const init = reconcile(input({ coverageBasis: "init" }));
+    expect(init.summary.coverage).toEqual({ status: "first_run", explicit: true });
+    expect(formatReconcileReport(init)).toContain("coverage: first run (explicit --init)");
+    const un = reconcile(input({ coverageBasis: "unconfirmed", watchStart: NOW - 6 * DAY }));
+    expect(un.summary.coverage).toEqual({ status: "unconfirmed" });
+    expect(formatReconcileReport(un)).toContain("coverage: unconfirmed");
+    expect(formatReconcileReport(un)).not.toContain("first run");
+    expect(codes(un)).toEqual([]);
+  });
+  it("状態の行: 未解決の錨・時刻なしの件数・accepted intervals の数と最新の区間を出す（件数と時刻だけ）", () => {
+    expect(formatStateLines(undefined)).toEqual(["unresolved: none", "accepted intervals: 0"]);
+    const lines = formatStateLines({
+      coveredUntil: NOW,
+      unresolved: {
+        oldestAt: NOW - 2 * DAY,
+        newestAt: NOW - DAY,
+        firstSeenAt: NOW - HOUR,
+        codes: { assume_without_record: 2 },
+        criteria: { clockSkewSeconds: 60, lagSeconds: 300 },
+      },
+      untimed: {
+        codes: { region_unread: 1 },
+        firstWindowStart: NOW - 3 * DAY,
+        settledUntil: NOW - DAY,
+      },
+      accepted: [
+        {
+          from: NOW - 9 * DAY,
+          until: NOW - 8 * DAY,
+          acceptedAt: NOW - 7 * DAY,
+          reasonGiven: true,
+          codes: { coverage_gap: 1 },
+        },
+        {
+          from: NOW - 5 * DAY,
+          until: NOW - 4 * DAY,
+          acceptedAt: NOW - 3 * DAY,
+          reasonGiven: true,
+          codes: { assume_without_record: 1 },
+        },
+      ],
+    });
+    expect(lines).toEqual([
+      `unresolved: oldest ${iso(NOW - 2 * DAY)}, newest ${iso(NOW - DAY)}, first seen ${iso(NOW - HOUR)}, assume_without_record=2 (judged with clock skew 60s, lag 300s)`,
+      "unresolved untimed errors (largest count per code): region_unread=1",
+      `accepted intervals: 2 (latest ${iso(NOW - 5 * DAY)} .. ${iso(NOW - 4 * DAY)}, accepted at ${iso(NOW - 3 * DAY)}; not confirmed)`,
+    ]);
+  });
+});
+
+describe("確認済みの区間の無い行は、読み始めが今 − 6 日より後なら誤り（続き 4 の (1)。--init の実行そのものは対象外）", () => {
+  it("unconfirmed で読み始めが今 − 6 日より後なら unconfirmed_not_covered（誤り）。ちょうど 6 日なら出ない。--init と確認済みの区間のある行には出ない", () => {
+    const r = reconcile(
+      input({
+        window: { since: NOW - HOUR, until: NOW },
+        coverageBasis: "unconfirmed",
+        watchStart: NOW - 6 * DAY,
+      }),
+    );
+    expect(codes(r)).toEqual(["error:unconfirmed_not_covered"]);
+    expect(reconcileExitCode(r)).toBe(1);
+    expect(
+      codes(reconcile(input({ coverageBasis: "unconfirmed", watchStart: NOW - 6 * DAY }))),
+    ).toEqual([]);
+    expect(
+      codes(reconcile(input({ window: { since: NOW - HOUR, until: NOW }, coverageBasis: "init" }))),
+    ).toEqual([]);
+    expect(
+      codes(
+        reconcile(
+          input({ window: { since: NOW - HOUR, until: NOW }, previousCoveredUntil: NOW - HOUR }),
+        ),
+      ),
+    ).toEqual([]);
+  });
+  it("受け入れで下げない（受け入れられるのは錨と今回の coverage_gap の区間だけ）", () => {
+    const anchors = anchorsOf(NOW - 2 * DAY, NOW - 2 * DAY);
+    const r = reconcile(
+      input({
+        window: { since: NOW - 3 * DAY, until: NOW },
+        coverageBasis: "unconfirmed",
+        watchStart: NOW - 6 * DAY,
+        anchors,
+      }),
+    );
+    expect(codes(r)).toEqual(["error:unconfirmed_not_covered"]);
+    expect(applyAcceptance(r, { anchors }).status).toBe("rejected");
+  });
+});
+
+describe("錨を作ったときの判定条件より緩い実行は、誤り 0 でも解決にしない（続き 4 の B1・B2）", () => {
+  const anchors = anchorsOf(NOW - 2 * DAY, NOW - 2 * DAY);
+  it("--clock-skew-seconds・--lag-seconds が錨の値より大きければ unresolved_criteria_looser（誤り）。同じか厳しければ出ない", () => {
+    const skew = reconcile(input({ anchors, clockSkewSeconds: 120 }));
+    expect(codes(skew)).toEqual(["error:unresolved_criteria_looser"]);
+    expect(skew.findings[0]?.detail).toContain("clock skew 120s > 60s");
+    expect(skew.findings[0]?.detail).toContain("not treated as resolved");
+    const lag = reconcile(input({ anchors, lagSeconds: 600 }));
+    expect(codes(lag)).toEqual(["error:unresolved_criteria_looser"]);
+    expect(lag.findings[0]?.detail).toContain("lag 600s > 300s");
+    expect(codes(reconcile(input({ anchors, clockSkewSeconds: 60, lagSeconds: 300 })))).toEqual([]);
+    expect(codes(reconcile(input({ anchors, clockSkewSeconds: 10, lagSeconds: 60 })))).toEqual([]);
+  });
+  it("緩い実行の結果では錨を消さない（終了コード 1）。出口は理由つきの受け入れ", () => {
+    const r = reconcile(input({ anchors, clockSkewSeconds: 120, previousCoveredUntil: NOW - DAY }));
+    const prev: AccountState = { coveredUntil: NOW - DAY, unresolved: anchors };
+    expect(nextAccountState(prev, r, { now: NOW }).unresolved).toEqual(anchors);
+    const a = applyAcceptance(r, { anchors, coveredUntil: NOW - DAY });
+    expect(a.status).toBe("applied");
+    if (a.status !== "applied") return;
+    expect(codes(a.result)).toEqual(["note:unresolved_criteria_looser"]);
+  });
+  it("緩い実行で新しい錨を足すときも、判定条件は厳しい方（小さい方）を保つ", () => {
+    const e = evFor(rec({ at: NOW - HOUR }));
+    const r = reconcile(input({ anchors, events: [e], clockSkewSeconds: 120, lagSeconds: 30 }));
+    const row = nextAccountState({ coveredUntil: NOW - DAY, unresolved: anchors }, r, { now: NOW });
+    expect(row.unresolved?.criteria).toEqual({ clockSkewSeconds: 60, lagSeconds: 30 });
+  });
+});
+
+describe("受け入れは区間に対して行う（続き 4 の A1・A2・A4）", () => {
+  it("既知の限界（A4）: 記録 1 件の code の区間の中で、記録した所見が消えて新しい同じ code が 1 件出たら、見分けられずに受け入れる（code と件数の検査は取り違えへの守りで、同一性の保証ではない）", () => {
+    const t0 = NOW - 3 * DAY;
+    const t2 = NOW - DAY;
+    const anchors = anchorsOf(t0, t2, { assume_without_record: 1, identity_mismatch: 1 });
+    // t0 の記録した引き受けは今回は見えず（記録が読めた）、区間の中の別の時刻 t1 に新しい同じ code の誤りが 1 件
+    const fresh = evFor(rec({ at: NOW - 2 * DAY }));
+    const r = reconcile(input({ events: [fresh], anchors }));
+    const a = applyAcceptance(r, { anchors });
+    expect(a.status).toBe("applied");
+    if (a.status !== "applied") return;
+    expect(codes(a.result)).toEqual(["note:assume_without_record"]);
+  });
+});
+
+describe("続き 5: 判定した範囲で見る（R2）・受け入れの件数は飽和させずに比べる（R3）", () => {
+  it("最も新しい錨が判定した範囲（--until − lag）の外なら unresolved_not_covered（lag の内は pending で判定していない）", () => {
+    const anchors = anchorsOf(NOW - 2 * DAY, NOW - DAY);
+    const r = reconcile(
+      input({ window: { since: NOW - 3 * DAY, until: NOW - DAY + 60_000 }, anchors }),
+    );
+    expect(codes(r)).toEqual(["error:unresolved_not_covered"]);
+    expect(r.findings[0]?.detail).toContain("judged");
+    expect(
+      codes(
+        reconcile(input({ window: { since: NOW - 3 * DAY, until: NOW - DAY + 300_000 }, anchors })),
+      ),
+    ).toEqual([]);
+  });
+  it("時刻なしの誤りを記録した実行の窓の始まりが通常の読み始めより前なら、既定の読み始めはそこまで戻す（R4 の読み直しを既定の実行でできるように。今 − 6 日で切る）", () => {
+    const coveredUntil = NOW - 2 * HOUR;
+    const s = decideReadStart({ now: NOW, coveredUntil, untimedStart: NOW - 3 * DAY });
+    expect(s).toEqual({
+      basis: "untimed",
+      since: NOW - 3 * DAY,
+      untimedStart: NOW - 3 * DAY,
+      coveredUntil,
+    });
+    expect(formatReconcileReport(reconcile(input()), { start: s })).toContain(
+      `read start: ${iso(NOW - 3 * DAY)} (from the unresolved untimed errors: the run that recorded them started ${iso(NOW - 3 * DAY)})`,
+    );
+    expect(decideReadStart({ now: NOW, coveredUntil, untimedStart: NOW - HOUR })).toEqual(
+      decideReadStart({ now: NOW, coveredUntil }),
+    );
+    expect(decideReadStart({ now: NOW, coveredUntil, untimedStart: NOW - 8 * DAY }).since).toBe(
+      NOW - 6 * DAY,
+    );
+  });
+  it("記録した件数が上限（MAX_CODE_COUNT）で飽和していれば、受け入れを適用しない（rejected と理由）", () => {
+    const e = evFor(rec({ at: NOW - 2 * DAY }));
+    const anchors = anchorsOf(e.time, e.time, { assume_without_record: MAX_CODE_COUNT });
+    const a = applyAcceptance(reconcile(input({ events: [e], anchors })), { anchors });
+    expect(a.status).toBe("rejected");
+    if (a.status !== "rejected") return;
+    expect(a.reason).toContain("saturated");
+  });
+});
+
+describe("続き 6: 受け入れで untimed を消す条件（U3）・解決を飽和の検査より先に（U4）・範囲の前後（U7）", () => {
+  it("U3: 受け入れの実行が、時刻なしの誤りを記録した実行の範囲を読み直していなければ untimed を残す（読み直していれば消す）", () => {
+    const untimed = {
+      codes: { region_unread: 1 },
+      firstWindowStart: NOW - 3 * DAY,
+      settledUntil: NOW - DAY,
+    };
+    const e = evFor(rec({ at: NOW - 2 * DAY }));
+    const anchors = anchorsOf(e.time, e.time);
+    const prev: AccountState = { coveredUntil: NOW - 2 * DAY, unresolved: anchors, untimed };
+    // 錨より後から読んだ受け入れ（錨は unresolved_not_covered として受け入れる）。時刻なしの誤りの窓は未読
+    const short = reconcile(
+      input({
+        window: { since: NOW - HOUR, until: NOW },
+        anchors,
+        previousCoveredUntil: NOW - 2 * DAY,
+      }),
+    );
+    const s1 = applyAcceptance(short, { anchors, coveredUntil: NOW - 2 * DAY });
+    expect(s1.status).toBe("applied");
+    expect(acceptedAccountState(prev, s1, { acceptedAt: NOW }).untimed).toEqual(untimed);
+    // 記録した範囲ごと読み直した受け入れ（同じ所見を読み直して下げる）
+    const whole = reconcile(
+      input({
+        window: { since: NOW - 3 * DAY, until: NOW },
+        events: [e],
+        anchors,
+        previousCoveredUntil: NOW - 2 * DAY,
+      }),
+    );
+    const s2 = applyAcceptance(whole, { anchors, coveredUntil: NOW - 2 * DAY });
+    expect(s2.status).toBe("applied");
+    expect(acceptedAccountState(prev, s2, { acceptedAt: NOW }).untimed).toBeUndefined();
+  });
+  it("U4: 記録が飽和していても、読み直して誤り 0 なら受け入れずに解決する（resolved）", () => {
+    const anchors = anchorsOf(NOW - 2 * DAY, NOW - 2 * DAY, {
+      assume_without_record: MAX_CODE_COUNT,
+    });
+    const r = reconcile(input({ anchors }));
+    expect(reconcileExitCode(r)).toBe(0);
+    expect(applyAcceptance(r, { anchors }).status).toBe("resolved");
+  });
+  it("U7: 判定した終わりが読み始めより前の短い窓でも、書く範囲は前後が逆にならない（読める状態を書く）", () => {
+    const r = reconcile(
+      input({
+        window: { since: NOW - 60_000, until: NOW },
+        incompleteReads: ["w"],
+        previousCoveredUntil: NOW - HOUR,
+      }),
+    );
+    const row = nextAccountState({ coveredUntil: NOW - HOUR }, r, { now: NOW });
+    expect((row.untimed?.firstWindowStart as number) <= (row.untimed?.settledUntil as number)).toBe(
+      true,
+    );
+    const text = serializeReconcileState(
+      withAccountState(parseReconcileState(undefined), ACCOUNT, row),
+    );
+    expect(accountStateOf(parseReconcileState(text, NOW), ACCOUNT)).toEqual(row);
+  });
+});
+
+describe("続き 5（cto）: 見張りの始まり（watchStart）と、読み直せない時刻なしの誤り（untimed_not_covered）", () => {
+  it("w2: 確認済みの区間の無い行は、読み始めが watchStart より後なら誤り。watchStart が今 − 6 日より後なら unconfirmed_not_covered（受け入れの対象外）、前なら untimed_not_covered（受け入れの対象）", () => {
+    const later = reconcile(
+      input({
+        window: { since: NOW - HOUR, until: NOW },
+        coverageBasis: "unconfirmed",
+        watchStart: NOW - 2 * HOUR,
+      }),
+    );
+    expect(codes(later)).toEqual(["error:unconfirmed_not_covered"]);
+    expect(
+      codes(reconcile(input({ coverageBasis: "unconfirmed", watchStart: NOW - 2 * HOUR }))),
+    ).toEqual([]);
+    const gone = reconcile(
+      input({ coverageBasis: "unconfirmed", watchStart: NOW - 6 * DAY - HOUR }),
+    );
+    expect(codes(gone)).toEqual(["error:untimed_not_covered"]);
+    expect(gone.findings[0]?.detail).toContain(new Date(NOW - 6 * DAY - HOUR).toISOString());
+    // --since を watchStart 以前にすれば読み直せる（既定の読み始めは 6 日より前に伸ばさない）
+    expect(
+      codes(
+        reconcile(
+          input({
+            window: { since: NOW - 6 * DAY - HOUR, until: NOW },
+            coverageBasis: "unconfirmed",
+            watchStart: NOW - 6 * DAY - HOUR,
+          }),
+        ),
+      ),
+    ).toEqual([]);
+  });
+  it("w5・U2: 確認済みの行で、時刻なしの誤りを記録した窓の始まりが今 − 6 日より前なら、読み始めが後のとき毎回 untimed_not_covered（受け入れの対象）", () => {
+    const untimed = { firstWindowStart: NOW - 6 * DAY - HOUR, settledUntil: NOW - 5 * DAY };
+    const r = reconcile(input({ previousCoveredUntil: NOW - 5 * DAY, untimed }));
+    expect(codes(r)).toEqual(["error:untimed_not_covered"]);
+    expect(
+      codes(
+        reconcile(
+          input({
+            window: { since: NOW - 6 * DAY - HOUR, until: NOW },
+            previousCoveredUntil: NOW - 5 * DAY,
+            untimed,
+          }),
+        ),
+      ),
+    ).toEqual([]);
+    // 既定の窓で読み直せるなら誤りにしない（消えないだけ）
+    expect(
+      codes(
+        reconcile(
+          input({
+            previousCoveredUntil: NOW - 5 * DAY,
+            untimed: { firstWindowStart: NOW - 5 * DAY, settledUntil: NOW - 4 * DAY },
+          }),
+        ),
+      ),
+    ).toEqual([]);
+  });
+  it("w3・U2: untimed_not_covered は受け入れの対象。受け入れた区間に [記録した窓の始まり（watchStart）, 今回の読み始め] が入り、受け入れで untimed を消す", () => {
+    const untimed = {
+      codes: { region_unread: 1 },
+      firstWindowStart: NOW - 6 * DAY - HOUR,
+      settledUntil: NOW - 5 * DAY,
+    };
+    const prev: AccountState = { coveredUntil: NOW - 5 * DAY, untimed };
+    const r = reconcile(input({ previousCoveredUntil: NOW - 5 * DAY, untimed }));
+    const a = applyAcceptance(r, {
+      coveredUntil: NOW - 5 * DAY,
+      untimedStart: untimed.firstWindowStart,
+      untimedCodes: untimed.codes,
+    });
+    expect(a.status).toBe("applied");
+    if (a.status !== "applied") return;
+    expect(a.interval).toMatchObject({ from: NOW - 6 * DAY - HOUR, until: NOW - 6 * DAY });
+    expect(a.interval.codes).toMatchObject({ untimed_not_covered: 1, region_unread: 1 });
+    expect(acceptedAccountState(prev, a, { acceptedAt: NOW }).untimed).toBeUndefined();
+    // 確認済みの区間の無い行: 区間の始まりは watchStart
+    const u2: AccountState = {
+      watchStart: NOW - 7 * DAY,
+      untimed: { ...untimed, firstWindowStart: NOW - 8 * DAY },
+    };
+    const r2 = reconcile(input({ coverageBasis: "unconfirmed", watchStart: NOW - 7 * DAY }));
+    const a2 = applyAcceptance(r2, { untimedStart: NOW - 7 * DAY });
+    expect(a2.status).toBe("applied");
+    if (a2.status !== "applied") return;
+    expect(a2.interval).toMatchObject({ from: NOW - 7 * DAY, until: NOW - 6 * DAY });
+    expect(acceptedAccountState(u2, a2, { acceptedAt: NOW })).toMatchObject({
+      coveredUntil: NOW - 300_000,
+    });
+    expect(acceptedAccountState(u2, a2, { acceptedAt: NOW }).untimed).toBeUndefined();
+    expect(acceptedAccountState(u2, a2, { acceptedAt: NOW }).watchStart).toBeUndefined();
+  });
+  it("w1: --init の誤りの実行は watchStart を書く（以後の誤りの実行でも動かない）。確認済みになれば消える", () => {
+    const r = reconcile(
+      input({
+        window: { since: NOW - 2 * HOUR, until: NOW },
+        incompleteReads: ["w"],
+        coverageBasis: "init",
+      }),
+    );
+    const row = nextAccountState(undefined, r, { now: NOW, watchStart: NOW - 2 * HOUR });
+    expect(row.watchStart).toBe(NOW - 2 * HOUR);
+    const again = nextAccountState(
+      row,
+      reconcile(
+        input({ incompleteReads: ["w"], coverageBasis: "unconfirmed", watchStart: NOW - 2 * HOUR }),
+      ),
+      { now: NOW + 1000 },
+    );
+    expect(again.watchStart).toBe(NOW - 2 * HOUR);
+    expect(() => nextAccountState(undefined, r, { now: NOW })).toThrow();
+  });
+});
+
+describe("続き 7（V1）: untimed_not_covered の受け入れは、記録した untimed の末尾まで判定していなければ適用しない", () => {
+  const untimed = {
+    codes: { record_read_incomplete: 1 },
+    firstWindowStart: NOW - 6 * DAY - HOUR,
+    settledUntil: NOW - HOUR,
+  };
+  it("今回の判定した終わり（until − lag）が settledUntil より前なら rejected（理由つき）。--until が無ければ applied", () => {
+    const past = reconcile(
+      input({
+        window: { since: NOW - 6 * DAY, until: NOW - 3 * HOUR },
+        previousCoveredUntil: NOW - 2 * HOUR,
+        untimed,
+      }),
+    );
+    expect(codes(past)).toEqual(["error:untimed_not_covered"]);
+    const a = applyAcceptance(past, {
+      coveredUntil: NOW - 2 * HOUR,
+      untimedStart: untimed.firstWindowStart,
+      untimedSettledUntil: untimed.settledUntil,
+      untimedCodes: untimed.codes,
+    });
+    expect(a.status).toBe("rejected");
+    if (a.status !== "rejected") return;
+    expect(a.reason).toContain("did not read the end of the unresolved untimed errors");
+    const now0 = reconcile(input({ previousCoveredUntil: NOW - 2 * HOUR, untimed }));
+    expect(
+      applyAcceptance(now0, {
+        coveredUntil: NOW - 2 * HOUR,
+        untimedStart: untimed.firstWindowStart,
+        untimedSettledUntil: untimed.settledUntil,
+        untimedCodes: untimed.codes,
+      }).status,
+    ).toBe("applied");
+  });
+  it("acceptedAccountState も、受け入れた区間 ∪ 今回判定した範囲が [untimed の始まり, settledUntil] を覆わなければ例外（覆えば消す）", () => {
+    const prev: AccountState = { coveredUntil: NOW - 2 * HOUR, untimed };
+    const ok = applyAcceptance(
+      reconcile(input({ previousCoveredUntil: NOW - 2 * HOUR, untimed })),
+      {
+        coveredUntil: NOW - 2 * HOUR,
+        untimedStart: untimed.firstWindowStart,
+        untimedSettledUntil: untimed.settledUntil,
+      },
+    );
+    expect(ok.status).toBe("applied");
+    expect(acceptedAccountState(prev, ok, { acceptedAt: NOW }).untimed).toBeUndefined();
+    // 末尾が今回の判定より後の行に、同じ受け入れの結果を当てる
+    const later: AccountState = {
+      coveredUntil: NOW - 2 * HOUR,
+      untimed: { ...untimed, settledUntil: NOW },
+    };
+    expect(() => acceptedAccountState(later, ok, { acceptedAt: NOW })).toThrow();
+    // 確認済みの区間の無い行は始まりを watchStart で見る
+    const u: AccountState = {
+      watchStart: NOW - 6 * DAY - HOUR,
+      untimed: { ...untimed, firstWindowStart: NOW - 7 * DAY },
+    };
+    const okU = applyAcceptance(
+      reconcile(input({ coverageBasis: "unconfirmed", watchStart: NOW - 6 * DAY - HOUR })),
+      { untimedStart: NOW - 6 * DAY - HOUR, untimedSettledUntil: untimed.settledUntil },
+    );
+    expect(okU.status).toBe("applied");
+    expect(acceptedAccountState(u, okU, { acceptedAt: NOW }).untimed).toBeUndefined();
   });
 });

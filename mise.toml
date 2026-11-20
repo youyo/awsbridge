@@ -154,7 +154,7 @@ run = "pnpm tsx scripts/console/stop.ts apply"
 # 変数（[env] に置かず mise.local.toml に置く）: AWSBRIDGE_CONSOLE_LOGS_TOKEN（--logs-api の API のトークン）、
 #   AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID（Cloudflare のアカウント ID）、AWSBRIDGE_CONSOLE_LOGS_WORKERS（任意。Worker の名前）
 [tasks."console:reconcile"]
-description = "コンソールログインの突き合わせの道具: 発行記録（--records <file|dir> か --logs-api）と CloudTrail の AssumeRoleWithWebIdentity（有効な全リージョン）を jti で突き合わせる（--profile <名前> が要る。読み取りだけ。読み始めは状態（--state。確認済みの区間のファイル）があれば「確認済みの区間の終わり − 重なり（--overlap-seconds。既定 86400 秒・下限 3600 秒）」、無ければ 6 日前で、6 日より前には戻らない。--since が勝つ（全部を読み直す監査は --since 6d）。出力は伏せ字。--clock-skew-seconds で時計ずれの許容を指定。毎日回す。回せない日があっても 6 日以内に回せば検証の穴はできない）"
+description = "コンソールログインの突き合わせの道具: 発行記録（--records <file|dir> か --logs-api）と CloudTrail の AssumeRoleWithWebIdentity（有効な全リージョン）を jti で突き合わせる（--profile <名前> が要る。読み取りだけ。状態（--state。確認済みの区間と未解決の所見のファイル）にこのアカウントの行が無ければ止まる（初回の手順は README）。読み始めは「確認済みの区間の終わり − 重なり（--overlap-seconds。既定 86400 秒・下限 3600 秒）」で、未解決の所見があればその最も古い時刻 − 重なりまで戻し、6 日より前には戻らない。誤りの実行は所見を状態に残し、解決か人の受け入れまで消えない。--since が勝つ（全部を読み直す監査は --since 6d）。出力は伏せ字。--clock-skew-seconds で時計ずれの許容を指定。毎日回す。回せない日があっても 6 日以内に回せば検証の穴はできない）"
 run = "pnpm tsx scripts/console/reconcile.ts"
 
 # ---- コンソールログイン: issuer の外からの比較（README の「コンソールログインの issuer の外からの確認」）----
