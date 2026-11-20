@@ -18,6 +18,8 @@
 //   error   record_line_unreadable    読めない記録の行
 //   error   record_read_incomplete    発行記録（API）を、別の経路の件数まで読み切れなかった窓（c2。cto の受け入れ条件 a）
 //   error   coverage_gap              前回の確認済みの区間の終わりより、今回の読み始めが後（間に読んでいない区間がある）
+//   error   unresolved_not_covered    前の実行までの未解決の所見（錨）の最も古い時刻より読み始めが後（--since）、または最も新しい時刻より --until が前
+//   error   unresolved_out_of_window  未解決の所見の最も古い時刻が既定のさかのぼり（今 − 6 日）より前で、読み直せない（解決か受け入れまで毎回）
 //   error   assume_time_gap           対になった引き受けの時刻が、発行の時刻から「JWT の寿命＋時計ずれ」を超えて後、または時計ずれを超えて前
 //   error   identity_mismatch         発行記録の利用者と、CloudTrail の SourceIdentity の伏せ字が食い違う（弱い一致: 先頭 1 文字と末尾のドメイン）
 //   error   identity_not_compared_admin Administrator の階層（admin）の対で、記録か引き受けのどちらかに利用者が無く、比べられなかった
@@ -42,8 +44,68 @@
 import { ROLE_PATH_PREFIX, rolePath, TIERS, type Tier } from "./constants";
 import { TOKEN_TTL_SECONDS } from "./issue/claims";
 import type { AssumeEvent, ReconRecord } from "./reconcile-input";
+import {
+  type AccountState,
+  type Anchors,
+  type CodeCounts,
+  type JudgmentCriteria,
+  MAX_CODE_COUNT,
+  type Untimed,
+} from "./reconcile-state";
 
 export type Severity = "error" | "warning" | "note";
+/**
+ * 時刻（at）を持つ誤りの code（cto の決裁 2026-11-19 q3: 錨にする）。誤りの実行は、最も古い・最も新しい時刻と code ごとの件数を状態に残し、
+ * 解決（その時刻を含む窓で誤り 0）か受け入れまで、次の実行の読み始めをそこまで戻す。
+ */
+export const TIMED_ERROR_CODES: readonly string[] = [
+  "assume_without_record",
+  "provider_not_in_config",
+  "tier_mismatch",
+  "role_mismatch",
+  "team_tier_mismatch",
+  "assume_time_gap",
+  "identity_mismatch",
+  "identity_not_compared_admin",
+  "team_not_in_config",
+];
+/**
+ * 時刻を持たない誤りの code（q3: 錨にしない）。件数だけ状態に残し、次の誤り 0 の実行で消える（coveredUntil を進めないので読み直される）。
+ * coverage_gap と unresolved_* は状態から決まる誤りなので保存しない（coverage_gap は次の実行で同じ判定をやり直す）。
+ */
+export const UNTIMED_ERROR_CODES: readonly string[] = [
+  "region_unread",
+  "record_line_truncated",
+  "record_line_unreadable",
+  "record_read_incomplete",
+  "coverage_gap",
+  "unconfirmed_not_covered",
+  "untimed_not_covered",
+  "unresolved_criteria_looser",
+  "unresolved_not_covered",
+  "unresolved_out_of_window",
+];
+/** 状態から決まる誤り（状態の untimed に入れない）。 */
+const STATE_DERIVED_CODES = [
+  "coverage_gap",
+  "unconfirmed_not_covered",
+  "untimed_not_covered",
+  "unresolved_criteria_looser",
+  "unresolved_not_covered",
+  "unresolved_out_of_window",
+];
+/**
+ * 受け入れで下げる、状態から決まる誤り（区間に対する受け入れ。q1・続き 4 の A1・B1）。unconfirmed_not_covered は下げない
+ * （確認済みの区間の無い行は 6 日を読み直すまで確かめていない。受け入れた区間にその未読の範囲は入らないため）。
+ */
+const ACCEPTABLE_STATE_CODES = [
+  "coverage_gap",
+  "untimed_not_covered",
+  "unresolved_criteria_looser",
+  "unresolved_not_covered",
+  "unresolved_out_of_window",
+];
+
 export type ReconFinding = {
   severity: Severity;
   code: string;
@@ -77,19 +139,35 @@ export const DEFAULT_OVERLAP_SECONDS = 86_400;
 export const MIN_OVERLAP_SECONDS = 3_600;
 
 /**
- * 読み始めとその決め方。option は --since、state は「確認済みの区間の終わり − 重なり」、lookback は既定のさかのぼり
- * （状態が無い初回か、終わり − 重なりがさかのぼりより前のとき。後者は coveredUntil を持つ）。
+ * 読み始めとその決め方。option は --since、state は「確認済みの区間の終わり − 重なり」、unresolved は「未解決の所見の最も古い時刻 − 重なり」、
+ * lookback は既定のさかのぼり（--init の初回か、上の候補がさかのぼりより前のとき。後者は coveredUntil・oldestAnchor を持つ）。
  */
 export type ReadStart =
   | { basis: "option"; since: number }
   | { basis: "state"; since: number; coveredUntil: number; overlapSeconds: number }
-  | { basis: "lookback"; since: number; lookbackDays: number; coveredUntil?: number };
+  | {
+      basis: "unresolved";
+      since: number;
+      oldestAnchor: number;
+      overlapSeconds: number;
+      coveredUntil?: number;
+    }
+  | { basis: "untimed"; since: number; untimedStart: number; coveredUntil?: number }
+  | {
+      basis: "lookback";
+      since: number;
+      lookbackDays: number;
+      coveredUntil?: number;
+      oldestAnchor?: number;
+    };
 
 /**
- * 読み始め = max(今 − さかのぼり, 確認済みの区間の終わり − 重なり)。since（--since）を渡せばそれが勝つ。状態が無ければさかのぼり。
+ * 読み始め = max(今 − さかのぼり, min(確認済みの区間の終わり − 重なり, 未解決の所見の最も古い時刻 − 重なり))。since（--since）を渡せばそれが勝つ。
+ * 状態も未解決も無ければさかのぼり。coveredUntil の無い行（--init の実行が誤りだった行。i3）は、未解決の錨があればそこから、時刻を持たない誤り
+ * （lookbackRequired）があればさかのぼりから読む（その窓を読み直すため。q3）。
  * 古い区間を含む長い窓の照会が間引かれて（sampleInterval > 1）読み切れなくなるのを避ける緩和策（原因は未確認: 保存の間引きか
- * 照会の間引きかを区別していない）。穴の判定（coverage_gap）は reconcile の側のままで、ここで決めた読み始めは終わり以前なので穴にならない。
- * 重なりが下限（MIN_OVERLAP_SECONDS）より短ければ RangeError（黙って広げない）。
+ * 照会の間引きかを区別していない）。穴の判定（coverage_gap）と未解決の判定（unresolved_*）は reconcile の側。
+ * 重なりが下限（MIN_OVERLAP_SECONDS）より短ければ RangeError（黙って広げない）。重なりを縮めても読み始めは最も古い錨より前になる。
  */
 export function decideReadStart(o: {
   now: number;
@@ -97,6 +175,10 @@ export function decideReadStart(o: {
   coveredUntil?: number | undefined;
   overlapSeconds?: number | undefined;
   lookbackDays?: number | undefined;
+  oldestAnchor?: number | undefined;
+  lookbackRequired?: boolean | undefined;
+  /** 時刻を持たない誤りを記録した実行の窓の始まり（続き 5 の R4）。既定の読み始めをそこまで戻す（重なりは引かない）。 */
+  untimedStart?: number | undefined;
 }): ReadStart {
   const overlapSeconds = o.overlapSeconds ?? DEFAULT_OVERLAP_SECONDS;
   if (!Number.isInteger(overlapSeconds) || overlapSeconds < MIN_OVERLAP_SECONDS)
@@ -104,24 +186,65 @@ export function decideReadStart(o: {
   if (o.since !== undefined) return { basis: "option", since: o.since };
   const lookbackDays = o.lookbackDays ?? DEFAULT_LOOKBACK_DAYS;
   const lookback = o.now - lookbackDays * 86_400_000;
-  if (o.coveredUntil === undefined) return { basis: "lookback", since: lookback, lookbackDays };
-  const fromState = o.coveredUntil - overlapSeconds * 1000;
-  return fromState > lookback
-    ? { basis: "state", since: fromState, coveredUntil: o.coveredUntil, overlapSeconds }
-    : { basis: "lookback", since: lookback, lookbackDays, coveredUntil: o.coveredUntil };
+  const fromState =
+    o.coveredUntil !== undefined
+      ? o.coveredUntil - overlapSeconds * 1000
+      : o.lookbackRequired
+        ? lookback
+        : undefined;
+  // 候補（同じ値なら前のものを使う）: 状態・錨・時刻を持たない誤りの窓
+  const candidates: { kind: "state" | "unresolved" | "untimed"; at: number }[] = [];
+  if (fromState !== undefined) candidates.push({ kind: "state", at: fromState });
+  if (o.oldestAnchor !== undefined)
+    candidates.push({ kind: "unresolved", at: o.oldestAnchor - overlapSeconds * 1000 });
+  if (o.untimedStart !== undefined) candidates.push({ kind: "untimed", at: o.untimedStart });
+  if (candidates.length === 0) return { basis: "lookback", since: lookback, lookbackDays };
+  const pick = candidates.reduce((a, b) => (b.at < a.at ? b : a));
+  const covered = o.coveredUntil !== undefined ? { coveredUntil: o.coveredUntil } : {};
+  if (pick.at > lookback) {
+    if (pick.kind === "unresolved")
+      return {
+        basis: "unresolved",
+        since: pick.at,
+        oldestAnchor: o.oldestAnchor as number,
+        overlapSeconds,
+        ...covered,
+      };
+    if (pick.kind === "untimed")
+      return { basis: "untimed", since: pick.at, untimedStart: pick.at, ...covered };
+    return {
+      basis: "state",
+      since: pick.at,
+      coveredUntil: o.coveredUntil as number,
+      overlapSeconds,
+    };
+  }
+  return {
+    basis: "lookback",
+    since: lookback,
+    lookbackDays,
+    ...covered,
+    ...(o.oldestAnchor !== undefined ? { oldestAnchor: o.oldestAnchor } : {}),
+  };
 }
 
 /** 読み始めの 1 行（決め方と実際の時刻。UTC）。 */
 export function formatReadStart(s: ReadStart): string {
   const iso = (t: number) => new Date(t).toISOString();
-  const how =
-    s.basis === "option"
-      ? "--since"
-      : s.basis === "state"
-        ? `from the state: confirmed until ${iso(s.coveredUntil)} minus overlap ${s.overlapSeconds}s`
-        : s.coveredUntil === undefined
-          ? `default lookback ${s.lookbackDays}d; no confirmed interval on record`
-          : `default lookback ${s.lookbackDays}d; the confirmed interval ends ${iso(s.coveredUntil)}, the overlap would go back further`;
+  let how: string;
+  if (s.basis === "option") how = "--since";
+  else if (s.basis === "state")
+    how = `from the state: confirmed until ${iso(s.coveredUntil)} minus overlap ${s.overlapSeconds}s`;
+  else if (s.basis === "unresolved")
+    how = `from the unresolved findings: oldest ${iso(s.oldestAnchor)} minus overlap ${s.overlapSeconds}s`;
+  else if (s.basis === "untimed")
+    how = `from the unresolved untimed errors: the run that recorded them started ${iso(s.untimedStart)}`;
+  else
+    how = `${
+      s.coveredUntil === undefined
+        ? `default lookback ${s.lookbackDays}d; no confirmed interval on record`
+        : `default lookback ${s.lookbackDays}d; the confirmed interval ends ${iso(s.coveredUntil)}, the overlap would go back further`
+    }${s.oldestAnchor !== undefined ? `; the oldest unresolved finding is ${iso(s.oldestAnchor)}` : ""}`;
   return `read start: ${iso(s.since)} (${how})`;
 }
 
@@ -151,11 +274,33 @@ export type ReconcileInput = {
   clockSkewSeconds?: number;
   /** 前回の成功した実行の「確認済みの区間の終わり」（epoch ミリ秒）。状態が無い（初回）なら undefined。 */
   previousCoveredUntil?: number;
+  /**
+   * previousCoveredUntil が無いときの表示（i3・i4）: init は --init の実行（first run (explicit --init)）、unconfirmed は行はあるが
+   * coveredUntil が無い（--init の実行が誤りだった）。渡さなければ今までどおり first_run。
+   */
+  coverageBasis?: "init" | "unconfirmed";
+  /** 確認済みの区間の無い行の見張りの始まり（続き 5 の w1。unconfirmed のとき）。無ければ今 − さかのぼり。 */
+  watchStart?: number;
+  /** 確認済みの行の、時刻を持たない誤りを記録した実行の範囲（続き 5 の w5・U2）。 */
+  untimed?: { firstWindowStart: number; settledUntil: number };
+  /**
+   * 前の実行までの未解決の所見の錨（最も古い・最も新しい時刻）。窓がそれを含まなければ unresolved_*（誤り。q3）。
+   * criteria（錨を作ったときの判定条件）より今回の判定条件が緩ければ unresolved_criteria_looser（誤り。続き 4 の B1）。
+   */
+  anchors?: { oldestAt: number; newestAt: number; criteria?: JudgmentCriteria };
+  /** 受け入れた区間。中の時刻を持つ誤りは note（accepted）に下げる（q1）。区間の外と時刻を持たない誤りは下げない。 */
+  accepted?: readonly { from: number; until: number }[];
+  /** 既定のさかのぼり（日。unresolved_out_of_window の境。既定 DEFAULT_LOOKBACK_DAYS）。 */
+  lookbackDays?: number;
 };
 
-/** 確認済みの区間との関係。first_run は状態が無い初回（穴なしとして扱う）。 */
+/**
+ * 確認済みの区間との関係。first_run は確認済みの区間の無い初回（穴なしとして扱う。CLI では --init の実行で explicit）。unconfirmed は行はあるが確認済みの区間が
+ * まだ無い（--init の実行が誤りだった。穴の判定はできないが、未解決の所見から読み直す。i3）。
+ */
 export type Coverage =
-  | { status: "first_run" }
+  | { status: "first_run"; explicit?: true }
+  | { status: "unconfirmed" }
   | { status: "continuous"; previous: number }
   | { status: "gap"; previous: number };
 
@@ -194,6 +339,13 @@ export type ReconcileSummary = {
 export type TimeFromIssue = { count: number; min?: number; max?: number };
 
 export type ReconcileResult = { findings: ReconFinding[]; summary: ReconcileSummary };
+
+/** 受け入れた所見（note に下げ、detail に (accepted) を付ける。code は変えない）。 */
+const accept = (f: ReconFinding): ReconFinding => ({
+  ...f,
+  severity: "note",
+  detail: `${f.detail ?? ""} (accepted)`.trim(),
+});
 
 /** jti の伏せ字（先頭 8 文字）。 */
 export const maskJti = (jti: string): string => `${jti.slice(0, 8)}…`;
@@ -456,10 +608,14 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
     add({ severity: "error", code: "record_line_unreadable", detail: pos });
   for (const w of i.incompleteReads ?? [])
     add({ severity: "error", code: "record_read_incomplete", detail: w });
-  // 確認済みの区間: 前回の終わりより今回の読み始めが後なら、間の区間はどの実行も確かめていない（誤り）。状態が無い初回は穴なし
+  // 確認済みの区間: 前回の終わりより今回の読み始めが後なら、間の区間はどの実行も確かめていない（誤り）。確認済みの区間の無い実行（--init の初回・unconfirmed の行）は比べる相手が無いので穴なし
   const coverage: Coverage =
     i.previousCoveredUntil === undefined
-      ? { status: "first_run" }
+      ? i.coverageBasis === "init"
+        ? { status: "first_run", explicit: true }
+        : i.coverageBasis === "unconfirmed"
+          ? { status: "unconfirmed" }
+          : { status: "first_run" }
       : i.window.since > i.previousCoveredUntil
         ? { status: "gap", previous: i.previousCoveredUntil }
         : { status: "continuous", previous: i.previousCoveredUntil };
@@ -475,6 +631,92 @@ export function reconcile(i: ReconcileInput): ReconcileResult {
       code: "window_exceeds_retention",
       detail: `since ${when(i.window.since)} is older than the record retention (${retentionDays}d)`,
     });
+  // 未解決の所見（錨）: 読み始めが最も古い錨より後なら、その所見を読み直していない（q3）。錨が今 − さかのぼりより前なら、既定の窓では
+  // 二度と読めないので out_of_window（解決か受け入れまで毎回）、そうでなければ not_covered。--until が最も新しい錨より前でも読み直していない
+  if (i.anchors !== undefined) {
+    const lookbackDays = i.lookbackDays ?? DEFAULT_LOOKBACK_DAYS;
+    const edge = i.now - lookbackDays * 86_400_000;
+    if (i.window.since > i.anchors.oldestAt) {
+      if (i.anchors.oldestAt < edge)
+        add({
+          severity: "error",
+          code: "unresolved_out_of_window",
+          detail: `the oldest unresolved finding ${when(i.anchors.oldestAt)} is older than the default window of ${lookbackDays}d (${when(edge)}) and cannot be read again; resolve it or accept it (--accept-unresolved)`,
+        });
+      else
+        add({
+          severity: "error",
+          code: "unresolved_not_covered",
+          detail: `the oldest unresolved finding ${when(i.anchors.oldestAt)} is before this run's start ${when(i.window.since)}`,
+        });
+    } else if (i.window.until - lagSeconds * 1000 < i.anchors.newestAt)
+      // 判定した範囲は --until − lag まで（最後の lag は pending で判定していない。続き 5 の R2）
+      add({
+        severity: "error",
+        code: "unresolved_not_covered",
+        detail: `the newest unresolved finding ${when(i.anchors.newestAt)} is after the end this run judged ${when(i.window.until - lagSeconds * 1000)} (--until minus lag ${lagSeconds}s)`,
+      });
+  }
+  // 錨を作ったときの判定条件より緩い実行（CLI の引数で緩められる時計ずれの許容と反映の遅れ。続き 4 の B1・B2）は、誤り 0 でも解決にしない
+  const criteria = i.anchors?.criteria;
+  if (criteria !== undefined) {
+    const looser = [
+      clockSkewSeconds > criteria.clockSkewSeconds
+        ? `clock skew ${clockSkewSeconds}s > ${criteria.clockSkewSeconds}s`
+        : undefined,
+      lagSeconds > criteria.lagSeconds ? `lag ${lagSeconds}s > ${criteria.lagSeconds}s` : undefined,
+    ].filter((x) => x !== undefined);
+    if (looser.length > 0)
+      add({
+        severity: "error",
+        code: "unresolved_criteria_looser",
+        detail: `the judgment criteria of this run are looser than when the unresolved findings were recorded (${looser.join(", ")}); not treated as resolved (judgment criteria looser: not resolving). Run with the recorded values, or accept with a reason (--accept-unresolved)`,
+      });
+  }
+  // 確認済みの区間の無い行（--init の実行が誤りだった行）は、読み始めが見張りの始まり（watchStart）より後なら誤り（続き 5 の w2・w3）。
+  // 見張りの始まりが既定の窓（今 − さかのぼり）の中なら unconfirmed_not_covered（--since を外せば読める。受け入れの対象外）、
+  // 既定の窓より前なら untimed_not_covered（既定の実行では読めない。--since を watchStart 以前にするか受け入れ）。--init の実行は対象外
+  const lookbackDaysW = i.lookbackDays ?? DEFAULT_LOOKBACK_DAYS;
+  const edgeW = i.now - lookbackDaysW * 86_400_000;
+  if (i.coverageBasis === "unconfirmed" && i.previousCoveredUntil === undefined) {
+    const watch = i.watchStart ?? edgeW;
+    if (i.window.since > watch) {
+      if (watch < edgeW)
+        add({
+          severity: "error",
+          code: "untimed_not_covered",
+          detail: `this row has no confirmed interval yet and its watch starts ${when(watch)}, before the default window of ${lookbackDaysW}d (${when(edgeW)}); read again with --since ${when(watch)} or earlier, or accept it (--accept-unresolved)`,
+        });
+      else
+        add({
+          severity: "error",
+          code: "unconfirmed_not_covered",
+          detail: `this row has no confirmed interval yet and this run starts ${when(i.window.since)}, after its watch start ${when(watch)}; run without --since to read it again`,
+        });
+    }
+  }
+  // 確認済みの行で、時刻を持たない誤りを記録した窓の始まりが既定の窓より前なら、既定の実行では読み直せない（続き 5 の w5・U2）
+  if (
+    i.untimed !== undefined &&
+    i.previousCoveredUntil !== undefined &&
+    i.untimed.firstWindowStart < edgeW &&
+    i.window.since > i.untimed.firstWindowStart
+  )
+    add({
+      severity: "error",
+      code: "untimed_not_covered",
+      detail: `the run that recorded the unresolved untimed errors started ${when(i.untimed.firstWindowStart)}, before the default window of ${lookbackDaysW}d (${when(edgeW)}); read again with --since ${when(i.untimed.firstWindowStart)} or earlier, or accept it (--accept-unresolved)`,
+    });
+  // 受け入れた区間の中の時刻を持つ誤りは note（accepted）に下げる（q1。jti を状態に入れないので区間で下げる）
+  const accepted = i.accepted ?? [];
+  if (accepted.length > 0)
+    for (const [k, f] of findings.entries())
+      if (
+        f.severity === "error" &&
+        f.at !== undefined &&
+        accepted.some((a) => (f.at as number) >= a.from && (f.at as number) <= a.until)
+      )
+        findings[k] = accept(f);
 
   return {
     findings,
@@ -524,8 +766,8 @@ export function reconcileExitCode(r: ReconcileResult): 0 | 1 {
 
 /**
  * 時刻を持つ誤り（引き受けか記録の時刻のあるもの）のうち最も古い時刻。無ければ undefined。
- * 検出した誤りは状態に残らない（状態は進めないだけ）ので、この時刻が既定の窓（今 − 6 日）から外れると、次の実行では読まれない
- * （--overlap-seconds や --since を変えても外れうる）。その前に所見を道具の外に記録させるために出す。
+ * 誤りの実行は時刻を持つ誤りを錨として状態に残し（nextAccountState）、次の実行はそこまで読み戻す。この時刻が既定の窓（今 − 6 日）から
+ * 外れると読み直せなくなり、解決か受け入れまで毎回 unresolved_out_of_window になる。その時刻を知らせるために出す。
  */
 export function oldestErrorAt(r: ReconcileResult): number | undefined {
   const times = r.findings
@@ -539,7 +781,7 @@ export function oldestErrorAt(r: ReconcileResult): number | undefined {
  * 終わりは「今回の終わり − 反映の遅れ（lag）」: 最後の lag の間は CloudTrail の反映が間に合わず、まだ判定していない（pending）。
  * 前回が先なら戻さない。誤りがある実行や検証できない引き受けがある実行で進めると、誤りが次の実行の区間の外に出て埋もれるので進めない
  * （穴の誤りが出た実行も、誤りなので進めない。直すには、読み始めを前回の終わり以前に戻して回す）。
- * 保証はその実行で読んだ窓の中だけ: 検出した誤りは状態に残らず、時刻が窓の外へ出れば次の実行で読まれず進む（oldestErrorAt）。
+ * 検出した時刻を持つ誤りは錨として状態に残る（nextAccountState。cto の決裁 2026-11-19 h1〜h4・q3）。
  */
 export function nextCoveredUntil(
   r: ReconcileResult,
@@ -564,7 +806,11 @@ const LABEL: Record<Severity, string> = { error: "ERROR", warning: "WARN ", note
 function coverageLine(c: Coverage): string {
   const iso = (t: number) => new Date(t).toISOString();
   if (c.status === "first_run")
-    return "coverage: first run (no confirmed interval on record; treated as no gap)";
+    return c.explicit
+      ? "coverage: first run (explicit --init)"
+      : "coverage: first run (no confirmed interval on record; treated as no gap)";
+  if (c.status === "unconfirmed")
+    return "coverage: unconfirmed (the row has no confirmed interval yet: the --init run had errors; read again from the unresolved findings)";
   if (c.status === "continuous")
     return `coverage: continuous (the previous confirmed interval ends ${iso(c.previous)})`;
   return `coverage: GAP (the previous confirmed interval ends ${iso(c.previous)}; this run starts later)`;
@@ -598,7 +844,7 @@ export function formatReconcileReport(
   const oldest = oldestErrorAt(r);
   if (oldest !== undefined)
     lines.push(
-      `oldest error finding: ${iso(oldest)} (it leaves the default window of ${DEFAULT_LOOKBACK_DAYS}d after ${iso(oldest + DEFAULT_LOOKBACK_DAYS * 86_400_000)}; record the findings outside the tool today)`,
+      `oldest error finding: ${iso(oldest)} (it leaves the default window of ${DEFAULT_LOOKBACK_DAYS}d after ${iso(oldest + DEFAULT_LOOKBACK_DAYS * 86_400_000)}; the state keeps it until a run reads it with no errors or a person accepts it)`,
     );
   const order: Severity[] = ["error", "warning", "note"];
   for (const sev of order)
@@ -609,4 +855,334 @@ export function formatReconcileReport(
   const n = (sev: Severity) => r.findings.filter((x) => x.severity === sev).length;
   lines.push(`errors: ${n("error")}, warnings: ${n("warning")}`);
   return redactReconcile(lines.join("\n"));
+}
+
+// ---- 所見の保持（cto の決裁 2026-11-19 h1〜h5・q1〜q3・i2・i3）----
+
+/** 受け入れの結果。nothing は受け入れるもの（錨も今回の coverage_gap も）が無い（CLI は終了コード 2）。 */
+export type AcceptanceOutcome =
+  | { status: "nothing" }
+  /** 錨を読み直して誤り 0（下げるものが無い）: 受け入れずにこの実行で解決する（受け入れた区間を作らない）。 */
+  | { status: "resolved"; result: ReconcileResult }
+  | { status: "rejected"; result: ReconcileResult; reason: string }
+  | {
+      status: "applied";
+      result: ReconcileResult;
+      interval: { from: number; until: number; codes: CodeCounts };
+    };
+
+const REJECT_REASON =
+  "errors remain outside what can be accepted: errors first seen in this run, outside the interval, or without a time";
+const sat = (n: number) => Math.min(n, MAX_CODE_COUNT);
+/** code ごとの件数（上限で飽和。続き 4 の (4)）。 */
+const countCodes = (list: readonly ReconFinding[]): CodeCounts => {
+  const out: CodeCounts = {};
+  for (const f of list) out[f.code] = sat((out[f.code] ?? 0) + 1);
+  return out;
+};
+/** code ごとの最大で合わせる（足し合わせない。飽和）。 */
+const maxCodes = (a: CodeCounts | undefined, b: CodeCounts): CodeCounts =>
+  Object.fromEntries(
+    [...new Set([...Object.keys(a ?? {}), ...Object.keys(b)])]
+      .sort()
+      .map((c) => [c, sat(Math.max(a?.[c] ?? 0, b[c] ?? 0))]),
+  );
+
+/**
+ * 受け入れ（--accept-unresolved。照合の実行と一体。q1・q2・続き 4 の A1・A2）。**受け入れは所見ではなく区間に対して行う**: 区間の中の
+ * 時刻を持つ誤りは、記録に無かったものを含めて、以後の実行でも誤りにならない（reconcile の accepted）。
+ * 受け入れられる区間は「前の実行までに記録された錨」と「今回の coverage_gap」から決める。
+ * 区間: 始まり = min(最も古い錨, coveredUntil（今回 coverage_gap のとき）)、終わり = max(最も新しい錨, 今回の読み始め（始まりより後で、
+ * 間を読んでいないとき）)。この実行で下げるのは、区間の中の時刻を持つ誤りのうち錨に記録された code で件数が記録以下のものと、
+ * 受け入れで下げる状態から決まる誤り（coverage_gap・unresolved_*）。区間の外・時刻を持たない誤り・記録に無い code や記録より多い件数は
+ * 下げない。下げても誤り（か検証できない引き受け）が残れば rejected（結果は下げる前のまま。受け入れを適用しない）。
+ * この code と件数の検査は取り違え（別の所見を受け入れてしまう）への守りで、同一性の保証ではない（状態に jti を入れないので、記録した
+ * 所見が消えて区間の中に同じ code の新しい所見が同じ件数だけ出れば見分けられない。続き 4 の A2・A4）。
+ */
+export function applyAcceptance(
+  r: ReconcileResult,
+  o: {
+    anchors?: Anchors | undefined;
+    coveredUntil?: number | undefined;
+    /** 時刻を持たない誤りの読み直せない範囲の始まり（確認済みの行は記録した窓の始まり、無い行は watchStart。続き 5 の w3）。 */
+    untimedStart?: number | undefined;
+    /** 記録した時刻を持たない誤りの判定の終わり（続き 7 の V1）。今回それまで判定していなければ受け入れない。 */
+    untimedSettledUntil?: number | undefined;
+    untimedCodes?: CodeCounts | undefined;
+  },
+): AcceptanceOutcome {
+  const since = r.summary.window.since;
+  const gap = r.findings.some((f) => f.severity === "error" && f.code === "coverage_gap");
+  const untimedGone = r.findings.some(
+    (f) => f.severity === "error" && f.code === "untimed_not_covered",
+  );
+  if (o.anchors === undefined && !gap && !untimedGone) return { status: "nothing" };
+  const starts = [
+    o.anchors?.oldestAt,
+    gap ? o.coveredUntil : undefined,
+    untimedGone ? o.untimedStart : undefined,
+  ].filter((x): x is number => x !== undefined);
+  const from = Math.min(...starts);
+  const ends = [o.anchors?.newestAt, since > from ? since : undefined].filter(
+    (x): x is number => x !== undefined,
+  );
+  const until = Math.max(...ends);
+  const inside = (f: ReconFinding) =>
+    f.severity === "error" && f.at !== undefined && f.at >= from && f.at <= until;
+  // 読み直して誤り 0（下げるものが無い）なら、受け入れずにこの実行で解決する（飽和の検査より先。続き 6 の U4）
+  if (reconcileExitCode(r) === 0) return { status: "resolved", result: r };
+  // untimed_not_covered の受け入れは、記録した untimed の末尾（settledUntil）まで今回判定したときだけ（続き 7 の V1）
+  if (untimedGone && o.untimedSettledUntil !== undefined && settledEnd(r) < o.untimedSettledUntil)
+    return {
+      status: "rejected",
+      result: r,
+      reason: `this run did not read the end of the unresolved untimed errors (recorded until ${new Date(o.untimedSettledUntil).toISOString()}, judged until ${new Date(settledEnd(r)).toISOString()}); run without --until or with a later --until`,
+    };
+  // 件数は飽和させない実件数で比べる（続き 5 の R3）。記録が上限で飽和していれば比べられないので適用しない
+  const counts: CodeCounts = {};
+  for (const f of r.findings.filter(inside)) counts[f.code] = (counts[f.code] ?? 0) + 1;
+  const recorded = o.anchors?.codes ?? {};
+  const saturated = Object.keys(recorded).filter((c) => (recorded[c] as number) >= MAX_CODE_COUNT);
+  if (saturated.length > 0)
+    return {
+      status: "rejected",
+      result: r,
+      reason: `the recorded count of ${saturated.join(", ")} is saturated at ${MAX_CODE_COUNT}, so the counts of this run cannot be compared`,
+    };
+  const findings = r.findings.map((f) => {
+    if (f.severity !== "error") return f;
+    if (ACCEPTABLE_STATE_CODES.includes(f.code)) return accept(f);
+    if (
+      inside(f) &&
+      recorded[f.code] !== undefined &&
+      (counts[f.code] ?? 0) <= (recorded[f.code] as number)
+    )
+      return accept(f);
+    return f;
+  });
+  const next: ReconcileResult = { ...r, findings };
+  // 何も下げなければ受け入れた区間を作らない（誤り 0 なら h4 の「その時刻を含む窓で誤り 0」で消える。区間の盲点を作らない）
+  if (findings.every((f, k) => f === r.findings[k]))
+    return reconcileExitCode(r) === 0
+      ? { status: "resolved", result: r }
+      : { status: "rejected", result: r, reason: REJECT_REASON };
+  if (reconcileExitCode(next) !== 0)
+    return { status: "rejected", result: r, reason: REJECT_REASON };
+  return {
+    status: "applied",
+    result: next,
+    interval: {
+      from,
+      until,
+      codes: {
+        ...recorded,
+        ...(gap ? { coverage_gap: 1 } : {}),
+        ...(untimedGone ? { ...(o.untimedCodes ?? {}), untimed_not_covered: 1 } : {}),
+      },
+    },
+  };
+}
+
+/** 判定した範囲の終わり（--until − lag。最後の lag は pending で判定していない）。 */
+const settledEnd = (r: ReconcileResult) => r.summary.window.until - r.summary.lagSeconds * 1000;
+
+/** 判定した範囲（読み始めから --until − lag まで）が錨の [最も古い, 最も新しい] を含むか（続き 4 の (3)・続き 5 の R2）。 */
+const windowCovers = (r: ReconcileResult, a: Anchors) =>
+  r.summary.window.since <= a.oldestAt && settledEnd(r) >= a.newestAt;
+
+/**
+ * 判定した範囲が、時刻を持たない誤りを記録した実行の読もうとした範囲を含むか（続き 5 の R4・続き 6 の U1）。始まりの側は、確認済みの行は
+ * 記録した窓の始まり、確認済みの区間の無い行は見張りの始まり（watchStart。続き 5 の w2）。終わりの側は記録した判定の終わり。
+ */
+const untimedCovered = (r: ReconcileResult, row: AccountState & { untimed: Untimed }) =>
+  r.summary.window.since <=
+    (row.coveredUntil !== undefined
+      ? row.untimed.firstWindowStart
+      : (row.watchStart ?? row.untimed.firstWindowStart)) &&
+  settledEnd(r) >= row.untimed.settledUntil;
+
+/** その実行の判定条件（錨に残す。B1）。 */
+const criteriaOf = (r: ReconcileResult): JudgmentCriteria => ({
+  clockSkewSeconds: r.summary.clockSkewSeconds,
+  lagSeconds: r.summary.lagSeconds,
+});
+
+/**
+ * 実行のあとのアカウントの行（h2・q3・続き 4 の (2)〜(4)・B1）。受け入れの適用は acceptedAccountState（別の経路）。
+ * 終了コード 0: coveredUntil を進め（nextCoveredUntil）、時刻を持たない誤りの件数を消す。錨を消すのは、窓（読み始めと --until）が
+ * [最も古い錨, 最も新しい錨] を含むときだけ（含まなければ残す。状態の側でも確かめる）。
+ * 0 でない: coveredUntil は変えず、時刻を持つ誤りを錨に合わせる（最も古いは前へ進めない・最も新しいは後へ・最初に見つけた時刻は保つ・
+ * code ごとの件数は 1 回の実行で見た最大・判定条件は厳しい方）。時刻を持たない誤りの件数は code ごとの最大で合わせ（足し合わせない）、
+ * 誤り 0 の実行でだけ消える（coverage_gap・unresolved_* などの状態から決まる誤りは入れない。検証できない引き受けは unverifiable の件数）。
+ * 件数は上限で飽和させる。accepted は追記だけで消さない。
+ */
+export function nextAccountState(
+  row: AccountState | undefined,
+  r: ReconcileResult,
+  o: {
+    now: number;
+    /** --init の実行の見張りの始まり（--since の読み始め、無ければ until。続き 5 の w1）。行の無い誤りの実行で要る。 */
+    watchStart?: number | undefined;
+  },
+): AccountState {
+  const accepted =
+    row?.accepted !== undefined && row.accepted.length > 0 ? { accepted: row.accepted } : {};
+  if (reconcileExitCode(r) === 0) {
+    // 確認済みの区間の無い行を確認済みにできるのは、読み始めが見張りの始まり以前の実行だけ（状態の側でも確かめる。続き 5 の w2）
+    if (
+      row !== undefined &&
+      row.coveredUntil === undefined &&
+      row.watchStart !== undefined &&
+      r.summary.window.since > row.watchStart
+    )
+      return row;
+    // 消すのは判定した範囲が含むときだけ（含まなければ残す。状態の側でも確かめる。続き 4 の (3)・続き 5 の R2・R4）
+    const keepAnchors = row?.unresolved !== undefined && !windowCovers(r, row.unresolved);
+    const keepUntimed =
+      row?.untimed !== undefined && !untimedCovered(r, { ...row, untimed: row.untimed });
+    return {
+      coveredUntil: nextCoveredUntil(r, row?.coveredUntil) as number,
+      ...(keepAnchors && row?.unresolved !== undefined ? { unresolved: row.unresolved } : {}),
+      ...(keepUntimed && row?.untimed !== undefined ? { untimed: row.untimed } : {}),
+      ...accepted,
+    };
+  }
+  const errors = r.findings.filter((f) => f.severity === "error");
+  const timed = errors.filter((f) => f.at !== undefined);
+  let unresolved = row?.unresolved;
+  if (timed.length > 0) {
+    const times = timed.map((f) => f.at as number);
+    const codes = countCodes(timed);
+    const c = criteriaOf(r);
+    unresolved =
+      unresolved === undefined
+        ? {
+            oldestAt: Math.min(...times),
+            newestAt: Math.max(...times),
+            firstSeenAt: o.now,
+            codes,
+            criteria: c,
+          }
+        : {
+            oldestAt: Math.min(unresolved.oldestAt, ...times),
+            newestAt: Math.max(unresolved.newestAt, ...times),
+            firstSeenAt: Math.min(unresolved.firstSeenAt, o.now),
+            codes: maxCodes(unresolved.codes, codes),
+            criteria: {
+              clockSkewSeconds: Math.min(unresolved.criteria.clockSkewSeconds, c.clockSkewSeconds),
+              lagSeconds: Math.min(unresolved.criteria.lagSeconds, c.lagSeconds),
+            },
+          };
+  }
+  const run = countCodes(
+    errors.filter((f) => f.at === undefined && !STATE_DERIVED_CODES.includes(f.code)),
+  );
+  if (r.summary.unverifiable > 0) run.unverifiable = sat(r.summary.unverifiable);
+  // 時刻を持たない誤り: 件数は code ごとの最大、範囲は窓の始まりの最も古い・判定した終わりの最も新しい（R4）
+  let untimed = row?.untimed;
+  if (Object.keys(run).length > 0)
+    untimed = {
+      codes: maxCodes(untimed?.codes, run),
+      firstWindowStart: Math.min(untimed?.firstWindowStart ?? Infinity, r.summary.window.since),
+      // 判定した終わりが読み始めより前の短い窓でも前後を逆にしない（読み直しの条件は厳しくなるだけ。U7）
+      settledUntil: Math.max(
+        untimed?.settledUntil ?? -Infinity,
+        settledEnd(r),
+        r.summary.window.since,
+      ),
+    };
+  // 確認済みの区間の無い行は見張りの始まりを保つ（以後動かない）。行の無い --init の誤りの実行は渡された値で決める（w1）
+  const watchStart = row !== undefined ? row.watchStart : o.watchStart;
+  if (row?.coveredUntil === undefined && watchStart === undefined)
+    throw new Error("a row with no confirmed interval needs its watch start (--init)");
+  return {
+    ...(row?.coveredUntil !== undefined ? { coveredUntil: row.coveredUntil } : {}),
+    ...(row?.coveredUntil === undefined && watchStart !== undefined ? { watchStart } : {}),
+    ...(unresolved !== undefined ? { unresolved } : {}),
+    ...(untimed !== undefined ? { untimed } : {}),
+    ...accepted,
+  };
+}
+
+/**
+ * 受け入れを適用した実行のあとの行。受け入れの結果（applyAcceptance の戻り値）を受け、applied でなければ例外（状態の側でも確かめる。
+ * cto の見解 2026-11-19 続き 5）。錨を消し、受け入れた区間を追記し、coveredUntil は通常どおり進める（再開点は足さない。q1）。
+ * 見張りの始まりは確認済みになるので消える。nextAccountState とは別の経路（続き 4 の (3)）。
+ * 時刻を持たない誤りの件数を消すのは、この実行が記録した範囲を読み直したとき（untimedCovered）か、今回 untimed_not_covered を
+ * 受け入れたとき（受け入れた区間に読み直せない範囲が入る）だけ。それ以外は残す（続き 6 の U3・続き 5 の w3・w5）。
+ */
+export function acceptedAccountState(
+  row: AccountState | undefined,
+  outcome: AcceptanceOutcome,
+  o: { acceptedAt: number },
+): AccountState {
+  if (outcome.status !== "applied" || reconcileExitCode(outcome.result) !== 0)
+    throw new Error(
+      "acceptance is applied only for an applied acceptance whose result exits with 0",
+    );
+  const r = outcome.result;
+  const untimedAccepted = r.findings.some((f) => f.code === "untimed_not_covered");
+  // untimed_not_covered を受け入れて untimed を消すのは、受け入れた区間 ∪ 今回判定した範囲が [untimed の始まり, settledUntil] を
+  // 覆うときだけ（覆わなければ例外。applyAcceptance が末尾を読んでいない受け入れを止めるので、ここに来るのは食い違い。続き 7 の V1）
+  if (untimedAccepted && row?.untimed !== undefined) {
+    const start =
+      row.coveredUntil !== undefined
+        ? row.untimed.firstWindowStart
+        : (row.watchStart ?? row.untimed.firstWindowStart);
+    const end = row.untimed.settledUntil;
+    const a = outcome.interval;
+    const judged = { from: r.summary.window.since, until: settledEnd(r) };
+    const covers = (x: { from: number; until: number }) => x.from <= start && x.until >= end;
+    const joined =
+      a.until >= judged.from && judged.until >= a.from
+        ? { from: Math.min(a.from, judged.from), until: Math.max(a.until, judged.until) }
+        : undefined;
+    if (!covers(a) && !covers(judged) && (joined === undefined || !covers(joined)))
+      throw new Error(
+        "the accepted interval and the judged range do not cover the unresolved untimed errors",
+      );
+  }
+  const keepUntimed =
+    row?.untimed !== undefined &&
+    !untimedAccepted &&
+    !untimedCovered(r, { ...row, untimed: row.untimed });
+  return {
+    coveredUntil: nextCoveredUntil(r, row?.coveredUntil) as number,
+    ...(keepUntimed && row?.untimed !== undefined ? { untimed: row.untimed } : {}),
+    accepted: [
+      ...(row?.accepted ?? []),
+      { ...outcome.interval, acceptedAt: o.acceptedAt, reasonGiven: true },
+    ],
+  };
+}
+
+const codesText = (c: CodeCounts) =>
+  Object.keys(c)
+    .sort()
+    .map((k) => `${k}=${c[k]}`)
+    .join(", ");
+
+/** 状態の行の要約（毎回の出力。件数と時刻だけ）: 未解決の錨・時刻を持たない誤りの件数・受け入れた区間の数と最新の区間（q1）。 */
+export function formatStateLines(row: AccountState | undefined): string[] {
+  const iso = (t: number) => new Date(t).toISOString();
+  const u = row?.unresolved;
+  const lines = [
+    u === undefined
+      ? "unresolved: none"
+      : `unresolved: oldest ${iso(u.oldestAt)}, newest ${iso(u.newestAt)}, first seen ${iso(u.firstSeenAt)}, ${codesText(u.codes)} (judged with clock skew ${u.criteria.clockSkewSeconds}s, lag ${u.criteria.lagSeconds}s)`,
+  ];
+  if (row !== undefined && row.coveredUntil === undefined && row.watchStart !== undefined)
+    lines.push(`watch starts: ${iso(row.watchStart)} (no confirmed interval yet)`);
+  if (row?.untimed !== undefined)
+    lines.push(
+      `unresolved untimed errors (largest count per code): ${codesText(row.untimed.codes)}`,
+    );
+  const acc = row?.accepted ?? [];
+  const last = acc[acc.length - 1];
+  lines.push(
+    last === undefined
+      ? "accepted intervals: 0"
+      : `accepted intervals: ${acc.length} (latest ${iso(last.from)} .. ${iso(last.until)}, accepted at ${iso(last.acceptedAt)}; not confirmed)`,
+  );
+  return lines;
 }

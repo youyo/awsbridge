@@ -388,9 +388,9 @@ describe("突き合わせの運用: 読み始めを状態から決める・状�
       "どの区間を検証できなかったかを記録します",
       "状態のファイルを黙って消しません",
       "間引かれずに読めると実測で確かめた期間を超えると、今の道具の読み方では、その間を完全に読めたことを確かめられません",
-      // 誤りのある実行は進めない、の保証の範囲（読んだ窓の中だけ）と、窓の外へ出た誤り
-      "保証するのは、その実行で読んだ窓に誤りがあれば区間を進めないことまでです",
-      "次の実行では読まれず、終了コード 0 で区間が進みます",
+      // 誤りのある実行は進めず、所見は状態に残る（所見の保持。#55 の「窓の外へ出ると読まれず進む」は期待値を逆にした）
+      "所見は状態に残り（未解決の所見）、解決か受け入れまで消えません",
+      "錨が消えるのは、その時刻を含む窓を読んで誤り 0 の実行か、人の受け入れだけです",
       "`oldest error finding:`",
       "その日のうちに、所見を道具の外に記録します",
       "原因が分かるまで `--overlap-seconds` と `--since` を変えず、状態のファイルを作り直しません",
@@ -412,6 +412,8 @@ describe("突き合わせの運用: 読み始めを状態から決める・状�
     expect(text).not.toMatch(/取り込み時に間引かれ/);
     expect(text).not.toContain("その間の発行は検証できなくなります");
     expect(text).not.toContain("誤りが埋もれるため");
+    expect(text).not.toContain("次の実行では読まれず、終了コード 0 で区間が進みます");
+    expect(text).not.toContain("検出した誤りは状態のファイルに残りません");
   });
   it("README.md: same points in English", () => {
     const text = read("README.md");
@@ -427,8 +429,8 @@ describe("突き合わせの運用: 読み始めを状態から決める・状�
       "record which interval could not be verified",
       "Do not delete the state file silently",
       "If you skip more days than the period measured to read without sampling, the current way the tool reads cannot confirm that the interval in between was read completely",
-      "What this guarantees is only that a run with an error in the window it read does not advance the interval",
-      "the next run does not read it, and the interval advances with exit code 0",
+      "The findings are kept in the state (unresolved findings) until they are resolved or accepted",
+      "Anchors are cleared only by a run that reads a window containing their time with no errors, or by a person's acceptance",
       "`oldest error finding:`",
       "record the findings outside the tool the day they appear",
       "Until the cause is known, do not change `--overlap-seconds` or `--since`, and do not rebuild the state file",
@@ -447,6 +449,10 @@ describe("突き合わせの運用: 読み始めを状態から決める・状�
     expect(text).not.toMatch(/sampled at ingestion/i);
     expect(text).not.toContain("the issuances in between can no longer be verified");
     expect(text).not.toContain("and bury them");
+    expect(text).not.toContain(
+      "the next run does not read it, and the interval advances with exit code 0",
+    );
+    expect(text).not.toContain("A detected error is not kept in the state file");
   });
   it("README（英日）: 誤りが出た実行の項は「解決か受け入れを記録してから再開する」で終える（解決した日も記録を残す）。緩和の効果は言い切らない。--until の文は 1 文", () => {
     const bulletOf = (text: string, head: string) =>
@@ -482,10 +488,11 @@ describe("突き合わせの運用: 読み始めを状態から決める・状�
     for (const s of [
       "確認済みの区間の終わり − 重なり",
       "`--overlap-seconds`",
-      "保証するのは、その実行で読んだ窓に誤りがあれば区間を進めないことまで",
+      "錨が消えるのは、その時刻を含む窓を読んで誤り 0 の実行か、人の受け入れ",
       "保存の間引きか照会の間引きかは未確認",
     ])
       expect(text, s).toContain(s);
+    expect(text).not.toContain("検出した誤りは状態に残らない");
     expect(text).not.toContain("既定のさかのぼりは 6 日で");
   });
   it("mise.toml: console:reconcile の説明に、読み始めは状態から（--overlap-seconds）・--since が勝つと書く", () => {
@@ -765,5 +772,193 @@ describe("README の並びと P2（B）の構成", () => {
         .sort();
     };
     expect(spans("README_ja.md")).toEqual(spans("README.md"));
+  });
+});
+
+// 所見の保持と --init（cto の決裁 2026-11-19 h1〜h6・i1〜i7・q1〜q3）
+describe("突き合わせの文書: 所見の保持・--init・受け入れ", () => {
+  const fenced = (text: string): string[] => {
+    const out: string[] = [];
+    let inFence = false;
+    for (const line of text.split("\n")) {
+      if (/^\s*```/.test(line)) inFence = !inFence;
+      else if (inFence) out.push(line);
+    }
+    return out;
+  };
+  it("mise.toml: console:reconcile の節（注記・説明・run）に --init と --accept-unresolved を入れない（定期実行に入れない。i5）", () => {
+    const text = read("mise.toml");
+    const from = text.indexOf("# ---- コンソールログイン: 発行記録と CloudTrail の突き合わせ");
+    const to = text.indexOf("# ---- ", from + 10);
+    const section = text.slice(from, to);
+    expect(section).toContain('[tasks."console:reconcile"]');
+    expect(section).not.toContain("--init");
+    expect(section).not.toContain("--accept-unresolved");
+    expect(section).toContain("行が無ければ止まる");
+  });
+  for (const f of ["README.md", "README_ja.md"])
+    it(`${f}: 照合の例のコードブロックに --init と --accept-unresolved を入れない（毎日の例。i5）`, () => {
+      const lines = fenced(read(f)).filter((l) => l.includes("console:reconcile"));
+      expect(lines.length).toBeGreaterThan(0);
+      for (const l of lines) {
+        expect(l).not.toContain("--init");
+        expect(l).not.toContain("--accept-unresolved");
+      }
+    });
+  it("README_ja.md: state_missing と 2 つの道・--init の出力・ファイルごと移す・失ったら記録してから --init・限界・未解決の所見・受け入れとその限界・時刻を持つ code", () => {
+    const text = read("README_ja.md");
+    for (const s of [
+      "`state_missing`（終了コード 2）",
+      "状態のファイルをファイルごと移します",
+      "`coverage: first run (explicit --init)`",
+      "`coverage: unconfirmed`",
+      "を道具の外に記録してから `--init` を打ちます",
+      "ファイルを消して `--init` を打てる者への守りではありません",
+      "`unresolved_out_of_window`",
+      "`unresolved_not_covered`",
+      "`--accept-unresolved --reason <理由>`",
+      "**限界: 受け入れた区間に遅れて現れた引き受けは誤りになりません。**",
+      "エージェントは打たず、定期実行に入れません",
+      "`coverage_gap` は残しません",
+      "`accepted intervals:`",
+    ])
+      expect(text, s).toContain(s);
+  });
+  it("README.md: same points in English", () => {
+    const text = read("README.md");
+    for (const s of [
+      "`state_missing` (exit code 2)",
+      "move the whole state file",
+      "`coverage: first run (explicit --init)`",
+      "`coverage: unconfirmed`",
+      "outside the tool before running `--init`",
+      "not against anyone who can delete the file and run `--init`",
+      "`unresolved_out_of_window`",
+      "`unresolved_not_covered`",
+      "`--accept-unresolved --reason <reason>`",
+      "**Limit: an assumption that shows up late inside an accepted interval is not an error.**",
+      "an agent does not, and it is not part of any scheduled run",
+      "`coverage_gap` is not kept",
+      "`accepted intervals:`",
+    ])
+      expect(text, s).toContain(s);
+  });
+});
+
+// 続き 4（Sol の結果）: 受け入れは区間に対して・取り違えへの守り・幅・判定条件・同時に回さない・確認済みの区間の無い行
+describe("突き合わせの文書: 続き 4 の (1)〜(5)・A・B", () => {
+  it("README_ja.md", () => {
+    const text = read("README_ja.md");
+    for (const s of [
+      "受け入れは所見ではなく区間に対して行います",
+      "記録に無かったものを含めて",
+      "取り違えへの守りで、同一性の保証ではありません",
+      "区間の幅",
+      "`unresolved_criteria_looser`",
+      "判定条件が緩いので解決にしません",
+      "設定・Worker の名前・`--records` と `--logs-api` の切り替えは、この判定条件に含めません",
+      "`unconfirmed_not_covered`",
+      "code ごとの最大",
+      "同じ状態のファイルで同時に回しません",
+    ])
+      expect(text, s).toContain(s);
+    expect(text).not.toContain(
+      "受け入れられるのは、前の実行までに記録した錨と、今回の `coverage_gap` だけです",
+    );
+  });
+  it("README.md", () => {
+    const text = read("README.md");
+    for (const s of [
+      "An acceptance is made on an interval, not on findings",
+      "including ones not recorded before",
+      "guards against mistakes; it does not prove that they are the same findings",
+      "the width of the interval",
+      "`unresolved_criteria_looser`",
+      "the judgment criteria are looser, so it is not treated as resolved",
+      "The config, the Worker names, and the switch between `--records` and `--logs-api` are not part of these judgment criteria",
+      "`unconfirmed_not_covered`",
+      "the largest count per code",
+      "Do not run the reconciliation at the same time with the same state file",
+    ])
+      expect(text, s).toContain(s);
+    expect(text).not.toContain(
+      "Only the anchors recorded by earlier runs and this run's `coverage_gap` can be accepted",
+    );
+  });
+  it("docs/specs/console-login.md: 読み始めの式に錨を入れる（§5.6 の読み始め）・受け入れは区間", () => {
+    const text = read("docs/specs/console-login.md");
+    expect(text).toContain(
+      "max(今 − 6 日, min(確認済みの区間の終わり − 重なり, 最も古い錨 − 重なり))",
+    );
+    expect(text).toContain("受け入れは所見ではなく区間に対して行う");
+  });
+});
+
+describe("突き合わせの文書: 続き 5（ロック・判定した範囲）", () => {
+  it("README（英日）・spec にロックのファイルと判定した範囲を書く", () => {
+    expect(read("README_ja.md")).toContain(
+      "状態のファイルの隣にロック（`<state>.lock`。中身は pid と開始時刻だけ）",
+    );
+    expect(read("README_ja.md")).toContain("判定した範囲（読み始めから `--until` − 反映の遅れまで");
+    expect(read("README.md")).toContain(
+      "creates a lock next to the state file (`<state>.lock`; it holds only the pid and the start time)",
+    );
+    expect(read("README.md")).toContain(
+      "the judged range, from the start to `--until` minus the propagation lag",
+    );
+    expect(read("docs/specs/console-login.md")).toContain("`<state>.lock` を排他で作り");
+  });
+});
+
+describe("突き合わせの文書: 続き 6（ロックが残る場合の手順）", () => {
+  it("README（英日）: SIGINT・SIGTERM で消し、SIGKILL などで残ったら pid を確かめて消す。「どの終わり方でも消す」とは書かない", () => {
+    const ja = read("README_ja.md");
+    expect(ja).toContain(
+      "SIGKILL や電源断などで残ったときは、中の pid の照合が動いていないことを確かめてから消します",
+    );
+    expect(ja).not.toContain("どの終わり方でも消します");
+    const en = read("README.md");
+    expect(en).toContain(
+      "if one is left after SIGKILL, a power loss, or similar, check that no reconciliation with the pid inside is running",
+    );
+    expect(en).not.toContain("the lock is removed however the run ends");
+  });
+});
+
+describe("突き合わせの文書: 続き 5（cto）見張りの始まり・untimed_not_covered・受け入れが消す範囲", () => {
+  it("README_ja.md", () => {
+    const t = read("README_ja.md");
+    for (const s of [
+      "`--since` なしの `--init` は、その実行の時刻から見張りを始めます（前の 6 日は読みますが約束しません）",
+      "失った区間を拾うなら `--since` を付けます",
+      "`untimed_not_covered`",
+      "見張りの始まり以前から読んだ誤り 0 の実行だけ",
+      "受け入れで時刻を持たない誤りの件数が消えるのは",
+    ])
+      expect(t, s).toContain(s);
+  });
+  it("README.md", () => {
+    const t = read("README.md");
+    for (const s of [
+      "`--init` without `--since` starts the watch at the time of that run (it reads the 6 days before but does not promise them)",
+      "pass `--since` to pick up the lost interval",
+      "`untimed_not_covered`",
+      "only a run with no errors that starts at or before the watch start",
+      "An acceptance clears the counts of errors without a time only",
+    ])
+      expect(t, s).toContain(s);
+  });
+});
+
+describe("突き合わせの文書: cto 続き 6 の s4（受け入れの実行に --until は付けられない）", () => {
+  it("README（英日）・rollout（英日）に 1 行", () => {
+    expect(read("README_ja.md")).toContain("受け入れの実行に `--until` は付けられません");
+    expect(read("README.md")).toContain("A run with `--accept-unresolved` cannot take `--until`");
+    expect(read("docs/console-production-rollout_ja.md")).toContain(
+      "受け入れの実行に `--until` は付けられません",
+    );
+    expect(read("docs/console-production-rollout.md")).toContain(
+      "A run with `--accept-unresolved` cannot take `--until`",
+    );
   });
 });

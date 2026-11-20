@@ -249,6 +249,10 @@ if (process.env.AWS_STUB_FAIL_ON && process.env.AWS_STUB_FAIL_ON.split("|").some
 const table = JSON.parse(fs.readFileSync(process.env.AWS_STUB_TABLE, "utf8"));
 if (!(key in table)) { process.stderr.write("unknown call: " + key + "\\n"); process.exit(255); }
 let res = table[key];
+// AWS_STUB_SLEEP_MS があれば、lookup-events の応答の前に待つ（実行中に止める試験）
+if (process.env.AWS_STUB_SLEEP_MS && args[1] === "lookup-events") Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.AWS_STUB_SLEEP_MS));
+// AWS_STUB_TOUCH があれば、lookup-events のときにそのファイルを書き換える（同じ状態のファイルで同時に回した形）
+if (process.env.AWS_STUB_TOUCH && args[1] === "lookup-events") fs.writeFileSync(process.env.AWS_STUB_TOUCH, process.env.AWS_STUB_TOUCH_TEXT || "");
 // AWS_STUB_FILTER_TIME があれば、lookup-events は --start-time .. --end-time の中のイベントだけを返す（実物と同じ）
 if (process.env.AWS_STUB_FILTER_TIME && args[1] === "lookup-events") {
   const at = (n) => Date.parse(args[args.indexOf(n) + 1]);
@@ -340,6 +344,13 @@ function run(
   });
 }
 
+/** 状態のファイルのこのアカウントの行（version 2）。 */
+const rowOf = (state: string) => {
+  const body = JSON.parse(readFileSync(state, "utf8"));
+  expect(body.version).toBe(2);
+  return body.accounts[ACCOUNT];
+};
+
 const callsOf = (log: string) =>
   readFileSync(log, "utf8")
     .split("\n")
@@ -372,7 +383,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
         { region: "ap-northeast-1", events: [trail(b)] },
       ],
     });
-    const r = await run(["--profile", "reconcile-test", "--records", records], env);
+    const r = await run(["--profile", "reconcile-test", "--records", records, "--init"], env);
     expect(r.out).toContain("errors: 0");
     expect(r.status, r.out).toBe(0);
     expect(r.out).toContain("source: file");
@@ -403,7 +414,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
       records: [],
       trails: [{ region: "us-east-1", events: [trail(a)] }],
     });
-    const r = await run(["--profile", "reconcile-test", "--records", records], env);
+    const r = await run(["--profile", "reconcile-test", "--records", records, "--init"], env);
     expect(r.status, r.out).toBe(1);
     expect(r.out).toContain("assume_without_record");
     expect(r.out).toContain(a.jwt.jti.slice(0, 8));
@@ -416,7 +427,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
         JSON.stringify({ $cloudflare: { truncated: true }, source: '{"event":"console_iss' }),
       ],
     });
-    const r = await run(["--profile", "reconcile-test", "--records", records], env);
+    const r = await run(["--profile", "reconcile-test", "--records", records, "--init"], env);
     expect(r.status, r.out).toBe(1);
     expect(r.out).toContain("record_line_truncated");
     expect(r.out).toContain("truncated lines: 1");
@@ -424,7 +435,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
 
   it("読めなかったリージョンは region_unread で終了コード 1", async () => {
     const { env, records } = setup({ failOn: "cloudtrail lookup-events --region=ap-northeast-1" });
-    const r = await run(["--profile", "reconcile-test", "--records", records], env);
+    const r = await run(["--profile", "reconcile-test", "--records", records, "--init"], env);
     expect(r.status, r.out).toBe(1);
     expect(r.out).toContain("region_unread");
     expect(r.out).toContain("regions: read 1/2");
@@ -435,7 +446,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
     const old = issue({ jti: newJti(), at: now() - 8 * 86_400_000 });
     const { env, records } = setup({ trails: [{ region: "us-east-1", events: [trail(old)] }] });
     const r = await run(
-      ["--profile", "reconcile-test", "--records", records, "--since", "10d"],
+      ["--profile", "reconcile-test", "--records", records, "--since", "10d", "--init"],
       env,
     );
     expect(r.out).toContain("unverifiable: 1");
@@ -448,7 +459,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
   it("さかのぼりを記録の保持より長くすると window_exceeds_retention（警告）", async () => {
     const { env, records } = setup({});
     const r = await run(
-      ["--profile", "reconcile-test", "--records", records, "--since", "10d"],
+      ["--profile", "reconcile-test", "--records", records, "--since", "10d", "--init"],
       env,
     );
     expect(r.status, r.out).toBe(0);
@@ -467,7 +478,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
       },
     ];
     const { env } = setup({ trails: [{ region: "us-east-1", events: [trail(a)] }] });
-    const r = await run(["--profile", "reconcile-test", "--logs-api"], {
+    const r = await run(["--profile", "reconcile-test", "--logs-api", "--init"], {
       ...env,
       AWSBRIDGE_CONSOLE_LOGS_API_BASE: base,
       AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID: CF_ACCOUNT,
@@ -522,7 +533,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
     const { env, state } = setup({
       trails: [{ region: "us-east-1", events: recs.map((r) => trail(r)) }],
     });
-    const r = await run(["--profile", "reconcile-test", "--logs-api"], apiEnv(env));
+    const r = await run(["--profile", "reconcile-test", "--logs-api", "--init"], apiEnv(env));
     expect(r.status, r.out).toBe(0);
     expect(r.out).toMatch(/matched: 12/);
     expect(r.out).toContain(`api count ${apiEvents.length}`);
@@ -540,12 +551,15 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
     const { env, state } = setup({
       trails: [{ region: "us-east-1", events: [trail(a), trail(b)] }],
     });
-    const r = await run(["--profile", "reconcile-test", "--logs-api"], apiEnv(env));
+    const r = await run(["--profile", "reconcile-test", "--logs-api", "--init"], apiEnv(env));
     expect(r.status, r.out).toBe(1);
     expect(r.out).toContain("record_read_incomplete");
     expect(r.out).toMatch(/read \d+ of \d+/);
     expect(r.out).toContain("state: not advanced");
-    expect(existsSync(state)).toBe(false);
+    // --init の実行は結果によらず行を書く（i2）。確認済みの区間は無い。時刻を持たない誤りは件数だけ（q3）。読めなかった記録の引き受けは錨
+    const row = rowOf(state);
+    expect(Object.keys(row).sort()).toEqual(["unresolved", "untimed", "watchStart"]);
+    expect(Object.keys(row.untimed.codes)).toEqual(["record_read_incomplete"]);
     noSecrets(r.out, [a.jwt.jti, b.jwt.jti]);
   });
 
@@ -555,13 +569,13 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
       AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID: CF_ACCOUNT,
       AWSBRIDGE_CONSOLE_LOGS_TOKEN: TOKEN,
     };
-    let r = await run(["--profile", "reconcile-test", "--logs-api"], {
+    let r = await run(["--profile", "reconcile-test", "--logs-api", "--init"], {
       ...env,
       ...api,
       AWSBRIDGE_CONSOLE_LOGS_API_BASE: "http://example.com:80",
     });
     expect(r.status, r.out).toBe(2);
-    r = await run(["--profile", "reconcile-test", "--logs-api"], {
+    r = await run(["--profile", "reconcile-test", "--logs-api", "--init"], {
       ...env,
       AWSBRIDGE_CONSOLE_LOGS_API_BASE: base,
       AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID: CF_ACCOUNT,
@@ -574,7 +588,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
   it("--logs-api: API が失敗すれば実行できない（終了コード 2。空の読み取りとして扱わない）", async () => {
     const { env } = setup({});
     apiFail = true;
-    const r = await run(["--profile", "reconcile-test", "--logs-api"], {
+    const r = await run(["--profile", "reconcile-test", "--logs-api", "--init"], {
       ...env,
       AWSBRIDGE_CONSOLE_LOGS_API_BASE: base,
       AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID: CF_ACCOUNT,
@@ -595,7 +609,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
     mkdirSync(dir);
     writeFileSync(join(dir, "a.ndjson"), JSON.stringify(a));
     writeFileSync(join(dir, "b.log.gz"), gzipSync(Buffer.from(JSON.stringify(b))));
-    const r = await run(["--profile", "reconcile-test", "--records", dir], env);
+    const r = await run(["--profile", "reconcile-test", "--records", dir, "--init"], env);
     expect(r.status, r.out).toBe(0);
     expect(r.out).toMatch(/matched: 2/);
     expect(r.out).toMatch(/lines 2\)/);
@@ -604,7 +618,15 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
   it("--account-id がプロファイルのアカウントと違えば終了コード 2（CloudTrail を読まない）", async () => {
     const { env, records, log } = setup({});
     const r = await run(
-      ["--profile", "reconcile-test", "--records", records, "--account-id", "444444444444"],
+      [
+        "--profile",
+        "reconcile-test",
+        "--records",
+        records,
+        "--account-id",
+        "444444444444",
+        "--init",
+      ],
       env,
     );
     expect(r.status, r.out).toBe(2);
@@ -614,7 +636,7 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
 
   it("aws の失敗（エラーの文にアカウント ID と email を含む）で終了コード 2 のときも、出力は伏せ字", async () => {
     const { env, records } = setup({ failOn: "sts get-caller-identity" });
-    const r = await run(["--profile", "reconcile-test", "--records", records], env);
+    const r = await run(["--profile", "reconcile-test", "--records", records, "--init"], env);
     expect(r.status, r.out).toBe(2);
     expect(r.out).toContain("sts get-caller-identity failed");
     noSecrets(r.out, []);
@@ -628,7 +650,10 @@ describe("console:reconcile（偽の aws と 127.0.0.1 の偽の Cloudflare の 
       (await run(["--profile", "reconcile-test", "--records", records, "--logs-api"], env)).status,
     ).toBe(2);
     const failing = setup({ failOn: "account list-regions|ec2 describe-regions" });
-    const r = await run(["--profile", "reconcile-test", "--records", failing.records], failing.env);
+    const r = await run(
+      ["--profile", "reconcile-test", "--records", failing.records, "--init"],
+      failing.env,
+    );
     expect(r.status, r.out).toBe(2);
     noSecrets(r.out, []);
   });
@@ -643,19 +668,53 @@ describe("console:reconcile: 時間の検査と SourceIdentity の一致（誤�
       records: [a],
       trails: [{ region: "us-east-1", events: [trail(a, { afterIssueSeconds: 400 })] }],
     });
-    let r = await run([...prof, "--records", records], env);
+    let r = await run([...prof, "--records", records, "--init"], env);
     expect(r.out).toMatch(/^ERROR\s+assume_time_gap/m);
     expect(r.out).toContain("+400s");
     expect(r.out).toMatch(/errors: 1, warnings: 0/);
     expect(r.out).toContain("time from issue: standard n=1 min 400s max 400s, admin n=0");
     expect(r.out).toContain("state: not advanced");
-    expect(existsSync(state)).toBe(false);
+    // --init の実行は誤りでも行を書く（i2）: 確認済みの区間は無く、時刻を持つ誤りが錨になる（q3）
+    expect(Object.keys(rowOf(state)).sort()).toEqual(["unresolved", "watchStart"]);
+    expect(rowOf(state).unresolved.codes).toEqual({ assume_time_gap: 1 });
     expect(r.status, r.out).toBe(1);
     noSecrets(r.out, [a.jwt.jti]);
+    // 錨を作ったときより判定条件を緩めた実行は、誤り 0 でも解決にしない（続き 4 の B1。#55 までは 0 で消えていた）
     r = await run([...prof, "--records", records, "--clock-skew-seconds", "120"], env);
-    expect(r.out).not.toContain("assume_time_gap");
+    expect(r.out).not.toMatch(/^ERROR\s+assume_time_gap/m);
     expect(r.out).toContain("clock skew 120s");
-    expect(r.status, r.out).toBe(0);
+    expect(r.out).toMatch(/^ERROR\s+unresolved_criteria_looser/m);
+    expect(r.out).toContain("judgment criteria looser: not resolving");
+    expect(r.status, r.out).toBe(1);
+    expect(rowOf(state).unresolved.codes).toEqual({ assume_time_gap: 1 });
+    expect(rowOf(state).unresolved.criteria).toEqual({ clockSkewSeconds: 60, lagSeconds: 300 });
+    // 出口は理由つきの受け入れ（区間を受け入れる）
+    const acc = await run(
+      [
+        ...prof,
+        "--records",
+        records,
+        "--clock-skew-seconds",
+        "120",
+        "--accept-unresolved",
+        "--reason",
+        "skew measured",
+      ],
+      env,
+    );
+    expect(acc.status, acc.out).toBe(0);
+    expect(rowOf(state).unresolved).toBeUndefined();
+    // 初めから広い許容で回せば（--init）誤りにならない（--clock-skew-seconds で許容を広げられる）
+    const wide = setup({
+      records: [a],
+      trails: [{ region: "us-east-1", events: [trail(a, { afterIssueSeconds: 400 })] }],
+    });
+    const w = await run(
+      [...prof, "--records", wide.records, "--init", "--clock-skew-seconds", "120"],
+      wide.env,
+    );
+    expect(w.out).not.toContain("assume_time_gap");
+    expect(w.status, w.out).toBe(0);
   });
 
   it("引き受けが発行より時計ずれを超えて前でも同じ所見（向きは -NNNs）", async () => {
@@ -664,7 +723,7 @@ describe("console:reconcile: 時間の検査と SourceIdentity の一致（誤�
       records: [a],
       trails: [{ region: "us-east-1", events: [trail(a, { afterIssueSeconds: -120 })] }],
     });
-    const r = await run([...prof, "--records", records], env);
+    const r = await run([...prof, "--records", records, "--init"], env);
     expect(r.out).toMatch(/^ERROR\s+assume_time_gap/m);
     expect(r.out).toContain("-120s");
     expect(r.status, r.out).toBe(1);
@@ -684,7 +743,7 @@ describe("console:reconcile: 時間の検査と SourceIdentity の一致（誤�
       records: [a],
       trails: [{ region: "us-east-1", events: [trail(a, { sourceIdentity: "bob@example.org" })] }],
     });
-    const r = await run([...prof, "--records", records], env);
+    const r = await run([...prof, "--records", records, "--init"], env);
     expect(r.out).toMatch(/^ERROR\s+identity_mismatch/m);
     expect(r.out).toContain("identity: compared 1, not compared 0 (admin 0)");
     expect(r.status, r.out).toBe(1);
@@ -695,7 +754,7 @@ describe("console:reconcile: 時間の検査と SourceIdentity の一致（誤�
   it("両方あって一致すれば所見なし。どちらかが無ければ比べず、比べられなかった件数を出す", async () => {
     const a = issue({ jti: newJti(), at: now() - 60 * MIN });
     const ok = setup({ records: [a], trails: [{ region: "us-east-1", events: [trail(a)] }] });
-    let r = await run([...prof, "--records", ok.records], ok.env);
+    let r = await run([...prof, "--records", ok.records, "--init"], ok.env);
     expect(r.out).toContain("identity: compared 1, not compared 0");
     expect(r.out).not.toContain("identity_mismatch");
     expect(r.status, r.out).toBe(0);
@@ -705,14 +764,14 @@ describe("console:reconcile: 時間の検査と SourceIdentity の一致（誤�
       records: [b],
       trails: [{ region: "us-east-1", events: [trail(b, { sourceIdentity: null })] }],
     });
-    r = await run([...prof, "--records", noEvent.records], noEvent.env);
+    r = await run([...prof, "--records", noEvent.records, "--init"], noEvent.env);
     expect(r.out).toContain("identity: compared 0, not compared 1");
     expect(r.out).toContain("identity_not_compared");
     expect(r.status, r.out).toBe(0);
 
     const c = issue({ jti: newJti(), at: now() - 60 * MIN, user: { accessSub: "1111…" } });
     const noRecord = setup({ records: [c], trails: [{ region: "us-east-1", events: [trail(c)] }] });
-    r = await run([...prof, "--records", noRecord.records], noRecord.env);
+    r = await run([...prof, "--records", noRecord.records, "--init"], noRecord.env);
     expect(r.out).toContain("identity: compared 0, not compared 1");
     expect(r.status, r.out).toBe(0);
   });
@@ -734,7 +793,7 @@ describe("console:reconcile: 確認済みの区間（状態のファイル）", 
       trails: [{ region: "us-east-1", events: [trail(a)] }],
     });
     const t0 = now();
-    let r = await run([...prof, "--records", records], env);
+    let r = await run([...prof, "--records", records, "--init"], env);
     expect(r.status, r.out).toBe(0);
     expect(r.out).toContain("coverage: first run");
     expect(r.out).toContain("state: confirmed until");
@@ -767,7 +826,8 @@ describe("console:reconcile: 確認済みの区間（状態のファイル）", 
     expect(r.out).toContain("coverage: GAP");
     expect(r.out).toContain("state: not advanced");
     expect(r.status, r.out).toBe(1);
-    expect(readFileSync(state, "utf8")).toBe(stateText(old));
+    // 確認済みの区間は進めない。coverage_gap は状態に保存しない（q3。次の実行で同じ判定をやり直す）
+    expect(rowOf(state)).toEqual({ coveredUntil: new Date(old).toISOString() });
     noSecrets(r.out, []);
     // さかのぼりを前回の終わり以前まで戻せば（--since 9d）穴は無い
     const again = await run([...prof, "--records", records, "--since", "9d"], env);
@@ -775,20 +835,32 @@ describe("console:reconcile: 確認済みの区間（状態のファイル）", 
     expect(again.out).not.toContain("coverage_gap");
   });
 
-  it("誤りのある実行（assume_without_record）は状態を進めない。初回で誤りなら状態のファイルを作らない", async () => {
+  it("誤りのある実行（assume_without_record）は状態を進めない。--init の初回で誤りなら、確認済みの区間の無い行（未解決の所見だけ）を書く", async () => {
     const a = issue({ jti: newJti(), at: now() - 60 * MIN });
     const { env, records, state } = setup({
       trails: [{ region: "us-east-1", events: [trail(a)] }],
     });
-    const r = await run([...prof, "--records", records], env);
+    const r = await run([...prof, "--records", records, "--init"], env);
     expect(r.status, r.out).toBe(1);
     expect(r.out).toContain("state: not advanced");
-    expect(existsSync(state)).toBe(false);
+    const assumedAt = a.jwt.iat * 1000 + 2000;
+    expect(rowOf(state)).toEqual({
+      // 見張りの始まりは --since なしの --init ではその実行の時刻（続き 5 の w1）
+      watchStart: expect.any(String),
+      unresolved: {
+        oldestAt: new Date(assumedAt).toISOString(),
+        newestAt: new Date(assumedAt).toISOString(),
+        firstSeenAt: expect.any(String),
+        codes: { assume_without_record: 1 },
+        criteria: { clockSkewSeconds: 60, lagSeconds: 300 },
+      },
+    });
     const prev = now() - 2 * DAY;
     writeFileSync(state, stateText(prev));
     const r2 = await run([...prof, "--records", records], env);
     expect(r2.status, r2.out).toBe(1);
-    expect(readFileSync(state, "utf8")).toBe(stateText(prev));
+    expect(rowOf(state).coveredUntil).toBe(new Date(prev).toISOString());
+    expect(rowOf(state).unresolved.codes).toEqual({ assume_without_record: 1 });
   });
 
   it("読めない状態のファイルは実行しない（終了コード 2。CloudTrail を読まない。初回として扱わない）。出力に中身を出さない", async () => {
@@ -825,7 +897,10 @@ describe("console:reconcile: 確認済みの区間（状態のファイル）", 
     const { env, records, dir } = setup({});
     const cwd = join(dir, "work");
     mkdirSync(cwd);
-    const r = await run([...prof, "--records", records], env, { cwd, defaultState: false });
+    const r = await run([...prof, "--records", records, "--init"], env, {
+      cwd,
+      defaultState: false,
+    });
     expect(r.status, r.out).toBe(0);
     expect(existsSync(join(cwd, ".secrets/console-reconcile-state.json"))).toBe(true);
     expect(r.out).toContain(".secrets/console-reconcile-state.json");
@@ -842,7 +917,7 @@ describe("console:reconcile: 確認済みの区間（状態のファイル）", 
         accounts: { [other]: { coveredUntil: "2026-01-01T00:00:00.000Z" } },
       }),
     );
-    const r = await run([...prof, "--records", records], env);
+    const r = await run([...prof, "--records", records, "--init"], env);
     expect(r.out).toContain("coverage: first run");
     expect(r.status, r.out).toBe(0);
     const body = JSON.parse(readFileSync(state, "utf8"));
@@ -888,7 +963,7 @@ describe("console:reconcile: cto の決裁 G2-A 条件 c5（Administrator の比
       records: [a],
       trails: [{ region: "us-east-1", events: [trail(a, { sourceIdentity: null })] }],
     });
-    const r = await run([...prof, "--records", s.records], s.env);
+    const r = await run([...prof, "--records", s.records, "--init"], s.env);
     expect(r.out).toMatch(/^ERROR\s+identity_not_compared_admin/m);
     expect(r.out).toContain("identity: compared 0, not compared 1 (admin 1)");
     expect(r.out).toContain("state: not advanced");
@@ -916,7 +991,7 @@ describe("console:reconcile: cto の決裁 G2-A 条件 c5（Administrator の比
         },
       ],
     });
-    const r = await run([...prof, "--records", s.records], s.env);
+    const r = await run([...prof, "--records", s.records, "--init"], s.env);
     expect(r.status, r.out).toBe(0);
     expect(r.out).toContain("console assumes: 3 (failed 0), matched: 3");
     expect(r.out).toContain("excluded assumes (not console): 2");
@@ -985,9 +1060,9 @@ describe("console:reconcile: 読み始めを状態から決める（--overlap-se
     noSecrets(r.out, [a.jwt.jti]);
   });
 
-  // 既知の限界（後半）: 検出した誤りは状態に残らないので、--overlap-seconds を短くして窓の外へ出すと次の実行で読まれず、終了コード 0 で
-  // 状態が進む。所見の保持の PR で、後半の期待値を逆にする（誤りが解決か受け入れまで残る）。
-  it("重なりの中の遅れた引き受け（前回の終わりより前・記録なし）は assume_without_record（誤り）で終了コード 1。状態は進めない。既知の限界: --overlap-seconds 3600 に変えると同じ引き受けは窓の外で読まれず終了コード 0（所見の保持の PR で期待値を逆にする）", async () => {
+  // 所見の保持（cto の決裁 2026-11-19 h5「重なりを縮めても進まない」）: #55 では既知の限界として「--overlap-seconds を短くすると次の実行で
+  // 読まれず終了コード 0 で進む」を固定していた。検出した誤りは錨として状態に残るので、後半の期待値を逆にした。
+  it("重なりの中の遅れた引き受け（前回の終わりより前・記録なし）は assume_without_record（誤り）で終了コード 1。状態は進めない。--overlap-seconds 3600 に変えても、読み始めは錨 − 1 時間になり同じ引き受けを読み直して終了コード 1 のまま", async () => {
     const late = issue({ jti: newJti(), at: now() - 4 * H });
     const { env, records, state, log } = setup({
       records: [],
@@ -1002,15 +1077,25 @@ describe("console:reconcile: 読み始めを状態から決める（--overlap-se
     expect(r.out).toContain(late.jwt.jti.slice(0, 8));
     expect(r.status, r.out).toBe(1);
     expect(r.out).toContain("state: not advanced");
-    expect(readFileSync(state, "utf8")).toBe(stateText(covered));
+    const lateAt = late.jwt.iat * 1000 + 2000;
+    expect(rowOf(state).coveredUntil).toBe(iso(covered));
+    expect(rowOf(state).unresolved).toMatchObject({
+      oldestAt: iso(lateAt),
+      newestAt: iso(lateAt),
+      codes: { assume_without_record: 1 },
+    });
 
-    // 重なりを 1 時間にすると読み始めは終わり − 1 時間（4 時間前の引き受けは読まない）。既知の限界: 検出済みの誤りが消えて 0 になる
+    // 重なりを 1 時間にしても、読み始めは min(終わり − 1 時間, 錨 − 1 時間) = 錨 − 1 時間（錨を読み直す）。誤りは消えず 1 のまま
     writeFileSync(log, "");
     const short = await run([...prof, "--records", records, "--overlap-seconds", "3600"], env);
-    expect(startOf(log)).toBe(covered - H);
-    expect(short.out).toContain("minus overlap 3600s");
-    expect(short.out).not.toContain("assume_without_record");
-    expect(short.status, short.out).toBe(0);
+    expect(startOf(log)).toBe(lateAt - H);
+    expect(short.out).toContain(
+      `from the unresolved findings: oldest ${iso(lateAt)} minus overlap 3600s`,
+    );
+    expect(short.out).toContain("assume_without_record");
+    expect(short.status, short.out).toBe(1);
+    expect(rowOf(state).coveredUntil).toBe(iso(covered));
+    expect(rowOf(state).unresolved.oldestAt).toBe(iso(lateAt));
   });
 
   it("--since を渡せば状態があってもそれが勝つ（全部を読み直す監査用の指定）。前回の終わりより後なら今までどおり coverage_gap", async () => {
@@ -1031,13 +1116,14 @@ describe("console:reconcile: 読み始めを状態から決める（--overlap-se
     expect(later.out).toContain("coverage_gap");
     expect(later.out).toContain("(--since)");
     expect(later.status, later.out).toBe(1);
-    expect(readFileSync(state, "utf8")).toBe(stateText(covered));
+    // coverage_gap は保存しない（q3）。確認済みの区間はそのまま
+    expect(rowOf(state)).toEqual({ coveredUntil: iso(covered) });
   });
 
   it("状態が無い初回は今までどおり 6 日。終わり − 重なりが 6 日より前でも 6 日（穴なし）。6 日より前に終わった状態は今までどおり coverage_gap", async () => {
     const first = setup({ filterTime: true });
     const t0 = now();
-    const r = await run([...prof, "--records", first.records], first.env);
+    const r = await run([...prof, "--records", first.records, "--init"], first.env);
     expect(r.status, r.out).toBe(0);
     const start = startOf(first.log);
     expect(start).toBeGreaterThanOrEqual(t0 - 6 * DAY - 1000);
@@ -1102,7 +1188,7 @@ describe("console:reconcile: 読み始めを状態から決める（--overlap-se
     apiCountSampledBefore = now() - 3 * DAY;
     // 状態が無い初回（6 日）は、古い区間を含むので record_read_incomplete（今までどおり誤り）
     const first = setup({ trails: [{ region: "us-east-1", events: [trail(a)] }] });
-    const r1 = await run([...prof, "--logs-api"], apiEnvOf(first.env));
+    const r1 = await run([...prof, "--logs-api", "--init"], apiEnvOf(first.env));
     expect(r1.out).toContain("record_read_incomplete");
     expect(r1.status, r1.out).toBe(1);
 
@@ -1155,7 +1241,7 @@ describe("console:reconcile: 同じ状態ファイルでの連続実行と、読
       trails: [{ region: "us-east-1", events: [trail(a)] }],
       filterTime: true,
     });
-    const first = await run([...prof, "--records", s.records], s.env);
+    const first = await run([...prof, "--records", s.records, "--init"], s.env);
     expect(first.status, first.out).toBe(0);
     expect(first.out).toContain("coverage: first run");
     const c1 = coveredOf(s.state);
@@ -1171,7 +1257,9 @@ describe("console:reconcile: 同じ状態ファイルでの連続実行と、読
     expect(second.out).toContain(late.jwt.jti.slice(0, 8));
     expect(second.status, second.out).toBe(1);
     expect(second.out).toContain("state: not advanced");
-    expect(readFileSync(s.state, "utf8")).toBe(afterFirst);
+    // 確認済みの区間は 1 回目のまま。遅れて出た引き受けは錨として残る
+    expect(rowOf(s.state).coveredUntil).toBe(JSON.parse(afterFirst).accounts[ACCOUNT].coveredUntil);
+    expect(rowOf(s.state).unresolved.codes).toEqual({ assume_without_record: 1 });
     // 終了コード 1 のとき、時刻を持つ誤りの最も古い時刻と、それが既定の窓（6 日）から外れる時刻を出す
     const lateAt = late.jwt.iat * 1000 + 2000;
     expect(second.out).toContain(
@@ -1180,14 +1268,16 @@ describe("console:reconcile: 同じ状態ファイルでの連続実行と、読
     expect(first.out).not.toContain("oldest error finding:");
   });
 
-  it("既知の限界: 遅れが重なり（既定 24 時間）を超えて CloudTrail に出た引き受けは、2 回目では読まれず検出されない（終了コード 0・状態は進む）。正常終了は重なりの外の遅れが無いことを証明しない", async () => {
+  // 一度も読まれていない誤りは保持できないので、前半は既知の限界のまま（#55 の注記の「期待値を逆にする」は、検出したあとの後半にだけ当たる。
+  // cto の決裁 2026-11-19 §4 の承認）。--since 6d で一度見つけたあとは錨として残り、--since なしの実行でも消えない
+  it("既知の限界: 遅れが重なり（既定 24 時間）を超えて CloudTrail に出た引き受けは、2 回目では読まれず検出されない（終了コード 0・状態は進む）。正常終了は重なりの外の遅れが無いことを証明しない。--since 6d で見つけたあとは、--since なしでも錨から読み戻して終了コード 1 のまま", async () => {
     const a = issue({ jti: newJti(), at: now() - 60 * MIN });
     const s = setup({
       records: [a],
       trails: [{ region: "us-east-1", events: [trail(a)] }],
       filterTime: true,
     });
-    const first = await run([...prof, "--records", s.records], s.env);
+    const first = await run([...prof, "--records", s.records, "--init"], s.env);
     expect(first.status, first.out).toBe(0);
     const c1 = coveredOf(s.state);
     // 前回の終わりの 25 時間前（重なりの外。6 日よりは新しい）の引き受け（記録なし）が、あとから出た
@@ -1204,6 +1294,15 @@ describe("console:reconcile: 同じ状態ファイルでの連続実行と、読
     const audit = await run([...prof, "--records", s.records, "--since", "6d"], s.env);
     expect(audit.out).toContain("assume_without_record");
     expect(audit.status, audit.out).toBe(1);
+    // 見つけた所見は錨として残る。--since なしの次の実行は「最も古い錨 − 重なり」から読み、所見は消えない
+    const lateAt = late.jwt.iat * 1000 + 2000;
+    expect(rowOf(s.state).unresolved.oldestAt).toBe(iso(lateAt));
+    writeFileSync(s.log, "");
+    const third = await run([...prof, "--records", s.records], s.env);
+    expect(lookupArg(s.log, "--start-time")).toBe(iso(lateAt - DAY));
+    expect(third.out).toContain("from the unresolved findings");
+    expect(third.out).toContain("assume_without_record");
+    expect(third.status, third.out).toBe(1);
   });
 
   it("--until がちょうど読み始め（状態の終わり − 重なり）か 1 ミリ秒前なら実行できない（終了コード 2）。1 ミリ秒後なら読み、過去の --until で成功しても確認済みの終わりを後ろに戻さない", async () => {
@@ -1299,3 +1398,928 @@ describe("console:reconcile: 同じ状態ファイルでの連続実行と、読
     expect(Math.min(...froms)).toBe(start - 15 * MIN);
   });
 });
+
+// ---- 所見の保持と --init（cto の決裁 2026-11-19 h1〜h5・i1〜i7・q1〜q3）----
+describe("console:reconcile: 状態の行が無いときに黙って初回にしない（--init。i1〜i7）", () => {
+  const prof = ["--profile", "reconcile-test"];
+  const H = 3_600_000;
+  const iso = (t: number) => new Date(t).toISOString();
+  const v1 = (coveredUntil: number, account = ACCOUNT) =>
+    JSON.stringify({ version: 1, accounts: { [account]: { coveredUntil: iso(coveredUntil) } } });
+
+  it("状態のファイルが無く --init も無ければ state_missing（終了コード 2）。aws も Cloudflare も呼ばない。2 つの道を出す", async () => {
+    const { env, records, log, state } = setup({});
+    const r = await run([...prof, "--records", records], env);
+    expect(r.status, r.out).toBe(2);
+    expect(r.out).toContain("state_missing");
+    expect(r.out).toContain("move the whole state file from there");
+    expect(r.out).toContain("--init");
+    expect(callsOf(log)).toEqual([]);
+    expect(existsSync(state)).toBe(false);
+    const api = await run([...prof, "--logs-api"], {
+      ...env,
+      AWSBRIDGE_CONSOLE_LOGS_API_BASE: base,
+      AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID: CF_ACCOUNT,
+      AWSBRIDGE_CONSOLE_LOGS_TOKEN: TOKEN,
+    });
+    expect(api.status, api.out).toBe(2);
+    expect(api.out).toContain("state_missing");
+    expect(callsOf(log)).toEqual([]);
+    expect(reqs).toEqual([]);
+    noSecrets(api.out, []);
+  });
+
+  it("別のアカウントの行だけなら state_missing（終了コード 2。呼ぶのはアカウントを知る sts だけ。ファイルは変えない）", async () => {
+    const { env, records, log, state } = setup({});
+    const other = v1(now() - 2 * H, "444444444444");
+    writeFileSync(state, other);
+    const r = await run([...prof, "--records", records], env);
+    expect(r.status, r.out).toBe(2);
+    expect(r.out).toContain("state_missing");
+    expect(callsOf(log).map((c) => `${c[0]} ${c[1]}`)).toEqual(["sts get-caller-identity"]);
+    expect(readFileSync(state, "utf8")).toBe(other);
+    noSecrets(r.out, []);
+  });
+
+  it("行があるのに --init なら終了コード 2（CloudTrail を読まない。ファイルは変えない）", async () => {
+    const { env, records, log, state } = setup({});
+    const text = v1(now() - 2 * H);
+    writeFileSync(state, text);
+    const r = await run([...prof, "--records", records, "--init"], env);
+    expect(r.status, r.out).toBe(2);
+    expect(r.out).toContain("--init");
+    expect(callsOf(log).map((c) => `${c[0]} ${c[1]}`)).toEqual(["sts get-caller-identity"]);
+    expect(readFileSync(state, "utf8")).toBe(text);
+  });
+
+  it("--init と --accept-unresolved は同時に使えない（終了コード 2。何も呼ばない）", async () => {
+    const { env, records, log } = setup({});
+    const r = await run(
+      [...prof, "--records", records, "--init", "--accept-unresolved", "--reason", "x"],
+      env,
+    );
+    expect(r.status, r.out).toBe(2);
+    expect(callsOf(log)).toEqual([]);
+  });
+
+  it("--init の成功: coverage: first run (explicit --init)。行は coveredUntil だけ。毎回 unresolved と accepted intervals の行を出す", async () => {
+    const a = issue({ jti: newJti(), at: now() - 60 * MIN });
+    const s = setup({ records: [a], trails: [{ region: "us-east-1", events: [trail(a)] }] });
+    const r = await run([...prof, "--records", s.records, "--init"], s.env);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain("coverage: first run (explicit --init)");
+    expect(r.out).toContain("unresolved: none");
+    expect(r.out).toContain("accepted intervals: 0");
+    expect(Object.keys(rowOf(s.state))).toEqual(["coveredUntil"]);
+  });
+
+  it("--init で誤り → 確認済みの区間の無い行（未解決の錨つき）ができ、次は --init なしで回り（unconfirmed）、所見は残る", async () => {
+    const late = issue({ jti: newJti(), at: now() - 3 * H });
+    const s = setup({ trails: [{ region: "us-east-1", events: [trail(late)] }], filterTime: true });
+    const first = await run([...prof, "--records", s.records, "--init"], s.env);
+    expect(first.status, first.out).toBe(1);
+    const lateAt = late.jwt.iat * 1000 + 2000;
+    expect(rowOf(s.state).coveredUntil).toBeUndefined();
+    expect(rowOf(s.state).unresolved.oldestAt).toBe(iso(lateAt));
+    writeFileSync(s.log, "");
+    const second = await run([...prof, "--records", s.records], s.env);
+    expect(second.out).toContain("coverage: unconfirmed");
+    expect(second.out).not.toContain("coverage: first run");
+    // 確認済みの区間の無い行は 6 日を読み直す（続き 4 の (1)。前は錨 − 重なりから読んでいた）
+    expect(second.out).toContain(
+      "(default lookback 6d; no confirmed interval on record; the oldest unresolved finding is",
+    );
+    expect(second.out).toContain("assume_without_record");
+    expect(second.status, second.out).toBe(1);
+    expect(rowOf(s.state).unresolved.oldestAt).toBe(iso(lateAt));
+    expect(rowOf(s.state).coveredUntil).toBeUndefined();
+  });
+});
+
+describe("console:reconcile: 所見の保持（h5 の負の試験・q の負の試験）", () => {
+  const prof = ["--profile", "reconcile-test"];
+  const H = 3_600_000;
+  const DAY = 86_400_000;
+  const iso = (t: number) => new Date(t).toISOString();
+  const v1 = (coveredUntil: number) =>
+    JSON.stringify({ version: 1, accounts: { [ACCOUNT]: { coveredUntil: iso(coveredUntil) } } });
+  const v2 = (row: unknown) => JSON.stringify({ version: 2, accounts: { [ACCOUNT]: row } });
+  /** 記録の無い引き受けを 1 回目で錨にする（状態は v1 の coveredUntil から）。 */
+  async function anchored(lateAgo: number) {
+    const late = issue({ jti: newJti(), at: now() - lateAgo });
+    const s = setup({ trails: [{ region: "us-east-1", events: [trail(late)] }], filterTime: true });
+    const covered = now() - 2 * H;
+    writeFileSync(s.state, v1(covered));
+    const r = await run([...prof, "--records", s.records], s.env);
+    expect(r.status, r.out).toBe(1);
+    return { s, late, covered, lateAt: late.jwt.iat * 1000 + 2000 };
+  }
+  const addTrail = (dir: string, events: unknown[]) => {
+    const p = join(dir, "table.json");
+    const table = JSON.parse(readFileSync(p, "utf8"));
+    table["cloudtrail lookup-events --region=us-east-1"].Events.push(...events);
+    writeFileSync(p, JSON.stringify(table));
+  };
+
+  it("version 1 の状態を読み（unresolved なし）、書くときは version 2", async () => {
+    const s = setup({});
+    const covered = now() - 2 * H;
+    writeFileSync(s.state, v1(covered));
+    const r = await run([...prof, "--records", s.records], s.env);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain("coverage: continuous");
+    expect(Object.keys(rowOf(s.state))).toEqual(["coveredUntil"]);
+  });
+
+  it("壊れた version 2（知らない項目・理由の本文）は実行しない（終了コード 2。CloudTrail を読まない。中身を出さない。ファイルは変えない）", async () => {
+    for (const row of [
+      { coveredUntil: iso(now() - H), unresolved: { oldestAt: "secret-nope" } },
+      {
+        coveredUntil: iso(now() - H),
+        accepted: [
+          {
+            from: iso(now() - H),
+            until: iso(now() - H),
+            acceptedAt: iso(now()),
+            reasonGiven: true,
+            codes: { a: 1 },
+            reason: "secret-nope",
+          },
+        ],
+      },
+      {},
+    ]) {
+      const s = setup({});
+      writeFileSync(s.state, v2(row));
+      const r = await run([...prof, "--records", s.records], s.env);
+      expect(r.status, r.out).toBe(2);
+      expect(r.out).not.toContain("secret-nope");
+      expect(callsOf(s.log).map((c) => `${c[0]} ${c[1]}`)).toEqual(["sts get-caller-identity"]);
+      expect(readFileSync(s.state, "utf8")).toBe(v2(row));
+    }
+  });
+
+  it("錨が今 − 6 日より前なら、何度回しても unresolved_out_of_window で終了コード 1 のまま（受け入れなしに消えない）", async () => {
+    const s = setup({ filterTime: true });
+    const old = now() - 6 * DAY - H;
+    const row = {
+      coveredUntil: iso(now() - 2 * H),
+      unresolved: {
+        oldestAt: iso(old),
+        newestAt: iso(old),
+        firstSeenAt: iso(now() - 5 * DAY),
+        criteria: { clockSkewSeconds: 60, lagSeconds: 300 },
+        codes: { assume_without_record: 1 },
+      },
+    };
+    writeFileSync(s.state, v2(row));
+    for (let i = 0; i < 2; i++) {
+      const r = await run([...prof, "--records", s.records], s.env);
+      expect(r.out).toMatch(/^ERROR\s+unresolved_out_of_window/m);
+      expect(r.out).toContain("default lookback 6d");
+      expect(r.status, r.out).toBe(1);
+      expect(rowOf(s.state)).toEqual(row);
+    }
+  });
+
+  it("--since で錨より後から始めると unresolved_not_covered（誤り・終了コード 1・錨は残る）", async () => {
+    const { s, lateAt, covered } = await anchored(4 * H);
+    const r = await run([...prof, "--records", s.records, "--since", "1h"], s.env);
+    expect(r.out).toMatch(/^ERROR\s+unresolved_not_covered/m);
+    expect(r.status, r.out).toBe(1);
+    expect(rowOf(s.state).unresolved.oldestAt).toBe(iso(lateAt));
+    expect(rowOf(s.state).coveredUntil).toBe(iso(covered));
+  });
+
+  it("理由の無い受け入れは通らない（--reason なし・空白だけ・--reason だけ。終了コード 2。何も呼ばない）", async () => {
+    const { s } = await anchored(4 * H);
+    const before = readFileSync(s.state, "utf8");
+    for (const extra of [
+      ["--accept-unresolved"],
+      ["--accept-unresolved", "--reason", "   "],
+      ["--reason", "x"],
+    ]) {
+      writeFileSync(s.log, "");
+      const r = await run([...prof, "--records", s.records, ...extra], s.env);
+      expect(r.status, `${extra.join(" ")}: ${r.out}`).toBe(2);
+      expect(callsOf(s.log)).toEqual([]);
+      expect(readFileSync(s.state, "utf8")).toBe(before);
+    }
+  });
+
+  it("受け入れるもの（錨も今回の coverage_gap も）が無ければ終了コード 2（CloudTrail を読まない）", async () => {
+    const s = setup({});
+    writeFileSync(s.state, v1(now() - 2 * H));
+    const r = await run(
+      [...prof, "--records", s.records, "--accept-unresolved", "--reason", "nothing"],
+      s.env,
+    );
+    expect(r.status, r.out).toBe(2);
+    expect(r.out).toContain("nothing to accept");
+    expect(callsOf(s.log).map((c) => `${c[0]} ${c[1]}`)).toEqual(["sts get-caller-identity"]);
+  });
+
+  it("窓の中の錨を受け入れる: その実行は 0（区間と理由を出力し、状態には理由の本文を入れない）。次の実行でも note（accepted）のまま 0", async () => {
+    const { s, lateAt, covered } = await anchored(4 * H);
+    const reason = "checked with the operator: a test login";
+    const acc = await run(
+      [...prof, "--records", s.records, "--accept-unresolved", "--reason", reason],
+      s.env,
+    );
+    expect(acc.status, acc.out).toBe(0);
+    expect(acc.out).toContain(
+      `accepted: ${iso(lateAt)} .. ${iso(lateAt)} (width 0s; unverified; not confirmed; assume_without_record=1; reason: ${reason})`,
+    );
+    expect(acc.out).toContain(
+      "an interval is accepted, not findings: every finding with a time inside it, including ones not recorded before, is not an error from now on",
+    );
+    // 幅が重なり（既定 24 時間）以下なら警告の行は出さない（続き 4 の A3）
+    expect(acc.out).not.toContain("wider than the overlap");
+    expect(acc.out).toMatch(/^NOTE\s+assume_without_record.*\(accepted\)/m);
+    expect(acc.out).toContain("errors: 0");
+    const row = rowOf(s.state);
+    expect(row.unresolved).toBeUndefined();
+    expect(Date.parse(row.coveredUntil)).toBeGreaterThan(covered);
+    expect(row.accepted).toEqual([
+      {
+        from: iso(lateAt),
+        until: iso(lateAt),
+        acceptedAt: expect.any(String),
+        reasonGiven: true,
+        codes: { assume_without_record: 1 },
+      },
+    ]);
+    expect(readFileSync(s.state, "utf8")).not.toContain("operator");
+    const next = await run([...prof, "--records", s.records, "--since", "6d"], s.env);
+    expect(next.status, next.out).toBe(0);
+    expect(next.out).toMatch(/^NOTE\s+assume_without_record.*\(accepted\)/m);
+    expect(next.out).toContain(`accepted intervals: 1 (latest ${iso(lateAt)} .. ${iso(lateAt)}`);
+  });
+
+  it("受け入れの実行で錨を読み直して誤り 0（記録があとから読めた）なら、受け入れた区間を作らずにこの実行で解決する（終了コード 0）", async () => {
+    const { s, late, covered } = await anchored(4 * H);
+    writeFileSync(s.records, JSON.stringify(late));
+    const r = await run(
+      [...prof, "--records", s.records, "--accept-unresolved", "--reason", "x"],
+      s.env,
+    );
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain("resolved by this run (no accepted interval recorded)");
+    expect(r.out).not.toMatch(/^accepted: /m);
+    expect(r.out).toContain("accepted intervals: 0");
+    const row = rowOf(s.state);
+    expect(Object.keys(row)).toEqual(["coveredUntil"]);
+    expect(Date.parse(row.coveredUntil)).toBeGreaterThan(covered);
+  });
+
+  // 続き 4 の (1): 確認済みの区間の無い行は、読み始めが今 − 6 日より後なら誤り（前は --since 1h の誤り 0 で確認済みになっていた。期待値を逆にした）
+  it("--init（--since 2h）が時刻なしの誤り → --since 1h は unconfirmed_not_covered（誤り・行は変えない）→ --since なしで誤り 0 なら確認済み", async () => {
+    const s = setup({
+      failOn: "cloudtrail lookup-events --region=ap-northeast-1",
+      filterTime: true,
+    });
+    const first = await run([...prof, "--records", s.records, "--init", "--since", "2h"], s.env);
+    expect(first.status, first.out).toBe(1);
+    expect(first.out).not.toContain("unconfirmed_not_covered");
+    expect(Object.keys(rowOf(s.state)).sort()).toEqual(["untimed", "watchStart"]);
+    expect(rowOf(s.state).untimed.codes).toEqual({ region_unread: 1 });
+    const { AWS_STUB_FAIL_ON: _drop, ...ok } = s.env;
+    const short = await run([...prof, "--records", s.records, "--since", "1h"], ok);
+    expect(short.out).toContain("coverage: unconfirmed");
+    expect(short.out).toMatch(/^ERROR\s+unconfirmed_not_covered/m);
+    expect(short.status, short.out).toBe(1);
+    expect(Object.keys(rowOf(s.state)).sort()).toEqual(["untimed", "watchStart"]);
+    expect(rowOf(s.state).untimed.codes).toEqual({ region_unread: 1 });
+    writeFileSync(s.log, "");
+    const t0 = now();
+    const full = await run([...prof, "--records", s.records], ok);
+    expect(full.status, full.out).toBe(0);
+    const start = Date.parse(lookupStart(s.log));
+    expect(start).toBeGreaterThanOrEqual(t0 - 6 * DAY - 1000);
+    expect(start).toBeLessThanOrEqual(now() - 6 * DAY);
+    expect(Object.keys(rowOf(s.state))).toEqual(["coveredUntil"]);
+  });
+
+  it("時刻なしの誤りの件数は誤り 0 の実行でだけ消える: 次の実行が時刻を持つ誤りだけでも残る（続き 4 の (2)）", async () => {
+    const s = setup({
+      failOn: "cloudtrail lookup-events --region=ap-northeast-1",
+      filterTime: true,
+    });
+    const covered = now() - 2 * H;
+    writeFileSync(s.state, v1(covered));
+    expect((await run([...prof, "--records", s.records], s.env)).status).toBe(1);
+    const late = issue({ jti: newJti(), at: now() - 3 * H });
+    addTrail(s.dir, [trail(late)]);
+    const { AWS_STUB_FAIL_ON: _drop, ...ok } = s.env;
+    const r = await run([...prof, "--records", s.records], ok);
+    expect(r.status, r.out).toBe(1);
+    expect(r.out).not.toMatch(/^ERROR\s+region_unread/m);
+    expect(rowOf(s.state).untimed.codes).toEqual({ region_unread: 1 });
+    expect(rowOf(s.state).unresolved.codes).toEqual({ assume_without_record: 1 });
+    expect(r.out).toContain("unresolved untimed errors (largest count per code): region_unread=1");
+  });
+
+  it("同じ状態のファイルを実行の途中でほかが書き換えたら、今回の所見を出してから終了コード 2（書かない。続き 4 の (5)）", async () => {
+    const { s } = await anchored(4 * H);
+    const other = JSON.stringify({
+      version: 1,
+      accounts: { "444444444444": { coveredUntil: iso(now() - H) } },
+    });
+    const env = { ...s.env, AWS_STUB_TOUCH: s.state, AWS_STUB_TOUCH_TEXT: other };
+    const r = await run([...prof, "--records", s.records], env);
+    expect(r.status, r.out).toBe(2);
+    expect(r.out).toContain("assume_without_record");
+    expect(r.out).toMatch(/errors: \d+/);
+    expect(r.out).toContain("changed while this run was running");
+    expect(r.out).toContain(
+      "do not run the reconciliation at the same time with the same state file",
+    );
+    expect(readFileSync(s.state, "utf8")).toBe(other);
+    noSecrets(r.out, []);
+  });
+
+  it("--help: 使い方と、受け入れは区間に対して行うこと（記録に無かった所見も誤りにならない）を出し、終了コード 0（何も呼ばない）", async () => {
+    const s = setup({});
+    const r = await run(["--help"], s.env);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain("--accept-unresolved --reason");
+    expect(r.out).toContain("accepts an interval, not findings");
+    expect(r.out).toContain("including ones not recorded before");
+    expect(r.out).toContain("cannot be used with --until");
+    expect(callsOf(s.log)).toEqual([]);
+  });
+
+  it("受け入れの実行に区間の外の今回初めての誤りがあれば、終了コード 1 で受け入れを適用しない（accepted は増えない）", async () => {
+    const { s, lateAt } = await anchored(4 * H);
+    const fresh = issue({ jti: newJti(), at: now() - H });
+    addTrail(s.dir, [trail(fresh)]);
+    const acc = await run(
+      [...prof, "--records", s.records, "--accept-unresolved", "--reason", "x"],
+      s.env,
+    );
+    expect(acc.status, acc.out).toBe(1);
+    expect(acc.out).toContain("accept: not applied");
+    const row = rowOf(s.state);
+    expect(row.accepted).toBeUndefined();
+    expect(row.unresolved.oldestAt).toBe(iso(lateAt));
+    expect(row.unresolved.newestAt).toBe(iso(fresh.jwt.iat * 1000 + 2000));
+  });
+
+  it("受け入れた区間の外の同じ code は誤り（終了コード 1）。区間の中の所見は note のまま", async () => {
+    const { s, lateAt } = await anchored(4 * H);
+    const acc = await run(
+      [...prof, "--records", s.records, "--accept-unresolved", "--reason", "x"],
+      s.env,
+    );
+    expect(acc.status, acc.out).toBe(0);
+    const other = issue({ jti: newJti(), at: now() - 3 * H });
+    addTrail(s.dir, [trail(other)]);
+    const r = await run([...prof, "--records", s.records, "--since", "6d"], s.env);
+    expect(r.status, r.out).toBe(1);
+    expect(r.out).toMatch(/^ERROR\s+assume_without_record/m);
+    expect(r.out).toMatch(/^NOTE\s+assume_without_record.*\(accepted\)/m);
+    expect(rowOf(s.state).unresolved.oldestAt).toBe(iso(other.jwt.iat * 1000 + 2000));
+    expect(rowOf(s.state).accepted).toHaveLength(1);
+    expect(lateAt).toBeLessThan(other.jwt.iat * 1000);
+  });
+
+  it("今回の coverage_gap を受け入れる: 区間は [前回の終わり, 今回の読み始め]。確認済みの区間はその実行が読んだ分だけ進み、次は continuous", async () => {
+    const s = setup({ filterTime: true });
+    const old = now() - 8 * DAY;
+    writeFileSync(s.state, v1(old));
+    const gap = await run([...prof, "--records", s.records], s.env);
+    expect(gap.status, gap.out).toBe(1);
+    expect(rowOf(s.state)).toEqual({ coveredUntil: iso(old) });
+    writeFileSync(s.log, "");
+    const acc = await run(
+      [...prof, "--records", s.records, "--accept-unresolved", "--reason", "machine was off"],
+      s.env,
+    );
+    expect(acc.status, acc.out).toBe(0);
+    const start = Date.parse(lookupStart(s.log));
+    expect(acc.out).toContain(
+      `accepted: ${iso(old)} .. ${iso(start)} (width ${Math.round((start - old) / 1000)}s; unverified; not confirmed; coverage_gap=1`,
+    );
+    // 幅が重なり（既定 24 時間）を超えるので警告の 1 行（続き 4 の A3）
+    expect(acc.out).toMatch(
+      /^WARN\s+the accepted interval \(width \d+s\) is wider than the overlap \(86400s\)/m,
+    );
+    const row = rowOf(s.state);
+    expect(row.accepted[0]).toMatchObject({
+      from: iso(old),
+      until: iso(start),
+      codes: { coverage_gap: 1 },
+    });
+    expect(Date.parse(row.coveredUntil)).toBeGreaterThan(start);
+    const next = await run([...prof, "--records", s.records], s.env);
+    expect(next.status, next.out).toBe(0);
+    expect(next.out).toContain("coverage: continuous");
+  });
+
+  it("一時的な region_unread（時刻を持たない誤り）は件数だけ残り、次の誤り 0 の実行で消えて区間が進む（受け入れは要らない）", async () => {
+    const s = setup({
+      failOn: "cloudtrail lookup-events --region=ap-northeast-1",
+      filterTime: true,
+    });
+    const covered = now() - 2 * H;
+    writeFileSync(s.state, v1(covered));
+    const r = await run([...prof, "--records", s.records], s.env);
+    expect(r.status, r.out).toBe(1);
+    expect(rowOf(s.state)).toEqual({
+      coveredUntil: iso(covered),
+      untimed: {
+        codes: { region_unread: 1 },
+        firstWindowStart: iso(covered - 24 * H),
+        settledUntil: expect.any(String),
+      },
+    });
+    expect(r.out).toContain("unresolved untimed errors (largest count per code): region_unread=1");
+    const { AWS_STUB_FAIL_ON: _drop, ...ok } = s.env;
+    const again = await run([...prof, "--records", s.records], ok);
+    expect(again.status, again.out).toBe(0);
+    expect(Object.keys(rowOf(s.state))).toEqual(["coveredUntil"]);
+    expect(Date.parse(rowOf(s.state).coveredUntil)).toBeGreaterThan(covered);
+  });
+
+  it("--init の初回が record_read_incomplete（時刻を持たない誤り）だけなら、次の 6 日の読みで誤り 0 なら確認済みになる", async () => {
+    const a = issue({ jti: newJti(), at: now() - 60 * MIN });
+    apiEvents = [
+      {
+        $metadata: { id: "e1" },
+        $workers: { scriptName: "awsbridge-console", eventType: "fetch" },
+        dataset: "cloudflare-workers",
+        timestamp: Date.parse(a.at),
+        source: a,
+      },
+    ];
+    apiCountSampledBefore = now() - 3 * DAY;
+    const s = setup({ trails: [{ region: "us-east-1", events: [trail(a)] }], filterTime: true });
+    const env = {
+      ...s.env,
+      AWSBRIDGE_CONSOLE_LOGS_API_BASE: base,
+      AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID: CF_ACCOUNT,
+      AWSBRIDGE_CONSOLE_LOGS_TOKEN: TOKEN,
+    };
+    const first = await run([...prof, "--logs-api", "--init"], env);
+    expect(first.out).toContain("record_read_incomplete");
+    expect(first.status, first.out).toBe(1);
+    expect(Object.keys(rowOf(s.state)).sort()).toEqual(["untimed", "watchStart"]);
+    // 翌日: 間引きが解けた（一時的な読みの失敗）。6 日を読み直して誤り 0 なら確認済み
+    apiCountSampledBefore = undefined;
+    writeFileSync(s.log, "");
+    const t0 = now();
+    const next = await run([...prof, "--logs-api"], env);
+    expect(next.status, next.out).toBe(0);
+    expect(next.out).toContain("coverage: unconfirmed");
+    const start = Date.parse(lookupStart(s.log));
+    expect(start).toBeGreaterThanOrEqual(t0 - 6 * DAY - 1000);
+    expect(start).toBeLessThanOrEqual(now() - 6 * DAY);
+    expect(Object.keys(rowOf(s.state))).toEqual(["coveredUntil"]);
+  });
+});
+
+describe("console:reconcile: 続き 5（ロック・判定した範囲・時刻なしの誤りの範囲・受け入れの出力の順・区間に対する受け入れ）", () => {
+  const prof = ["--profile", "reconcile-test"];
+  const H = 3_600_000;
+  const iso = (t: number) => new Date(t).toISOString();
+  const v1 = (coveredUntil: number) =>
+    JSON.stringify({ version: 1, accounts: { [ACCOUNT]: { coveredUntil: iso(coveredUntil) } } });
+  const addTrail = (dir: string, events: unknown[]) => {
+    const p = join(dir, "table.json");
+    const table = JSON.parse(readFileSync(p, "utf8"));
+    table["cloudtrail lookup-events --region=us-east-1"].Events.push(...events);
+    writeFileSync(p, JSON.stringify(table));
+  };
+
+  it("R1: 状態のファイルの隣のロック（<state>.lock）があれば、何も読まず終了コード 2（ロックも状態も変えない）", async () => {
+    const s = setup({});
+    const stateBefore = v1(now() - 2 * H);
+    writeFileSync(s.state, stateBefore);
+    const lock = `${s.state}.lock`;
+    writeFileSync(lock, JSON.stringify({ pid: 1, startedAt: iso(now()) }));
+    const r = await run([...prof, "--records", s.records], s.env);
+    expect(r.status, r.out).toBe(2);
+    expect(r.out).toContain("another reconciliation is running with the same state file");
+    expect(r.out).toContain("check the lock file and remove it");
+    expect(callsOf(s.log)).toEqual([]);
+    expect(existsSync(lock)).toBe(true);
+    expect(readFileSync(s.state, "utf8")).toBe(stateBefore);
+    noSecrets(r.out, []);
+  });
+
+  it("R1: ロックは終了コード 0・1・2 のどれでも消える。中身は pid と開始時刻だけ", async () => {
+    const ok = setup({});
+    writeFileSync(ok.state, v1(now() - 2 * H));
+    expect((await run([...prof, "--records", ok.records], ok.env)).status).toBe(0);
+    expect(existsSync(`${ok.state}.lock`)).toBe(false);
+    const late = issue({ jti: newJti(), at: now() - 3 * H });
+    const bad = setup({ trails: [{ region: "us-east-1", events: [trail(late)] }] });
+    writeFileSync(bad.state, v1(now() - 2 * H));
+    expect((await run([...prof, "--records", bad.records], bad.env)).status).toBe(1);
+    expect(existsSync(`${bad.state}.lock`)).toBe(false);
+    const fail = setup({ failOn: "account list-regions|ec2 describe-regions" });
+    writeFileSync(fail.state, v1(now() - 2 * H));
+    expect((await run([...prof, "--records", fail.records], fail.env)).status).toBe(2);
+    expect(existsSync(`${fail.state}.lock`)).toBe(false);
+    const missing = setup({});
+    expect((await run([...prof, "--records", missing.records], missing.env)).status).toBe(2);
+    expect(existsSync(`${missing.state}.lock`)).toBe(false);
+  });
+
+  it("R4: 時刻なしの誤りは、--until を過去にした誤り 0 の実行と、--since を後ろにした誤り 0 の実行では消えない。既定の実行は記録した実行の窓まで戻して読み直し、消える", async () => {
+    const s = setup({
+      failOn: "cloudtrail lookup-events --region=ap-northeast-1",
+      filterTime: true,
+    });
+    const covered = now() - 2 * H;
+    writeFileSync(s.state, v1(covered));
+    expect((await run([...prof, "--records", s.records], s.env)).status).toBe(1);
+    const recorded = rowOf(s.state).untimed;
+    expect(recorded.codes).toEqual({ region_unread: 1 });
+    expect(recorded.firstWindowStart).toBe(iso(covered - 24 * H));
+    const { AWS_STUB_FAIL_ON: _drop, ...ok } = s.env;
+    const past = await run([...prof, "--records", s.records, "--until", iso(now() - H)], ok);
+    expect(past.status, past.out).toBe(0);
+    expect(rowOf(s.state).untimed).toEqual(recorded);
+    const later = await run([...prof, "--records", s.records, "--since", "25h"], ok);
+    expect(later.status, later.out).toBe(0);
+    expect(rowOf(s.state).untimed).toEqual(recorded);
+    writeFileSync(s.log, "");
+    const plain = await run([...prof, "--records", s.records], ok);
+    expect(plain.status, plain.out).toBe(0);
+    expect(plain.out).toContain("from the unresolved untimed errors");
+    expect(lookupStart(s.log)).toBe(recorded.firstWindowStart);
+    expect(rowOf(s.state).untimed).toBeUndefined();
+  });
+
+  it("R5: 受け入れは状態を書く前に acceptance (not yet written) を出し、書けたあとに accepted: を出す。書けなければ accepted: を出さず、保存されていないと出す", async () => {
+    const late = issue({ jti: newJti(), at: now() - 4 * H });
+    const s = setup({ trails: [{ region: "us-east-1", events: [trail(late)] }], filterTime: true });
+    writeFileSync(s.state, v1(now() - 2 * H));
+    expect((await run([...prof, "--records", s.records], s.env)).status).toBe(1);
+    const before = readFileSync(s.state, "utf8");
+    const other = JSON.stringify({
+      version: 1,
+      accounts: { "444444444444": { coveredUntil: iso(now() - H) } },
+    });
+    const conflict = await run(
+      [...prof, "--records", s.records, "--accept-unresolved", "--reason", "x"],
+      { ...s.env, AWS_STUB_TOUCH: s.state, AWS_STUB_TOUCH_TEXT: other },
+    );
+    expect(conflict.status, conflict.out).toBe(2);
+    expect(conflict.out).toContain("acceptance (not yet written):");
+    expect(conflict.out).not.toMatch(/^accepted: /m);
+    expect(conflict.out).toContain("the acceptance was not saved");
+    writeFileSync(s.state, before);
+    const ok = await run(
+      [...prof, "--records", s.records, "--accept-unresolved", "--reason", "x"],
+      s.env,
+    );
+    expect(ok.status, ok.out).toBe(0);
+    const i = ok.out.indexOf("acceptance (not yet written):");
+    const j = ok.out.search(/^accepted: /m);
+    const k = ok.out.indexOf("state: confirmed until");
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(j).toBeGreaterThan(i);
+    expect(j).toBeGreaterThan(k);
+  });
+
+  it("R6: 受け入れを保存したあと、同じ区間に記録に無かった code の時刻を持つ誤りが出ても note（区間に対して行う）。時刻を持たない誤りは下がらない", async () => {
+    const late = issue({ jti: newJti(), at: now() - 4 * H });
+    const s = setup({ trails: [{ region: "us-east-1", events: [trail(late)] }], filterTime: true });
+    writeFileSync(s.state, v1(now() - 2 * H));
+    expect((await run([...prof, "--records", s.records], s.env)).status).toBe(1);
+    const acc = await run(
+      [...prof, "--records", s.records, "--accept-unresolved", "--reason", "x"],
+      s.env,
+    );
+    expect(acc.status, acc.out).toBe(0);
+    const lateAt = late.jwt.iat * 1000 + 2000;
+    expect(rowOf(s.state).accepted[0]).toMatchObject({ from: iso(lateAt), until: iso(lateAt) });
+    // 同じ時刻（区間の中）に、記録に無かった code（identity_mismatch）の引き受けが遅れて出た
+    const same = issue({ jti: newJti(), at: Date.parse(late.at) });
+    writeFileSync(s.records, JSON.stringify(same));
+    addTrail(s.dir, [trail(same, { sourceIdentity: "bob@example.org" })]);
+    const r = await run([...prof, "--records", s.records, "--since", "6d"], s.env);
+    expect(r.out).toMatch(/^NOTE\s+identity_mismatch.*\(accepted\)/m);
+    expect(r.out).toMatch(/^NOTE\s+assume_without_record.*\(accepted\)/m);
+    expect(r.status, r.out).toBe(0);
+    // 時刻を持たない誤り（region_unread）は区間に関係なく誤り
+    const unread = await run([...prof, "--records", s.records], {
+      ...s.env,
+      AWS_STUB_FAIL_ON: "cloudtrail lookup-events --region=ap-northeast-1",
+    });
+    expect(unread.out).toMatch(/^ERROR\s+region_unread/m);
+    expect(unread.status, unread.out).toBe(1);
+  });
+
+  it("R6: 確認済みの区間の無い行で --since を後ろにした受け入れは unconfirmed_not_covered が残り、適用しない（終了コード 1・accepted なし）", async () => {
+    const late = issue({ jti: newJti(), at: now() - 3 * H });
+    const s = setup({ trails: [{ region: "us-east-1", events: [trail(late)] }], filterTime: true });
+    // 見張りの始まりを 2 時間前にした --init（--since なしの --init は見張りがその実行の時刻から始まり、--since 1h でも読める。続き 5 の w1）
+    expect(
+      (await run([...prof, "--records", s.records, "--init", "--since", "4h"], s.env)).status,
+    ).toBe(1);
+    const r = await run(
+      [...prof, "--records", s.records, "--since", "1h", "--accept-unresolved", "--reason", "x"],
+      s.env,
+    );
+    expect(r.out).toMatch(/^ERROR\s+unconfirmed_not_covered/m);
+    expect(r.out).toContain("accept: not applied");
+    expect(r.status, r.out).toBe(1);
+    expect(rowOf(s.state).accepted).toBeUndefined();
+  });
+
+  it("R3: 記録した件数が上限で飽和していれば受け入れを適用しない（終了コード 1 と理由）", async () => {
+    const late = issue({ jti: newJti(), at: now() - 4 * H });
+    const s = setup({ trails: [{ region: "us-east-1", events: [trail(late)] }], filterTime: true });
+    const lateAt = iso(late.jwt.iat * 1000 + 2000);
+    writeFileSync(
+      s.state,
+      JSON.stringify({
+        version: 2,
+        accounts: {
+          [ACCOUNT]: {
+            coveredUntil: iso(now() - 2 * H),
+            unresolved: {
+              oldestAt: lateAt,
+              newestAt: lateAt,
+              firstSeenAt: iso(now() - H),
+              codes: { assume_without_record: 1_000_000 },
+              criteria: { clockSkewSeconds: 60, lagSeconds: 300 },
+            },
+          },
+        },
+      }),
+    );
+    const r = await run(
+      [...prof, "--records", s.records, "--accept-unresolved", "--reason", "x"],
+      s.env,
+    );
+    expect(r.status, r.out).toBe(1);
+    expect(r.out).toContain("saturated");
+    expect(rowOf(s.state).accepted).toBeUndefined();
+  });
+});
+
+describe("console:reconcile: 続き 6（受け入れと untimed・シグナルでのロック・state_missing の順）", () => {
+  const prof = ["--profile", "reconcile-test"];
+  const H = 3_600_000;
+  const iso = (t: number) => new Date(t).toISOString();
+  const v1 = (coveredUntil: number) =>
+    JSON.stringify({ version: 1, accounts: { [ACCOUNT]: { coveredUntil: iso(coveredUntil) } } });
+
+  it("U3: --since を 1 時間前にした受け入れ（region_unread の窓は未読）では、錨は受け入れても untimed は残る", async () => {
+    const late = issue({ jti: newJti(), at: now() - 4 * H });
+    const s = setup({
+      trails: [{ region: "us-east-1", events: [trail(late)] }],
+      failOn: "cloudtrail lookup-events --region=ap-northeast-1",
+      filterTime: true,
+    });
+    writeFileSync(s.state, v1(now() - 2 * H));
+    expect((await run([...prof, "--records", s.records], s.env)).status).toBe(1);
+    const recorded = rowOf(s.state).untimed;
+    expect(recorded.codes).toEqual({ region_unread: 1 });
+    const { AWS_STUB_FAIL_ON: _drop, ...ok } = s.env;
+    const acc = await run(
+      [...prof, "--records", s.records, "--since", "1h", "--accept-unresolved", "--reason", "x"],
+      ok,
+    );
+    expect(acc.status, acc.out).toBe(0);
+    expect(rowOf(s.state).unresolved).toBeUndefined();
+    expect(rowOf(s.state).accepted).toHaveLength(1);
+    expect(rowOf(s.state).untimed).toEqual(recorded);
+  });
+
+  for (const signal of ["SIGTERM", "SIGINT"] as const)
+    it(`U5: ${signal} で止めてもロックを消す（元の終わり方で終わる）`, async () => {
+      const s = setup({});
+      writeFileSync(s.state, v1(now() - 2 * H));
+      const lock = `${s.state}.lock`;
+      const p = spawn(
+        join(root, "node_modules/.bin/tsx"),
+        [
+          join(root, "scripts/console/reconcile.ts"),
+          ...prof,
+          "--records",
+          s.records,
+          "--state",
+          s.state,
+        ],
+        { cwd: root, env: { ...s.env, AWS_STUB_SLEEP_MS: "20000" } },
+      );
+      const closed = new Promise<{ code: number | null; signal: string | null }>((resolve) =>
+        p.on("close", (code, sig) => resolve({ code, signal: sig })),
+      );
+      // ロックを取り、CloudTrail を読みに行った（偽の aws が待っている）ところで止める
+      for (let i = 0; i < 200 && !callsOf(s.log).some((c) => c[1] === "lookup-events"); i++)
+        await new Promise((r) => setTimeout(r, 50));
+      expect(existsSync(lock)).toBe(true);
+      p.kill(signal);
+      const end = await closed;
+      expect(end.code === null ? end.signal : end.code).not.toBe(0);
+      expect(existsSync(lock)).toBe(false);
+    });
+
+  it("U6: ファイルが無く --init も無い state_missing は、ロックを取る前（ディレクトリを作る前）に止める", async () => {
+    const s = setup({});
+    const dir = join(s.dir, "not-yet");
+    const state = join(dir, "state.json");
+    const r = await run([...prof, "--records", s.records, "--state", state], s.env);
+    expect(r.status, r.out).toBe(2);
+    expect(r.out).toContain("state_missing");
+    expect(existsSync(dir)).toBe(false);
+  });
+});
+
+describe("console:reconcile: 続き 5（cto）見張りの始まり（watchStart）と untimed_not_covered", () => {
+  const prof = ["--profile", "reconcile-test"];
+  const H = 3_600_000;
+  const DAY = 86_400_000;
+  const iso = (t: number) => new Date(t).toISOString();
+  const FAIL = "cloudtrail lookup-events --region=ap-northeast-1";
+  const v2 = (row: unknown) => JSON.stringify({ version: 2, accounts: { [ACCOUNT]: row } });
+
+  it("w1・w4: --since なしの --init が時刻なしの誤り → 見張りはその実行の時刻（until）から → 翌日の既定の実行は見張りを含むので誤り 0 なら確認済み", async () => {
+    const s = setup({ failOn: FAIL, filterTime: true });
+    const t0 = now();
+    const init = await run([...prof, "--records", s.records, "--init"], s.env);
+    expect(init.status, init.out).toBe(1);
+    expect(init.out).toContain("watch starts:");
+    const watch = Date.parse(rowOf(s.state).watchStart);
+    expect(watch).toBeGreaterThanOrEqual(t0 - 1000);
+    expect(watch).toBeLessThanOrEqual(now());
+    const { AWS_STUB_FAIL_ON: _drop, ...ok } = s.env;
+    const next = await run([...prof, "--records", s.records], ok);
+    expect(next.status, next.out).toBe(0);
+    expect(Object.keys(rowOf(s.state))).toEqual(["coveredUntil"]);
+  });
+
+  it("w1: --since つきの --init は見張りがその読み始めから（以後の誤りの実行でも動かない）", async () => {
+    const s = setup({ failOn: FAIL, filterTime: true });
+    const t0 = now();
+    expect(
+      (await run([...prof, "--records", s.records, "--init", "--since", "3h"], s.env)).status,
+    ).toBe(1);
+    const watch = rowOf(s.state).watchStart;
+    expect(Date.parse(watch)).toBeGreaterThanOrEqual(t0 - 3 * H - 1000);
+    expect(Date.parse(watch)).toBeLessThanOrEqual(now() - 3 * H);
+    expect((await run([...prof, "--records", s.records], s.env)).status).toBe(1);
+    expect(rowOf(s.state).watchStart).toBe(watch);
+  });
+
+  it("w3: 既定の読み始め（今 − 6 日）が見張りの始まりを過ぎたら毎回 untimed_not_covered。--since を見張り以前にして誤り 0 なら確認済み", async () => {
+    const s = setup({ filterTime: true });
+    const watch = now() - 6 * DAY - H;
+    const row = {
+      watchStart: iso(watch),
+      untimed: {
+        codes: { region_unread: 1 },
+        firstWindowStart: iso(watch - DAY),
+        settledUntil: iso(watch),
+      },
+    };
+    writeFileSync(s.state, v2(row));
+    for (let i = 0; i < 2; i++) {
+      const r = await run([...prof, "--records", s.records], s.env);
+      expect(r.out).toMatch(/^ERROR\s+untimed_not_covered/m);
+      expect(r.status, r.out).toBe(1);
+      expect(rowOf(s.state)).toEqual(row);
+    }
+    const back = await run([...prof, "--records", s.records, "--since", iso(watch)], s.env);
+    expect(back.status, back.out).toBe(0);
+    expect(Object.keys(rowOf(s.state))).toEqual(["coveredUntil"]);
+  });
+
+  it("w3: 受け入れると、受け入れた区間に [見張りの始まり, 今回の読み始め] が入り、untimed を消して確認済みになる", async () => {
+    const s = setup({ filterTime: true });
+    const watch = now() - 6 * DAY - H;
+    writeFileSync(
+      s.state,
+      v2({
+        watchStart: iso(watch),
+        untimed: {
+          codes: { region_unread: 1 },
+          firstWindowStart: iso(watch - DAY),
+          settledUntil: iso(watch),
+        },
+      }),
+    );
+    writeFileSync(s.log, "");
+    const acc = await run(
+      [...prof, "--records", s.records, "--accept-unresolved", "--reason", "x"],
+      s.env,
+    );
+    expect(acc.status, acc.out).toBe(0);
+    const start = lookupStart(s.log);
+    const row = rowOf(s.state);
+    expect(row.accepted[0]).toMatchObject({
+      from: iso(watch),
+      until: start,
+      codes: { region_unread: 1, untimed_not_covered: 1 },
+    });
+    expect(row.untimed).toBeUndefined();
+    expect(row.watchStart).toBeUndefined();
+    expect(row.coveredUntil).toBeDefined();
+  });
+
+  it("w5・U1・U2: 確認済みの行で、時刻なしの誤りを記録した窓が既定の窓より前なら毎回 untimed_not_covered。受け入れたときだけ消える", async () => {
+    const s = setup({ filterTime: true });
+    const first = now() - 6 * DAY - H;
+    const row = {
+      coveredUntil: iso(now() - 2 * H),
+      untimed: {
+        codes: { record_read_incomplete: 1 },
+        firstWindowStart: iso(first),
+        settledUntil: iso(now() - 3 * H),
+      },
+    };
+    writeFileSync(s.state, v2(row));
+    const r = await run([...prof, "--records", s.records], s.env);
+    expect(r.out).toMatch(/^ERROR\s+untimed_not_covered/m);
+    expect(r.status, r.out).toBe(1);
+    expect(rowOf(s.state)).toEqual(row);
+    const acc = await run(
+      [...prof, "--records", s.records, "--accept-unresolved", "--reason", "x"],
+      s.env,
+    );
+    expect(acc.status, acc.out).toBe(0);
+    expect(rowOf(s.state).untimed).toBeUndefined();
+    expect(rowOf(s.state).accepted[0]).toMatchObject({
+      from: iso(first),
+      codes: { untimed_not_covered: 1 },
+    });
+  });
+});
+
+describe("console:reconcile: 続き 7（V1・cto 続き 6 の s1〜s3）受け入れの実行に --until は付けられない・untimed の範囲を覆う受け入れだけが消す", () => {
+  const prof = ["--profile", "reconcile-test"];
+  const H = 3_600_000;
+  const DAY = 86_400_000;
+  const iso = (t: number) => new Date(t).toISOString();
+  const v2 = (row: unknown) => JSON.stringify({ version: 2, accounts: { [ACCOUNT]: row } });
+  const rows = () => {
+    const t = now();
+    const untimed = {
+      codes: { record_read_incomplete: 1 },
+      firstWindowStart: iso(t - 6 * DAY - H),
+      settledUntil: iso(t - H),
+    };
+    return {
+      t,
+      confirmed: { start: t - 6 * DAY - H, row: { coveredUntil: iso(t - 2 * H), untimed } },
+      unconfirmed: {
+        start: t - 6 * DAY - H,
+        row: {
+          watchStart: iso(t - 6 * DAY - H),
+          untimed: { ...untimed, firstWindowStart: iso(t - 7 * DAY) },
+        },
+      },
+    };
+  };
+  for (const kind of ["confirmed", "unconfirmed"] as const)
+    it(`${kind === "confirmed" ? "確認済みの行" : "確認済みの区間の無い行"}: --until T−3h つきの受け入れは終了コード 2（何も読まず状態も変えない）。--until なしなら untimed が消え、受け入れた区間は [始まり, 読み始め]`, async () => {
+      const s = setup({ filterTime: true });
+      const all = rows();
+      const { start, row } = all[kind];
+      const text = v2(row);
+      writeFileSync(s.state, text);
+      const past = await run(
+        [
+          ...prof,
+          "--records",
+          s.records,
+          "--accept-unresolved",
+          "--reason",
+          "x",
+          "--until",
+          iso(all.t - 3 * H),
+        ],
+        s.env,
+      );
+      expect(past.status, past.out).toBe(2);
+      expect(past.out).toContain("--accept-unresolved cannot be used with --until");
+      expect(callsOf(s.log)).toEqual([]);
+      expect(readFileSync(s.state, "utf8")).toBe(text);
+      const ok = await run(
+        [...prof, "--records", s.records, "--accept-unresolved", "--reason", "x"],
+        s.env,
+      );
+      expect(ok.status, ok.out).toBe(0);
+      const after = rowOf(s.state);
+      expect(after.untimed).toBeUndefined();
+      expect(after.accepted).toHaveLength(1);
+      expect(after.accepted[0]).toMatchObject({ from: iso(start), until: lookupStart(s.log) });
+    });
+});
+
+/** lookup-events の --start-time（全リージョンで同じ）。 */
+function lookupStart(log: string): string {
+  const starts = new Set(
+    callsOf(log)
+      .filter((c) => c[1] === "lookup-events")
+      .map((c) => c[c.indexOf("--start-time") + 1] ?? ""),
+  );
+  expect(starts.size).toBe(1);
+  return [...starts][0] ?? "";
+}
