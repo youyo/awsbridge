@@ -36,13 +36,22 @@ function tmp(): string {
   return d;
 }
 
+/**
+ * 出力先（AWSBRIDGE_CONSOLE_OUT_DIR）を渡さない呼び出しには、存在しない一時ディレクトリを入れる。
+ * CLI の既定の出力先は cwd 相対の .generated/console なので、そのままだと手元の前回の生成物（台帳）を読んでしまう。
+ * 渡された値（空でないもの）は上書きしない。CLI と同じく空文字は未指定とみなす。
+ */
 function run(cmd: string, env: Record<string, string>, cwd = root, args: string[] = []) {
+  const withOut = {
+    ...env,
+    AWSBRIDGE_CONSOLE_OUT_DIR: env.AWSBRIDGE_CONSOLE_OUT_DIR || join(tmp(), "out"),
+  };
   return spawnSync(
     join(root, "node_modules/.bin/tsx"),
     [join(root, "scripts/console/config.ts"), cmd, ...args],
     {
       cwd,
-      env: { PATH: process.env.PATH ?? "", ...env },
+      env: { PATH: process.env.PATH ?? "", ...withOut },
       encoding: "utf8",
     },
   );
@@ -151,6 +160,25 @@ describe("console:config:check", () => {
     const c = companyConfig();
     for (const k of c.kinds) delete k.assign.developer;
     const r = run("check", { AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", c) });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toContain("warning: teams[1]: unassigned_team");
+  });
+
+  it("作業ディレクトリに前回の生成物（.generated/console）があっても、出力先を渡さない check はそれを読まない", () => {
+    // 前回の台帳に退役したチーム ops がある。出力先を渡さない check が cwd の .generated/console を読むと、
+    // ops が設定から消えた誤り（retired_team_removed）になり、警告だけのはずの設定が終了コード 1 になる
+    const d = tmp();
+    const prev = companyConfig();
+    prev.retiredTeams = [{ name: "ops", tier: "standard" }];
+    const seeded = runInit({
+      AWSBRIDGE_CONSOLE_CONFIG: write(d, "prev.json", prev),
+      AWSBRIDGE_CONSOLE_AUD_FILE: write(d, "auds.json", companyAuds()),
+      AWSBRIDGE_CONSOLE_OUT_DIR: join(d, ".generated/console"),
+    });
+    expect(seeded.status, seeded.stderr).toBe(0);
+    const c = companyConfig();
+    for (const k of c.kinds) delete k.assign.developer;
+    const r = run("check", { AWSBRIDGE_CONSOLE_CONFIG: write(d, "console.json", c) }, d);
     expect(r.status, r.stderr).toBe(0);
     expect(r.stderr).toContain("warning: teams[1]: unassigned_team");
   });
