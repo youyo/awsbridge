@@ -279,7 +279,7 @@ The skill guides you in order through re-pointing the remotes (`origin` → `ups
 
 ## How the Worker is deployed (default route and explicit route)
 
-`scripts/wrangler.sh deploy` takes the **default route** unless you ask otherwise: `wrangler versions upload`, then it reads the Version ID from the output and runs `wrangler versions deploy <version-id>@100% --yes`. Only the code, vars and bindings of the Worker change. Custom Domains and Routes (triggers) are not synchronized, so the token needs no permission on the zone. A token that is "Individual Workers Editor for this one Worker, no zone permissions" is enough for daily deploys.
+`scripts/wrangler.sh deploy` takes the **default route** unless you ask otherwise: `wrangler versions upload`, then it reads the Version ID from the output and runs `wrangler versions deploy <version-id>@100% --yes`. Only the code, vars and bindings of the Worker change. Custom Domains and Routes (triggers) are not synchronized, so the token needs no permission on the zone. A token that is "Individual Workers Editor for this one Worker, no zone permissions" is enough for daily deploys. How to create it is in [How to create the token for daily deploys](#how-to-create-the-token-for-daily-deploys).
 
 This applies to every Worker. `mise run deploy:worker` uses it for the MCP Worker. There is no mise task that deploys the console Worker; run `scripts/wrangler.sh` with the console wrangler config, as shown in "Console login setup" (`AWSBRIDGE_WRANGLER_CONFIG=<console wrangler config> AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy`).
 
@@ -295,6 +295,86 @@ This applies to every Worker. `mise run deploy:worker` uses it for the MCP Worke
 - **Do not run `wrangler deploy` with a token that has no zone permissions.** It uploads the code first and fails only in the later triggers step, so the command exits with a failure code **even though the new code is already live**. Treat the failure as "deployed, but triggers not synchronized".
 - `versions upload` does not change `workers_dev` or `preview_urls` of the Worker. These settings stay as the last explicit `wrangler deploy` set them, so make sure they are `false` there (the configurations in this repository fix both to `false`).
 - A Worker's Custom Domains and Routes change only through the explicit route.
+
+### How to create the token for daily deploys
+
+The token "Individual Workers Editor for this one Worker, no zone permissions" is an account-owned API token with the Editor role on a single Worker. Editor can update and deploy an existing Worker (code, settings, versions), but cannot create or delete Workers ([Workers roles and permissions](https://developers.cloudflare.com/workers/authorization/workers/)).
+
+What it can and cannot do (as the official documentation describes it):
+
+- `wrangler deploy`, `wrangler versions upload` and `wrangler versions deploy` of an existing Worker need only Editor on that Worker (as the official documentation describes it). What happens when the default route of this repository runs with this token has not been checked in this repository.
+- Creating a new Worker needs Admin on Workers as a whole. You cannot scope a token to a Worker that does not exist yet, so create the token after the first deployment (the explicit route above).
+- Changing a Route needs Workers Routes Write on the zone. Custom Domains do not support per-Worker roles. Neither is possible with the daily token, which is the point.
+- `wrangler login` (OAuth) does not support per-Worker scopes. Pass this token through the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` environment variables ([Workers authorization](https://developers.cloudflare.com/workers/authorization/)).
+
+**Official route (dashboard)**: under Manage Account > Account API Tokens, create an account-owned token, set the scope to **Specified Workers**, select the Worker, and give it the **Editor** role ([changelog 2026-09-15](https://developers.cloudflare.com/changelog/post/2026-09-15-granular-worker-permissions/)). If you can do this, it is enough.
+
+**Fallback route (API)**: if that screen does not let you select a Worker in your environment, you can create the token through the API. This does not mean the dashboard cannot do it.
+
+1. Create a creator token. Give it only Account > Account API Tokens > Edit, and a short expiry (today). The API reference calls the permission `Account API Tokens Write` ([how to](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/)). The token you create can only carry permissions within the creator's own. Put the value in the environment variable `CREATOR_TOKEN`; never write it on the command line. The examples below pass the header from the shell builtin `printf`, so the token is not on the curl command line (where other users could see it as a process argument) (bash, zsh).
+
+   ```
+   auth_header() { printf 'Authorization: Bearer %s\n' "$CREATOR_TOKEN"; }
+   ```
+2. Get the script tag. The resource takes the immutable `tag` of the Worker, not its name (`id` is the name).
+
+   ```
+   curl -sS -H @<(auth_header) \
+     "https://api.cloudflare.com/client/v4/accounts/<account_id>/workers/scripts" \
+     | jq '.result[] | select(.id == "<worker name>") | .tag'
+   ```
+
+   This list needs one of the Workers permissions (for example Workers Scripts Read). The creator token does not have it, so either use a token of your own that does, or add it to the creator token.
+
+   [Workers scripts API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/list/)
+3. Get the permission group ID. Write the `id` in the policy, because the `name` can change. From the list, pick the group that means Editor on a single Worker (one with `is_selectable` true). A guide for what to look for is `Individual Workers Editor`, the permission the `List Worker Scripts` API reference lists as accepted.
+
+   ```
+   curl -sS -H @<(auth_header) \
+     "https://api.cloudflare.com/client/v4/accounts/<account_id>/tokens/permission_groups" \
+     | jq '.result[] | select(.name | test("Worker"; "i")) | {id, name, scopes, is_selectable}'
+   ```
+
+   [permission_groups API](https://developers.cloudflare.com/api/resources/accounts/subresources/tokens/subresources/permission_groups/methods/list/)
+4. Create the token. Write the request body to `policy.json`.
+
+   ```
+   {
+     "name": "<token_name>",
+     "policies": [
+       {
+         "effect": "allow",
+         "permission_groups": [{ "id": "<permission_group_id>" }],
+         "resources": {
+           "com.cloudflare.api.account.<account_id>": {
+             "com.cloudflare.edge.worker.script.<script_tag>": "*"
+           }
+         }
+       }
+     ],
+     "expires_on": "<expiry in UTC, e.g. 2027-01-31T00:00:00Z>"
+   }
+   ```
+
+   The key `com.cloudflare.edge.worker.script.<script_tag>` is not in the official documentation. We confirmed in a user environment that a token can be created with this key. The keys the documentation does list are the account and zone forms, `com.cloudflare.api.account.…`.
+
+   The value comes back in `result.value` of the response. Do not print it; write it straight to a file or a secret store. When you write it to a file, make it readable only by you from the moment it is created (`umask 077`; a later `chmod` leaves a window in which other users can read it).
+
+   ```
+   curl -sS -X POST -H @<(auth_header) \
+     -H "Content-Type: application/json" --data @policy.json \
+     "https://api.cloudflare.com/client/v4/accounts/<account_id>/tokens" \
+     | (umask 077; jq -r '.result.value' > <destination>)
+   ```
+
+   [Create token API](https://developers.cloudflare.com/api/resources/accounts/subresources/tokens/methods/create/)
+5. Check the scope. Put the new token in `DEPLOY_TOKEN` and run the following. For an account-owned token, `GET /accounts/<account_id>/tokens/verify` shows `active` and the expiry.
+
+   - Reading the settings of the target Worker (`GET /accounts/<account_id>/workers/scripts/<worker name>/settings`) succeeds
+   - Listing other Workers (`GET /accounts/<account_id>/workers/scripts`) returns 403, or returns only the target Worker (if you can see other Workers, the scope is too wide)
+   - Listing Routes (`GET /zones/<zone_id>/workers/routes`) returns 403
+   - Listing Custom Domains (`GET /accounts/<account_id>/workers/domains`) returns 403
+6. Discard the creator token. In a user environment, the creator token could not delete itself. Delete it under Account API Tokens in the dashboard, or with another token that has Account API Tokens Write, and remove `CREATOR_TOKEN` from the environment. It expires soon anyway, but delete it first.
 
 ## MCP relay setup
 

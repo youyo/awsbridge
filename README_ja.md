@@ -279,7 +279,7 @@ cd <下流リポジトリ名> && claude
 
 ## Worker のデプロイの経路（既定と明示）
 
-`scripts/wrangler.sh deploy` は、指定がなければ**既定の経路**を通ります。`wrangler versions upload` を流し、出力から Version ID を取り出して `wrangler versions deploy <version-id>@100% --yes` を流します。変わるのは Worker のコード・vars・バインディングだけです。Custom Domain と Route（triggers）は同期しないので、トークンにゾーンの権限は要りません。日常のデプロイは「その Worker だけの Individual Workers Editor で、ゾーンの権限なし」のトークンで足ります。
+`scripts/wrangler.sh deploy` は、指定がなければ**既定の経路**を通ります。`wrangler versions upload` を流し、出力から Version ID を取り出して `wrangler versions deploy <version-id>@100% --yes` を流します。変わるのは Worker のコード・vars・バインディングだけです。Custom Domain と Route（triggers）は同期しないので、トークンにゾーンの権限は要りません。日常のデプロイは「その Worker だけの Individual Workers Editor で、ゾーンの権限なし」のトークンで足ります。作り方は[日常のデプロイ用のトークンの作り方](#日常のデプロイ用のトークンの作り方)に書きました。
 
 これはすべての Worker に効きます。MCP の Worker は `mise run deploy:worker` がこれを使います。コンソールログインの Worker をデプロイする mise のタスクはありません。「コンソールログインのセットアップ」に書いたとおり、コンソール用の wrangler の設定を指定して `scripts/wrangler.sh` を流します（`AWSBRIDGE_WRANGLER_CONFIG=<コンソール用の wrangler の設定> AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy`）。
 
@@ -295,6 +295,86 @@ cd <下流リポジトリ名> && claude
 - **ゾーンの権限がないトークンで `wrangler deploy` を流さないでください。** コードの upload を先に行い、あとの triggers の段で失敗するため、**新しいコードが本番に出たあとでも**コマンドは失敗の終了コードで終わります。この失敗は「デプロイされたが triggers は同期されていない」と読みます。
 - `versions upload` は Worker の `workers_dev` と `preview_urls` を変えません。これらは直前の明示の `wrangler deploy` で設定した状態のままです。そのときに `false` になっていることを確かめてください（このリポジトリの設定は、どちらも `false` に固定しています）。
 - Worker の Custom Domain と Route は、明示の経路でしか変わりません。
+
+### 日常のデプロイ用のトークンの作り方
+
+「その Worker だけの Individual Workers Editor で、ゾーンの権限なし」のトークンは、Cloudflare の Workers の権限で、アカウント所有の API トークンに、Worker 1 つの範囲で Editor を付けたものです。Editor は既存の Worker のコード・設定・バージョンを更新してデプロイできますが、Worker の作成と削除はできません（[Workers の権限](https://developers.cloudflare.com/workers/authorization/workers/)）。
+
+できること・できないこと（公式の記述による）:
+
+- 既存の Worker の `wrangler deploy`、`wrangler versions upload`、`wrangler versions deploy` は、その Worker への Editor で足ります（公式の記述による）。このリポジトリの既定の経路をこのトークンで流した結果は、このリポジトリでは確かめていません。
+- Worker の新規作成には、Workers 全体の Admin が要ります。存在しない Worker には範囲を指定できないので、トークンは初回のデプロイ（上の明示の経路）のあとに作ります。
+- Route の変更にはゾーンの Workers Routes Write が要ります。Custom Domain は、Worker ごとの権限に対応していません。どちらも日常のトークンではできないのが狙いです。
+- `wrangler login`（OAuth）は、Worker ごとの範囲に対応していません。このトークンは `CLOUDFLARE_API_TOKEN` と `CLOUDFLARE_ACCOUNT_ID` の環境変数で渡します（[Workers の認可](https://developers.cloudflare.com/workers/authorization/)）。
+
+**公式の経路（ダッシュボード）**: Manage Account > Account API Tokens で、アカウント所有のトークンを作り、scope を **Specified Workers** にして対象の Worker を選び、role に **Editor** を付けます（[変更履歴 2026-09-15](https://developers.cloudflare.com/changelog/post/2026-09-15-granular-worker-permissions/)）。選べればこれで足ります。
+
+**補助の経路（API）**: 上の画面で Worker を選べない環境では、API で作れます。ダッシュボードでは作れない、という意味ではありません。
+
+1. 作成用のトークンを作ります。Account > Account API Tokens > Edit だけを付け、期限は短く（当日）します（API のリファレンスでは `Account API Tokens Write` と書かれています。[作り方](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/)）。作るトークンの権限は、作る人の権限の範囲内に限られます。値は環境変数 `CREATOR_TOKEN` に入れ、コマンド行には書きません。下の例は、トークンを curl の引数に載せないよう（ほかのユーザーにプロセスの引数として見えないよう）、ヘッダーをシェルの組み込みの `printf` から渡します（bash・zsh）。
+
+   ```
+   auth_header() { printf 'Authorization: Bearer %s\n' "$CREATOR_TOKEN"; }
+   ```
+2. script tag を取ります。リソースに書くのは Worker の名前ではなく、変わらない ID である `tag` です（`id` は名前です）。
+
+   ```
+   curl -sS -H @<(auth_header) \
+     "https://api.cloudflare.com/client/v4/accounts/<account_id>/workers/scripts" \
+     | jq '.result[] | select(.id == "<worker の名前>") | .tag'
+   ```
+
+   この一覧には、Workers の権限のどれか（たとえば Workers Scripts Read）が要ります。作成用のトークンには付いていないので、その権限を持つ自分のトークンで取るか、作成用のトークンに足します。
+
+   [Workers scripts の API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/list/)
+3. 権限グループの ID を取ります。`name` は変わりうるので、ポリシーには `id` を書きます。一覧から、Worker 1 つの Editor に当たるものを選びます（`is_selectable` が true のもの）。探すときの目安は、`List Worker Scripts` の API リファレンスが受け付ける権限として挙げている `Individual Workers Editor` です。
+
+   ```
+   curl -sS -H @<(auth_header) \
+     "https://api.cloudflare.com/client/v4/accounts/<account_id>/tokens/permission_groups" \
+     | jq '.result[] | select(.name | test("Worker"; "i")) | {id, name, scopes, is_selectable}'
+   ```
+
+   [permission_groups の API](https://developers.cloudflare.com/api/resources/accounts/subresources/tokens/subresources/permission_groups/methods/list/)
+4. トークンを作ります。リクエストの本体を `policy.json` に書きます。
+
+   ```
+   {
+     "name": "<token_name>",
+     "policies": [
+       {
+         "effect": "allow",
+         "permission_groups": [{ "id": "<permission_group_id>" }],
+         "resources": {
+           "com.cloudflare.api.account.<account_id>": {
+             "com.cloudflare.edge.worker.script.<script_tag>": "*"
+           }
+         }
+       }
+     ],
+     "expires_on": "<期限（UTC。例 2027-01-31T00:00:00Z）>"
+   }
+   ```
+
+   `com.cloudflare.edge.worker.script.<script_tag>` というキーは、公式の文書に記載がありません。利用者の環境で、このキーで作れたことを確かめました。公式の文書にあるキーは、アカウントとゾーンの `com.cloudflare.api.account.…` の形です。
+
+   値は応答の `result.value` に入ります。端末に出さず、ファイルまたは秘密情報の置き場に直接書きます。ファイルに書くときは、作る時点で本人だけが読める権限にします（`umask 077`。あとから `chmod` すると、その間ほかのユーザーが読めます）。
+
+   ```
+   curl -sS -X POST -H @<(auth_header) \
+     -H "Content-Type: application/json" --data @policy.json \
+     "https://api.cloudflare.com/client/v4/accounts/<account_id>/tokens" \
+     | (umask 077; jq -r '.result.value' > <保存先>)
+   ```
+
+   [トークン作成の API](https://developers.cloudflare.com/api/resources/accounts/subresources/tokens/methods/create/)
+5. 範囲を確かめます。作ったトークンを `DEPLOY_TOKEN` に入れ、次を流します。アカウント所有のトークンは、`GET /accounts/<account_id>/tokens/verify` で `active` と期限を確かめられます。
+
+   - 対象の Worker の設定の取得（`GET /accounts/<account_id>/workers/scripts/<worker の名前>/settings`）が成功する
+   - ほかの Worker の一覧（`GET /accounts/<account_id>/workers/scripts`）が 403 になるか、対象の Worker だけが返る（ほかの Worker が見えたら、範囲が広すぎます）
+   - Route の一覧（`GET /zones/<zone_id>/workers/routes`）が 403
+   - Custom Domain の一覧（`GET /accounts/<account_id>/workers/domains`）が 403
+6. 作成用のトークンを捨てます。利用者の環境では、作成用のトークン自身では自分を削除できませんでした。ダッシュボードの Account API Tokens か、別の Account API Tokens Write のトークンで削除し、`CREATOR_TOKEN` を環境から消します。期限が短いので、消し忘れても失効しますが、消すのが先です。
 
 ## MCP の中継のセットアップ
 
