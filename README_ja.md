@@ -311,11 +311,15 @@ cd <下流リポジトリ名> && claude
 
 **補助の経路（API）**: 上の画面で Worker を選べない環境では、API で作れます。ダッシュボードでは作れない、という意味ではありません。
 
-1. 作成用のトークンを作ります。Account > Account API Tokens > Edit だけを付け、期限は短く（当日）します（API のリファレンスでは `Account API Tokens Write` と書かれています。[作り方](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/)）。作るトークンの権限は、作る人の権限の範囲内に限られます。値は環境変数 `CREATOR_TOKEN` に入れ、コマンド行には書きません。
+1. 作成用のトークンを作ります。Account > Account API Tokens > Edit だけを付け、期限は短く（当日）します（API のリファレンスでは `Account API Tokens Write` と書かれています。[作り方](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/)）。作るトークンの権限は、作る人の権限の範囲内に限られます。値は環境変数 `CREATOR_TOKEN` に入れ、コマンド行には書きません。下の例は、トークンを curl の引数に載せないよう（ほかのユーザーにプロセスの引数として見えないよう）、ヘッダーをシェルの組み込みの `printf` から渡します（bash・zsh）。
+
+   ```
+   auth_header() { printf 'Authorization: Bearer %s\n' "$CREATOR_TOKEN"; }
+   ```
 2. script tag を取ります。リソースに書くのは Worker の名前ではなく、変わらない ID である `tag` です（`id` は名前です）。
 
    ```
-   curl -sS -H "Authorization: Bearer $CREATOR_TOKEN" \
+   curl -sS -H @<(auth_header) \
      "https://api.cloudflare.com/client/v4/accounts/<account_id>/workers/scripts" \
      | jq '.result[] | select(.id == "<worker の名前>") | .tag'
    ```
@@ -326,7 +330,7 @@ cd <下流リポジトリ名> && claude
 3. 権限グループの ID を取ります。`name` は変わりうるので、ポリシーには `id` を書きます。一覧から、Worker 1 つの Editor に当たるものを選びます（`is_selectable` が true のもの）。探すときの目安は、`List Worker Scripts` の API リファレンスが受け付ける権限として挙げている `Individual Workers Editor` です。
 
    ```
-   curl -sS -H "Authorization: Bearer $CREATOR_TOKEN" \
+   curl -sS -H @<(auth_header) \
      "https://api.cloudflare.com/client/v4/accounts/<account_id>/tokens/permission_groups" \
      | jq '.result[] | select(.name | test("Worker"; "i")) | {id, name, scopes, is_selectable}'
    ```
@@ -354,14 +358,13 @@ cd <下流リポジトリ名> && claude
 
    `com.cloudflare.edge.worker.script.<script_tag>` というキーは、公式の文書に記載がありません。利用者の環境で、このキーで作れたことを確かめました。公式の文書にあるキーは、アカウントとゾーンの `com.cloudflare.api.account.…` の形です。
 
-   値は応答の `result.value` に入ります。端末に出さず、ファイルまたは秘密情報の置き場に直接書きます。
+   値は応答の `result.value` に入ります。端末に出さず、ファイルまたは秘密情報の置き場に直接書きます。ファイルに書くときは、作る時点で本人だけが読める権限にします（`umask 077`。あとから `chmod` すると、その間ほかのユーザーが読めます）。
 
    ```
-   curl -sS -X POST -H "Authorization: Bearer $CREATOR_TOKEN" \
+   curl -sS -X POST -H @<(auth_header) \
      -H "Content-Type: application/json" --data @policy.json \
      "https://api.cloudflare.com/client/v4/accounts/<account_id>/tokens" \
-     | jq -r '.result.value' > <保存先>
-   chmod 600 <保存先>
+     | (umask 077; jq -r '.result.value' > <保存先>)
    ```
 
    [トークン作成の API](https://developers.cloudflare.com/api/resources/accounts/subresources/tokens/methods/create/)

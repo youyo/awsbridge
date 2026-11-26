@@ -311,11 +311,15 @@ What it can and cannot do (as the official documentation describes it):
 
 **Fallback route (API)**: if that screen does not let you select a Worker in your environment, you can create the token through the API. This does not mean the dashboard cannot do it.
 
-1. Create a creator token. Give it only Account > Account API Tokens > Edit, and a short expiry (today). The API reference calls the permission `Account API Tokens Write` ([how to](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/)). The token you create can only carry permissions within the creator's own. Put the value in the environment variable `CREATOR_TOKEN`; never write it on the command line.
+1. Create a creator token. Give it only Account > Account API Tokens > Edit, and a short expiry (today). The API reference calls the permission `Account API Tokens Write` ([how to](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/)). The token you create can only carry permissions within the creator's own. Put the value in the environment variable `CREATOR_TOKEN`; never write it on the command line. The examples below pass the header from the shell builtin `printf`, so the token is not on the curl command line (where other users could see it as a process argument) (bash, zsh).
+
+   ```
+   auth_header() { printf 'Authorization: Bearer %s\n' "$CREATOR_TOKEN"; }
+   ```
 2. Get the script tag. The resource takes the immutable `tag` of the Worker, not its name (`id` is the name).
 
    ```
-   curl -sS -H "Authorization: Bearer $CREATOR_TOKEN" \
+   curl -sS -H @<(auth_header) \
      "https://api.cloudflare.com/client/v4/accounts/<account_id>/workers/scripts" \
      | jq '.result[] | select(.id == "<worker name>") | .tag'
    ```
@@ -326,7 +330,7 @@ What it can and cannot do (as the official documentation describes it):
 3. Get the permission group ID. Write the `id` in the policy, because the `name` can change. From the list, pick the group that means Editor on a single Worker (one with `is_selectable` true). A guide for what to look for is `Individual Workers Editor`, the permission the `List Worker Scripts` API reference lists as accepted.
 
    ```
-   curl -sS -H "Authorization: Bearer $CREATOR_TOKEN" \
+   curl -sS -H @<(auth_header) \
      "https://api.cloudflare.com/client/v4/accounts/<account_id>/tokens/permission_groups" \
      | jq '.result[] | select(.name | test("Worker"; "i")) | {id, name, scopes, is_selectable}'
    ```
@@ -354,14 +358,13 @@ What it can and cannot do (as the official documentation describes it):
 
    The key `com.cloudflare.edge.worker.script.<script_tag>` is not in the official documentation. We confirmed in a user environment that a token can be created with this key. The keys the documentation does list are the account and zone forms, `com.cloudflare.api.account.…`.
 
-   The value comes back in `result.value` of the response. Do not print it; write it straight to a file or a secret store.
+   The value comes back in `result.value` of the response. Do not print it; write it straight to a file or a secret store. When you write it to a file, make it readable only by you from the moment it is created (`umask 077`; a later `chmod` leaves a window in which other users can read it).
 
    ```
-   curl -sS -X POST -H "Authorization: Bearer $CREATOR_TOKEN" \
+   curl -sS -X POST -H @<(auth_header) \
      -H "Content-Type: application/json" --data @policy.json \
      "https://api.cloudflare.com/client/v4/accounts/<account_id>/tokens" \
-     | jq -r '.result.value' > <destination>
-   chmod 600 <destination>
+     | (umask 077; jq -r '.result.value' > <destination>)
    ```
 
    [Create token API](https://developers.cloudflare.com/api/resources/accounts/subresources/tokens/methods/create/)
