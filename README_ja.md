@@ -668,7 +668,11 @@ mise run console:reconcile -- --profile <プロファイル> --logs-api --since 
 - **`assume_time_gap`・`identity_mismatch`・`identity_not_compared_admin` が出たら**: 停止スイッチ（Admin の発行なら vars `ADMIN_LOGIN_DISABLED`、それ以外は `LOGIN_DISABLED` を `true`）で発行を止め、該当の発行と引き受け（発行記録と CloudTrail のイベント）を調べ、技術の判断者に上げます。誤りが残る間、区間は進みません。発行記録（Workers Logs）の保持は 7 日で、過ぎると該当の発行を調べられなくなるので、放置しません。
 - **`--since` を渡すとき、`--since` は回す間隔より 5 分以上長くします**（確認済みの区間の終わりが「今回の終わり − 反映の遅れ（既定 300 秒）」になるため、ちょうどの長さでは穴が出ます）。例: 毎日回すなら既定の 6 日のままにします（`--since` を付けません。6 日は読み始めの上限で、状態があれば読み始めは状態から決まります）。
 - 毎日の実行は awsbridge の外（MCP 経由のエージェントなど）で行います。awsbridge には定期の実行の仕組みを入れません。通知も awsbridge の外で、仕組みは利用者が決めます。
-- 段階 2 の最初に、実物で次を確かめます: Cloudflare の API の応答の形（`events`・`$metadata.id` のカーソル・`count` の意味・切られた印が `$workers.truncated` か `$cloudflare.truncated` か）、CloudTrail の `AssumeRoleWithWebIdentity` のフィールド名（`requestParameters.webIdentityTokenId`・`userIdentity.identityProvider` など）。違えば `scripts/console/reconcile-cf.ts`・`src/console/reconcile-input.ts` とフィクスチャを直します。
+- 実物での確認の状況（確かめ済みのものと、まだ確かめていないもの）:
+  - **確かめ済み（Cloudflare の API）**: 応答の形（`events`・`$metadata.id` のカーソル・`count` の意味）は、API の仕様（OpenAPI）と実物の応答（2026-11-16）で確かめました。結果は `scripts/console/reconcile-cf.ts` の冒頭に並べています（たとえば `count` は返したページの行数で全件の数ではなく、`$metadata.id` は一意ではありません）。
+  - **確かめ済み（CloudTrail）**: `AssumeRoleWithWebIdentity` の `requestParameters.webIdentityTokenId`（発行記録の `jti`）と `userIdentity.identityProvider` は、実物の発行と引き受けの 1 対 1 の突き合わせ（誤り 0）で確かめました。`SourceIdentity` も実物のイベントから読めて比べられています。ただし、`requestParameters` と `responseElements` のどちらにあるかまでは区別して確かめていません。
+  - **まだ確かめていないもの**: 切られた印が `$workers.truncated` か `$cloudflare.truncated` か（道具は両方を見ます）、同じ `$metadata.id` の行が複数あるときにカーソルがどこから続くか。CloudTrail の `responseElements` のうち `credentials.accessKeyId`・`assumedRoleUser.assumedRoleId`、および `requestID`・`eventID`・`recipientAccountId` のフィールド名。
+  - 実物と違えば `scripts/console/reconcile-cf.ts`・`src/console/reconcile-input.ts` とフィクスチャを直します。
 
 ### コンソールログインの issuer の外からの確認（毎日）
 
