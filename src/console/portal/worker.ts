@@ -27,7 +27,6 @@ import type { WorkerConfig } from "../types";
 import { assetResponse, isAssetName, isStaticResponse } from "./assets";
 import { handleLogin, type LoginRateLimiter } from "./login";
 import {
-  cliPage,
   errorPage,
   expiredPage,
   htmlResponse,
@@ -359,7 +358,7 @@ export function createPortalWorker<Env extends PortalEnv>(
       return htmlResponse(errorPage("not_found", errOpts), 404);
     if (!isRead) return methodNotAllowed("GET, HEAD", requestId, mark);
 
-    // チームのパスの画面（GET /login・/expired・S1・S2・S3）と静的なファイルは、Access JWT を確かめてから描く（G-6 の原則。
+    // チームのパスの画面（GET /login・/expired・S1・S2）と静的なファイルは、Access JWT を確かめてから描く（G-6 の原則。
     // JWT がない・AUD が未知・チームが違えば断る。S2 の CSRF トークンにも aud と sub が要る）
     const access = await verifyConsoleAccess(
       req.headers.get("Cf-Access-Jwt-Assertion"),
@@ -410,31 +409,6 @@ export function createPortalWorker<Env extends PortalEnv>(
     const roleParam = params.get("role") ?? undefined;
     const newCsrf = () =>
       createCsrfToken(rt.csrfKey, { aud: access.aud, sub: access.sub }, Math.floor(now() / 1000));
-
-    if (page === "cli") {
-      // ロールの指定があればこのチームのロールであること。無ければ 1 つならそれ、複数なら選ぶリンク
-      const selected =
-        roleParam !== undefined
-          ? roles.find((r) => r.role.name === roleParam)
-          : roles.length === 1
-            ? roles[0]
-            : undefined;
-      if (roleParam !== undefined && !selected)
-        return htmlResponse(errorPage("not_listed", errOpts), 404);
-      return htmlResponse(
-        cliPage({
-          config,
-          tier,
-          team,
-          teamBase,
-          account,
-          roles,
-          selected,
-          csrf: selected ? await newCsrf() : undefined,
-          mark,
-        }),
-      );
-    }
 
     const csrf = await newCsrf();
     return htmlResponse(

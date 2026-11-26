@@ -1,5 +1,5 @@
-// コンソールログインのチームの画面: S1（一覧。検索・お気に入り・最近使ったもの）・S3（aws login の手順）・静的なファイル。
-// 設計: docs/specs/console-login-portal.md §4.2・§4.4・§5.4・§5.6・§6.5・§9.2・§9.6。
+// コンソールログインのチームの画面: S1（一覧。検索・お気に入り・最近使ったもの）・静的なファイル。S3（aws login の手順）は無い（欠番）。
+// 設計: docs/specs/console-login-portal.md §4.2・§5.4・§5.6・§6.5・§9.2・§9.6。
 // 階層に共通の画面（1 つの Worker の Standard と Admin のチーム）。一覧は発行用の生成物のこのチームの行だけから作り、他のチームの行・AUD・ARN を出さない。
 // CSP（script-src 'self'・style-src 'self'）に合わせ、inline の script・style を使わない（一覧の JSON は実行されないデータの要素）。
 import { readFileSync } from "node:fs";
@@ -229,79 +229,24 @@ describe("S1 チームの一覧（Admin）", () => {
   });
 });
 
-describe("S3 aws login の手順", () => {
-  it("Viewer（Standard）: config の断片・aws login・確かめる・aws logout・--remote・案内。email と ARN を出さない", async () => {
-    const res = await get(std(), "/t/infra/a/333333333333/cli?role=readonly");
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("[profile svc-a-prod-readonly]");
-    expect(html).toContain("region = ap-northeast-1");
-    expect(html).toContain("aws login --profile svc-a-prod-readonly");
-    expect(html).toContain("aws sts get-caller-identity --profile svc-a-prod-readonly");
-    expect(html).toContain("aws logout --profile svc-a-prod-readonly");
-    expect(html).toContain("aws login --remote");
-    expect(html).toContain("333333333333");
-    expect(html).toContain("FederatedViewer");
-    for (const s of [
-      "自分で始めた URL だけ開く",
-      "コードを人に渡さない",
-      "一覧で選ぶセッション",
-      "共有の端末では aws logout",
-    ])
-      expect(html).toContain(s);
-    expect(html).not.toContain("aws+svc-a-prod@example.com");
-    expect(html).not.toContain("arn:aws:iam::");
-    // 「コンソールを開く」は S2 と同じ POST（CSRF つき）
-    expect(html).toContain('action="/t/infra/login"');
-    expect(html).toMatch(/name="csrf" value="[^"]+"/);
-    expect(html).toContain('value="333333333333:readonly"');
-    noInline(html);
-  });
-
-  it("Administrator（Admin）: 同じ端末だけ（--remote は使えない）", async () => {
-    const html = await (
-      await get(adm(), `/t/${ADMIN_TEAM}/a/333333333333/cli?role=admin`, {
-        aud: ADMIN_AUD,
-      })
-    ).text();
-    expect(html).toContain("aws login --profile svc-a-prod-admin");
-    expect(html).toContain("同じ端末だけ");
-    expect(html).toContain("--remote は使えません");
-    expect(html).not.toContain("aws login --remote も使えます");
-  });
-
-  it("ロールの指定が無くロールが 1 つならそれを使い、このチームのロールでなければ 404 not_listed", async () => {
+describe("S3（aws login の手順の画面）は無い（欠番）", () => {
+  it("GET /t/<team>/a/<account>/cli は、ロールの指定の有無・JWT の有無にかかわらず 404 not_found（S3 の HTML を返さない）", async () => {
     const w = std();
-    const one = await (await get(w, "/t/infra/a/333333333333/cli")).text();
-    expect(one).toContain("aws login --profile svc-a-prod-readonly");
-    const other = await get(w, "/t/infra/a/444444444444/cli?role=developer");
-    expect(other.status).toBe(404);
-    expect(await other.text()).toContain("not_listed");
-    expect((await get(w, "/t/infra/a/333333333333/cli?role=admin")).status).toBe(404);
-  });
-
-  it("ロールが複数で指定が無ければ、ロールを選ぶリンクを出す", async () => {
-    const config = workerConfig();
-    const a = config.accounts.find(
-      (x) => x.accountId === "444444444444",
-    ) as WorkerConfig["accounts"][number];
-    // Standard の階層のロールの行だけ（Admin のロールの行に Standard のチームを入れると row_team_tier で 500）
-    for (const r of a.roles)
-      if (r.role !== "admin" && !r.teams.includes("infra")) r.teams.push("infra");
-    const html = await (await get(std(config), "/t/infra/a/444444444444/cli")).text();
-    expect(html).toContain('href="/t/infra/a/444444444444/cli?role=readonly"');
-    expect(html).toContain('href="/t/infra/a/444444444444/cli?role=developer"');
-    expect(html).not.toContain("aws login --profile");
-  });
-
-  it("プロファイル名は アカウント名-ロール を小文字にし、使えない文字は - にする", async () => {
-    const config = workerConfig();
-    const a = config.accounts.find(
-      (x) => x.accountId === "333333333333",
-    ) as WorkerConfig["accounts"][number];
-    a.name = "Svc A/Prod (main)";
-    const html = await (await get(std(config), "/t/infra/a/333333333333/cli?role=readonly")).text();
-    expect(html).toContain("[profile svc-a-prod-main-readonly]");
+    for (const [path, o] of [
+      ["/t/infra/a/333333333333/cli?role=readonly", {}],
+      ["/t/infra/a/333333333333/cli", {}],
+      ["/t/infra/a/333333333333/cli?role=admin", {}],
+      ["/t/infra/a/333333333333/cli?role=readonly", { aud: null }],
+      [`/t/${ADMIN_TEAM}/a/333333333333/cli?role=admin`, { aud: ADMIN_AUD }],
+      [`/t/${ADMIN_TEAM}/a/333333333333/cli`, { aud: ADMIN_AUD }],
+    ] as const) {
+      const res = await get(w, path, o);
+      expect(res.status, path).toBe(404);
+      const html = await res.text();
+      expect(html, path).toContain("not_found");
+      expect(html, path).not.toContain("aws login");
+      expect(html, path).not.toContain("[profile ");
+    }
   });
 });
 
@@ -389,27 +334,13 @@ describe("POST のフォームに noreferrer を付けない（Origin: null で�
     expectNoReferrerFree(html, 1);
   });
 
-  it("S3 aws login の手順（Standard）の POST の form", async () => {
-    const html = await (await get(std(), "/t/infra/a/333333333333/cli?role=readonly")).text();
-    expectNoReferrerFree(html, 1);
-  });
-
-  it("S3 aws login の手順（Admin）の POST の form", async () => {
-    const html = await (
-      await get(adm(), `/t/${ADMIN_TEAM}/a/333333333333/cli?role=admin`, {
-        aud: ADMIN_AUD,
-      })
-    ).text();
-    expectNoReferrerFree(html, 1);
-  });
-
   it("pages.ts のどの method=post の form も noreferrer を持たない（今後足される form も捕まえる）", () => {
     const src = readFileSync(
       join(new URL("../../", import.meta.url).pathname, "src/console/portal/pages.ts"),
       "utf8",
     );
     const posts = formTags(src).filter((t) => /\smethod="post"/i.test(t));
-    expect(posts.length).toBeGreaterThanOrEqual(2);
+    expect(posts.length).toBeGreaterThanOrEqual(1);
     for (const tag of posts) expect(tag).not.toMatch(/noreferrer/i);
   });
 });

@@ -1,5 +1,5 @@
 // コンソールログインの Standard の Worker を wrangler dev で起動し、擬似の Access（certs）・STS・getSigninToken を相手に、
-// 入口の一覧（S0）→ S2 のリンク → POST /t/<team>/login → 302 までの通しと、S1・S3・静的なファイルを確かめる。
+// 入口の一覧（S0）→ S2 のリンク → POST /t/<team>/login → 302 までの通しと、S1・静的なファイル・S3 が無いことを確かめる。
 // 負の試験（断るケース）は console-negative.test.ts に集めてある（重複を持たない）。
 // 入口の身元のグループの取り方は未確定なので、本物のエントリ（normal）は全チームの S1 へのリンクに落ちる経路を通り、
 // 試験用のエントリの変数 E2E_IDENTITY_GROUPS を渡したもの（grouped）が所属するチームの行の経路を通る。
@@ -456,7 +456,7 @@ describe("コンソールの Worker（wrangler dev）: 入口の一覧（S0）�
   });
 });
 
-describe("コンソールの Worker（wrangler dev）: S1・S3・静的なファイル", () => {
+describe("コンソールの Worker（wrangler dev）: S1・静的なファイル・S3 が無いこと", () => {
   it("S1 は他のチームの行・AUD を出さず、inline の script・style を使わない。?q= はサーバー側で絞る", async () => {
     const dev = await page(normal, "/t/dev/", DEV);
     expect(dev.status).toBe(200);
@@ -472,14 +472,17 @@ describe("コンソールの Worker（wrangler dev）: S1・S3・静的なファ
     expect(q.body).not.toContain('href="/t/infra/a/333333333333?role=readonly"');
   });
 
-  it("S3 は aws login の手順（Viewer は --remote も）と、CSRF つきの「コンソールを開く」", async () => {
-    const r = await page(normal, "/t/infra/a/333333333333/cli?role=readonly", INFRA);
-    expect(r.status, r.body).toBe(200);
-    expect(r.body).toContain("aws login --profile svc-a-prod-readonly");
-    expect(r.body).toContain("aws login --remote");
-    expect(r.body).toContain("共有の端末では aws logout");
-    expect(r.body).toMatch(/name="csrf" value="[^"]+"/);
-    expect(r.body).not.toContain("aws+svc-a-prod@example.com");
+  it("S3（/cli）は無い。ロールの指定の有無にかかわらず 404 で、aws login の手順を返さない", async () => {
+    for (const path of [
+      "/t/infra/a/333333333333/cli?role=readonly",
+      "/t/infra/a/333333333333/cli",
+    ]) {
+      const r = await page(normal, path, INFRA);
+      expect(r.status, r.body).toBe(404);
+      expect(r.body).toContain("not_found");
+      expect(r.body).not.toContain("aws login");
+      expect(r.body).not.toContain("[profile ");
+    }
   });
 
   it("静的なファイルは /assets（入口の JWT）と /t/<team>/assets（チームの JWT）から返し、no-store にしない", async () => {

@@ -532,7 +532,7 @@ describe("Access アプリの無いチームのパスは必ず断る（両階層
       // このチームの AUD は表から消えたので未知（unknown_audience）、他のチームの AUD は team_mismatch。どれも断る
       for (const aud of [AUDS.teams[team] as string, ADMIN_B_AUD, INFRA, AUDS.entry]) {
         const jwt = await h.accessJwt({ aud });
-        for (const page of ["/", "/a/333333333333", "/a/333333333333/cli", "/expired", "/login"]) {
+        for (const page of ["/", "/a/333333333333", "/expired", "/login"]) {
           const res = await get(`${base}${page}`, { jwt }, baseEnv(h), config);
           expect(res.status, `${team} ${aud} ${page}`).toBe(403);
         }
@@ -550,7 +550,7 @@ describe("Access アプリの無いチームのパスは必ず断る（両階層
 
 describe("Admin の階層のチームの画面は Access JWT を確かめてから描く", () => {
   it("JWT が無ければ 401、Standard のチームなら 403 team_mismatch、入口の AUD なら 403 unknown_audience、別の Admin のチームなら 403 team_mismatch", async () => {
-    for (const page of ["/", "/a/333333333333", "/a/333333333333/cli", "/expired", "/login"]) {
+    for (const page of ["/", "/a/333333333333", "/expired", "/login"]) {
       expect((await get(`${TEAM_PATH}${page}`)).status, page).toBe(401);
       for (const [aud, code] of [
         [INFRA, "team_mismatch"],
@@ -595,11 +595,11 @@ describe("Admin の階層のチームの画面は Access JWT を確かめてか�
     expect(await res.text()).toContain("not_listed");
   });
 
-  it("S1（/t/<team>/）・S3・S5 は枠を返す。入口（/）は同じ Worker にあり、チームの AUD では開かない", async () => {
+  it("S1（/t/<team>/）・S5 は枠を返す。入口（/）は同じ Worker にあり、チームの AUD では開かない", async () => {
     const jwt = await h.accessJwt({ aud: ADMIN_AUD });
     expect((await get("/")).status).toBe(401);
     expect((await get("/", { jwt })).status).toBe(403);
-    for (const page of ["/", "/a/333333333333/cli", "/expired", "/login"]) {
+    for (const page of ["/", "/expired", "/login"]) {
       expect((await get(`${TEAM_PATH}${page}`, { jwt })).status, page).toBe(200);
     }
     expect((await get(`${TEAM_PATH}/a/333333333333`, { jwt, method: "POST" })).status).toBe(405);
@@ -615,12 +615,11 @@ describe("Admin の階層のチームの画面は Access JWT を確かめてか�
 });
 
 describe("Admin の画面: [ADMIN] の印（④ で見た目を決め直す。今の形を保つ）", () => {
-  it("Admin のチームの画面（S1・S2・S3・S5・GET /login）とエラー（401 以外・503 を含む）の見出しとタブのタイトルに [ADMIN] が付く", async () => {
+  it("Admin のチームの画面（S1・S2・S5・GET /login）とエラー（401 以外・503 を含む）の見出しとタブのタイトルに [ADMIN] が付く", async () => {
     const jwt = await h.accessJwt({ aud: ADMIN_AUD });
     const pages = [
       await get(`${TEAM_PATH}/`, { jwt }),
       await get(`${TEAM_PATH}/a/333333333333`, { jwt }),
-      await get(`${TEAM_PATH}/a/333333333333/cli`, { jwt }),
       await get(`${TEAM_PATH}/expired`, { jwt }),
       await get(`${TEAM_PATH}/login`, { jwt }),
       await get(`${TEAM_PATH}/a/555555555555`, { jwt }), // 404 not_listed

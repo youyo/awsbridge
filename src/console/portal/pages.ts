@@ -1,12 +1,11 @@
 // コンソールログイン: ポータルの画面（docs/specs/console-login-portal.md §4）。階層（Standard / Admin）に共通。
-// S1（チームの一覧）・S2（ロールの選択と POST のフォーム）・S3（aws login の手順）・S4（エラー）・S5（セッション切れ）・GET /login の案内。
+// S1（チームの一覧）・S2（ロールの選択と POST のフォーム）・S4（エラー）・S5（セッション切れ）・GET /login の案内。
 // 入口（S0）は表示用の生成物を読むので、ここではなく src/console/display/ に置く（Admin のバンドルに入れない）。
 // CSP が script-src 'self'・style-src 'self' なので、inline の script・style を書かない（JS と CSS は /assets から読む）。
 // 一覧の JSON は script の要素に入れず、エスケープした data-json の属性（dataElement）で渡す。
 // 設定由来の値はすべてエスケープする。発行の経路（login.ts）からは import しない。node の API を使わない。
 import type { Tier } from "../constants";
 import type { IssueErrorCode } from "../issue/errors";
-import { resolveRegion } from "../issue/federation";
 import type { WorkerAccount, WorkerConfig, WorkerRole } from "../types";
 
 const ESCAPES: Record<string, string> = {
@@ -346,99 +345,6 @@ ${dataElement(data)}
 <p class="note">一覧の更新: ${esc(o.config.generatedAt)}。一覧は目安です。実際に入れるかは各アカウントの設定で決まります。</p>${
       supportUrl !== undefined ? `\n<p><a href="${esc(supportUrl)}">問い合わせ先</a></p>` : ""
     }`,
-    o.mark,
-    o.teamBase,
-  );
-}
-
-/** プロファイル名（<アカウント名>-<ロール> を小文字にし、使えない文字は - にする）。 */
-export function profileName(accountName: string, role: string): string {
-  const s = `${accountName}-${role}`
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-  return s === "" ? role : s;
-}
-
-export type CliPageOptions = {
-  config: WorkerConfig;
-  tier: Tier;
-  team: string;
-  teamBase: string;
-  account: WorkerAccount;
-  /** このチームで入れるロール（行の順）。 */
-  roles: { role: WorkerRole; sessionSeconds: number }[];
-  /** 選んだロール（無ければ選ぶリンクを出す）。 */
-  selected?: { role: WorkerRole; sessionSeconds: number } | undefined;
-  /** 「コンソールを開く」の CSRF トークン（selected があるときだけ）。 */
-  csrf?: string | undefined;
-  mark?: string | undefined;
-};
-
-/** S3 aws login の手順（§4.4・§6.5）。表示するのは行の情報から作った文字列だけで、認証情報・URL・トークン・email を含まない。 */
-export function cliPage(o: CliPageOptions): string {
-  const a = o.account;
-  const back = `<p><a href="${esc(o.teamBase)}/a/${esc(a.accountId)}">← 戻る</a></p>`;
-  if (!o.selected) {
-    const items = o.roles
-      .map(
-        ({ role }) =>
-          `<li><a href="${esc(`${o.teamBase}/a/${a.accountId}/cli?role=${encodeURIComponent(role.name)}`)}">${esc(
-            role.displayName,
-          )}（${esc(role.roleName)}）</a></li>`,
-      )
-      .join("\n");
-    return layout(
-      `CLI で使う: ${a.name}`,
-      `${back}
-<h1>CLI で使う: ${esc(a.name)}（${esc(a.accountId)}）</h1>
-<p>ロールを選んでください。</p>
-<ul>
-${items}
-</ul>`,
-      o.mark,
-      o.teamBase,
-    );
-  }
-  const { role, sessionSeconds } = o.selected;
-  const profile = profileName(a.name, role.name);
-  const region = resolveRegion(undefined, o.config.portal.regions);
-  const remote =
-    o.tier === "admin"
-      ? `<p>aws login は同じ端末だけです（--remote は使えません）。</p>`
-      : `<p>ブラウザのない端末では <code>aws login --remote</code> も使えます（Viewer だけ）。</p>`;
-  return layout(
-    `CLI で使う: ${a.name} / ${role.displayName}`,
-    `${back}
-<h1>CLI で使う: ${esc(a.name)} / ${esc(role.displayName)}</h1>
-<p>前提: AWS CLI 2.32.0 以降。このロールのコンソールを、既定のブラウザで開いてあること。</p>
-<ol>
-<li>コンソールを開く（まだなら）
-<form method="post" action="${esc(o.teamBase)}/login" target="_blank" rel="noopener">
-<input type="hidden" name="entry" value="${esc(`${a.accountId}:${role.name}`)}">
-<input type="hidden" name="region" value="${esc(region)}">
-<input type="hidden" name="csrf" value="${esc(o.csrf ?? "")}">
-<button type="submit">コンソールを開く（新しいタブ）</button>
-</form></li>
-<li>~/.aws/config に追記する（プロファイル名は変えてよい）
-<pre><code>[profile ${esc(profile)}]
-region = ${esc(region)}</code></pre></li>
-<li>端末で実行する
-<pre><code>aws login --profile ${esc(profile)}</code></pre></li>
-<li>開いたブラウザで、次のセッションを選ぶ: アカウント ${esc(a.accountId)} / ${esc(role.roleName)} / console-&lt;あなたのメールアドレス&gt;。
-既定のブラウザが別なら、表示された URL を、コンソールを開いたブラウザに貼る。</li>
-<li>確かめる: <code>aws sts get-caller-identity --profile ${esc(profile)}</code></li>
-</ol>
-<p>認証情報は 15 分ごとに自動で更新され、最長でセッションの長さ（${esc(hours(sessionSeconds))}）まで使えます。</p>
-<p>終わったら: <code>aws logout --profile ${esc(profile)}</code></p>
-${remote}
-<ul class="note">
-<li>自分で始めた URL だけ開く。</li>
-<li>表示されたコードを人に渡さない。</li>
-<li>一覧で選ぶセッション（アカウントとロール）を確かめる。</li>
-<li>共有の端末では aws logout する。</li>
-</ul>`,
     o.mark,
     o.teamBase,
   );
