@@ -12,7 +12,7 @@ export type TeamPage =
   | "login"
   | "expired"
   | "asset"
-  /** デプロイ後の確認（Admin だけが持つ。Standard は 404。portal/worker.ts）。 */
+  /** デプロイ後の確認（コンソールの Worker は常に keyCheck を持つので、どのチームにもある。部品が keyCheck を持たないときだけ 404。portal/worker.ts）。 */
   | "key-check";
 
 export type PortalRoute =
