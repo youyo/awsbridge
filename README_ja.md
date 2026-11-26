@@ -302,7 +302,7 @@ cd <下流リポジトリ名> && claude
 
 できること・できないこと（公式の記述による）:
 
-- 既存の Worker の `wrangler deploy` は、その Worker への Editor で足ります。このリポジトリの既定の経路（`versions upload` と `versions deploy`）をこのトークンで流した結果は、このリポジトリでは確かめていません（公式の記述は `wrangler deploy` についてです）。
+- 既存の Worker の `wrangler deploy`、`wrangler versions upload`、`wrangler versions deploy` は、その Worker への Editor で足ります（公式の記述による）。このリポジトリの既定の経路をこのトークンで流した結果は、このリポジトリでは確かめていません。
 - Worker の新規作成には、Workers 全体の Admin が要ります。存在しない Worker には範囲を指定できないので、トークンは初回のデプロイ（上の明示の経路）のあとに作ります。
 - Route の変更にはゾーンの Workers Routes Write が要ります。Custom Domain は、Worker ごとの権限に対応していません。どちらも日常のトークンではできないのが狙いです。
 - `wrangler login`（OAuth）は、Worker ごとの範囲に対応していません。このトークンは `CLOUDFLARE_API_TOKEN` と `CLOUDFLARE_ACCOUNT_ID` の環境変数で渡します（[Workers の認可](https://developers.cloudflare.com/workers/authorization/)）。
@@ -323,7 +323,7 @@ cd <下流リポジトリ名> && claude
    この一覧には、Workers の権限のどれか（たとえば Workers Scripts Read）が要ります。作成用のトークンには付いていないので、その権限を持つ自分のトークンで取るか、作成用のトークンに足します。
 
    [Workers scripts の API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/list/)
-3. 権限グループの ID を取ります。`name` は変わりうるので、ポリシーには `id` を書きます。一覧から、Worker 1 つの Editor に当たるものを選びます（`is_selectable` が true のもの）。名前の表記は確かめていません。
+3. 権限グループの ID を取ります。`name` は変わりうるので、ポリシーには `id` を書きます。一覧から、Worker 1 つの Editor に当たるものを選びます（`is_selectable` が true のもの）。探すときの目安は、`List Worker Scripts` の API リファレンスが受け付ける権限として挙げている `Individual Workers Editor` です。
 
    ```
    curl -sS -H "Authorization: Bearer $CREATOR_TOKEN" \
@@ -368,10 +368,10 @@ cd <下流リポジトリ名> && claude
 5. 範囲を確かめます。作ったトークンを `DEPLOY_TOKEN` に入れ、次を流します。アカウント所有のトークンは、`GET /accounts/<account_id>/tokens/verify` で `active` と期限を確かめられます。
 
    - 対象の Worker の設定の取得（`GET /accounts/<account_id>/workers/scripts/<worker の名前>/settings`）が成功する
-   - ほかの Worker の一覧（`GET /accounts/<account_id>/workers/scripts`）が 403
+   - ほかの Worker の一覧（`GET /accounts/<account_id>/workers/scripts`）が 403 になるか、対象の Worker だけが返る（ほかの Worker が見えたら、範囲が広すぎます）
    - Route の一覧（`GET /zones/<zone_id>/workers/routes`）が 403
    - Custom Domain の一覧（`GET /accounts/<account_id>/workers/domains`）が 403
-6. 作成用のトークンを捨てます。トークンは自分自身を削除できず（エラー 9109）、API では消せません。ダッシュボードの Account API Tokens から削除し、`CREATOR_TOKEN` を環境から消します。期限が短いので、消し忘れても失効しますが、消すのが先です。
+6. 作成用のトークンを捨てます。利用者の環境では、作成用のトークン自身では自分を削除できませんでした。ダッシュボードの Account API Tokens か、別の Account API Tokens Write のトークンで削除し、`CREATOR_TOKEN` を環境から消します。期限が短いので、消し忘れても失効しますが、消すのが先です。
 
 ## MCP の中継のセットアップ
 

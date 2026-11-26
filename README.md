@@ -302,7 +302,7 @@ The token "Individual Workers Editor for this one Worker, no zone permissions" i
 
 What it can and cannot do (as the official documentation describes it):
 
-- `wrangler deploy` of an existing Worker needs only Editor on that Worker. What happens when the default route of this repository (`versions upload` and `versions deploy`) runs with this token has not been checked in this repository (the official description is about `wrangler deploy`).
+- `wrangler deploy`, `wrangler versions upload` and `wrangler versions deploy` of an existing Worker need only Editor on that Worker (as the official documentation describes it). What happens when the default route of this repository runs with this token has not been checked in this repository.
 - Creating a new Worker needs Admin on Workers as a whole. You cannot scope a token to a Worker that does not exist yet, so create the token after the first deployment (the explicit route above).
 - Changing a Route needs Workers Routes Write on the zone. Custom Domains do not support per-Worker roles. Neither is possible with the daily token, which is the point.
 - `wrangler login` (OAuth) does not support per-Worker scopes. Pass this token through the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` environment variables ([Workers authorization](https://developers.cloudflare.com/workers/authorization/)).
@@ -323,7 +323,7 @@ What it can and cannot do (as the official documentation describes it):
    This list needs one of the Workers permissions (for example Workers Scripts Read). The creator token does not have it, so either use a token of your own that does, or add it to the creator token.
 
    [Workers scripts API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/list/)
-3. Get the permission group ID. Write the `id` in the policy, because the `name` can change. From the list, pick the group that means Editor on a single Worker (one with `is_selectable` true). The exact spelling of the name has not been checked.
+3. Get the permission group ID. Write the `id` in the policy, because the `name` can change. From the list, pick the group that means Editor on a single Worker (one with `is_selectable` true). A guide for what to look for is `Individual Workers Editor`, the permission the `List Worker Scripts` API reference lists as accepted.
 
    ```
    curl -sS -H "Authorization: Bearer $CREATOR_TOKEN" \
@@ -368,10 +368,10 @@ What it can and cannot do (as the official documentation describes it):
 5. Check the scope. Put the new token in `DEPLOY_TOKEN` and run the following. For an account-owned token, `GET /accounts/<account_id>/tokens/verify` shows `active` and the expiry.
 
    - Reading the settings of the target Worker (`GET /accounts/<account_id>/workers/scripts/<worker name>/settings`) succeeds
-   - Listing other Workers (`GET /accounts/<account_id>/workers/scripts`) returns 403
+   - Listing other Workers (`GET /accounts/<account_id>/workers/scripts`) returns 403, or returns only the target Worker (if you can see other Workers, the scope is too wide)
    - Listing Routes (`GET /zones/<zone_id>/workers/routes`) returns 403
    - Listing Custom Domains (`GET /accounts/<account_id>/workers/domains`) returns 403
-6. Discard the creator token. A token cannot delete itself (error 9109), so it cannot be removed through the API. Delete it under Account API Tokens in the dashboard, and remove `CREATOR_TOKEN` from the environment. It expires soon anyway, but delete it first.
+6. Discard the creator token. In a user environment, the creator token could not delete itself. Delete it under Account API Tokens in the dashboard, or with another token that has Account API Tokens Write, and remove `CREATOR_TOKEN` from the environment. It expires soon anyway, but delete it first.
 
 ## MCP relay setup
 
