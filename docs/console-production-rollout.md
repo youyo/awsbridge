@@ -60,7 +60,7 @@ Set up the console Worker with the Standard tier and the Viewer role, following 
 - The first generation has no ledger to compare with: run `mise run console:config:generate -- --ledger-init` and record that you did (it is printed and kept as `ledgerInit` in the meta of `stacksets.json`). Keep the generated `stacksets.json` in a private place as the baseline for `--ledger-baseline` in a new checkout.
 - [ ] Before the first deployment, `mise run console:inspect -- --profile=<p>` in each target account (required after `--ledger-init`): the only errors are `role_missing` and `provider_missing` (nothing is deployed yet). A `trust_team_retired`, `trust_team_tier`, or `unlisted_role` means a console role is already there: stop and find out where it comes from.
 - The first deployment, and any change of a Custom Domain, takes the explicit route with a short-lived token of your own that has the zone permissions; discard it afterwards ([How the Worker is deployed](../README.md#how-the-worker-is-deployed-default-route-and-explicit-route)). Before you discard it, check once with it that no Route hits the two console hosts, as in [Checking the console issuers from outside](../README.md#checking-the-console-issuers-from-outside-daily) (all pages, wildcards included; a list that cannot be read is not 0 Routes).
-- Daily deploys use a token that is "Individual Workers Editor for the console Worker only, no zone permissions", held by the person described above.
+- Daily deploys use a token that is "Individual Workers Editor for the console Worker only, no zone permissions", held by the person described above. How to create it is in [How to create the token for daily deploys](../README.md#how-to-create-the-token-for-daily-deploys).
 
 ### Before the first issuance
 

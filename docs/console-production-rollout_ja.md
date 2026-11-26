@@ -60,7 +60,7 @@ mise run poc:g2:clean-check -- --profile <読み取り専用のプロファイ�
 - 初回の生成には比べる台帳がありません。`mise run console:config:generate -- --ledger-init` を回し、回したことを記録します（標準出力に出て、`stacksets.json` の meta に `ledgerInit` として残ります）。生成した `stacksets.json` は、新しいチェックアウトで `--ledger-baseline` に渡す baseline として private な場所に保管します。
 - [ ] 最初のデプロイの前に、対象のアカウントごとに `mise run console:inspect -- --profile=<p>`（`--ledger-init` のあとは必須）: 誤りは `role_missing` と `provider_missing` だけ（まだ何も配っていない）。`trust_team_retired`・`trust_team_tier`・`unlisted_role` が出たら、コンソールのロールがすでにあります。止めて、出どころを調べます。
 - 初回のデプロイと Custom Domain の変更は、ゾーンの権限を持つ自分の短命のトークンで明示の経路を使い、終わったらトークンを捨てます（[Worker のデプロイの経路](../README_ja.md#worker-のデプロイの経路既定と明示)）。捨てる前に、そのトークンでコンソールの 2 つのホストに当たる Route が 0 本であることを 1 回確かめます。やり方は [issuer の外からの確認](../README_ja.md#コンソールログインの-issuer-の外からの確認毎日) と同じです（全ページ、ワイルドカードも数える。一覧が取れなければ 0 本とみなさない）。
-- 日常のデプロイには「コンソールの Worker だけの Individual Workers Editor・ゾーン権限なし」のトークンを使い、上に書いた人が持ちます。
+- 日常のデプロイには「コンソールの Worker だけの Individual Workers Editor・ゾーン権限なし」のトークンを使い、上に書いた人が持ちます。作り方は [日常のデプロイ用のトークンの作り方](../README_ja.md#日常のデプロイ用のトークンの作り方) です。
 
 ### 最初の発行の前
 
