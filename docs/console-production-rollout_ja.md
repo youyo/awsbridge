@@ -70,14 +70,15 @@ mise run poc:g2:clean-check -- --profile <読み取り専用のプロファイ�
 - [ ] `mise run console:access:inspect`: 誤り 0（入口のアプリとすべてのチームのアプリで Cookie Path が有効。[Access アプリ](../README_ja.md#コンソールログインの-access-アプリcookie-path)）。
 - [ ] **workers.dev と Preview の URL が応答しない。** Worker の workers.dev の URL も Preview の URL も、Worker の応答（ポータルの画面・JSON・issuer の文書）を返さない。404 か Cloudflare のエラーの画面が期待値です。応答すれば Access を通らない入口になります。`workers_dev` / `preview_urls` を直して明示の経路でデプロイし、確かめ直します。
 - [ ] **日常のトークンがコンソールの Worker に限られている。** そのトークンで、コンソールの 2 つのホスト（ポータルと issuer）それぞれに Worker の Route を足すことを 1 回ずつ試します（例: ゾーンの Workers Routes の API `/zones/{zone_id}/workers/routes` への `POST`）。期待値: すべて 403。どれかが通ったら、作られたものをすぐ消し、トークンの範囲の誤りとして扱い（消して作り直す）、確かめ直します。
-- [ ] **既定の経路で設定が変わらない。** 意味のある変更なしに（例: デプロイのメッセージだけ）既定の経路で 1 回デプロイし、前後を比べます: vars・`secret_key` のバインディング・Custom Domain・Workers Logs（observability）の設定・`workers_dev` と `preview_urls`（どちらも `false` のまま）・`LOGIN_DISABLED` がどれも同じ。そのあと `mise run console:key:check` をもう一度: `[NG]` が無い。既定の経路のあとも鍵が残ることは、以前の階層ごとの Admin の Worker でしか測っていません。1 つのコンソールの Worker では推論で、ここが初めての確認です。
+- [ ] **既定の経路で設定が変わらない。** 上の日常のトークン（Individual Workers Editor）で、意味のある変更なしに（例: デプロイのメッセージだけ）既定の経路で 1 回デプロイし、前後を比べます（そのトークンでデプロイできることも、ここで確かめます）: vars・`secret_key` のバインディング・Custom Domain・Workers Logs（observability）の設定・`workers_dev` と `preview_urls`（どちらも `false` のまま）・`LOGIN_DISABLED` がどれも同じ。そのあと `mise run console:key:check` をもう一度: `[NG]` が無い。既定の経路のあとも鍵が残ることは、以前の階層ごとの Admin の Worker でしか測っていません。1 つのコンソールの Worker では推論で、ここが初めての確認です。
+- [ ] **停止スイッチの `503 login_disabled` を発行の前に見る。** `LOGIN_DISABLED` が `"true"` のうちに、入口かチームの一覧から、設定にあるアカウントを選んでアカウントの画面を開きます。期待値: 注意の文（「ログインを一時停止しています。案内に従ってください。」）がそのアカウントの画面に出る。ロールを選んで「コンソールを開く（新しいタブ）」を押すと、新しいタブが `503 login_disabled` になる。`503` を返すのは「コンソールを開く」の送信（`POST /login`）だけです。注意の文が出るのはアカウントの画面で、チームの一覧には出ません。URL を手で組むと、設定に無いアカウントの画面は `404 not_listed` になり、フォームも `503` も出ないので、一覧から選びます。
 - [ ] `AWSBRIDGE_CONSOLE_LOGS_WORKERS` に、下流の wrangler の設定での名前で、コンソールの Worker の名前を書いている（既定は上流の名前 `awsbridge-console` で、自分の名前とは限りません）。下の最初の `--logs-api` での `console:reconcile` で、記録の読み込みが成功すること（`source: api`、終了コード 2 でない）を期待値にします。
 - [ ] `mise run console:exposure-check`: 終了コード 0、すべての境界が `[OK]`。
 - [ ] base のスタックとロールのスタックのあと: `mise run console:inspect -- --profile=<p>` が誤り 0、MCP のスタックとプロバイダーが変わっていない。
 
 ### 最初の発行の当日
 
-`LOGIN_DISABLED` を `"false"` にしてデプロイし、時刻（T0）を記録します。ポータルから Viewer の発行を行い（使うなら `aws login` でも）、発行の回数を記録します。CloudTrail にイベントが出るまで待ちます。30 分は目安です（未確認）。道具は反映の遅れ（既定 300 秒、`--lag-seconds`）より新しい記録を `pending` として残すので、片付いていなければ待ってから回し直します。そのうえで同じ日に:
+デプロイの前に時刻（T0）を記録し、`LOGIN_DISABLED` を `"false"` にしてデプロイします。T0 はデプロイの後ではなく前の時刻にします。下の `--since` は、その T0 の 5 分前にします（早い側に倒すので、取りこぼしがありません）。ポータルから Viewer の発行を行い（使うなら `aws login` でも）、発行の回数を記録します。CloudTrail にイベントが出るまで待ちます。30 分は目安です（未確認）。道具は反映の遅れ（既定 300 秒、`--lag-seconds`）より新しい記録を `pending` として残すので、片付いていなければ待ってから回し直します。そのうえで同じ日に:
 
 - [ ] **workers.dev と Preview の URL が応答しないことを取り直す。** `LOGIN_DISABLED` を `"false"` にしたデプロイのあとも、最初の発行の前と同じ確認で応答しない。
 
@@ -131,7 +132,7 @@ mise run console:exposure-check
 
 段 5 の判断の前に 1 回行います。どの停止も、固定の時間を待って完了にせず、要求が断られたことを確かめて完了にします（[発行を止める](../README_ja.md#発行を止めるコンソールログイン)）。
 
-- [ ] **Viewer。** 停止スイッチ: `LOGIN_DISABLED` を `true` にすると発行が `503 login_disabled` になる。そのあと戻す。1 人停止: 自分の SourceIdentity で `mise run console:stop:apply` を行うと、自分の Viewer のセッションの要求が通らなくなる（[1 人停止](../README_ja.md#コンソールログインの-1-人停止)）。書き込むには `--stops`・`--reason`・`--yes` が要り、コンソールのロールのセッションからではなく別の入口（IAM Identity Center など）から流します。Viewer のロールの revoke（L3）で、それより前に発行したセッションが断られる。1 人停止の解除は解除の条件（少なくともロールの `MaxSessionDuration`）を待つので、訓練は 2 日にまたがる前提で組みます。
+- [ ] **Viewer。** 停止スイッチ: `LOGIN_DISABLED` を `true` にすると発行が `503 login_disabled` になる。確かめる画面は、一覧から選んだ設定にあるアカウントの画面で、「コンソールを開く」を押したあとの新しいタブです（`503` は送信（`POST /login`）でだけ出ます。URL を手で組むと、設定に無いアカウントは `404 not_listed` で止まり、`503` を確かめられません）。そのあと戻す。1 人停止: 自分の SourceIdentity で `mise run console:stop:apply` を行うと、自分の Viewer のセッションの要求が通らなくなる（[1 人停止](../README_ja.md#コンソールログインの-1-人停止)）。書き込むには `--stops`・`--reason`・`--yes` が要り、コンソールのロールのセッションからではなく別の入口（IAM Identity Center など）から流します。Viewer のロールの revoke（L3）で、それより前に発行したセッションが断られる。1 人停止の解除は解除の条件（少なくともロールの `MaxSessionDuration`）を待つので、訓練は 2 日にまたがる前提で組みます。
 - [ ] **Admin の階層だけを止める。** 段 4 と同じ `ADMIN_LOGIN_DISABLED` と、弱いロールの信頼ポリシーでの Deny（[ロールの信頼ポリシーでの拒否](../README_ja.md#ロールの信頼ポリシーでの拒否)）: 弱いロールの発行が `sts_denied` で失敗し、Viewer は動き続ける。手で戻し、1 回発行してドリフト検出で確かめます。Admin の階層だけを止めるプロバイダーの削除はありません（[発行を Cloudflare に頼らずに止める](../README_ja.md#発行を-cloudflare-に頼らずに止めるl2-と信頼ポリシーの拒否)）。訓練のために本番でプロバイダーを消しません。
 - [ ] **Administrator の棚卸し。** [Administrator の残った権限の棚卸し](../README_ja.md#コンソールログインの-administrator-の残った権限の棚卸し) の 2〜4（プロバイダー・CloudTrail・IAM の一覧）を 1 回行います。Administrator のロールはまだ無いので、その節の 1 は飛ばします。一覧は、Administrator を使ったあとに比べる前の状態として残します（アカウント ID を含むので公開リポジトリに入れません）。IAM の外の今のリソースポリシー（例: 使っているサービスの S3・KMS・Lambda）も、その基準として取ります。自分の Viewer のセッションで行った操作のイベントに `sourceIdentity` が出るかを確かめます。出なければ、README のとおり、イベントの拾い方を変える必要があります。
 
