@@ -8,7 +8,6 @@ import type { WorkerConfig } from "../types";
 export type TeamPage =
   | "list"
   | "account"
-  | "cli"
   | "login"
   | "expired"
   | "asset"
@@ -44,9 +43,9 @@ function teamRest(
   if (rest === "/login") return { page: "login" };
   if (rest === "/expired") return { page: "expired" };
   if (rest === "/key-check") return { page: "key-check" };
-  const m = /^\/a\/([^/]+)(\/cli)?$/.exec(rest);
+  const m = /^\/a\/([^/]+)$/.exec(rest);
   if (m && ACCOUNT_ID_RE.test(m[1] as string))
-    return { page: m[2] ? "cli" : "account", accountId: m[1] as string };
+    return { page: "account", accountId: m[1] as string };
   return undefined;
 }
 

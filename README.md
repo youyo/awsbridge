@@ -697,6 +697,26 @@ Order for deploying Administrator (**an example that has not been run yet**; to 
 - Whenever you update the Viewer stack, look at the change set; **if `AdministratorRole` appears, do not execute it** (the Viewer stack's `AdministratorTeams` is no longer empty).
 - To abort, **delete the Admin stack, and remove Administrator from the config and regenerate** (so that the artifacts and the portal list do not keep Administrator), then deploy the Worker and confirm that the portal no longer shows Administrator.
 
+### Using aws login (console login)
+
+The portal has no page of steps for `aws login`. After you open the console of the role from the portal, run `aws login` in a terminal and choose the session in the browser that AWS opens.
+
+1. Prerequisites: AWS CLI 2.32.0 or later, and the console of that role already open in your default browser.
+2. Add a profile to `~/.aws/config` (the name is free; the Region is the one you chose in the portal):
+
+   ```ini
+   [profile <profile-name>]
+   region = <region>
+   ```
+
+3. Run `aws login --profile <profile-name>`. In the browser that opens, choose the session `<account-id> / <role-name> / console-<your-email>` from the list. If your default browser is a different one, paste the URL that the CLI prints into the browser where you opened the console.
+4. Check with `aws sts get-caller-identity --profile <profile-name>`. The credentials refresh every 15 minutes, up to the session length of the role. When you are done, run `aws logout --profile <profile-name>`.
+
+- A Viewer (Standard tier) can also use `aws login --remote` on a terminal without a browser. An Administrator (Admin tier) can use `aws login` on the same device only: `--remote` is denied by the Admin guard policy.
+- **Open only a URL that you started yourself, and give the code that is shown to no one.** Someone who starts `aws login --remote` and has you open the URL can use the role's permissions until the session length of the role. Always check the account and role of the session you choose in the list.
+- On a shared terminal, run `aws logout` after you finish. `aws login` keeps its cache and refresh token on the terminal.
+- Notifying on `--remote` issuance is detection after the fact, not prevention: see `docs/specs/console-login.md` (section 4.4 and threat T15).
+
 ## Daily operations
 
 Once console login is live, run two checks every day: the reconciliation of issue records with CloudTrail (`console:reconcile`) and the check of the console issuers from outside (`console:exposure-check`). Rotate the signing keys on a schedule.

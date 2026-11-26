@@ -379,7 +379,7 @@ Standard と Admin の 2 つの Worker への振り分け（N9 は 1 つの Work
 `--remote` を許すことに伴う運用（Viewer）:
 
 - **通知**: `--remote` の発行を CloudTrail で通知する。条件は `requestParameters.client_id = arn:aws:signin:::devtools/cross-device`（② で組み、G3 に持っていく）。通知は事後の検知で、防止ではない
-- **案内**: 「自分で始めた URL だけ開く」「コードを人に渡さない」「一覧で選ぶセッション（アカウントとロール）を確かめる」「共有の端末では使ったあと `aws logout` する」
+- **案内**: 「自分で始めた URL だけ開く」「コードを人に渡さない」「一覧で選ぶセッション（アカウントとロール）を確かめる」「共有の端末では使ったあと `aws logout` する」。ポータルの画面には出さない（S3 を削除した。2026-11-27 の利用者の判断）ので、README の「aws login で使う」で伝える
 - **残るリスク**（受容）: 攻撃者が始めた `aws login --remote` の URL を Viewer が開いてコードを渡すと、攻撃者は Viewer の権限をロールの上限の時間まで使える。防ぐのは利用者の注意だけ（画面に要求元の端末が出ない）
 - **見直しの条件**: `--remote` に L3・L3-1 が効かないと分かったら、Viewer も `localhost` だけに戻す [資料: cto の決裁 2026-11-12 の再審議条件]
 
@@ -850,7 +850,7 @@ cto の決裁（2026-11-12。D8 の段階導入の書き直しを条件付きで
 | 運用の道具 `console:keygen`・`console:secrets:standard`・`console:build:standard`・`console:dev` | #22 | 実装 |
 | Admin の Worker（画面と 9 段。署名は 503）と経路の共通化 | #23 | 実装 |
 | 検査の道具 `console:inspect`（§4.9）| #24 | 実装 |
-| ポータルの画面（入口 S0 の 1 つの一覧、S1、S3）| #25 | 実装 |
+| ポータルの画面（入口 S0 の 1 つの一覧、S1、S3。S3 は 2026-11-27 に削除）| #25 | 実装 |
 | 負の試験の E2E と、3 方向のバンドルの分離の試験。生成器の誤り `issuer_host_overlaps_portal`（G-8）| #26 | 実装 |
 | Admin の `secret_key` の署名・Admin の issuer の文書・Access JWT の鮮度の検査・`key-check`。生成器の誤り `admin_issuer_path`・`admin_issuer_multiple`・`admin_issuer_host_shared`。運用の道具 `console:admin-key:put` / `retire` / `check`、`secrets:scan`（gitleaks）| #27 | 実装。本物の `secret_key` での確認は未実施 |
 | 設計書の X1 の反映と実装の記録 | #28 | 文書 |

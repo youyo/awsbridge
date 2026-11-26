@@ -73,7 +73,7 @@ issuer の公開文書（discovery と JWKS）: Admin の Worker が <admin-issu
 
 | 部品 | 内容 | 置き場所 |
 |---|---|---|
-| Admin の Worker | Admin のオリジンの S1〜S5 と発行（POST）、`key-check`、Admin の issuer の discovery と JWKS。Standard の一覧の行・Standard の鍵・Standard のチームの AUD・入口の AUD を持たない | 別の Worker デプロイ（`wrangler.console-admin.jsonc`）。`workers_dev: false`・`preview_urls: false`。互換フラグ（`nodejs_compat`・`webcrypto_modern_algorithms`）は使わない |
+| Admin の Worker | Admin のオリジンの S1〜S5（S3 は欠番）と発行（POST）、`key-check`、Admin の issuer の discovery と JWKS。Standard の一覧の行・Standard の鍵・Standard のチームの AUD・入口の AUD を持たない | 別の Worker デプロイ（`wrangler.console-admin.jsonc`）。`workers_dev: false`・`preview_urls: false`。互換フラグ（`nodejs_compat`・`webcrypto_modern_algorithms`）は使わない |
 | 発行のオリジン | `https://awsbridge-admin-console.<domain>`（設定の `portal.adminOrigin`）。Standard のオリジン（`portal.standardOrigin`）と別のホスト | Custom Domain |
 | Admin の issuer のホスト | `https://<admin-issuer-host>`（例 `awsbridge-oidc-admin-console.<domain>`。設定の `boundaries[].issuers.admin` は `https://<admin-issuer-host>/admin`）。Standard の issuer のホストとも、ポータルのホストとも別。Access アプリは置かない。このドメインを奪われると Admin の issuer を奪われるので、自動更新・レジストラのロック・ゾーンの権限を絞る（[console-login.md](console-login.md) §3.1） | Custom Domain |
 | 署名鍵 | 管理下の Admin の鍵 1 つ（差し替えの間だけ 2 つ。§6）。Worker の `secret_key` バインディング。公開鍵は vars | Cloudflare（§4） |

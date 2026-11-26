@@ -953,11 +953,7 @@ describe.each([stdT, adminT])("$label: 負の試験（両階層に共通）", (t
     }
 
     for (const method of ["POST", "PUT", "DELETE", "PATCH", "OPTIONS"]) {
-      for (const rest of [
-        "/",
-        t.s2.replace(teamBase(t.team), ""),
-        `${t.s2.replace(teamBase(t.team), "")}/cli`,
-      ]) {
+      for (const rest of ["/", t.s2.replace(teamBase(t.team), "")]) {
         it(`${method} ${teamBase(t.team)}${rest} は 405 method_not_allowed（画面は GET・HEAD だけ）`, async () => {
           const r = await post(t, { method, path: `${teamBase(t.team)}${rest}` });
           denied(r, 405, "method_not_allowed");
@@ -1064,7 +1060,6 @@ describe("Standard のチーム: 負の試験", () => {
       ["GET", "/assets/portal.js", "入口の静的なファイル"],
       ["GET", "/t/infra/", "チームの一覧（S1）"],
       ["GET", "/t/infra/a/333333333333", "S2"],
-      ["GET", "/t/infra/a/333333333333/cli", "S3"],
       ["GET", "/t/infra/login", "GET /login"],
       ["GET", "/t/infra/assets/portal.css", "チームの静的なファイル"],
       ["GET", "/t/infra-elevated/", "Admin のチームの一覧（S1）"],
@@ -1375,11 +1370,10 @@ describe.each([stdT, adminT])(
     afterEach(noIssue);
     const base = teamBase(t.noapp);
 
-    it("JWT が無ければ 401（S1・S2・S3・GET /login・静的なファイル）", async () => {
+    it("JWT が無ければ 401（S1・S2・GET /login・静的なファイル）", async () => {
       for (const path of [
         `${base}/`,
         `${base}/a/333333333333`,
-        `${base}/a/333333333333/cli`,
         `${base}/login`,
         `${base}/assets/portal.css`,
       ]) {

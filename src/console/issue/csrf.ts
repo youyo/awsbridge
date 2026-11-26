@@ -80,7 +80,7 @@ function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0;
 }
 
-/** S2・S3 の hidden に入れるトークンを作る。aud・sub が空か区切り（|）を含めば投げる。 */
+/** S2 の hidden に入れるトークンを作る。aud・sub が空か区切り（|）を含めば投げる。 */
 export async function createCsrfToken(
   key: CryptoKey,
   binding: CsrfBinding,
