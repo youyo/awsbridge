@@ -697,6 +697,26 @@ Administrator を配る順（**まだ実行していない例**で、下流の�
 - Viewer のスタックを更新するときは、必ず change set を見ます。**`AdministratorRole` が出たら実行しません**（Viewer のスタックの `AdministratorTeams` が空でなくなっている）。
 - 中断するときは、**Admin のスタックを消し、かつ設定から Administrator を外して生成し直します**（生成物とポータルの一覧に Administrator を残さない）。そのあと Worker をデプロイし、ポータルに Administrator が出なくなったことを確かめます。
 
+### aws login で使う（コンソールログイン）
+
+ポータルに `aws login` の手順の画面はありません。ポータルでそのロールのコンソールを開いたあと、端末で `aws login` を実行し、AWS が開くブラウザでセッションを選びます。
+
+1. 前提: AWS CLI 2.32.0 以降。そのロールのコンソールを、既定のブラウザで開いてあること。
+2. `~/.aws/config` にプロファイルを足します（名前は自由。リージョンはポータルで選んだもの）。
+
+   ```ini
+   [profile <プロファイル名>]
+   region = <リージョン>
+   ```
+
+3. `aws login --profile <プロファイル名>` を実行します。開いたブラウザの一覧から、セッション `<アカウント ID> / <ロール名> / console-<あなたのメールアドレス>` を選びます。既定のブラウザが別なら、CLI が表示した URL を、コンソールを開いたブラウザに貼ります。
+4. `aws sts get-caller-identity --profile <プロファイル名>` で確かめます。認証情報は 15 分ごとに更新され、最長でロールのセッションの長さまで使えます。終わったら `aws logout --profile <プロファイル名>` を実行します。
+
+- Viewer（Standard の階層）は、ブラウザのない端末で `aws login --remote` も使えます。Administrator（Admin の階層）は同じ端末の `aws login` だけです。`--remote` は Admin の守りの部品が Deny します。
+- **自分で始めた URL だけを開き、表示されたコードを人に渡さないでください。** 誰かが始めた `aws login --remote` の URL をあなたが開いてコードを渡すと、その人はロールのセッションの長さまで、そのロールの権限を使えます。一覧で選ぶセッションのアカウントとロールを必ず確かめてください。
+- 共有の端末では、使い終えたら `aws logout` を実行してください。`aws login` はキャッシュとリフレッシュトークンを端末に残します。
+- `--remote` の発行の通知は事後の検知で、防止ではありません。`docs/specs/console-login.md`（§4.4 と脅威 T15）を見てください。
+
 ## 日々の運用
 
 コンソールログインが動き始めたら、毎日 2 つの確認を回します。発行記録と CloudTrail の突き合わせ（`console:reconcile`）と、コンソールの issuer の外からの確認（`console:exposure-check`）です。署名鍵は間隔を決めて差し替えます。
