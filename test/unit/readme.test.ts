@@ -62,49 +62,85 @@ describe("README のプロファイル一覧（alias でバンドル）", () => 
   }
 });
 
-// README の作り直し（#51 の並び）を P2（B）の構成（1 つの Worker・1 つの issuer・1 つのプロバイダー）に合わせたもの
-describe("README の並びと P2（B）の構成", () => {
-  const order = (f: string, hs: string[]) => {
-    const text = read(f);
-    let at = -1;
-    for (const h of hs) {
-      const i = text.indexOf(`\n${h}\n`);
-      expect(i, h).toBeGreaterThan(at);
-      at = i;
-    }
-  };
-  it("README.md: できること → 受容 → 上流と下流 → 構成 → 下流 → デプロイの経路 → MCP → コンソール → 日々の運用 → 停止 → 棚卸し → 移行 → 開発", () =>
+// README の並び（MCP の中継だけ。コンソールログインの節はタグ console-login-final の版にある）
+describe("README の並び（MCP の中継だけ）", () => {
+  // 「## 」の見出し（コードブロックの外）が、この並びとちょうど一致する（足りないものも余分なものも無い）
+  const order = (f: string, hs: string[]) =>
+    expect(headings(f).filter((h) => h.startsWith("## "))).toEqual(hs);
+  it("README.md: できること → 廃止と片付け → 上流と下流 → 構成 → 下流 → デプロイの経路 → MCP → 鍵の差し替え → 移行 → 開発", () =>
     order("README.md", [
       "## What awsbridge does",
-      "## Before using console login (accepted limits)",
+      "## Retiring console login and cleaning up",
       "## Upstream and downstream",
       "## Architecture",
       "## Operating in a downstream repository",
       "## How the Worker is deployed (default route and explicit route)",
       "## MCP relay setup",
-      "## Console login setup",
-      "## Daily operations",
-      "## Stopping issuance (console login)",
-      "## Inventory of what an Administrator left behind (console login)",
+      "## Key rotation",
       "## Migrating an existing MCP deployment",
       "## Development",
     ]));
   it("README_ja.md: 同じ並び", () =>
     order("README_ja.md", [
       "## awsbridge でできること",
-      "## コンソールログインを使う前に（受容する限界）",
+      "## コンソールログインの廃止と片付け",
       "## 上流と下流",
       "## 構成",
       "## 下流リポジトリでの運用",
       "## Worker のデプロイの経路（既定と明示）",
       "## MCP の中継のセットアップ",
-      "## コンソールログインのセットアップ",
-      "## 日々の運用",
-      "## 発行を止める（コンソールログイン）",
-      "## コンソールログインの Administrator の残った権限の棚卸し",
+      "## 鍵の差し替え",
       "## MCP の中継の既存のデプロイの移行",
       "## 開発",
     ]));
+
+  // 他のファイル（SKILL.md・scripts・wrangler.jsonc のコメント）や下流のリンクが参照する見出し
+  const kept: [string, string[]][] = [
+    [
+      "README.md",
+      [
+        "## Operating in a downstream repository",
+        "## How the Worker is deployed (default route and explicit route)",
+        "### How to create the token for daily deploys",
+        "## MCP relay setup",
+        "### Multi-account",
+        "### Signing key rotation (MCP relay)",
+      ],
+    ],
+    [
+      "README_ja.md",
+      [
+        "## 下流リポジトリでの運用",
+        "## Worker のデプロイの経路（既定と明示）",
+        "### 日常のデプロイ用のトークンの作り方",
+        "## MCP の中継のセットアップ",
+        "### マルチアカウント",
+        "### 署名鍵のローテーション（MCP の中継）",
+      ],
+    ],
+  ];
+  for (const [f, hs] of kept)
+    it(`${f}: 参照される MCP の見出しが残る`, () => {
+      for (const h of hs) expect(headings(f), h).toContain(h);
+    });
+
+  // 廃止と片付けの節の外には、コンソールログインのことを書かない
+  const consoleWords =
+    /console[-_ ]?login|コンソールログイン|src\/console|console:|wrangler\.console|-console\.jsonc|console-production-rollout|Console Worker|コンソール Worker|コンソールの Worker/i;
+  const outsideRetirement: [string, string, string][] = [
+    ["README.md", "## Retiring console login and cleaning up", "## Upstream and downstream"],
+    ["README_ja.md", "## コンソールログインの廃止と片付け", "## 上流と下流"],
+  ];
+  for (const [f, start, end] of outsideRetirement)
+    it(`${f}: 「${start}」の節の外にコンソールログインの記述が無い`, () => {
+      const text = read(f);
+      const i = text.indexOf(`\n${start}\n`);
+      const j = text.indexOf(`\n${end}\n`, i + 1);
+      expect(i, start).toBeGreaterThan(0);
+      expect(j, end).toBeGreaterThan(i);
+      const outside = (text.slice(0, i) + text.slice(j)).split("\n");
+      expect(outside.filter((l) => consoleWords.test(l))).toEqual([]);
+    });
 
   for (const f of ["README.md", "README_ja.md"]) {
     it(`${f}: 初回のデプロイは明示の経路（AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy）、Access のアプリができるまで AWSBRIDGE_ACCESS_AUD は仮の値`, () => {
@@ -161,18 +197,20 @@ describe("README の構成の節の全体図（Mermaid）", () => {
   };
   const mermaid = (s: string) => /```mermaid\n([\s\S]*?)\n```/.exec(s)?.[1];
   const cases: [string, string, string[]][] = [
-    ["README.md", "## Architecture", ["MCP Worker", "Console Worker", "STS", "AWS MCP Server"]],
-    ["README_ja.md", "## 構成", ["MCP Worker", "コンソール Worker", "STS", "AWS MCP Server"]],
+    ["README.md", "## Architecture", ["MCP Worker", "STS", "AWS MCP Server"]],
+    ["README_ja.md", "## 構成", ["MCP Worker", "STS", "AWS MCP Server"]],
   ];
   for (const [f, h, words] of cases)
-    it(`${f}: ${h} の冒頭（最初の「### 」より前）に Mermaid の全体図があり、主な要素を含む`, () => {
+    it(`${f}: ${h} の冒頭（最初の「### 」より前）に Mermaid の全体図があり、MCP の中継の主な要素を含み、コンソールの要素を含まない`, () => {
       const diagram = mermaid(intro(f, h));
       expect(diagram, "mermaid block").toBeDefined();
       for (const w of words) expect(diagram, w).toContain(w);
+      expect(diagram).not.toMatch(/console|コンソール|getSigninToken|Workers Logs/i);
     });
 });
 
-// コンソールログインを上流から外す予定の案内と、使っていた下流の片付けの手順（コンソールログインの廃止の案内）。
+// コンソールログインを上流から外したことの案内と、使っていた下流の片付けの順序と決まり。
+// 片付けの骨子と各段のコマンドは、タグ console-login-final の版の README にある。
 describe("README のコンソールログインの廃止の案内と片付け", () => {
   const section = (f: string, heading: string, next: string) => {
     const text = read(f);
@@ -187,44 +225,26 @@ describe("README のコンソールログインの廃止の案内と片付け", 
       "README.md",
       "## What awsbridge does",
       "## Retiring console login and cleaning up",
-      "## Before using console login (accepted limits)",
+      "## Upstream and downstream",
       [
-        // 1. 外す予定と、MCP の中継が変わらないこと
-        "Console login will be removed from upstream.",
+        // 1. 外したことと、MCP の中継が変わらないこと
+        "Console login has been removed from upstream.",
         "The MCP relay does not change",
-        // 2. 順序の 4 段
+        // 2. コンソールの節と片付けの手順はタグの版にある
+        "the README and the specs of the version at the tag `console-login-final`",
+        "git show console-login-final:README.md",
+        "the cleanup outline and the commands of each step are in the README of the tag version",
+        // 3. 順序の 4 段
         "do not pull upstream `main`",
         "git fetch upstream --tags && git merge console-login-final",
         "Make your own backup tag",
         "Clean up on that version",
         "Only after the cleanup is done, merge upstream `main`",
         "in your downstream repository, not in a checkout of the upstream tag",
-        // 3. 片付けの骨子（8 段）
-        "`LOGIN_DISABLED`",
-        "then wait at least the JWT lifetime (300 seconds) plus the clock skew (60 seconds, the default of the reconciliation)",
-        "is not accepted by STS after that (`exp` = `iat` + 300)",
-        "This is a margin, not a guarantee",
-        "step 3 gives the guarantee",
-        "the wait before the revoke in step 2 is only a margin",
-        "revoke the sessions already issued, before deleting anything on the AWS side",
-        "no `AssumeRoleWithWebIdentity` of a console role in CloudTrail after the time of the last revoke",
-        "revoke again for that role and run the reconciliation again",
-        "last reconciliation and the external check",
-        // 3 段目の完了の条件（照合の確認済みの区間の終わりは反映の遅れだけ手前になる）
-        "at least the reflection delay (300 seconds by default) after the time you stopped new issuance",
-        "the end of the confirmed interval is past the time you stopped issuance",
-        "no unresolved findings (resolved, or explicitly accepted)",
-        "Take inventory of the permissions left",
-        "the separate Administrator stacks, then the role stacks of each kind, then the base StackSet",
-        "first delete the stack instances in every target account without retaining the stacks",
-        "and only then delete the StackSet itself",
-        "all the console IAM OIDC providers are gone and that providers for other uses, such as the MCP one, are unchanged",
-        "Delete the console Worker",
-        "Delete the Access applications and the DNS records",
-        "Clean up the generated files, state files, and tokens",
         // 4. 不変条件・決まり
         "Do not give up the issuer host (the Worker, the Custom Domain, and the DNS records) until you have deleted the IAM OIDC provider and confirmed it is gone.",
         "Do not wait a fixed time",
+        "the wait before the revoke in step 2 is only a margin",
         "`DeleteConflict`",
         "Do not remove the stop policies (the revoke and the one-person-stop Deny) until the longest session of that role (`MaxSessionDuration`) has expired, counted from the later of the time you confirmed that new issuance is stopped (`503 login_disabled`) and the time of the last revoke (if you revoked again, the time of that one)",
         "Just before you remove them, confirm again that new issuance is not possible (`503 login_disabled`)",
@@ -243,39 +263,22 @@ describe("README のコンソールログインの廃止の案内と片付け", 
       "README_ja.md",
       "## awsbridge でできること",
       "## コンソールログインの廃止と片付け",
-      "## コンソールログインを使う前に（受容する限界）",
+      "## 上流と下流",
       [
-        "コンソールログインは上流から外す予定です。",
+        "コンソールログインは上流から外しました。",
         "MCP の中継は変わりません",
+        "タグ `console-login-final` の版の README と仕様",
+        "git show console-login-final:README_ja.md",
+        "片付けの骨子と各段のコマンドは、タグの版の README にあります",
         "upstream の `main` を pull せず",
         "git fetch upstream --tags && git merge console-login-final",
         "自分の退避タグを打ちます",
         "その版で片付けます",
         "片付けが終わってから、upstream の `main` を取り込みます",
         "上流のタグの作業ツリーではなく、下流のリポジトリで行います",
-        "`LOGIN_DISABLED`",
-        "JWT の寿命 300 秒と時計のずれ（照合の既定 60 秒）を足した長さ以上待ち",
-        "その長さを過ぎると STS が受け付けません（`exp` = `iat` + 300）",
-        "目安であって保証ではありません",
-        "保証は次の段の最後の照合が担います",
-        "2 段目の revoke の前の待ちは目安です",
-        "AWS 側の削除の前に、発行済みのセッションを revoke し",
-        "最後の revoke の時刻より後に、コンソール用のロールの `AssumeRoleWithWebIdentity` が CloudTrail に無いこと",
-        "そのロールで revoke をやり直し、照合をやり直します",
-        "最後の照合と外からの確認",
-        "新しい発行を止めた時刻から、反映の遅れ（既定 300 秒）以上たってから",
-        "確認済みの区間の終わりが、停止の時刻を越えた",
-        "未解決の所見が無い（解決するか、明示して受け入れる）",
-        "残った権限の棚卸し",
-        "Administrator の別スタック → 種類のロールのスタック → base の StackSet",
-        "スタックインスタンスを、スタックを残さない形で消し",
-        "StackSet 本体を消します",
-        "コンソール用の OIDC プロバイダーがすべて無くなり、MCP 用など他の用途のプロバイダーは変わっていないことを確かめます",
-        "コンソールの Worker を消します",
-        "Access のアプリと DNS のレコードを消します",
-        "生成物・状態ファイル・トークンを片付けます",
         "IAM の OIDC プロバイダーを消して、不在を確かめるまで、issuer のホスト（Worker・Custom Domain・DNS のレコード）を手放しません。",
         "固定の時間を待たず",
+        "2 段目の revoke の前の待ちは目安です",
         "`DeleteConflict`",
         "停止のためのインラインポリシー（revoke と 1 人停止の Deny）は、そのロールの最長のセッション（`MaxSessionDuration`）が切れるまで外しません。起点は、新しい発行の停止を確かめた時刻（`503 login_disabled` の確認）と、最後の revoke の時刻（やり直したなら、やり直したときの時刻）の、遅いほうです",
         "外す直前に、新しい発行ができないこと（`503 login_disabled`）をもう一度確かめます",
@@ -291,13 +294,15 @@ describe("README のコンソールログインの廃止の案内と片付け", 
     ],
   ];
   for (const [f, prev, heading, next, phrases] of cases) {
-    it(`${f}: 「${heading}」が「${prev}」の直後・受容の節の前にあり、タグ名・順序の 4 段・片付けの骨子・決まり・未確認を載せる`, () => {
+    it(`${f}: 「${heading}」が「${prev}」の直後・上流と下流の節の前にあり、外したこと・タグ名・タグの版への案内・順序の 4 段・決まり・未確認を載せる`, () => {
       const { text, before } = section(f, heading, next);
       // 直前の節は「できること」: その節の見出しが、この節より前で最後の「## 」
       expect(before.split("\n## ").pop()?.startsWith(prev.slice(3))).toBe(true);
       expect(text).toContain("`console-login-final`");
       expect(text).toContain("`archive/console-login`");
       for (const p of phrases) expect(text, p).toContain(p);
+      // 外す「予定」の書き方は残さない
+      expect(text).not.toMatch(/will be removed|外す予定/);
     });
   }
 });
