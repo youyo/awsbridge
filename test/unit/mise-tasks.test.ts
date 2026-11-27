@@ -68,6 +68,19 @@ describe("mise.toml のデプロイタスク", () => {
       readFileSync(new URL("../../scripts/wrangler.sh", import.meta.url).pathname, "utf8"),
     ).toMatch(/--config "\$\{AWSBRIDGE_WRANGLER_CONFIG:-wrangler\.jsonc\}"/);
   });
+  it("秘密の検査（secrets:scan）は gitleaks で作業ツリー（未コミットを含む）を見る。gitleaks の版を固定する", () => {
+    const run = /^run\s*=.*$/m.exec(section('tasks."secrets:scan"'))?.[0] ?? "";
+    expect(run).toContain("scripts/secrets-scan.sh");
+    const script = readFileSync(
+      new URL("../../scripts/secrets-scan.sh", import.meta.url).pathname,
+      "utf8",
+    );
+    expect(script).toContain("gitleaks git");
+    expect(script).toContain("gitleaks dir");
+    expect(script).toContain("git ls-files -co --exclude-standard");
+    expect(script).toContain("--redact");
+    expect(section("tools")).toMatch(/^gitleaks\s*=\s*"\d+\.\d+\.\d+"/m);
+  });
 });
 
 describe("mise.toml: コンソールログインの鍵の道具（P2: Admin の鍵の道具は無い）", () => {
@@ -84,19 +97,6 @@ describe("mise.toml: コンソールログインの鍵の道具（P2: Admin の�
   });
   it("鍵の道具の変数（トークン・アカウント ID）を [env] に置かない", () => {
     expect(section("env")).not.toMatch(/^AWSBRIDGE_CONSOLE_ADMIN_/m);
-  });
-  it("秘密の検査（secrets:scan）は gitleaks で作業ツリー（未コミットを含む）を見る。gitleaks の版を固定する", () => {
-    const run = /^run\s*=.*$/m.exec(section('tasks."secrets:scan"'))?.[0] ?? "";
-    expect(run).toContain("scripts/secrets-scan.sh");
-    const script = readFileSync(
-      new URL("../../scripts/secrets-scan.sh", import.meta.url).pathname,
-      "utf8",
-    );
-    expect(script).toContain("gitleaks git");
-    expect(script).toContain("gitleaks dir");
-    expect(script).toContain("git ls-files -co --exclude-standard");
-    expect(script).toContain("--redact");
-    expect(section("tools")).toMatch(/^gitleaks\s*=\s*"\d+\.\d+\.\d+"/m);
   });
 });
 
