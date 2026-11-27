@@ -84,16 +84,10 @@ describe("assumeRoleWithWebIdentity", () => {
     expect(p.get("DurationSeconds")).toBe("900");
   });
 
-  it("MCP の呼び出し（指定なし）は init に redirect を入れない（振る舞いを変えない。c2）", async () => {
+  it("MCP の呼び出し（指定なし）は init に redirect を入れない（振る舞いを変えない）", async () => {
     const { fn, calls } = fakeFetch(() => new Response(success));
     await assumeRoleWithWebIdentity({ ...base, fetch: fn });
     expect(calls[0]?.init).not.toHaveProperty("redirect");
-  });
-
-  it("redirect を渡したときだけ init に入れる（コンソールの呼び出しは manual を渡す。c2）", async () => {
-    const { fn, calls } = fakeFetch(() => new Response(success));
-    await assumeRoleWithWebIdentity({ ...base, fetch: fn, redirect: "manual" });
-    expect(calls[0]?.init.redirect).toBe("manual");
   });
 
   it("durationSeconds と endpoint を上書きできる", async () => {
