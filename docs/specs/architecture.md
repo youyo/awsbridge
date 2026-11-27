@@ -4,7 +4,6 @@
 - 状態: 本体実装済み・実環境で通し確認済み（2026-11-05: Portal → Access → Worker → STS → AWS MCP、aws_profile による読み取り専用 / デバッグロールの切り替え、デバッグ専用権限が MCP 経由でのみ通ること）
 - 改訂: 2026-11-12 人のコンソールのロールが Viewer / Administrator の 2 つになった（Developer は廃止）ことに合わせて、MCP 用ロールとの関係を直した。MCP の Debugger を「Administrator か Developer を持つ人にだけ」渡す規則を取り下げ、割り当ては設定で決めることにした（cto の決裁）
 - 前身: [youyo/aws-mcp-gateway](https://github.com/youyo/aws-mcp-gateway)（Go 製。OIDC 認証付き AWS MCP Server リバースプロキシ）
-- この文書は MCP 用の構成を扱う。コンソールログイン（人が使う AWS コンソールと `aws login`。別の Worker・issuer・鍵・audience・ロール）は [console-login.md](console-login.md)（全体設計）と [console-login-portal.md](console-login-portal.md)（ポータル）を参照
 
 ## 目的
 
@@ -122,11 +121,11 @@ awsbridge は利用者の認証を Cloudflare Access に任せ、Access が発�
 | `FederatedAwsBridgeMcpDebugger` | 障害調査（運用操作・実行を伴う） | `ReadOnlyAccess` + インラインポリシー + 任意の追加管理ポリシー（`DebugAdditionalPolicyArns`） | `DebugAllowedSubjects` |
 
 - 既定名は 2026-11 に `FederatedMcpReadOnly` / `FederatedMcpDebug` から変えた（途中で `FederatedMcpViewer` / `FederatedMcpDebugger` だった期間がある。2026-11-13 に今の名前へ）。パラメーター名・出力名・環境変数名・論理 ID は変えていない（移行は README「移行（既定のロール名の変更とデバッグロールの縮小）」）。
-- **MCP 用ロールは、人のコンソールログインのロール（Viewer / Administrator、[console-login.md](console-login.md) §2.3）と独立している。** 今は共有せず（console-login.md §2.3）、人にコンソールのロールを与えても MCP 側の権限には効かない。MCP 用ロールを誰に渡すかは下流が決める（上流は割り当ての規則を持たない。cto の決裁 2026-11-12）:
+- **MCP 用ロールを誰に渡すかは下流が決める**（上流は割り当ての規則を持たない。cto の決裁 2026-11-12）:
   - MCP の Viewer（`FederatedAwsBridgeMcpViewer`）は全員が使える。
   - MCP の Debugger（`FederatedAwsBridgeMcpDebugger`）を渡す相手は、設定（`DebugAllowedSubjects`）で下流が決める。渡すときの注意: Debugger はリモートシェルなどで実行先（インスタンス・タスク）のロールの権限を得られ、その権限には MCP 経由の条件が付かない。
   - 運用: Debugger を渡す人を変えたとき（チームのメンバーの変更など）は `DebugAllowedSubjects` も直す。外し忘れは気付きにくいので、所属変更の手順に入れる。許可リストはアカウントごとの設定なので、合わせる単位は「そのアカウント」。
-  - 将来: MCP 側の認可をチーム（Access アプリ → セッションタグ。M2-MCP）に寄せる設計は別に扱う。設定ファイルでロールを管理する方向（console-login-portal.md §11）は、M2-MCP の着手の承認ではない（それまでは email の許可リスト）。
+  - 将来: MCP 側の認可をチーム（Access アプリ → セッションタグ。M2-MCP）に寄せる設計は別に扱う。それまでは email の許可リスト。
 - インラインポリシーは Statement をグループ（Sid）に分けて持つ。Allow はすべて `StringEquals aws:CalledViaAWSMCP = aws-mcp.amazonaws.com`、Resource は `*`。削除系・IAM 変更・組織変更は含めない。Action はワイルドカードを使わず個別に並べる。
   - `Investigation`: ログ・トレース・CloudTrail・Athena・Config・EC2 コンソール出力など、`ReadOnlyAccess` より深い調査用の読み取り。
   - `DenySsmParameterRead` / `DenySecretsManagerRead`（Deny、条件なし）: `ssm:GetParameter` / `GetParameters` / `GetParametersByPath` / `GetParameterHistory` と `secretsmanager:GetSecretValue` / `BatchGetSecretValue` を拒否する。読み取り専用ロールと同じ。AWS MCP を経由しても効き、`ReadOnlyAccess` の `ssm:Get*` や `DebugAdditionalPolicyArns` で足した管理ポリシーの Allow も上から塞ぐ。`kms:Decrypt` はどの Statement にも付けない（2026-11 に、MCP 経由で秘密値を読む `SecretRead` と `SecretDecrypt` を削除し、MCP を経由しない取得だけを拒否していた `DenyParameterReadOutsideMCP` をこの無条件の Deny に替えた）。

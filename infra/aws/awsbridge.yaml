@@ -12,9 +12,7 @@ Description: >-
 #                 plus the same Deny on reading secret values)
 #                 (+ optional extra managed policies via DebugAdditionalPolicyArns).
 #
-# These MCP roles are separate from the human console roles (Viewer / Administrator,
-# see docs/specs/console-login.md section 2.3). Granting a person a console role does not change what these
-# roles can do. Everyone can use the read-only role (Viewer). Who gets the debug role (Debugger) is decided
+# Everyone can use the read-only role (Viewer). Who gets the debug role (Debugger) is decided
 # by the downstream configuration (DebugAllowedSubjects); there is no upstream rule. Note when granting it:
 # its remote shells get the target role's permissions, which carry no MCP-only condition.
 #
