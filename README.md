@@ -4,34 +4,29 @@ English | [日本語](README_ja.md)
 
 Bridge AI agents to AWS.
 
-awsbridge turns the identity of a user authenticated by Cloudflare Access into per-user temporary AWS credentials. It runs as Cloudflare Workers that are their own OIDC issuers: a Worker signs a short-lived JWT for the user, and AWS STS (`AssumeRoleWithWebIdentity`) exchanges it for credentials of a role in the target account. No long-lived AWS access keys are stored in the Workers.
+awsbridge turns the identity of a user authenticated by Cloudflare Access into per-user temporary AWS credentials. It runs as a Cloudflare Worker that is its own OIDC issuer: the Worker signs a short-lived JWT for the user, and AWS STS (`AssumeRoleWithWebIdentity`) exchanges it for credentials of a role in the target account. No long-lived AWS access keys are stored in the Worker.
 
-> Early development stage. The design documents are in [docs/specs/](docs/specs/) (written in Japanese): [architecture.md](docs/specs/architecture.md) for the MCP relay, and [console-login.md](docs/specs/console-login.md), [console-login-portal.md](docs/specs/console-login-portal.md), and [console-login-admin.md](docs/specs/console-login-admin.md) for console login. Some steps below are marked as not run or not measured yet; take those as examples.
+> Early development stage. The design document is [docs/specs/architecture.md](docs/specs/architecture.md) (written in Japanese). Some steps below are marked as not run or not measured yet; take those as examples.
 
 Predecessor: [youyo/aws-mcp-gateway](https://github.com/youyo/aws-mcp-gateway)
 
 ## What awsbridge does
 
-awsbridge has two features. Each has its own Worker, issuer, IAM OIDC provider, audience, and roles, and you can use either one alone.
+awsbridge is an MCP relay (`src/index.ts`, [`wrangler.jsonc`](wrangler.jsonc)). It converts the identity of the user into per-user temporary AWS credentials (STS), signs requests with SigV4, and relays them to the AWS MCP Server. It is designed to sit behind a Cloudflare MCP Portal. The `aws_profile` argument switches between AWS accounts.
 
-1. **MCP relay** (`src/index.ts`, [`wrangler.jsonc`](wrangler.jsonc)): converts the identity of the user into per-user temporary AWS credentials (STS), signs requests with SigV4, and relays them to the AWS MCP Server. It is designed to sit behind a Cloudflare MCP Portal. The `aws_profile` argument switches between AWS accounts.
-2. **Console login** (`src/console/`, [`wrangler.console.jsonc`](wrangler.console.jsonc)): people open a portal behind Cloudflare Access and sign in to the AWS Management Console, or to the CLI with `aws login`. One Worker serves the entry, the list of accounts and roles, and issuing for every role, with one issuer, one signing key, and one OIDC provider per boundary. Teams and roles have a tier:
-   - **Standard** (for example a Viewer): `aws login` works on the same device and with `--remote`.
-   - **Admin** (for example an Administrator): its teams have their own Access applications with a short session, its roles live under their own path with a 1-hour `MaxSessionDuration` and a Deny of `aws login --remote`, the pages of its teams carry an Admin mark and an Administrator is issued only from the login page of an Admin team (the confirmation screen; the entry list only links to it), and the reconciliation treats it more strictly.
-
-   The tier does not separate the Worker, the issuer, the key, or the host; the only things that separate the tiers when issuing are the team and the team condition in the role trust policy (acceptance d below). It does not guarantee how strong a role is (`docs/specs/console-login.md` §3.3).
-
-The MCP roles (`FederatedAwsBridgeMcpViewer` / `FederatedAwsBridgeMcpDebugger`) are separate from the human console roles (for example `FederatedAwsBridgeViewer` / `FederatedAwsBridgeAdministrator`). Granting a person a console role does not change what the MCP roles can do.
-
-Stages in this README follow the rollout plan in `docs/specs/console-login.md` §7: stage 1 completes the code, stage 2 is a trial in a personal environment, and stage 3 is the rollout to a company. The steps of a production rollout in a downstream repository are in [Rolling out console login in production](docs/console-production-rollout.md).
+Each target account gets two MCP roles: the read-only `FederatedAwsBridgeMcpViewer` and the debug `FederatedAwsBridgeMcpDebugger` (see "AWS side (per target account)").
 
 ## Retiring console login and cleaning up
 
-Console login will be removed from upstream. The MCP relay does not change: its settings, secret names, IAM OIDC provider and audience, stacks, and task names stay the same. If you only use the MCP relay, you have nothing to do.
+Console login has been removed from upstream. The MCP relay does not change: its settings, secret names, IAM OIDC provider and audience, stacks, and task names stay the same. If you only use the MCP relay, you have nothing to do.
 
-The last version that still has console login is kept as the annotated tag `console-login-final` and the branch `archive/console-login`. This notice is added first; the code, tests, tools, docs, and specs for console login are removed in a later change. The sections about console login below stay on that tag.
+The last version that still has console login is kept as the annotated tag `console-login-final` and the branch `archive/console-login`. The console login sections (setup, daily operations, stopping issuance, inventory) are in the README and the specs of the version at the tag `console-login-final`. To read them locally, for example:
 
-**If you ran console login in a downstream repository, you must clean up before you take the removal.** The deployed console Worker, the Access applications, and the IAM OIDC provider and roles stay after the code is gone, and the roles keep trusting the console issuer. Merging the removal also deletes the tools you need for cleanup (the stop, reconciliation, external check, and key tasks).
+```sh
+git fetch upstream --tags && git show console-login-final:README.md
+```
+
+**If you ran console login in a downstream repository, you must clean up before you take the version without it.** The deployed console Worker, the Access applications, and the IAM OIDC provider and roles stay after the code is gone, and the roles keep trusting the console issuer. Merging the version without console login also removes the tools you need for cleanup (the stop, reconciliation, external check, and key tasks).
 
 The order for a downstream repository:
 
@@ -42,60 +37,23 @@ The order for a downstream repository:
    ```
 
 2. Make your own backup tag in the downstream repository.
-3. Clean up on that version (the outline below).
+3. Clean up on that version: the cleanup outline and the commands of each step are in the README of the tag version (the section with the same heading as this one, and the sections it refers to).
 4. Only after the cleanup is done, merge upstream `main`.
 
 Do the cleanup in your downstream repository, not in a checkout of the upstream tag: it needs your downstream config, state files, and mise settings.
 
-The outline of the cleanup. Each step has a section above or below that gives the commands ("Stopping issuance (console login)", "Inventory of what an Administrator left behind (console login)", "Reconciling console logins (issue records x CloudTrail)", "Checking the console issuers from outside (daily)", "Required stack for console login (base)", "Role stacks"):
-
-1. Stop new issuance: set the Worker var `LOGIN_DISABLED` to `true`, deploy, and confirm `503 login_disabled`.
-2. Confirm `503 login_disabled`, then wait at least the JWT lifetime (300 seconds) plus the clock skew (60 seconds, the default of the reconciliation), and then revoke the sessions already issued, before deleting anything on the AWS side, and confirm by a denial that they stopped. The reason for the wait: a JWT signed before the stop, including one from the old version of the Worker or from a request still being handled, is not accepted by STS after that (`exp` = `iat` + 300). This is a margin, not a guarantee, because the old version may still sign after your confirmation; step 3 gives the guarantee.
-3. Run the last reconciliation and the external check, and keep the record. Run them at least the reflection delay (300 seconds by default) after the time you stopped new issuance, because the end of the confirmed interval is the end of this run minus the reflection delay. Move on only when, for every target account, the end of the confirmed interval is past the time you stopped issuance and there are no unresolved findings (resolved, or explicitly accepted) and no `AssumeRoleWithWebIdentity` of a console role in CloudTrail after the time of the last revoke (this also catches an assumption whose issue record is missing). If there is one, revoke again for that role and run the reconciliation again.
-4. Take inventory of the permissions left in every account where you handed out Administrator.
-5. Delete the AWS side, in this order: the separate Administrator stacks, then the role stacks of each kind, then the base StackSet. For the base StackSet, first delete the stack instances in every target account without retaining the stacks, confirm that they are gone and that the IAM resources (the console IAM OIDC provider and the guard managed policies) are gone, and only then delete the StackSet itself. Then confirm that all the console IAM OIDC providers are gone and that providers for other uses, such as the MCP one, are unchanged.
-6. Delete the console Worker, and confirm its secrets and Custom Domain are gone.
-7. Delete the Access applications and the DNS records, and confirm no record of the portal or issuer host is left.
-8. Clean up the generated files, state files, and tokens on your machine (for example the generated files, the reconciliation state, the stop list, and the tokens of the Logs API and of the key tools).
-
-Rules:
+Rules (the step numbers are those of the cleanup outline in the README of the tag version):
 
 - Do not give up the issuer host (the Worker, the Custom Domain, and the DNS records) until you have deleted the IAM OIDC provider and confirmed it is gone. While the provider exists, the roles trust that host by URL, so whoever gets the host can issue tokens that the roles accept.
-- Do not wait a fixed time at any step. Finish a step when you have confirmed the denial or the absence (the wait before the revoke in step 2 is only a margin; step 3 confirms).
-- If a stack deletion stops with `DeleteConflict`, the cause is an inline policy added outside CloudFormation. Remove the inline policies that are not for stopping first. Do not remove the stop policies (the revoke and the one-person-stop Deny) until the longest session of that role (`MaxSessionDuration`) has expired, counted from the later of the time you confirmed that new issuance is stopped (`503 login_disabled`) and the time of the last revoke (if you revoked again, the time of that one). Removing them earlier brings the sessions already issued and `aws login` back without a new login. Just before you remove them, confirm again that new issuance is not possible (`503 login_disabled`): while the provider still exists, only the Worker switch stops new issuance (the conditions for lifting a stop are in `docs/specs/console-login.md` §6.3). Once that holds, remove them, retry the stack deletion right away and confirm the role is gone.
-- If you cannot wait, leave the role whose deletion stopped in place with its stop policies attached. While such a role remains, the cleanup is not finished: add a Deny of `sts:AssumeRoleWithWebIdentity` to that role's trust policy ("Denying in the role trust policy"), and keep the issuer host until you have confirmed the provider is gone (the rule above stays). Not confirmed: whether such a role can keep the base StackSet from being deleted.
+- Do not wait a fixed time at any step. Finish a step when you have confirmed the denial or the absence (the wait before the revoke in step 2 is only a margin; the last reconciliation in step 3 confirms).
+- If a stack deletion stops with `DeleteConflict`, the cause is an inline policy added outside CloudFormation. Remove the inline policies that are not for stopping first. Do not remove the stop policies (the revoke and the one-person-stop Deny) until the longest session of that role (`MaxSessionDuration`) has expired, counted from the later of the time you confirmed that new issuance is stopped (`503 login_disabled`) and the time of the last revoke (if you revoked again, the time of that one). Removing them earlier brings the sessions already issued and `aws login` back without a new login. Just before you remove them, confirm again that new issuance is not possible (`503 login_disabled`): while the provider still exists, only the Worker switch stops new issuance (the conditions for lifting a stop are in the specs of the tag version). Once that holds, remove them, retry the stack deletion right away and confirm the role is gone.
+- If you cannot wait, leave the role whose deletion stopped in place with its stop policies attached. While such a role remains, the cleanup is not finished: add a Deny of `sts:AssumeRoleWithWebIdentity` to that role's trust policy ("Denying in the role trust policy" in the README of the tag version), and keep the issuer host until you have confirmed the provider is gone (the rule above stays). Not confirmed: whether such a role can keep the base StackSet from being deleted.
 
 What is confirmed and what is not:
 
 - Confirmed once in one personal test environment (confirm it again in each of your environments): the Custom Domain is deleted together with the Worker, and inline policies outside the template do not stop the deletion of the stack.
 - Not confirmed: how long the sessions already issued and the `aws login` refresh tokens stay usable after the roles and the provider are deleted. Revoking and a Deny do not invalidate refresh tokens.
 - This order has not been run end to end. Take it as an outline and check each step in your own environment.
-
-## Before using console login (accepted limits)
-
-> **Anyone who can deploy the console Worker, or who can touch its secrets or dependencies, holds full control of every account where Administrator is deployed.**
->
-> Console login issues Viewer and Administrator from one Worker, one issuer, one signing key, and one OIDC provider (per boundary; separate from the MCP relay). Before using it, accept the following.
->
-> a. The whole console Worker is the authority that issues Administrator. Any one of the Worker's deploy permission, its secrets (the signing key bindings, the CSRF key), or its dependencies (npm dependencies, build tools) reaches full control of every account where Administrator is deployed. This holds even for a change made only for Viewer.
-> b. Only people allowed to issue Administrator deploy the Worker and operate the keys. Handing this to an agent, CI, or anyone else hands them full control.
-> c. The scripts of the entry page, the lists, and the screens run on the same origin as Administrator issuance (with path routing, the default). A flaw in a screen can trigger Administrator issuance from the browser of a person who has an Access session for an Admin team. The confirmation screen does not stop this.
-> d. The only things that separate Viewer from Administrator are the team the Worker derives from the Access application's AUD, the session tag that carries that team, and the team condition in the role trust policy. On the AWS side, the issuer, the key, and the audience do not distinguish tiers. Do not reuse a team name across tiers.
-> e. Deleting the OIDC provider stops both Viewer and Administrator. The ways to stop only Administrator without relying on Cloudflare are a Deny in the Administrator role's trust policy and deleting the Administrator stack.
->
-> One Worker separates authority between the tiers, not availability. A broken key setting (for example one key in two boundaries, or a current kid missing from the public keys, which is what removing the current kid does) makes every route of the Worker return `500 server_misconfigured`: the portal and the issuer documents of every boundary, for both tiers.
->
-> The issue records are written by this Worker itself, so against anyone who can write to this Worker, the reconciliation with CloudTrail is not independent detection.
->
-> The ways to stop issuance (the stop switches, removing a kid, deleting the provider, a Deny in the trust policy) only stop new issuance and new assumptions; they do not stop sessions already issued. Revoking the role is what stops sessions already issued.
->
-> The age limit of the Access JWT for Admin teams (default 15 minutes) is the time since the JWT was issued, not the time since the user authenticated. Whether re-authentication is required is decided by the Access and IdP settings.
->
-> Anyone who can read Workers Logs can read the issue records (masked). Treat permission to read the logs with the same weight as permission on this Worker.
->
-> The ledger of retired team names (below): The ledger guards against operator mistakes, not against anyone who can write the config; deleting the artifacts and passing the first-run flag (`--ledger-init`) removes it. The old roles in an account that has left management are not visible to `mise run console:inspect` either; the ledger is the only guard there.
-
-When you change a team's tier, use a new name (do not reuse a name in another tier: a name left in an old stack's trust policy would let people of another tier in). When you remove a team, move it to `retiredTeams` (the ledger of retired team names) in the config. `mise run console:config:generate` treats as an error using a ledger name for a current team, removing a name from the ledger, removing a team without moving it to the ledger, and changing the tier of a team with the same name. The procedure is in "Ledger of retired team names" under "Console login setup".
 
 ## Upstream and downstream
 
@@ -105,7 +63,7 @@ Production runs from a private **downstream** repository: a clone of awsbridge t
 
 | | Upstream (this repository) | Downstream (private) |
 |---|---|---|
-| Holds | Workers, CloudFormation templates, reference Terraform, mise tasks, examples (`config/*.example.json`, `wrangler*.jsonc` with `example.com`) | `wrangler.<name>.jsonc` (MCP), `wrangler.<name>-console.jsonc` (console login), `mise.<name>.toml`, `.miserc.toml`, `deploy/profiles.json`, the console config (for example `deploy/console.json`) |
+| Holds | Workers, CloudFormation templates, reference Terraform, mise tasks, examples (`config/*.example.json`, `wrangler*.jsonc` with `example.com`) | `wrangler.<name>.jsonc`, `mise.<name>.toml`, `.miserc.toml`, `deploy/profiles.json` |
 | Never holds | real hosts, account IDs, emails, keys | edits to upstream files (only new files, so `git pull` does not conflict) |
 | Secrets | none | `mise.local.toml` and `.secrets/` (gitignored, never committed) |
 
@@ -115,42 +73,26 @@ The setup order for a downstream repository is in "Operating in a downstream rep
 
 The Cloudflare side (Workers) and the AWS side (CloudFormation) are completely separate. Deploying a Worker does not call AWS, and deploying CloudFormation does not call Cloudflare. For each target AWS account, you only need to run CloudFormation. An AWS account trusts an issuer only through its IAM OIDC provider, and each issuer host is served by one Worker.
 
-The whole picture (each flow is detailed below):
+The whole picture (the flow is detailed below):
 
 ```mermaid
 flowchart LR
   client["MCP client<br/>(for example Claude)"]
-  person["Person<br/>(browser or terminal)"]
   subgraph cf["Cloudflare"]
     portal["MCP Server Portal"]
     accessMcp["Access<br/>(MCP connection host)"]
-    accessConsole["Access<br/>(entry and one application per team)"]
     mcpWorker["MCP Worker<br/>wrangler.jsonc"]
-    consoleWorker["Console Worker<br/>wrangler.console.jsonc"]
-    logs[("Workers Logs<br/>issue records")]
   end
   subgraph aws["Each target AWS account"]
     sts["STS<br/>AssumeRoleWithWebIdentity"]
     mcpRoles["OIDC provider and MCP roles<br/>infra/aws/awsbridge.yaml"]
-    consoleRoles["OIDC provider and team roles<br/>infra/aws/console/"]
-    trail[("CloudTrail")]
   end
   awsMcp["AWS MCP Server<br/>(calls the AWS APIs of the target account)"]
-  federation["AWS sign-in federation<br/>getSigninToken"]
-  console["AWS Management Console"]
   client --> portal --> accessMcp --> mcpWorker
   mcpWorker -- "5-minute JWT" --> sts
   mcpWorker -- "SigV4" --> awsMcp
-  person --> accessConsole --> consoleWorker
-  consoleWorker -- "5-minute JWT with the team tag" --> sts
-  consoleWorker -- "temporary credentials" --> federation
-  person -. "login URL" .-> console
   sts --- mcpRoles
-  sts --- consoleRoles
   sts -. "reads the issuer documents" .-> mcpWorker
-  sts -. "reads the issuer documents" .-> consoleWorker
-  consoleWorker --> logs
-  logs -. "mise run console:reconcile" .- trail
 ```
 
 ### MCP relay
@@ -174,48 +116,14 @@ STS reads https://awsbridge-oidc-mcp.example.com/.well-known/* (public; served b
 Each target account: infra/aws/awsbridge.yaml (IAM OIDC provider + the two MCP roles)
 ```
 
-
-### Console login
-
-```
-Browser or terminal of a person
-  │
-  ▼
-Cloudflare Access (an entry application and one application per team at /t/<team>;
-                   the applications of Admin-tier teams have a short session)
-  │
-  ▼
-Console Worker (wrangler.console.jsonc), one Worker for both tiers
-  │ portal  https://awsbridge-console.example.com                  entry, the list, issuing at /t/<team>
-  │ issuer  https://awsbridge-oidc-console.example.com/console     discovery and JWKS only
-  │ keys    secret_key per boundary (CONSOLE_KEY_*), used for both tiers
-  │ 1. verify the Access JWT (exactly one aud) and decide the team from its AUD (and the tier from the team)
-  │ 2. sign a 5-minute JWT (aud awsbridge-console, the team in a session tag)
-  ▼
-STS AssumeRoleWithWebIdentity in the target account
-  │ trust policy: the console provider, aud awsbridge-console, the team tag (teams of the role's tier only), SourceIdentity required
-  ▼
-getSigninToken ─▶ AWS Management Console (or aws login)
-
-Each target account: the base stack infra/aws/console/base.yaml (one OIDC provider per boundary + guard policies of both tiers)
-                     + role stacks generated from the console config (kind.<kind>.yaml); the Administrator role in a separate stack
-Issue records (console_issue) ─▶ Workers Logs ─▶ mise run console:reconcile (with CloudTrail)
-```
-
-- The Worker decides the team only from the AUD of the Access application the request came through, and puts it in a session tag. AWS decides who may enter which role through the role's trust policy. The mapping of teams and kinds of accounts to roles lives in the console config and the role stacks, not in the Worker.
-- A boundary is a trust boundary (`managed`, or `partner:<id>` for an unmanaged partner). Each boundary has its own issuer, key, and provider, shared by the Standard and the Admin tier.
-- The tier stays as a classification of teams and roles. It decides the Access application of the team (the session of Admin-tier teams is short, and the Worker also limits the age of their Access JWT), the role path (`/awsbridge-console/std/` or `/awsbridge-console/admin/`), the shape of the role (`MaxSessionDuration` of exactly 1 hour and no `aws login --remote` for the Admin tier), the guard policy, the confirmation screen, and how the reconciliation treats the issuance.
-
 ### Hosts
 
 | Host (example) | Worker | Purpose | Access |
 |---|---|---|---|
 | `awsbridge-mcp.example.com` | MCP | MCP connection (`/mcp`) | Protected. Its AUD is the Worker's `ACCESS_AUD` |
 | `awsbridge-oidc-mcp.example.com` | MCP | MCP issuer (`/.well-known/*`) | Public (STS reads it). Any other path returns 401 |
-| `awsbridge-console.example.com` | Console | Portal (entry and `/t/<team>` for the teams of both tiers) | Entry and team applications, Cookie Path enabled |
-| `awsbridge-oidc-console.example.com` | Console | Console issuer (`/console`; `/p/<id>/console` for a partner) | No Access application (STS reads it). Paths other than the issuer documents return 404 |
 
-- The production configurations (the console Worker and `env.prod` of the MCP Worker) use Custom Domains on a zone of your Cloudflare account and set `workers_dev` and `preview_urls` to `false`, which closes the entrances that skip Access. Only the MCP trial configuration `env.dev` uses workers.dev.
+- The production configuration (`env.prod` of the MCP Worker) uses Custom Domains on a zone of your Cloudflare account and sets `workers_dev` and `preview_urls` to `false`, which closes the entrances that skip Access. Only the trial configuration `env.dev` uses workers.dev.
 - The `awsbridge-oidc-` prefix marks a host that is only an issuer and says whose it is, so that when another OIDC mechanism is later set up on the same domain, the owner of each issuer is clear.
 - **An issuer host is what the IAM OIDC provider trusts.** Whoever takes it over can issue tokens that AWS accepts. Keep the domain's auto-renewal on, lock the domain at the registrar, and limit who can edit the zone (DNS, Routes, Custom Domains) and deploy the Workers.
 
@@ -227,8 +135,7 @@ Production use is expected to happen in a private downstream repository. You reg
 
 1. Create the downstream repository and add its files (steps 1 to 4 below).
 2. MCP relay: follow "Order for the first deployment" in "MCP relay setup".
-3. Console login (optional, and possible later): follow "Order of the first setup (console login)" in "Console login setup". Start with the Standard tier (Viewer) only, and add the Admin tier only after the checks of [Rolling out console login in production](docs/console-production-rollout.md).
-4. Once console login is live, start the daily checks in "Daily operations".
+3. Once it is running, rotate the signing key on a fixed schedule with the steps in "Key rotation".
 
 ### Steps
 
@@ -264,8 +171,6 @@ git remote add origin <private repository URL>   # The downstream push destinati
 
    The format of `deploy/profiles.json` is the same as the JSON in "Multi-account" (commit it. Role ARNs are not secrets). Copying the upstream `config/profiles.example.json` and rewriting it is the quickest way.
 
-   For console login, add `wrangler.<name>-console.jsonc` the same way, starting from the upstream `wrangler.console.jsonc` and replacing `routes` and `vars` with your values (keep `alias` pointing at the generated files in `.generated/console/`), and add your console config (for example `deploy/console.json`, starting from `config/console.example.json` or `config/console.company.example.json`). See "Console login setup".
-
 3. Add the downstream mise config files: `mise.<name>.toml` and the `.miserc.toml` that enables it (commit both. Do not put secret values in them).
 
 ```toml
@@ -277,9 +182,6 @@ AWSBRIDGE_STACK_NAME = "awsbridge-mcp"
 AWSBRIDGE_KEY_FILE = ".secrets/awsbridge-mcp-signing-key.json"   # Use a separate key per environment
 # AWS_PROFILE = "<AWS CLI profile used for deployment>"
 # AWSBRIDGE_AUDIENCE = "awsbridge"               # If you change it, also match the Worker's var STS_AUDIENCE
-# Console login (only if you use it)
-# AWSBRIDGE_CONSOLE_CONFIG = "deploy/console.json"
-# AWSBRIDGE_CONSOLE_WRANGLER_CONFIG = "wrangler.awsbridge-mcp-console.jsonc"
 ```
 
 ```toml
@@ -287,7 +189,7 @@ AWSBRIDGE_KEY_FILE = ".secrets/awsbridge-mcp-signing-key.json"   # Use a separat
 env = ["awsbridge-mcp"]
 ```
 
-4. Write secret values and environment-specific values in `mise.local.toml` (gitignored. Do not commit it): `AWSBRIDGE_ISSUER` (the issuer URL, such as `https://awsbridge-oidc-mcp.example.com`), `AWSBRIDGE_ALLOWED_SUBJECTS`, `AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS`, `AWSBRIDGE_ACCESS_TEAM_DOMAIN`, `AWSBRIDGE_ACCESS_AUD`, and so on (see "Variables in `mise.local.toml`"), plus the console tool variables listed in each console section. The profile list goes in `deploy/profiles.json`, not in `mise.local.toml`.
+4. Write secret values and environment-specific values in `mise.local.toml` (gitignored. Do not commit it): `AWSBRIDGE_ISSUER` (the issuer URL, such as `https://awsbridge-oidc-mcp.example.com`), `AWSBRIDGE_ALLOWED_SUBJECTS`, `AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS`, `AWSBRIDGE_ACCESS_TEAM_DOMAIN`, `AWSBRIDGE_ACCESS_AUD`, and so on (see "Variables in `mise.local.toml`"). The profile list goes in `deploy/profiles.json`, not in `mise.local.toml`.
 
 5. Deploy the MCP relay (first time). The full order, including Cloudflare Access, is "Order for the first deployment" in "MCP relay setup".
 
@@ -309,7 +211,7 @@ git pull --no-rebase upstream main
 - **Keep signing keys separate per environment.** Do not reuse the same key and the same issuer as the upstream's development deployment (use a different path for `AWSBRIDGE_KEY_FILE`). You can swap keys without downtime by following "Signing key rotation (MCP relay)" (`mise run key:prepare` → `secrets` → wait → `key:activate` → `secrets` → wait → `key:retire` → `secrets`).
 - **The issuer (the issuer URL) differs per environment**, so the CloudFormation stack that creates the IAM OIDC provider and roles is also separate per environment (use different values of `AWSBRIDGE_STACK_NAME`). When placing multiple environments in the same account, also separate the role names (`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME`).
 - mise gives `mise.<name>.toml` precedence over `mise.toml`, and `mise.local.toml` precedence over `mise.<name>.toml`. `.config/mise/conf.d/*.toml` loses to `mise.toml`, so it cannot be used.
-- The upstream `wrangler.jsonc` (`name: awsbridge` / `env.dev`) is for the upstream's development use. Do not use it downstream. The same goes for the upstream `wrangler.console.jsonc`, which is an example.
+- The upstream `wrangler.jsonc` (`name: awsbridge` / `env.dev`) is for the upstream's development use. Do not use it downstream.
 
 ### Setup skill (Claude Code)
 
@@ -321,13 +223,13 @@ cd <downstream repository name> && claude
 /setup-downstream <downstream repository name>
 ```
 
-The skill guides you in order through re-pointing the remotes (`origin` → `upstream`), creating the downstream repository, deploying the Worker, CloudFormation, Cloudflare Access/Portal, and verification. It covers the MCP relay only, not console login. For operations that affect external systems, it asks for confirmation before running at each stage. The skill is version-controlled together with the code, so updates reach the downstream repository through `git pull --no-rebase upstream main`.
+The skill guides you in order through re-pointing the remotes (`origin` → `upstream`), creating the downstream repository, deploying the Worker, CloudFormation, Cloudflare Access/Portal, and verification. For operations that affect external systems, it asks for confirmation before running at each stage. The skill is version-controlled together with the code, so updates reach the downstream repository through `git pull --no-rebase upstream main`.
 
 ## How the Worker is deployed (default route and explicit route)
 
 `scripts/wrangler.sh deploy` takes the **default route** unless you ask otherwise: `wrangler versions upload`, then it reads the Version ID from the output and runs `wrangler versions deploy <version-id>@100% --yes`. Only the code, vars and bindings of the Worker change. Custom Domains and Routes (triggers) are not synchronized, so the token needs no permission on the zone. A token that is "Individual Workers Editor for this one Worker, no zone permissions" is enough for daily deploys. How to create it is in [How to create the token for daily deploys](#how-to-create-the-token-for-daily-deploys).
 
-This applies to every Worker. `mise run deploy:worker` uses it for the MCP Worker. There is no mise task that deploys the console Worker; run `scripts/wrangler.sh` with the console wrangler config, as shown in "Console login setup" (`AWSBRIDGE_WRANGLER_CONFIG=<console wrangler config> AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy`).
+`mise run deploy:worker` uses it for the MCP Worker.
 
 - Why: a token with Workers Routes Write on the zone can add a Route to another Worker's Custom Domain host and take over its responses. Daily deploys therefore use a token without that permission.
 - Arguments: `--var`, `--message`, `--tag`, `--outdir`, `--minify`, `--keep-vars` and the other options that `wrangler versions upload` accepts are passed on. `--config` and `--env` come from `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` as before. An option that `versions upload` does not accept (such as `--routes`) stops the script with an error; it is never dropped silently. If the Version ID cannot be read from the output, it exits 1 and does not run `versions deploy`.
@@ -464,7 +366,7 @@ From the second time on, deploy only the side you changed.
 
 ### AWS side (per target account)
 
-Just deploy [infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml). It creates an IAM OIDC provider whose issuer is the Worker's issuer URL, and two roles that are assumed with the JWT issued by the Worker (read-only `FederatedAwsBridgeMcpViewer` and debug `FederatedAwsBridgeMcpDebugger`). These MCP roles are separate from the human console roles (Viewer / Administrator); granting a person a console role does not change what the MCP roles can do. Everyone can use the Viewer (`FederatedAwsBridgeMcpViewer`). Who gets the Debugger (`FederatedAwsBridgeMcpDebugger`) is decided by the downstream configuration (`DebugAllowedSubjects`); there is no upstream rule. Note when granting it: through remote shells and similar actions, the Debugger gets the permissions of the target's role, which carry no MCP-only condition.
+Just deploy [infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml). It creates an IAM OIDC provider whose issuer is the Worker's issuer URL, and two roles that are assumed with the JWT issued by the Worker (read-only `FederatedAwsBridgeMcpViewer` and debug `FederatedAwsBridgeMcpDebugger`). Everyone can use the Viewer (`FederatedAwsBridgeMcpViewer`). Who gets the Debugger (`FederatedAwsBridgeMcpDebugger`) is decided by the downstream configuration (`DebugAllowedSubjects`); there is no upstream rule. Note when granting it: through remote shells and similar actions, the Debugger gets the permissions of the target's role, which carry no MCP-only condition.
 
 ```
 AWS_PROFILE=<target> mise run deploy:aws    # Deploy CloudFormation (can be deployed to any number of accounts)
@@ -598,251 +500,11 @@ You can switch between multiple AWS accounts with the `aws_profile` argument of 
 
 A downstream repository does not edit the upstream `wrangler.jsonc`; its own `wrangler.<name>.jsonc` points `alias` at its own JSON (for example `deploy/profiles.json`) (see "Operating in a downstream repository"). For details, see the section on multi-account (aws_profile) in `docs/specs/architecture.md`.
 
-## Console login setup
+## Key rotation
 
-For production, follow the order of the steps, the checks with their expected results, and the checklist before adding an Administrator in [Rolling out console login in production](docs/console-production-rollout.md).
+Rotate the signing key of the MCP Worker on a fixed schedule.
 
-### Order of the first setup (console login)
-
-Each step is described in the sections below. A person runs the key and CSRF key tools from a local machine, never from CI. **Only people allowed to issue Administrator deploy the console Worker and operate its keys, from the first deployment on** (acceptance b), even while only Viewer is configured.
-
-1. **Config**: write the console config and check it with `mise run console:config:check` ("Config file and generated files"). For the first setup, leave out the teams of the Admin tier and the Administrator role.
-2. **Access**: create the entry application and the team applications with Cookie Path enabled and save their AUDs ("Access applications for console login (Cookie Path)").
-3. **Generate**: `mise run console:config:generate -- --ledger-init` the first time (there is no ledger to compare with yet; see "Ledger of retired team names"), plain `mise run console:config:generate` afterwards. It needs the AUDs of the teams, and the entry AUD only when there are two or more Standard teams. Then check the Access applications with `mise run console:access:inspect`, which reads the generated `access.json`. Before the first deployment, run `mise run console:inspect -- --profile=<p>` in each target account (required after `--ledger-init`): in an account that has no console role or provider yet, the only expected errors are `role_missing` and `provider_missing`; a `trust_team_retired`, `trust_team_tier`, or `unlisted_role` stops the setup until it is explained.
-4. **Worker**: deploy it, upload the signing key of each boundary and the CSRF key, write the key vars, deploy again, and run `mise run console:key:check` ("Console login signing keys"). The issuer is published only after this step.
-5. **Base stack** in each target account, after the issuer is published: IAM reads the issuer's discovery document when it creates the OIDC provider. This order is inferred from the same mechanism as for the earlier per-tier Admin issuer; it has not been measured with the single issuer ("Required stack for console login (base)").
-6. **Role stacks** from the generated `kind.<kind>.yaml` ("Role stacks").
-7. **Check**: `mise run console:inspect -- --profile=<p>` in each account (0 errors) and `mise run console:exposure-check`, then start the daily checks ("Daily operations").
-8. **Admin tier** (only if you deploy an Administrator, and in production only after the steps of the rollout document): follow "Adding the Admin tier and the Administrator role".
-
-### Config file and generated files
-
-Which teams exist, which roles there are, and which team may enter which role in which kind of account are set in one config file. The upstream holds only the schema (`src/console/config.ts`), the examples, and the tools; the real values live downstream (`docs/specs/console-login-portal.md` §11).
-
-- Examples: [`config/console.example.json`](config/console.example.json) (a personal minimum: one team, a Viewer, one account) and [`config/console.company.example.json`](config/console.company.example.json) (a company shape with an Admin tier). Copy one to `config/console.json` (upstream development; gitignored) or to your downstream file (for example `deploy/console.json`, given with `AWSBRIDGE_CONSOLE_CONFIG`).
-- Inputs (environment variables; defaults filled in by `scripts/console/config.ts`): `AWSBRIDGE_CONSOLE_CONFIG` (default `config/console.json`), `AWSBRIDGE_CONSOLE_AUD_FILE` (the Terraform output `{ "teams": { <team>: <AUD> }, "entry": <AUD> }`; optional, and a personal setup without Terraform can write `access.aud` in the config instead), `AWSBRIDGE_CONSOLE_INVENTORY_FILE` (the accounts of an Organization for `placement: ou`; optional; it contains emails, so do not commit it), `AWSBRIDGE_CONSOLE_OUT_DIR` (default `.generated/console`; gitignored), `AWSBRIDGE_CONSOLE_SOURCE_REVISION` (optional; the commit recorded in the generated files).
-- Neither task calls AWS, Cloudflare, or Terraform. Errors in the config stop the generation (the output shows the key path and the kind of error, never the values).
-
-| Generated file | Used by |
-|---|---|
-| `worker.json` | The console Worker (`alias`): the AUDs and tiers of the teams of both tiers, role ARNs, the boundary issuers |
-| `display.json` | The console Worker (`alias`): the entry list only. The Administrator rows are for display and carry no email, AUD, or ARN |
-| `stacksets.json` | The parameters of the base stack (`providers`) and of the role stacks per kind, and the ledger of retired team names |
-| `access.json` | `mise run console:access:inspect` and comparison with Terraform in CI |
-| `kind.<kind>.yaml` | The role template of each kind (reference shape; see "Role stacks") |
-
-```bash
-cp config/console.example.json config/console.json   # upstream development; downstream: your own file and AWSBRIDGE_CONSOLE_CONFIG
-mise run console:config:check      # schema, references, duplicates, tiers (and the AUD mapping when AWSBRIDGE_CONSOLE_AUD_FILE is given); writes nothing
-mise run console:config:generate   # writes the generated files to AWSBRIDGE_CONSOLE_OUT_DIR (the first time: -- --ledger-init)
-```
-
-#### Ledger of retired team names
-
-- It compares with the previous artifacts in the output directory (`stacksets.json`) and, when given, with `--ledger-baseline <path>` (a `stacksets.json` you kept). With both, it must pass both. A baseline that cannot be read or has the wrong shape is an error.
-- Generating with no ledger to compare with (no previous artifacts and no baseline, or previous artifacts in the shape from before the console moved to one Worker, issuer, and provider) is an error. Only the first generation and the migration from that earlier shape pass, with `mise run console:config:generate -- --ledger-init` (the first-run flag). Passing it while the previous artifacts or the baseline have a ledger is an error. It is recorded on standard output and in the meta of `stacksets.json` (`ledgerInit`; gone after the next generation).
-- After using `--ledger-init`, run `mise run console:inspect` before you deploy (to see that no old or retired team name is left in a trust policy).
-- Keep the previous artifacts (`.generated/console/stacksets.json`) or a baseline (the artifacts are gitignored; in a new checkout, pass it with `--ledger-baseline <path>`).
-- `mise run console:config:check` is unchanged: without previous artifacts it says nothing, and with them it compares.
-
-### Access applications for console login (Cookie Path)
-
-The console-login portal (the entry screen) sits behind Cloudflare Access applications: an entry application for the portal host and one application per team at `<host>/t/<team>`. When teams are separated by path (`portal.routing: path`, the default), **Cookie Path (`path_cookie_attribute`) must be enabled on the entry application and on every team application** (the teams of the Standard and the Admin tier sit on the same host under `/t/<team>`). If it is disabled, the AUD of another application on the same host also lands in the `aud` of the Access JWT, and the Worker's "exactly one `aud`" check rejects it (nobody can log in). When teams are separated by host (`routing: host`), cookies are already separated by host, so this is only a warning. The Worker does not enforce Cookie Path; it is checked in two ways.
-
-- Reference Terraform: [`infra/cloudflare/console/`](infra/cloudflare/console/) (a separate state from the MCP-side `infra/cloudflare/`). It creates the entry application (one) and the team applications (`for_each`) and pins `path_cookie_attribute = true` (not a variable). The applications of teams of the Admin tier get a short session (`admin_session_duration`, default 15 minutes). It is an example that has not been applied. Save `terraform output -json console_aud` as `AWSBRIDGE_CONSOLE_AUD_FILE`.
-- Inspection: `mise run console:access:inspect`. Run `mise run console:config:generate` first to write `access.json`; the tool reads the Cloudflare API (GET only, no writes) and checks that an application exists for each entry and team AUD, that its type is `self_hosted`, that its destination is `<host>/t/<team>`, and that Cookie Path is enabled. With R-P a disabled (false or missing) Cookie Path is an error (exit code 1), and an application under `/t/` that is not in the config is a warning. The output never contains an AUD, a token, or an account ID.
-- Give it a dedicated read-only token (Access: Apps and Policies Read only) in `AWSBRIDGE_CONSOLE_ACCESS_READ_TOKEN` and the account ID in `AWSBRIDGE_CONSOLE_ACCESS_CF_ACCOUNT_ID`, both in `mise.local.toml`. It does not fall back to the `wrangler login` OAuth and does not read the other tools' tokens.
-- What 0 errors does not cover: who the policies of an application allow (include, require, and exclude rules), the session duration, and other applications, Allow policies, or Bypass rules that cover the same paths. A misconfigured Admin-tier application lets people through with a valid Admin-tier AUD, which the Worker cannot refuse. A person reviews the policies and the session settings of the Admin-tier applications and records them.
-- Do not create an Access application on the issuer host: IAM and STS fetch it without authentication.
-
-### Console login signing keys
-
-The console-login Worker (`wrangler.console.jsonc`; one Worker that issues both Viewer and Administrator) signs the JWT it passes to STS with a Workers binding of type `secret_key` (a non-extractable `CryptoKey`; RSASSA-PKCS1-v1_5 / SHA-256, usages `sign` only), one per boundary (`managed`, `partner:<id>`). A boundary's key is used for both Viewer and Administrator (acceptance a). A private JWK stored as a string secret is not used.
-
-- `mise run console:key:put -- --boundary <boundary>` creates the key in its own memory and uploads it with the Cloudflare API. It does not write the key to a file or print it, and the key never passes through CI or logs. A person runs it, only from a local machine. wrangler has no command to upload a `secret_key`.
-- The binding name is `CONSOLE_KEY_<first 8 bytes of the kid in hex>`, derived from the kid (the boundary name is not part of it). The tool refuses an existing name. A new key always gets a different name.
-- The Worker reads the vars `CONSOLE_CURRENT_KEYS` (boundary -> name and kid of the current key) and `CONSOLE_PUBLIC_JWKS` (boundary -> public keys, at most old and new). If either is empty or broken, if a current kid is missing from its boundary's public keys, or if one key appears in two boundaries, every route returns `500 server_misconfigured`. Before signing it checks the boundary's binding (a `CryptoKey`, non-extractable, `sign` only, `exportKey` fails), checks that the tier of the team in the tag matches the tier of the role ARN's path, and verifies each signed JWT with the public key in the vars. If anything does not match, issuing for that boundary returns `503 signing_unavailable`. Each boundary's issuer JWKS serves only that boundary's public keys from the vars.
-- Until the keys are uploaded (while the vars are empty), every route returns `500`. For the first setup, deploy the Worker, upload the keys and the CSRF key, then set the vars and deploy again.
-- The CSRF key `CONSOLE_CSRF_KEY` stays a `secret_text`. `mise run console:secrets -- --yes` creates 32 random bytes locally and uploads them (no file, not printed). After recreating it, open forms need to be reloaded.
-- Tokens: for `AWSBRIDGE_CONSOLE_CF_API_TOKEN`, use a token that can write only the console Worker (no zone permissions) (without it, the `wrangler login` OAuth token is used, in memory only). **Only people allowed to issue Administrator deploy the Worker and operate the keys** (acceptance b). Even though the key cannot be extracted, anyone who can change the Worker's code or secrets can sign any JWT.
-- Stopping: setting the var `LOGIN_DISABLED` to `true` stops new issuance for everything; setting `ADMIN_LOGIN_DISABLED` to `true` stops it only for teams of the Admin tier (both fail closed: any value other than `false`, `0`, empty, or unset stops). Sessions already issued are not stopped (revoke). The age limit of the Access JWT for teams of the Admin tier is the var `ADMIN_ACCESS_MAX_AGE_SECONDS` (seconds, 60 to 86400, default `900`).
-- Update paths: in a development account we confirmed that a `secret_key` binding survives `wrangler deploy`, `wrangler secret put` / `wrangler secret bulk` / `wrangler secret delete` on other secrets, and `wrangler versions secret put / bulk` followed by `versions deploy` (measured with a test Worker in a development account). Managing the Worker's bindings from the dashboard or Terraform was not measured, so do not use those paths.
-- Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID` (or `account_id` in the wrangler config), `AWSBRIDGE_CONSOLE_CF_API_TOKEN` (optional), `AWSBRIDGE_CONSOLE_WRANGLER_CONFIG` (default `wrangler.console.jsonc`), `AWSBRIDGE_CONSOLE_ACCESS_TOKEN` (optional; the Access token used for the key-check in `check`; with `--team <team>` it also opens on the path of a team of the Admin tier).
-- Other vars of the Worker: `ACCESS_TEAM_DOMAIN`, `STS_REGION` (CloudTrail records `AssumeRoleWithWebIdentity` in this region). Issue records go to Workers Logs, and the wrangler config pins `observability.head_sampling_rate` to `1`.
-
-Checking the bundle, running locally, and deploying (run `mise run console:config:generate` first. The wrangler config is `AWSBRIDGE_CONSOLE_WRANGLER_CONFIG`, default `wrangler.console.jsonc`; the MCP-side `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` are not read by these tasks):
-
-```bash
-mise run console:build   # wrangler deploy --dry-run --outdir dist/console (bundles even while the key vars are empty)
-mise run console:dev     # wrangler dev (local use; a secret_key binding cannot be created locally, so every route returns 500 while the key vars are empty)
-# Deploy by hand after you approve it (check the routes and vars first). The first time and when a Custom Domain changes, use the explicit route:
-#   e.g. AWSBRIDGE_WRANGLER_CONFIG=wrangler.console.jsonc AWSBRIDGE_WRANGLER_ENV= AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy bash scripts/wrangler.sh deploy
-# Later deploys (for example after changing the vars) take the default route: leave out AWSBRIDGE_WRANGLER_DEPLOY_MODE
-# (that the key binding survives versions upload was measured once on the earlier per-tier Admin Worker; the record is in docs/specs/console-login-admin.md;
-#  for the single console Worker it is inferred from the same mechanism, so run mise run console:key:check after the deploy)
-```
-
-First upload (per boundary):
-
-
-```bash
-mise run console:key:put -- --boundary managed            # only shows what it would do (no API calls)
-mise run console:key:put -- --boundary managed --yes      # creates the key and uploads it as a secret_key; prints the name, kid, public key, and the vars to set next
-# put reads the vars in the wrangler config and prints them with only this boundary replaced.
-# Before moving to the next boundary, write the printed CONSOLE_PUBLIC_JWKS and CONSOLE_CURRENT_KEYS into the vars of the wrangler config
-mise run console:key:put -- --boundary partner:partner-x --yes
-# again, write the printed vars into the wrangler config
-mise run console:secrets -- --yes                         # the CSRF key (secret_text)
-# once the vars cover every boundary, deploy
-mise run console:key:check     # per boundary: binding type, discovery and JWKS, key-check (non-extractable, exportKey fails, self-verification)
-```
-
-Rotation is in "Key rotation" under "Daily operations".
-
-### Required stack for console login (base)
-
-[`infra/aws/console/base.yaml`](infra/aws/console/base.yaml) (StackSet `awsbridge-console-base`) creates the IAM OIDC provider for console login (one, shared by Viewer and Administrator) and the per-tier guard policies (customer managed, explicit Denies only). It does not create roles (the reference role template is [`infra/aws/console/kind.example.yaml`](infra/aws/console/kind.example.yaml); regenerate it with `mise run console:template:example` after changing the generator). Design: `docs/specs/console-login.md` §4.2 and §4.8. The parameters per account are in the generated `stacksets.json` (`providers`).
-
-| Parameter | Default | Meaning |
-|---|---|---|
-| `IssuerHost` | none (required) | Host of the issuer (e.g. `awsbridge-oidc-console.example.com`) |
-| `IssuerPath` | `console` | Path of the issuer. Issuer = `https://<IssuerHost>/<IssuerPath>` (`p/<id>/console` for a partner) |
-| `Audience` | `awsbridge-console` | Fixed |
-
-- There is one provider per boundary, and the roles of both the Standard and the Admin tier trust the same provider. The only thing that separates Viewer from Administrator is the team condition (`aws:RequestTag/awsbridge_team`) in the role trust policy (acceptance d).
-- The Admin guard policy (`AwsbridgeConsoleGuardAdmin`, including the Deny of `aws login --remote`) and its export are always created in every account. Whether Administrator is deployed is decided only by whether the Administrator role stack (a separate stack) is created.
-- Both guard policies deny writes to the console provider (every path under `<IssuerHost>`): create, delete, adding a client ID, and so on. The Deny statement with a single host has not been measured on real AWS yet (unverified; to be measured in the downstream production rollout). The inspection tool (`mise run console:inspect`) expects guard policies of this shape (otherwise `guard_version_mismatch`).
-- **Always run `mise run console:inspect` right after creating the Administrator role and after changing the team or role settings** (in the [downstream production rollout](docs/console-production-rollout.md), also at step 4 (the step that adds the Admin tier)). A team value in a trust policy that is not a team of the role's tier is `trust_team_tier`, and a retired team name left in a trust policy is `trust_team_retired` (both errors).
-- Order: publish the issuer (the discovery and JWKS of the console Worker) before you deploy this stack. IAM reads the discovery document when it creates a provider; this order is inferred from that mechanism and was not measured with the single issuer.
-- Deploy and update with a principal other than the console-login roles (for example the StackSets execution role). A console-login role session with a guard policy attached cannot update this stack.
-- The provider ARN is an output but not an export. The role template builds the ARN from `IssuerHost`, `IssuerPath`, and the account ID (`AWS::AccountId`), so the role stack parameters contain no account ID.
-- Deleting the provider (L2) is done outside CloudFormation and stops Viewer too; see "Stopping issuance without relying on Cloudflare (L2 and trust policy Deny)".
-
-### Role stacks
-
-`mise run console:config:generate` writes one role template per kind (`kind.<kind>.yaml`, generated from `roles` in the config) and its parameters (`stacksets.json`: for each role, the teams it accepts, as `<Role>Teams`, for example `ViewerTeams`). A role whose parameter is empty is not created. Each role gets a trust policy for the console provider of its boundary (the team tag with the teams in `<Role>Teams`, whose `AllowedPattern` accepts only the teams assigned to that role in that kind; `TagKeys`; SourceIdentity required), the `aws login` policy (Standard: same device and `--remote`; Admin: same device only), and its tier's guard policy. The reference output is [`infra/aws/console/kind.example.yaml`](infra/aws/console/kind.example.yaml); regenerate it with `mise run console:template:example` after changing the generator.
-
-- The template is a reference shape. You may write roles by hand, but keep the structural requirements (the tier, the path `/awsbridge-console/<tier>/`, the shape of the trust policy, and that the stops work; `docs/specs/console-login.md` §4.8). How strong a hand-made role is, is the downstream's responsibility.
-- Deploy the kind stacks (name pattern `awsbridge-console-kind-<kind>`) with StackSets, or with CloudFormation for single accounts, using a principal other than the console-login roles.
-- The Administrator role goes in a separate stack; see "Adding the Admin tier and the Administrator role".
-
-### Adding the Admin tier and the Administrator role
-
-There is no separate Admin Worker, issuer, key, or host: the teams of the Admin tier get their own Access applications on the same portal host, and the console Worker issues for them at `/t/<team>`. In production, add them in the order of [Rolling out console login in production](docs/console-production-rollout.md): first a weaker Admin-tier role without Administrator (step 4), then, after a person approves, the Administrator role (step 5).
-
-- Give the Admin-tier teams new names that no Standard team uses or has used (acceptance d; the generator also rejects a ledger name and a change of tier for the same name).
-- Give their Access applications a short session (`admin_session_duration` in the reference Terraform, default 15 minutes) and keep the var `ADMIN_ACCESS_MAX_AGE_SECONDS` (default `900`) in line with it.
-- `ADMIN_LOGIN_DISABLED` stops new issuance for the Admin-tier teams only; `LOGIN_DISABLED` stops everything.
-
-Order for deploying Administrator (**an example that has not been run yet**; to be confirmed in the downstream production rollout): add the teams of the Admin tier (Access applications with a short session) and the role to the config, run `mise run console:config:generate`, deploy the Worker with `ADMIN_LOGIN_DISABLED` set to `"true"`, and then create the Administrator role in a **separate stack** from the Viewer stack (such as `awsbridge-console-kind-default`), from the same kind template (the generated `kind.<kind>.yaml`). The Viewer stack can still be updated while Administrator is stopped, and aborting takes a single stack deletion. Conditions:
-
-- Give the stack a name that does not match the pattern `awsbridge-console-kind-<kind>` (for example `awsbridge-console-admin-default`). A fake kind name could match the SCP and CI conditions (the name pattern of kind stacks).
-- In the Admin stack, set only `AdministratorTeams` and leave the other team parameters empty. **In the Viewer stack, keep `AdministratorTeams` empty** (do not create the same role name from two stacks). The `AllowedPattern` of `AdministratorTeams` accepts only the teams of the Admin tier assigned to Administrator in that kind (a Standard team cannot be passed).
-- Look at the creation change set and confirm it contains **only an `Add` of `AdministratorRole`** before you execute it.
-- Right after creation and before the first issuance, confirm with `aws iam get-role` that the trust policy names the console provider and that its team condition holds only teams of the Admin tier, and with `aws iam list-attached-role-policies` that the Admin guard policy is attached, and run `mise run console:inspect` (the commands in the Administrator inventory section). Only after these checks pass, set `ADMIN_LOGIN_DISABLED` back to `"false"` and deploy (step 5 of the rollout document).
-- Whenever you update the Viewer stack, look at the change set; **if `AdministratorRole` appears, do not execute it** (the Viewer stack's `AdministratorTeams` is no longer empty).
-- To abort, **delete the Admin stack, and remove Administrator from the config and regenerate** (so that the artifacts and the portal list do not keep Administrator), then deploy the Worker and confirm that the portal no longer shows Administrator.
-
-### Using aws login (console login)
-
-The portal has no page of steps for `aws login`. After you open the console of the role from the portal, run `aws login` in a terminal and choose the session in the browser that AWS opens.
-
-1. Prerequisites: AWS CLI 2.32.0 or later, and the console of that role already open in your default browser.
-2. Add a profile to `~/.aws/config` (the name is free; the Region is the one you chose in the portal):
-
-   ```ini
-   [profile <profile-name>]
-   region = <region>
-   ```
-
-3. Run `aws login --profile <profile-name>`. In the browser that opens, choose the session `<account-id> / <role-name> / console-<your-email>` from the list. If your default browser is a different one, paste the URL that the CLI prints into the browser where you opened the console.
-4. Check with `aws sts get-caller-identity --profile <profile-name>`. The credentials refresh every 15 minutes, up to the session length of the role. When you are done, run `aws logout --profile <profile-name>`.
-
-- A Viewer (Standard tier) can also use `aws login --remote` on a terminal without a browser. An Administrator (Admin tier) can use `aws login` on the same device only: `--remote` is denied by the Admin guard policy.
-- **Open only a URL that you started yourself, and give the code that is shown to no one.** Someone who starts `aws login --remote` and has you open the URL can use the role's permissions until the session length of the role. Always check the account and role of the session you choose in the list.
-- On a shared terminal, run `aws logout` after you finish. `aws login` keeps its cache and refresh token on the terminal.
-- Notifying on `--remote` issuance is detection after the fact, not prevention: see `docs/specs/console-login.md` (section 4.4 and threat T15).
-
-## Daily operations
-
-Once console login is live, run two checks every day: the reconciliation of issue records with CloudTrail (`console:reconcile`) and the check of the console issuers from outside (`console:exposure-check`). Rotate the signing keys on a schedule.
-
-### Reconciling console logins (issue records x CloudTrail)
-
-`mise run console:reconcile` matches the console Worker's issue records (the structured log `console_issue`) against the CloudTrail `AssumeRoleWithWebIdentity` events of the profile's account, using the JWT `jti` (= `requestParameters.webIdentityTokenId`). It reports **assumptions with no issue record** (a forged JWT, or issuance outside the Worker) as errors. Reconciliation is detection material, not proof of completeness (a compromised Worker can also write fake records). **The issue records are written by the console Worker itself. Against anyone who can write to the console Worker (including people who handle only Viewer), the reconciliation is not independent detection** (an accepted limit; see the acceptance section at the top).
-
-- One account per run (`--profile` is required). It reads CloudTrail in **all enabled regions** of the account (`account list-regions`; `ec2 describe-regions` if that is not allowed). A region it cannot read is an error.
-- It runs only four read-only aws commands: `sts get-caller-identity`, `account list-regions`, `ec2 describe-regions`, `cloudtrail lookup-events`. The profile needs `sts:GetCallerIdentity`, `account:ListRegions` (or `ec2:DescribeRegions`), and `cloudtrail:LookupEvents`.
-- It looks only at console assumptions (role path `/awsbridge-console/`, or a provider whose host is a configured issuer host). MCP assumptions are not counted. A console role assumed through a provider that is not in the config is an error.
-- Excluded assumptions: the number of `AssumeRoleWithWebIdentity` events that match neither and are left out of the reconciliation is printed as `excluded assumes (not console): <n>` (not a finding; the exit code does not change). The expected value is 0 if you do not use MCP in the same account. On the first run, and on any day it is not 0, check the following: in CloudTrail, look at the role ARN and the provider (`userIdentity.identityProvider`) of those events and confirm they are the MCP roles (`FederatedAwsBridgeMcpViewer` and so on) and the MCP issuer. If not, check whether a role outside the path was assumed through a provider that is not in the config (for example an entry point an Administrator left behind; see the Administrator inventory section), and escalate to your technical decision maker.
-- Issue records come from one of two inputs:
-  - `--records <file|dir>`: NDJSON (plain lines, Logpush Trace Events envelopes, or Workers Logs events; `.gz` is read too).
-  - `--logs-api`: reads Workers Logs with the Cloudflare API (`POST /accounts/{account_id}/workers/observability/telemetry/query`). This query is the only Cloudflare API the tool calls. For each window the tool first gets the number of matching events (the `calculations` view, trusted only when `abr_level` is 1 and `sampleInterval` is 1), then reads the events. Long windows can be sampled (`abr_level` > 1), so when the rows read fall short of the count or the read is sampled, the tool halves the window and reads again. If a 1-minute window still falls short, it reports `record_read_incomplete` (error), exits with 1, and does not advance the state.
-- Where issue records live (stage 2, the personal environment): Workers Logs (7 days of retention on Workers Paid). The wrangler config of the console Worker pins `observability.head_sampling_rate` to `1` so that sampling never drops a record.
-- Retention window: the default lookback is 6 days (shorter than the 7-day retention; it is where a first run with `--init` starts, and even with a state the start never goes back further than this; see "Read start" below). Assumptions older than the record retention that have no record are counted separately as `unverifiable`. A lookback longer than the retention is a warning (`--retention-days` changes the retention).
-- Truncated record lines (`$cloudflare.truncated` and similar) and unreadable lines are errors; only their positions are printed.
-- Time check: for a matched pair, if the assumption happens later than the issue time (`jwt.iat`, or the record time when absent) by more than "JWT lifetime 300 s + clock skew", it is reported as `assume_time_gap` (error, exit code 1). An assumption earlier than the issue time by more than the clock skew gets the same finding (a clock anomaly, or a record fitted to a forged JWT; the direction is shown as `+NNNs` / `-NNNs` in the detail). The default clock skew is 60 s and `--clock-skew-seconds <n>` changes it. The legitimate differences measured in stage 2 fell within this range, so it was raised from a warning to an error. The line `time from issue: standard n=<count> min <s>s max <s>s, admin ...` shows, per tier, the count, minimum, and maximum of the time from issue to assumption for matched pairs (kept as a record for revisiting the threshold).
-- Identity check: only when both the issue record's user (the value used as SourceIdentity) and the CloudTrail SourceIdentity are present, they are compared in their masked form (`a***@***.com`); a difference is `identity_mismatch` (error, exit code 1). Issue records keep the email masked, so the comparison is a weak match (only the first character and the trailing domain): **it can only catch a different domain or a different first letter**, and it cannot tell apart another person with the same first letter and domain (a match does not prove it is the same person). Pairs where either side is missing are not skipped silently: the counts are printed as `identity: compared <n>, not compared <m> (admin <k>)` and as `identity_not_compared` (note). For the Administrator tier (roles of the Admin tier: a pair where the record's tier, the tier of the record's team, or the role path `/awsbridge-console/admin/` says Admin; the provider is shared by both tiers and does not decide the tier), each pair that could not be compared is `identity_not_compared_admin` (error, exit code 1). This tier covers every role of the Admin tier, not only the Administrator: an assumption of a weaker Admin-tier role that cannot be compared is also an error.
-- Tier checks: a record whose tier differs from the tier of the role path is `tier_mismatch`; a record whose team has a tier in the config that differs from the record's tier or the role path's tier is `team_tier_mismatch`; a record of a team that is not in the config is `team_not_in_config` (all errors).
-- Administrator-tier issuance: `admin issues: <n> (<time> <result>, ...)` shows the number of Admin-tier issue records in the window read, with each time (UTC) and result. In the daily reconciliation, check that there is no issuance you do not recognize. There is no immediate notification of Admin issuance (handled in stage 3).
-- Confirmed interval: per account, a row is kept in a state file (`--state <file>`, default `.secrets/console-reconcile-state.json`; `.secrets/` is gitignored). If this run starts later than the end of the confirmed interval (an interval nobody read), it is `coverage_gap` (error, exit code 1). The file holds only account IDs, times, and counts per code; never a token, email, `jti`, or the text of an acceptance reason. **Only a run with exit code 0 advances the interval** (to "this run's end minus the propagation lag"). A run with errors does not advance it and keeps the findings in the state (see "Unresolved findings" below). A corrupt state file or an unknown shape is not treated as a first run; the tool refuses to run (exit code 2). A version 1 file (only the confirmed interval) is read as having no unresolved findings and is written back as version 2. To clear a gap, investigate and then re-run with `--since` set at or before the previous end (`coverage_gap` is not kept in the state, so the interval advances when that run has no errors). To accept a gap that cannot be read again, use the acceptance below (do not rebuild the state file by hand).
-- When the state has no row: if the file has no row for this account (including when there is no file), the tool does not silently treat it as a first run; it stops with `state_missing` (exit code 2). With no file it calls neither aws nor Cloudflare (with a file that has no row for this account, it calls only `sts get-caller-identity` to learn the account). There are two ways forward: if the account was reconciled on another machine, move the whole state file from there; only if this is really the first run, a person runs it once with `--init`. Passing `--init` when the row exists is exit code 2. A run with `--init` writes the row whatever the result (the confirmed interval on exit code 0, otherwise only the unresolved findings) and prints `coverage: first run (explicit --init)`. A run with `--init` that exits with 0 writes only the confirmed interval (`coveredUntil`); only when it does not exit with 0 (the row is not confirmed) does it write one watch start (`watchStart`) to the row, which never moves afterwards. When `--init` has `--since`, the watch starts at that start; `--init` without `--since` starts the watch at the time of that run (it reads the 6 days before but does not promise them). The next run on a row with no confirmed interval reads the 6 days again (and prints `coverage: unconfirmed`), and only a run with no errors that starts at or before the watch start can confirm the row. Starting later than the watch start with `--since` is `unconfirmed_not_covered` (error; not lowered by an acceptance). Once the default start (now minus 6 days) passes the watch start, every run reports `untimed_not_covered` (error; it can be accepted); to clear it, read again with `--since` at or before the watch start, or accept it (the default start never goes back further than 6 days). The run with `--init` itself is exempt. `--init` is in neither the mise task nor any scheduled run (with a row present, it stops with an error).
-- Unresolved findings: a run with exit code 1 does not advance the confirmed interval and keeps its findings in the state. Errors with a time (`assume_without_record`, `provider_not_in_config`, `tier_mismatch`, `role_mismatch`, `team_tier_mismatch`, `assume_time_gap`, `identity_mismatch`, `identity_not_compared_admin`, `team_not_in_config`) are kept as anchors: the oldest time, the newest time, the count per code, and when they were first seen. Errors without a time (`record_read_incomplete`, `region_unread`, `record_line_truncated`, `record_line_unreadable`, and unverifiable assumptions) are kept only as counts, as the largest count per code (not summed; capped at 1000000). The interval does not advance, so the next run reads the same interval again, and they are cleared only by a run with no errors (a run with only other errors does not clear them). `coverage_gap` is not kept. While there are anchors, the start is the earlier of "the end of the confirmed interval minus the overlap" and "the oldest anchor minus the overlap", cut at now minus 6 days. Shortening `--overlap-seconds` still reads the anchors again. If the start is later than the oldest anchor, it is an error: `unresolved_out_of_window` when the anchor is older than now minus 6 days (it can no longer be read again, so on every run until it is accepted), otherwise `unresolved_not_covered` (when `--since` starts later). Anchors are cleared only by a run that reads a window containing their time with no errors, or by a person's acceptance (when the state is written, the tool also checks that the judged range, from the start to `--until` minus the propagation lag, contains everything from the oldest to the newest anchor; the last lag is `pending` and not judged). The counts of errors without a time are also cleared only by a run with no errors that reads again the range the recording run tried to read (its window start and judged end), or by an acceptance, and a default run goes back to that window start. Once that window start is older than the default window (now minus 6 days) and can no longer be read again, every run reports `untimed_not_covered` (error; it can be accepted). The anchors keep the judgment criteria in force when they were made (`--clock-skew-seconds` and `--lag-seconds`; larger is looser for both), and the stricter values are kept when anchors are added. A run with looser values reports `unresolved_criteria_looser` (error, exit code 1) even with no other errors: the judgment criteria are looser, so it is not treated as resolved (to clear it, run again with the recorded values, or accept with a reason). The config, the Worker names, and the switch between `--records` and `--logs-api` are not part of these judgment criteria. Every run prints the `unresolved:` and `accepted intervals:` lines. A run with errors prints, in the `oldest error finding:` line, the oldest time among errors that have a time and when it leaves the default window.
-- Acceptance (`--accept-unresolved --reason <reason>`): a person accepts findings that cannot be resolved after investigation. It is part of a reconciliation run (the window read is reconciled as usual). **An acceptance is made on an interval, not on findings**: errors with a time inside an accepted interval, including ones not recorded before, are not errors in later runs. The interval is decided from the anchors recorded by earlier runs and this run's `coverage_gap`. The accepted interval starts at the oldest anchor (or at the previous end, if earlier, when this run has `coverage_gap`) and ends at the newest anchor (or at this run's start, if later, when the time in between was not read). Inside the interval, errors with a time are lowered to notes (`(accepted)`) only up to the codes and counts recorded. Errors outside the interval, errors without a time, and codes or counts beyond those recorded are not lowered; if errors remain, the run exits with 1 and the acceptance is not applied. This check of codes and counts guards against mistakes; it does not prove that they are the same findings (the state keeps no `jti`, so if a recorded finding goes away and a new finding with the same code shows up inside the interval in the same number, it is accepted without being told apart). On exit code 0 it prints the accepted interval, the width of the interval, and the reason (with one warning line when the width is more than the overlap, 24 hours by default), appends `accepted` to the state (the interval, the time, whether a reason was given, and the counts per code; not the text of the reason), and the confirmed interval advances as usual. Accepted intervals are kept apart from the confirmed interval and are never removed. An acceptance clears the counts of errors without a time only when the run read again the range they were recorded for, or when it accepted `untimed_not_covered` (the accepted interval then runs from the recorded window start, or the watch start, to this run's start); otherwise they stay. In later runs too, errors with a time inside an accepted interval stay notes. Nothing to accept, a missing or empty reason, or `--init` together are all exit code 2. **Limit: an assumption that shows up late inside an accepted interval is not an error.** A person runs the acceptance; an agent does not, and it is not part of any scheduled run. A run with `--accept-unresolved` cannot take `--until` (exit code 2).
-- Read start: without `--since`, the run starts at the later of "the end of the confirmed interval minus the overlap" and "now minus 6 days" (with unresolved findings, it goes back to "the oldest anchor minus the overlap" as above). The overlap is `--overlap-seconds <n>` (default `86400` = 24 hours, minimum `3600` = 1 hour; shorter is refused with exit code 2), a value separate from the propagation lag (`--lag-seconds`). An assumption from before the previous end that shows up late in CloudTrail is read again and reconciled as long as it falls inside the overlap (with no record it is `assume_without_record`). A first run with `--init` still starts 6 days back, and the `coverage_gap` check is unchanged (a start taken from the state is at or before the previous end, so it is not a gap; a previous end older than 6 days is still `coverage_gap`). The `read start:` line of the output shows the start time and how it was chosen (`from the state`, `from the unresolved findings`, `default lookback`, or `--since`). `--since` always wins. For an audit that reads everything again, use `--since 6d`. When `--since` and `--overlap-seconds` are passed together, the tool prints one line saying that `--overlap-seconds` is not used. If only `--until` is set in the past and the start taken from the state is at or after `--until`, the tool refuses to run (exit code 2).
-  - Exit code 0 does not prove that no assumption showed up late outside the overlap (the same holds when the start is cut at 6 days). The 24-hour overlap and the 1-hour minimum are a guess and a configuration floor, not values shown to be safe. The conditions for shortening the overlap are decided by measurement (the distribution of the delay; recorded in step 2 of the rollout).
-  - Why: when every run read the full 6 days again even with a state, the count of a query covering the older part was sampled (`sampleInterval` greater than 1), which led to `record_read_incomplete` and to `assume_without_record` errors for the records that could not be read. Whether the sampling happened at storage or at query time has not been confirmed. Taking the start from the state is a mitigation: it was avoided in the tests against a fake API; whether it works against the real one is checked in step 2 of the rollout. The 24-hour overlap is also a guess (to be corrected by measurement).
-- **Limit (the state file)**: anyone who can write the state file can move the end of the confirmed interval forward, push the start later, and make the tool skip the interval in between (no `coverage_gap` either). Keep the state file where only the people who run the reconciliation can write it. The reconciliation does not detect this. The guard of `--init` (stopping when there is no row) guards against mistakes, not against anyone who can delete the file and run `--init`. Do not run the reconciliation at the same time with the same state file. Before reading the state, the tool creates a lock next to the state file (`<state>.lock`; it holds only the pid and the start time), and if it cannot, it reads nothing and stops with exit code 2 (the lock is removed when the run ends normally, with errors, when it cannot run, and on SIGINT or SIGTERM; if one is left after SIGKILL, a power loss, or similar, check that no reconciliation with the pid inside is running, then remove it; a run never removes another run's lock). It also reads the file again before writing; if it differs from what it read first, it prints this run's findings, does not write, and stops with exit code 2.
-- The output is redacted (`jti` shows its first 8 characters, no email, account IDs show the last 4 digits). The summary shows the window read, the number of regions, the unverifiable count, truncated lines, and where the records came from (`source: api` or `file`).
-- Exit codes: `0` no errors / `1` errors, or one or more unverifiable assumptions (even with zero errors) / `2` could not run (input, aws, or API failure).
-- Variables (`mise.local.toml`): `AWSBRIDGE_CONSOLE_LOGS_TOKEN` (API token for `--logs-api`; environment variable only), `AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID` (Cloudflare account ID), `AWSBRIDGE_CONSOLE_LOGS_WORKERS` (optional; Worker names, default `awsbridge-console`), `AWSBRIDGE_CONSOLE_CONFIG` (config file).
-- Token: a read-only token is preferable, but according to the Cloudflare API specification `telemetry/query` accepts only the "Workers Observability Write" permission. Whether a Read-only token works is to be checked in stage 2. Limit the token to Workers Observability; do not give it permission to write Workers or secrets.
-
-```bash
-mise run console:reconcile -- --profile <profile> --logs-api               # from Workers Logs (start from the state; stops when there is no row)
-mise run console:reconcile -- --profile <profile> --records ./issue-logs/  # from exported files
-mise run console:reconcile -- --profile <profile> --logs-api --since 2026-11-10T00:00:00Z
-mise run console:reconcile -- --profile <profile> --logs-api --since 6d     # read everything again (audit)
-```
-
-Operations:
-
-- **Run the reconciliation every day, whether or not an Administrator issued anything.** Even if you cannot run it on some day, no verification gap opens as long as you run it within 6 days. Issue records are kept for 7 days, so **an issuance not reconciled within 7 days cannot be verified later**. The tool reports the skipped interval as `coverage_gap` (error, exit code 1). However, every day you skip makes the window longer (the start is the previous end minus the overlap), and a query covering the older part can be sampled into `record_read_incomplete`. **If you skip more days than the period measured to read without sampling, the current way the tool reads cannot confirm that the interval in between was read completely** (that period has not been measured yet). Do not skip; run it every day.
-- **The first run and moving machines**: only for an account reconciled for the first time, a person runs it with `--init` (for example `mise run console:reconcile -- --profile <profile> --logs-api --init`). When you move the reconciliation to another machine, move the whole state file. If you lose the file, record what was lost (the confirmed interval and the unresolved findings; the `read start:`, `unresolved:`, and `accepted intervals:` lines of earlier output) outside the tool before running `--init`. When you run `--init` again after losing the state, pass `--since` to pick up the lost interval (without it, the watch starts at the time of that run). A person runs `--init` (an agent runs it only for a first run the user asked for). **Limit: the guard of `--init` guards against mistakes, not against anyone who can delete the file and run `--init`.**
-- **A run with errors does not advance the interval.** The findings are kept in the state (unresolved findings) until they are resolved or accepted. Once you have investigated the errors and settled them, re-run with `--since` set at or before the previous end, which advances the interval (with unresolved findings, the start goes back to the oldest anchor even without `--since`). Anything past the 7-day record retention can no longer be verified. If you leave it, `coverage_gap` errors pile up from the next run on. When an error appears, record the findings outside the tool the day they appear (time, code, the start of the `jti`, role; the state keeps no `jti`, so only that record tells which assumption it was). Until the cause is known, do not change `--overlap-seconds` or `--since`, and do not rebuild the state file. Resume only after recording the resolution or the acceptance (on the day an error is resolved, too, keep a record of the resolution).
-- **When the state does not advance and the window grows too old to read**: while errors keep the interval from advancing, the start stays at the previous end minus the overlap and the window grows every day. If a query covering the older part keeps being sampled into `record_read_incomplete` and can no longer be read, proceed in this order. (1) keep the evidence within the retention (7 days): record which interval could not be verified (the previous end and the times in the `read start:` and `window:` lines), and keep the findings and the output as they are. (2) read it again in short windows: run with `--since` and `--until` cutting the window short (pass another file to `--state` so that the daily state file does not move; add `--init` only on the first run with that file). (3) Only if an interval still cannot be read does a person decide whether to accept it. The two ways to resume are named apart. To **resume after verification** is when every short window has been read with exit code 0; rebuild the state file up to the end that was read. To **resume by accepting it unverified** is when a person accepts the interval that cannot be read; do not rebuild the state file by hand, but run `--accept-unresolved --reason <reason>` with `--since` set to the start of what can be read (the time from the previous end to that start is kept in the `accepted` of the state as an acceptance of `coverage_gap`, apart from the confirmed interval). Also keep a lasting record outside the tool of: the account, the interval that could not be verified, the width of the accepted interval, the unresolved findings, the reason for accepting, who decided and when, and the state file before and after the change. Do not delete the state file silently (the next run stops with `state_missing`, and running again with `--init` leaves the interval that could not be verified and the unresolved findings recorded nowhere).
-- **When `assume_time_gap`, `identity_mismatch`, or `identity_not_compared_admin` appears**: stop issuing with the stop switch (set the var `ADMIN_LOGIN_DISABLED` to `true` for an Admin issuance, otherwise `LOGIN_DISABLED`), investigate the issuance and the assumption (the issue record and the CloudTrail event), and escalate to your technical decision maker. While an error remains, the interval does not advance. Issue records (Workers Logs) are kept for 7 days, and after that the issuance can no longer be investigated, so do not leave it.
-- **Make `--since` at least 5 minutes longer than your run interval when you pass `--since`** (the confirmed interval ends at "this run's end minus the propagation lag, 300 s by default", so an exactly matching length leaves a gap). Example: if you run it every day, keep the default of 6 days (do not pass `--since`; 6 days is the furthest the start goes back, and with a state the start comes from the state).
-- The daily run is done outside awsbridge (for example an agent over MCP). awsbridge has no scheduler. Notifications are also outside awsbridge; the operator decides how to do it.
-- Status of the checks against real data (what is confirmed and what is not yet):
-  - **Confirmed (Cloudflare API)**: the shape of the response (`events`, the `$metadata.id` cursor, what `count` means) was checked against the API specification (OpenAPI) and a real response (2026-11-16). The results are listed at the top of `scripts/console/reconcile-cf.ts` (for example, `count` is the number of rows in the returned page, not a total, and `$metadata.id` is not unique).
-  - **Confirmed (CloudTrail)**: `requestParameters.webIdentityTokenId` (the `jti` of the issue record) and `userIdentity.identityProvider` of `AssumeRoleWithWebIdentity` were checked by a real one-to-one reconciliation of issuances and assumptions (0 errors). `SourceIdentity` was also read from real events and compared. However, whether it sits in `requestParameters` or in `responseElements` was not checked separately.
-  - **Not yet confirmed**: whether the truncation flag is `$workers.truncated` or `$cloudflare.truncated` (the tool looks at both), and where the cursor continues from when several rows share the same `$metadata.id`. Also the CloudTrail field names `credentials.accessKeyId` and `assumedRoleUser.assumedRoleId` under `responseElements`, plus `requestID`, `eventID`, and `recipientAccountId`.
-  - If they differ from real data, fix `scripts/console/reconcile-cf.ts`, `src/console/reconcile-input.ts`, and the fixtures.
-
-### Checking the console issuers from outside (daily)
-
-`mise run console:exposure-check` fetches each console issuer's `/.well-known/openid-configuration` and `jwks.json` from the outside and compares them with the public keys in your configuration. The AWS IAM OIDC providers trust the JWKS served at the issuer host, so if a Route or similar replaces the response of that host, a forged JWT (an Administrator, for example) could be accepted. This is the daily check for "what awsbridge serves is what it should serve". Together with `console:reconcile` it makes the two daily checks: (i) this comparison from the outside, (ii) the reconciliation above.
-
-- **Targets**: every boundary issuer (the same issuer for Viewer and Administrator).
-- **What it compares with**: the public keys in the vars of the wrangler config (`CONSOLE_PUBLIC_JWKS`, the same file `console:key:check` reads) and the boundary issuer URLs in the generated `worker.json`. It does not only compare `kid`: it compares the key contents (`kty`, `n`, `e`, `alg`, `use`, and any extra member), the `issuer` and `jwks_uri` of the discovery document, and the HTTP status (200 only).
-- **What is an error** (it says "match" only when everything matches): a status other than 200, a **redirect (not followed; it is an error)**, a fetch failure or timeout, a response that is not JSON or has the wrong shape, an `issuer` / `jwks_uri` that differs, a key that is missing, **an extra key**, a key whose contents differ, a duplicate `kid`.
-- **How it fetches**: so that the local DNS (including its negative cache) cannot affect the result, it resolves the host with public DNS over HTTPS (`https://cloudflare-dns.com/dns-query`, A and AAAA), connects to that IP over TLS, and sends the original host name as the SNI and `Host` (the certificate is verified against the host name). One GET per document, no retry, 10 s timeout. It uses **no Cloudflare or AWS token** and sends no `Authorization` header: it is public HTTP GETs only.
-- **Output and exit codes**: `[OK]` / `[NG]` lines per issuer and a conclusion. Responses' values (`n`, the `kid` of a foreign key) are not printed; account IDs and emails are redacted. `0` all match / `1` some mismatch / `2` could not run (config unreadable, no expected keys, and so on).
-- Variables (the same as the key tools; set them in `mise.local.toml`): `AWSBRIDGE_CONSOLE_OUT_DIR` (default `.generated/console`), `AWSBRIDGE_CONSOLE_WRANGLER_CONFIG` (default `wrangler.console.jsonc`). Run `mise run console:config:generate` first.
-
-```bash
-mise run console:exposure-check
-```
-
-Limits and what the zone owner keeps:
-
-- **Watching the zone's configuration is the zone owner's operation.** awsbridge does not hold a token that can read the zone. What to watch: **there is no Route that hits the two console hosts (the portal and the issuer)**. Count the Routes that hit them through a wildcard such as `*.<zone>/*` too. Example of how to check: use a token with Zone Read or similar on the spot and read **all pages** of `GET /zones/{zone_id}/workers/routes`. **If the list cannot be read, or the read stops partway, do not treat it as 0 Routes.** awsbridge does not keep a token for this at all times. When you change a Custom Domain, check once with the same token you used for the change, before you delete that token.
-- **The comparison from the outside is detection, not prevention.** A replacement that remains is found by the next check, but something added and removed between two checks is not found. If a Route is laid over the portal host, an issuance as a logged-in user may be possible, and that issuance looks normal in the reconciliation (a guess; not measured).
-
-### Key rotation
-
-#### Signing key rotation (MCP relay)
+### Signing key rotation (MCP relay)
 
 This is the procedure for replacing the MCP Worker's signing key (secret `SIGNING_JWK`) without downtime. STS caches the JWKS, so simply swapping the key would make verification fail right after the switch. Therefore, the new key's public key is first published in the JWKS (`/.well-known/jwks.json`), and signing is switched only after STS has picked it up.
 
@@ -862,137 +524,6 @@ mise run secrets        #    Remove the old public key from the JWKS
 - Key files are created with mode 0600 and are never overwritten. Each task checks existence before acting and, if the conditions are not met, aborts without changing anything (`key:prepare`: NEXT already exists; `key:activate`: NEXT is missing or PREVIOUS already exists). `key:retire` does nothing if PREVIOUS is missing.
 - If an **element** of `ADDITIONAL_PUBLIC_JWKS` is invalid (a short key, broken base64url, non-RSA, and so on), the Worker discards only that element, logs `jwks: invalid additional key skipped (index=<n>)` as a warning, and still returns the signing key's public key and the valid additional keys (the JWKS as a whole does not stop). If it is broken as JSON or is not an array, it returns 200 without additional keys. Only when `SIGNING_JWK` is invalid does it return 500 `server_misconfigured`. Note that STS cannot verify a signature made with a discarded key, so `mise run secrets` applies the same validation to the next / previous key files and stops without registering if they do not pass.
 - For details of the mechanism, see the section on signing key rotation in `docs/specs/architecture.md`.
-
-#### Console login signing keys
-
-Per boundary; every 90 days or less; always rotate and remove the old kid if a compromise is suspected; one key, so it affects both Viewer and Administrator:
-
-```bash
-mise run console:key:put -- --boundary managed --yes      # 1. upload a new key under a new name
-# 2. set that boundary in vars CONSOLE_PUBLIC_JWKS to the old and new keys and deploy (both in the JWKS)
-# -- wait at least 1 hour (24 hours to be safe): until the STS JWKS cache expires --
-# 3. set that boundary in vars CONSOLE_CURRENT_KEYS to the new key, deploy, and run mise run console:key:check
-# 4. wait longer than the JWT lifetime (5 minutes), remove the old public key from CONSOLE_PUBLIC_JWKS, and deploy
-mise run console:key:retire -- --binding CONSOLE_KEY_<old key> --yes   # 5. delete the old key (refuses current keys, keys still in the vars or JWKS, and the CSRF key)
-```
-
-## Stopping issuance (console login)
-
-| Method | How | What it stops |
-|---|---|---|
-| Stop switch | Set the var `LOGIN_DISABLED` to `true` on the console Worker and deploy (issuing then returns `503 login_disabled`) | New issuance for every team |
-| Admin stop switch | Set the var `ADMIN_LOGIN_DISABLED` to `true` and deploy (the same `503 login_disabled`, only for the teams of the Admin tier) | New issuance for the Admin-tier teams |
-| Remove a kid | Remove the kid from that boundary in `CONSOLE_PUBLIC_JWKS` and deploy (if it is the current key, the Worker treats the vars as broken and every route returns `500 server_misconfigured`) | Issuing with that key, for Viewer and Administrator alike (one key per boundary). Removing the current kid stops every route of every boundary and both tiers |
-| Delete the provider (L2) | "Stopping issuance without relying on Cloudflare (L2 and trust policy Deny)" below; does not rely on Cloudflare | New assumptions of every console role in that account, Viewer included |
-| Deny in the trust policy | "Denying in the role trust policy" below; does not rely on Cloudflare | New assumptions of that role (the way to stop only Administrator) |
-| Delete the Administrator stack | Delete the separate Administrator stack in that account; does not rely on Cloudflare | New Administrator assumptions in that account (whether it also ends sessions already issued has not been measured) |
-| Revoke (L3) | Revoke the role's active sessions (IAM "Revoke active sessions") | Sessions already issued for that role |
-| Stop one person (L3-1) | "Stopping one person for console login" below | That person's existing and new sessions |
-
-- Only revoke (L3) and the one-person stop (L3-1) stop AWS sessions that were already issued. The others stop new issuance or new assumptions only.
-- Neither revoke nor the one-person Deny invalidates `aws login` refresh tokens: once you remove them, `aws login` gets new credentials at the next refresh without signing in again. When to remove them is in `docs/specs/console-login.md` §6.3.
-- Complete each stop by confirming that a request is refused, not by waiting a fixed time (`docs/specs/console-login.md` §6.1).
-- **When the Worker cannot be relied on to stop**: if you cannot deploy the Worker, cannot confirm `503 login_disabled`, or cannot trust the Worker (its code, secrets, deploy permission, or dependencies may be compromised), do not keep trying the stop switches. Stop on the AWS side instead: a Deny in the trust policy, deleting the Administrator stack, or deleting the provider (stops Viewer too), as in "Stopping issuance without relying on Cloudflare (L2 and trust policy Deny)" below. Add revoke (L3) for sessions already issued.
-
-### Stopping one person for console login
-
-To stop a single person, the person's SourceIdentity (email by default) is written as a Deny into the inline policy with the reserved name `AwsbridgeConsoleDenySourceIdentity` on the console login roles (a Deny of every action for sessions whose `aws:SourceIdentity` matches; design in `docs/specs/console-login.md` §6.3). The stop tool writes it.
-
-- The stop list is a file in the same form as the inspect tool's `--stops` (`{ "sourceIdentities": ["..."] }`), and it is the source of truth for who is stopped. **It contains email addresses, so keep it in `.secrets/` or in your downstream repository, and never commit it to the public repository.**
-- `console:stop:apply` aligns the reserved policy on every target role with the list in the file. The targets are the configured roles that exist in the account, roles under the `/awsbridge-console/` path, and roles outside the path that are not in the config but trust a console provider (the plan marks them as roles not in the config, with the source `unlisted`).
-- Without `--yes` it only shows the plan. It still reads IAM and calls `sts get-caller-identity` to compute the difference from the current state (unlike the key tool, where no API is called without `--yes`). The only writes are `iam put-role-policy` and `iam delete-role-policy`.
-- Without `--allow-remove` it only adds: each role's reserved policy becomes the union of its current values and the values in the file. Values on a role that are not in the file are kept, and only their count is shown as extra (`EXTRA`). Extra values alone leave the exit code at 0. A run that has nothing to add and only values to remove (a release only) writes nothing and exits with 2 unless `--allow-remove` is given.
-- With `--allow-remove` it makes every role match the file (releasing a stop). It finishes adding on every role before removing, so a failure on the removing side never blocks the adding side. The tool prints the release conditions from §6.3 (do not remove before the role's `MaxSessionDuration` has passed, the cause is removed, old keys are gone, and new issuance is confirmed impossible). The tool cannot check them, so a person does. It also removes values from roles that are not in the config.
-- In both cases it never halts the whole run for one role. Roles whose reserved policy holds a document that is not a stop document, roles whose inline policies would exceed 10,240 characters in total, and roles where the write fails are reported and left unwritten; the other roles are still written, and the tool exits with 1.
-- `--reason` is required. The result is printed to standard output as a one-line JSON record (time, last 4 digits of the account, roles, change in counts, reason; no values), which the operator keeps. The output never contains email values or full account IDs.
-- It refuses to run from a session of a console role (a configured role name or a role under `/awsbridge-console/`), because the guard policy denies the writes. Run it through another entry point such as IAM Identity Center.
-
-```bash
-mise run console:stop:show -- --profile=<p> --stops=.secrets/console-stops.json      # read only: counts per role, missing and extra
-mise run console:stop:apply -- --profile=<p> --stops=.secrets/console-stops.json --reason="<reason>"         # show the plan
-mise run console:stop:apply -- --profile=<p> --stops=.secrets/console-stops.json --reason="<reason>" --yes   # write
-mise run console:inspect -- --profile=<p> --stops=.secrets/console-stops.json        # afterwards, check the configured roles
-```
-
-`console:inspect --stops` checks the configured roles. Roles not in the config and roles outside the path are checked by the stop tool's own read-back after writing (see the table in its output).
-
-Exit codes: 0 done (or nothing to change; extra values alone still give 0) / 1 some roles were not written / 2 nothing was run (input error, read failure, the caller, or a release-only run without `--allow-remove`).
-
-### Stopping issuance without relying on Cloudflare (L2 and trust policy Deny)
-
-**There is no L2 that stops only Administrator** (acceptance e). Viewer and Administrator share one provider, so deleting the provider (L2) also stops Viewer. The ways to stop only Administrator without relying on Cloudflare are a Deny in the Administrator role's trust policy (below) and deleting the Administrator stack. None of these stops AWS sessions that were already issued, so combine them with revoke (L3). **It is done outside CloudFormation.** The deletion and the restore procedure below were run in the personal environment of stage 2 (on the per-tier Admin provider used before the console moved to one provider; the mechanism is the same): after the deletion, issuing failed at the portal with `upstream_auth_failed` ("this account is not accepting logins right now"), and a CLI session from before the deletion kept working. Recreating it with the same URL, client ID, and tags gave the same ARN, and the first issuance that arrived after the recreation (about 2 minutes later) succeeded.
-
-1. With a principal other than the console-login roles, delete the console provider in the target account (the guard policy Denies only block writes from the console-login roles). Viewer stops too.
-
-   ```sh
-   aws iam delete-open-id-connect-provider --profile <operator profile> \
-     --open-id-connect-provider-arn arn:aws:iam::<account ID>:oidc-provider/awsbridge-oidc-console.example.com/console
-   ```
-
-2. **While it is stopped, do not update the base stack (the stack instance for that account).** The provider has drifted from the stack, and what an update does in that state (fail, or recreate the provider) has not been measured. If it is recreated, the stop is undone.
-3. To restore, recreate the provider with the same URL, the same client ID, and the same tags. The ARN is determined by the URL, so the role trust policies do not change.
-
-   ```sh
-   aws iam create-open-id-connect-provider --profile <operator profile> \
-     --url https://awsbridge-oidc-console.example.com/console \
-     --client-id-list awsbridge-console \
-     --tags Key=project,Value=awsbridge
-   ```
-
-4. After recreating it, issue once, run stack drift detection, and confirm there is no difference before you resume stack updates; the recreated provider leaves no drift (in that run, the recreated provider's thumbprint also matched the original, and drift detection on the base stack was IN_SYNC).
-
-Still not measured: what an update of the base stack does while stopped (not done in that run). The time from deletion until assumptions stop has only the measurement with the Standard shape, about 12 seconds (`docs/specs/console-login.md` §6.1).
-
-#### Denying in the role trust policy
-
-The other way to stop issuance without relying on Cloudflare, and the way to stop only Administrator. Add a `Deny` statement for `sts:AssumeRoleWithWebIdentity` to the trust policy of the role you want to stop (by hand, with a principal other than the console-login roles). In the same stage 2 run (a role of the Admin tier), issuing after the change failed at the portal with `sts_denied` ("could not enter this role"; CloudTrail shows `AccessDenied`), which is distinguishable from the provider deletion (`upstream_auth_failed`). Existing CLI sessions kept working (revoke is what stops those).
-
-- **The trust policy Deny is outside CloudFormation's management. While it is stopped, do not update the role stack. Restore it by hand, and confirm with one issuance and drift detection.**
-- In the two kinds of update measured (an update with no changes, and an update that changes only the stack tags), the Deny was not removed (CloudFormation did not write back the template's trust policy); whether an update that changes the trust policy itself removes the Deny has not been measured (for example a change of team assignments). Because it is not measured, do not update while stopped.
-
-## Inventory of what an Administrator left behind (console login)
-
-An Administrator has full rights in the target account, so it can leave entry points that keep working after console login is stopped: access keys, roles, providers, trust policy changes, and so on. Revoke (L3) and stopping one person (L3-1) do not stop these (`docs/specs/console-login-admin.md` §7). After stopping (or as a periodic check), take an inventory with the steps below and delete what was left, item by item. **The commands below are examples that have not been run yet**; they are to be confirmed in the stopping drill (stage 2, and the drill of the [production rollout](docs/console-production-rollout.md)). They only read; deleting is not written here. Run them with a profile for a principal other than the console roles (IAM Identity Center or similar). **This inventory does not guarantee a complete recovery**: it finds what the listed reads can show.
-
-1. **The console role itself**: `mise run console:inspect -- --profile=<p>` compares the trust policy, managed policies (including the guard policy and its version), inline policies, `MaxSessionDuration`, and providers with the shape expected from the config. To look without the tool:
-
-   ```sh
-   aws iam get-role --role-name FederatedAwsBridgeAdministrator --profile <p>                     # trust policy (AssumeRolePolicyDocument), path, MaxSessionDuration
-   aws iam list-attached-role-policies --role-name FederatedAwsBridgeAdministrator --profile <p>  # managed policies (only AdministratorAccess and the Admin guard policy?)
-   aws iam list-role-policies --role-name FederatedAwsBridgeAdministrator --profile <p>           # inline policy names (AwsLogin, the reserved stop name, ...)
-   aws iam get-role-policy --role-name FederatedAwsBridgeAdministrator --policy-name <name> --profile <p>
-   ```
-
-2. **Providers**: check that the OIDC providers are only the MCP one and the console ones (the boundary issuer; one for Viewer and Administrator). Compare the URL, client IDs, and tags with what the base stack creates. Check SAML providers too.
-
-   ```sh
-   aws iam list-open-id-connect-providers --profile <p>
-   aws iam get-open-id-connect-provider --open-id-connect-provider-arn <ARN> --profile <p>
-   aws iam list-saml-providers --profile <p>
-   ```
-
-3. **Writes made by that person's sessions**: from CloudTrail management events, pick those whose `userIdentity.sessionContext.sourceIdentity` is the person's SourceIdentity (email by default). `lookup-events` covers the last 90 days, one region at a time, and takes only one lookup attribute per call. It cannot filter by SourceIdentity, so narrow by `EventSource` or similar first, then filter on the contents of `CloudTrailEvent` (a JSON string). IAM events are mostly recorded in us-east-1 ("Global service events" in the CloudTrail documentation, which notes that some global service events are logged in other regions). Check each enabled region, including for other services. **Whether `sourceIdentity` stays on the events of operations after the assumption (listed as unverified in `docs/specs/console-login.md`) has not been checked in this repository yet.** It is to be checked in stage 2; if it does not, this procedure will be changed (for example, to pick events by the RoleSessionName `console-<email>`).
-
-   ```sh
-   aws cloudtrail lookup-events --region us-east-1 --profile <p> \
-     --lookup-attributes AttributeKey=EventSource,AttributeValue=iam.amazonaws.com \
-     --start-time 2026-11-01T00:00:00Z --output json \
-     | jq '.Events[].CloudTrailEvent | fromjson
-           | select(.userIdentity.sessionContext.sourceIdentity == "user@example.com")
-           | {eventTime, eventName, requestParameters}'
-   ```
-
-   Operations to look for, for example: `CreateUser`, `CreateAccessKey`, `CreateLoginProfile`, `CreateRole`, `UpdateAssumeRolePolicy`, `PutRolePolicy`, `AttachRolePolicy`, `PutUserPolicy`, `AttachUserPolicy`, `CreatePolicyVersion`, `CreateOpenIDConnectProvider`, `AddClientIDToOpenIDConnectProvider`, `CreateSAMLProvider`. Outside IAM, also look for changes that open resource policies to other principals (S3 bucket policies, KMS key policies, Lambda function permissions and function URLs, and so on).
-
-4. **A listing that does not rely on CloudTrail**: CloudTrail may have been stopped or deleted, so list the current IAM state and compare it with the previous listing (or the expected state). Do the same outside IAM: for the services you use, take the current resource policies (for example S3 bucket policies, KMS key policies, Lambda function policies and function URLs) and compare them with a baseline taken before the Administrator was used.
-
-   ```sh
-   aws iam get-account-authorization-details --profile <p> > authz-<date>.json   # all users, roles, groups, and policies (contains account IDs; do not put it in a public repository)
-   aws iam list-users --profile <p>
-   aws iam list-access-keys --user-name <user> --profile <p>
-   ```
-
-5. Delete what you found item by item after checking the cause, and record what you deleted and when. Do not lift the stop (L3, L3-1) in that account until the deletion is done (the lifting conditions in `docs/specs/console-login.md` §6.3).
 
 ## Migrating an existing MCP deployment
 

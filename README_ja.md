@@ -6,32 +6,27 @@ Bridge AI agents to AWS.
 
 awsbridge は、Cloudflare Access で認証された利用者の身元を、利用者ごとの AWS の一時認証情報に変えます。動くのは、自分自身が OIDC の issuer になる Cloudflare Worker です。Worker が利用者のために短命の JWT に署名し、AWS STS（`AssumeRoleWithWebIdentity`）がそれを対象のアカウントのロールの認証情報に引き換えます。Worker には長期の AWS のアクセスキーを置きません。
 
-> 開発初期段階です。設計は [docs/specs/](docs/specs/) にあります。MCP の中継は [architecture.md](docs/specs/architecture.md)、コンソールログインは [console-login.md](docs/specs/console-login.md)・[console-login-portal.md](docs/specs/console-login-portal.md)・[console-login-admin.md](docs/specs/console-login-admin.md) です。下の手順のうち「まだ実行していない」「未測定」と書いたものは、例として読んでください。
+> 開発初期段階です。設計は [docs/specs/architecture.md](docs/specs/architecture.md) にあります。下の手順のうち「まだ実行していない」「未測定」と書いたものは、例として読んでください。
 
 前身: [youyo/aws-mcp-gateway](https://github.com/youyo/aws-mcp-gateway)
 
 ## awsbridge でできること
 
-awsbridge の機能は 2 つです。機能ごとに Worker・issuer・IAM の OIDC プロバイダー・audience・ロールが分かれていて、片方だけでも使えます。
+awsbridge は MCP の中継です（`src/index.ts`、[`wrangler.jsonc`](wrangler.jsonc)）。利用者の身元を利用者ごとの AWS 一時認証情報（STS）に変換し、SigV4 署名して AWS MCP Server へ中継します。Cloudflare MCP Portal の背後に置くことを前提としています。引数 `aws_profile` で AWS アカウントを切り替えられます。
 
-1. **MCP の中継**（`src/index.ts`、[`wrangler.jsonc`](wrangler.jsonc)）: 利用者の身元を利用者ごとの AWS 一時認証情報（STS）に変換し、SigV4 署名して AWS MCP Server へ中継します。Cloudflare MCP Portal の背後に置くことを前提としています。引数 `aws_profile` で AWS アカウントを切り替えられます。
-2. **コンソールログイン**（`src/console/`、[`wrangler.console.jsonc`](wrangler.console.jsonc)）: 人が Cloudflare Access の背後のポータルを開き、AWS マネジメントコンソールか、CLI の `aws login` にログインします。入口・アカウントとロールの一覧・すべてのロールの発行を 1 つの Worker が受け持ち、issuer・署名鍵・OIDC プロバイダーは境界ごとに 1 つです。チームとロールには階層があります。
-   - **Standard**（例 Viewer）: `aws login` は同じ端末と `--remote` の両方で使えます。
-   - **Admin**（例 Administrator）: チームごとに短いセッションの Access のアプリを持ち、ロールは専用のパスに置いて `MaxSessionDuration` は 1 時間、`aws login --remote` は Deny です。チームの画面には Admin の印が付き、Administrator は Admin のチームのログインの画面（確認画面。入口の一覧はそこへつなぐだけ）からだけ発行します。突き合わせではより厳しく扱います。
-
-   階層は Worker・issuer・鍵・ホストを分けません。発行で階層を分けるのは、チームと、ロールの信頼ポリシーのチームの条件だけです（下の受容 d）。ロールの権限の強さは保証しません（`docs/specs/console-login.md` §3.3）。
-
-MCP 用のロール（`FederatedAwsBridgeMcpViewer` / `FederatedAwsBridgeMcpDebugger`）は、人のコンソールログインのロール（例 `FederatedAwsBridgeViewer` / `FederatedAwsBridgeAdministrator`）とは別のロールです。人にコンソールのロールを与えても、MCP 用ロールの権限は変わりません。
-
-この README の段階は、`docs/specs/console-login.md` §7 の段階導入に従います。段階 1 はコードの完成、段階 2 は個人の環境での導入と試験、段階 3 は会社への導入です。下流リポジトリでの本番の導入の段は [本番でのコンソールログインの導入](docs/console-production-rollout_ja.md) に書きました。
+対象のアカウントには、MCP 用のロールを 2 つ置きます。読み取り専用の `FederatedAwsBridgeMcpViewer` と、デバッグ用の `FederatedAwsBridgeMcpDebugger` です（「AWS 側（対象アカウントごと）」）。
 
 ## コンソールログインの廃止と片付け
 
-コンソールログインは上流から外す予定です。MCP の中継は変わりません。設定・secret の名前・IAM の OIDC プロバイダーと audience・スタック・タスク名は同じです。MCP の中継だけを使っているなら、することはありません。
+コンソールログインは上流から外しました。MCP の中継は変わりません。設定・secret の名前・IAM の OIDC プロバイダーと audience・スタック・タスク名は同じです。MCP の中継だけを使っているなら、することはありません。
 
-コンソールログインが残っている最後の版は、注釈つきのタグ `console-login-final` とブランチ `archive/console-login` に残します。この案内を先に出し、コンソールログインのコード・試験・道具・文書・仕様は、あとの変更で消します。下のコンソールログインの節は、そのタグの版に残ります。
+コンソールログインが残っている最後の版は、注釈つきのタグ `console-login-final` とブランチ `archive/console-login` にあります。コンソールログインの節（セットアップ・日々の運用・発行の停止・棚卸し）は、タグ `console-login-final` の版の README と仕様にあります。手元で読むなら、たとえば次のようにします。
 
-**下流のリポジトリでコンソールログインを動かしていたなら、消す変更を取り込む前に片付けが必要です。** デプロイ済みのコンソールの Worker・Access のアプリ・IAM の OIDC プロバイダーとロールは、コードが無くなっても残り、ロールはコンソールの issuer を信じ続けます。消す変更を merge すると、片付けに使う道具（停止・照合・外からの確認・鍵のタスク）も消えます。
+```sh
+git fetch upstream --tags && git show console-login-final:README_ja.md
+```
+
+**下流のリポジトリでコンソールログインを動かしていたなら、外した版を取り込む前に片付けが必要です。** デプロイ済みのコンソールの Worker・Access のアプリ・IAM の OIDC プロバイダーとロールは、コードが無くなっても残り、ロールはコンソールの issuer を信じ続けます。外した版を merge すると、片付けに使う道具（停止・照合・外からの確認・鍵のタスク）も無くなります。
 
 下流のリポジトリでの順序です。
 
@@ -42,60 +37,23 @@ MCP 用のロール（`FederatedAwsBridgeMcpViewer` / `FederatedAwsBridgeMcpDebu
    ```
 
 2. 下流のリポジトリで、自分の退避タグを打ちます。
-3. その版で片付けます（下の骨子）。
+3. その版で片付けます。片付けの骨子と各段のコマンドは、タグの版の README にあります（この節と同じ見出しの節と、そこから参照する節）。
 4. 片付けが終わってから、upstream の `main` を取り込みます。
 
 片付けは、上流のタグの作業ツリーではなく、下流のリポジトリで行います。下流の設定・状態ファイル・mise の設定が要るためです。
 
-片付けの骨子です。各段のコマンドは、前後の節にあります（「発行を止める（コンソールログイン）」「コンソールログインの Administrator の残った権限の棚卸し」「コンソールログインの突き合わせ（発行記録 × CloudTrail）」「コンソールログインの issuer の外からの確認（毎日）」「コンソールログインの必須のスタック（base）」「ロールのスタック」）。
-
-1. 新しい発行を止めます。Worker の vars `LOGIN_DISABLED` を `true` にしてデプロイし、`503 login_disabled` を確かめます。
-2. `503 login_disabled` を確かめてから、JWT の寿命 300 秒と時計のずれ（照合の既定 60 秒）を足した長さ以上待ち、そのあとで、AWS 側の削除の前に、発行済みのセッションを revoke し、止まったことを拒否で確かめます。待つ理由: 停止の前に署名された JWT は、古い版の Worker や処理中の要求のものも含め、その長さを過ぎると STS が受け付けません（`exp` = `iat` + 300）。ただし古い版が 503 の確認の後にも署名しうるので、これは目安であって保証ではありません。保証は次の段の最後の照合が担います。
-3. 最後の照合と外からの確認を回し、記録を残します。新しい発行を止めた時刻から、反映の遅れ（既定 300 秒）以上たってから回します（確認済みの区間の終わりは、今回の終わりから反映の遅れを引いた時刻になるためです）。すべての対象のアカウントで、確認済みの区間の終わりが、停止の時刻を越えたことと、未解決の所見が無い（解決するか、明示して受け入れる）ことと、最後の revoke の時刻より後に、コンソール用のロールの `AssumeRoleWithWebIdentity` が CloudTrail に無いこと（Worker の発行記録が欠けた引き受けも拾うためです）を確かめてから、次の段へ進みます。あれば、そのロールで revoke をやり直し、照合をやり直します。
-4. Administrator を配ったすべてのアカウントで、残った権限の棚卸しをします。
-5. AWS 側を、次の順で消します。Administrator の別スタック → 種類のロールのスタック → base の StackSet。base の StackSet は、先に、すべての対象のアカウントのスタックインスタンスを、スタックを残さない形で消し、消えたことと IAM の実体（コンソールの OIDC プロバイダーと守りの管理ポリシー）が無いことを確かめてから、StackSet 本体を消します。そのあと、コンソール用の OIDC プロバイダーがすべて無くなり、MCP 用など他の用途のプロバイダーは変わっていないことを確かめます。
-6. コンソールの Worker を消します。secret と Custom Domain が残っていないことを確かめます。
-7. Access のアプリと DNS のレコードを消します。ポータルと issuer のホストのレコードが残っていないことを確かめます。
-8. 手元の生成物・状態ファイル・トークンを片付けます（生成物、照合の状態ファイル、停止の一覧、Logs API と鍵の道具のトークンなど）。
-
-決まりです。
+決まりです（段の番号は、タグの版の README の片付けの骨子のものです）。
 
 - IAM の OIDC プロバイダーを消して、不在を確かめるまで、issuer のホスト（Worker・Custom Domain・DNS のレコード）を手放しません。プロバイダーが残っている間、ロールはそのホストを URL で信じているので、ホストを手に入れた者が、ロールの受け入れるトークンを発行できてしまうためです。
-- どの段も、固定の時間を待たずに、拒否または不在を確かめて完了にします（2 段目の revoke の前の待ちは目安です。確かめるのは 3 段目です）。
-- スタックの削除が `DeleteConflict` で止まる原因は、CloudFormation の外で足したインラインポリシーです。停止のためのものではないインラインポリシーから先に外します。停止のためのインラインポリシー（revoke と 1 人停止の Deny）は、そのロールの最長のセッション（`MaxSessionDuration`）が切れるまで外しません。起点は、新しい発行の停止を確かめた時刻（`503 login_disabled` の確認）と、最後の revoke の時刻（やり直したなら、やり直したときの時刻）の、遅いほうです。早く外すと、発行済みのセッションと `aws login` が、再ログインなしで戻ります。外す直前に、新しい発行ができないこと（`503 login_disabled`）をもう一度確かめます。プロバイダーがまだあるので、新しい発行を止めているのは Worker のスイッチだけだからです（停止を解く条件は `docs/specs/console-login.md` §6.3）。確かめたら外し、すぐにスタックの削除をやり直して、ロールが無いことを確かめます。
-- 待てないなら、削除が止まったロールは、停止のポリシーを付けたまま残します。そのようなロールが残る間、片付けは未完了です。そのロールの信頼ポリシーに `sts:AssumeRoleWithWebIdentity` の Deny を足し（「ロールの信頼ポリシーでの拒否」）、プロバイダーの不在を確かめるまで issuer のホストを手放しません（上の決まりのままです）。そのロールのせいで base の StackSet が消せない場合があるかは未確認です。
+- どの段も、固定の時間を待たずに、拒否または不在を確かめて完了にします（2 段目の revoke の前の待ちは目安です。確かめるのは 3 段目の最後の照合です）。
+- スタックの削除が `DeleteConflict` で止まる原因は、CloudFormation の外で足したインラインポリシーです。停止のためのものではないインラインポリシーから先に外します。停止のためのインラインポリシー（revoke と 1 人停止の Deny）は、そのロールの最長のセッション（`MaxSessionDuration`）が切れるまで外しません。起点は、新しい発行の停止を確かめた時刻（`503 login_disabled` の確認）と、最後の revoke の時刻（やり直したなら、やり直したときの時刻）の、遅いほうです。早く外すと、発行済みのセッションと `aws login` が、再ログインなしで戻ります。外す直前に、新しい発行ができないこと（`503 login_disabled`）をもう一度確かめます。プロバイダーがまだあるので、新しい発行を止めているのは Worker のスイッチだけだからです（停止を解く条件は、タグの版の仕様にあります）。確かめたら外し、すぐにスタックの削除をやり直して、ロールが無いことを確かめます。
+- 待てないなら、削除が止まったロールは、停止のポリシーを付けたまま残します。そのようなロールが残る間、片付けは未完了です。そのロールの信頼ポリシーに `sts:AssumeRoleWithWebIdentity` の Deny を足し（タグの版の README の「ロールの信頼ポリシーでの拒否」）、プロバイダーの不在を確かめるまで issuer のホストを手放しません（上の決まりのままです）。そのロールのせいで base の StackSet が消せない場合があるかは未確認です。
 
 確かめたことと、未確認のことです。
 
 - 個人の検証環境で 1 回確かめました（環境ごとに確かめ直してください）。Custom Domain は Worker と一緒に消えます。テンプレートの外のインラインポリシーがあっても、スタックの削除は止まりません。
 - 未確認です。ロールとプロバイダーを消したあと、発行済みのセッションと `aws login` のリフレッシュトークンがいつまで使えるか。revoke と Deny はリフレッシュトークンを無効にしません。
 - この順序は、通しでは試していません。骨子として読み、各段を自分の環境で確かめてください。
-
-## コンソールログインを使う前に（受容する限界）
-
-> **コンソールの Worker をデプロイできる者と、その secret・依存物に触れる者は、Administrator を配った全アカウントの全権を持ちます。**
->
-> コンソールログインは、Viewer と Administrator を 1 つの Worker・1 つの issuer・1 つの署名鍵・1 つの OIDC プロバイダーで発行します（境界ごと。MCP の中継とは別）。使う前に、次を受け入れてください。
->
-> a. コンソールの Worker 全体が Administrator の発行の権威です。Worker のデプロイの権限、secret（署名鍵のバインディング・CSRF の鍵）、依存物（npm の依存・ビルドの道具）のどれか 1 つで、Administrator を配った全アカウントの全権に届きます。Viewer のためだけの変更でも同じです。
-> b. Worker のデプロイと鍵の操作は、Administrator を発行してよい人だけが行います。エージェント・CI・ほかの人に任せるなら、その相手に全権を渡すことになります。
-> c. 入口・一覧・画面のスクリプトは、Administrator の発行と同じオリジンで動きます（パス方式（既定）では）。画面の欠陥は、Admin のチームの Access のセッションを持つ人のブラウザから Administrator の発行を起こしえます。確認画面はこれを止めません。
-> d. Viewer と Administrator を分けるのは、Worker が Access のアプリの AUD から決めたチームと、そのチームを入れたセッションタグ、ロールの信頼ポリシーのチームの条件だけです。AWS の側では、issuer・鍵・audience に階層の区別がありません。チームの名前を階層をまたいで使い直さないでください。
-> e. OIDC プロバイダーを消すと、Viewer も Administrator も止まります。Administrator だけを Cloudflare に頼らずに止める手段は、Administrator のロールの信頼ポリシーでの拒否と、Administrator のスタックの削除です。
->
-> 1 つの Worker が分けるのは階層の間の権限で、可用性は分けません。鍵の設定の不備（例: 1 つの鍵が 2 つの境界にある、今の kid が公開鍵に無い。今の kid を外すとこれになります）では、Worker のどの経路も `500 server_misconfigured` になります。すべての境界のポータルと issuer の文書、両方の階層です。
->
-> 発行記録はこの Worker 自身が書くので、この Worker に書ける者に対しては、CloudTrail との突き合わせは独立の検知ではありません。
->
-> 発行を止める手段（停止スイッチ・kid の削除・プロバイダーの削除・信頼ポリシーの拒否）は新しい発行と引き受けを止めるだけで、発行済みのセッションは止めません。発行済みを止めるのはロールの revoke です。
->
-> Admin のチームの Access JWT の経過時間の上限（既定 15 分）は、JWT が発行されてからの時間です。利用者が認証してからの時間ではありません。再認証を求めるかは Access と IdP の設定で決まります。
->
-> Workers Logs を読める人は、発行記録（伏せ字）を読めます。ログの閲覧の権限も、この Worker の権限と同じ重さで扱ってください。
->
-> 退役したチーム名の台帳（下）について: 台帳は運用者の取り違えを止める守りで、設定を書ける者への守りではありません。生成物を消して初回の指定（`--ledger-init`）を付ければ外せます。管理外に出たアカウントの古いロールは `mise run console:inspect` でも見えず、守りは台帳だけです。
-
-チームの階層を変えるときは新しい名前にします（同じ名前を別の階層で使い直さない。古いスタックの信頼ポリシーに残った名前が、別の階層の人を通すため）。チームを消すときは、設定の `retiredTeams`（退役したチーム名の台帳）へ移します。`mise run console:config:generate` は、台帳の名前を今のチームに使うこと・台帳から名前を消すこと・消したチームを台帳へ移さないこと・同じ名前の階層を変えることを誤りにします。 手順は「コンソールログインのセットアップ」の「退役したチーム名の台帳」に書きました。
 
 ## 上流と下流
 
@@ -105,7 +63,7 @@ MCP 用のロール（`FederatedAwsBridgeMcpViewer` / `FederatedAwsBridgeMcpDebu
 
 | | 上流（このリポジトリ） | 下流（private） |
 |---|---|---|
-| 持つもの | Worker、CloudFormation のテンプレート、参考の Terraform、mise のタスク、例（`config/*.example.json`、`example.com` を書いた `wrangler*.jsonc`） | `wrangler.<name>.jsonc`（MCP）、`wrangler.<name>-console.jsonc`（コンソールログイン）、`mise.<name>.toml`、`.miserc.toml`、`deploy/profiles.json`、コンソールログインの設定ファイル（例 `deploy/console.json`） |
+| 持つもの | Worker、CloudFormation のテンプレート、参考の Terraform、mise のタスク、例（`config/*.example.json`、`example.com` を書いた `wrangler*.jsonc`） | `wrangler.<name>.jsonc`、`mise.<name>.toml`、`.miserc.toml`、`deploy/profiles.json` |
 | 持たないもの | 実際のホスト・アカウント ID・email・鍵 | 上流のファイルの編集（新しいファイルを足すだけなので、`git pull` で衝突しない） |
 | 秘密 | なし | `mise.local.toml` と `.secrets/`（gitignore。コミットしない） |
 
@@ -115,42 +73,26 @@ MCP 用のロール（`FederatedAwsBridgeMcpViewer` / `FederatedAwsBridgeMcpDebu
 
 Cloudflare 側（Worker）と AWS 側（CloudFormation）は完全に分かれています。Worker のデプロイは AWS を呼ばず、CloudFormation のデプロイは Cloudflare を呼びません。対象の AWS アカウントには CloudFormation だけを流せば足ります。AWS のアカウントが issuer を信頼するのは IAM の OIDC プロバイダーを通してだけで、issuer のホストは 1 つの Worker が出します。
 
-全体像（それぞれの流れの詳細は下にあります）:
+全体像（流れの詳細は下にあります）:
 
 ```mermaid
 flowchart LR
   client["MCP クライアント<br/>（例: Claude）"]
-  person["人<br/>（ブラウザーか端末）"]
   subgraph cf["Cloudflare"]
     portal["MCP Server Portal"]
     accessMcp["Access<br/>（MCP の接続用ホスト）"]
-    accessConsole["Access<br/>（入口とチームごとのアプリケーション）"]
     mcpWorker["MCP Worker<br/>wrangler.jsonc"]
-    consoleWorker["コンソール Worker<br/>wrangler.console.jsonc"]
-    logs[("Workers Logs<br/>発行記録")]
   end
   subgraph aws["対象の各 AWS アカウント"]
     sts["STS<br/>AssumeRoleWithWebIdentity"]
     mcpRoles["OIDC プロバイダーと MCP のロール<br/>infra/aws/awsbridge.yaml"]
-    consoleRoles["OIDC プロバイダーとチームのロール<br/>infra/aws/console/"]
-    trail[("CloudTrail")]
   end
   awsMcp["AWS MCP Server<br/>（対象アカウントの AWS API を呼ぶ）"]
-  federation["AWS サインインのフェデレーション<br/>getSigninToken"]
-  console["AWS マネジメントコンソール"]
   client --> portal --> accessMcp --> mcpWorker
   mcpWorker -- "5 分の JWT" --> sts
   mcpWorker -- "SigV4" --> awsMcp
-  person --> accessConsole --> consoleWorker
-  consoleWorker -- "チームのタグ付きの 5 分の JWT" --> sts
-  consoleWorker -- "一時認証情報" --> federation
-  person -. "ログイン URL" .-> console
   sts --- mcpRoles
-  sts --- consoleRoles
   sts -. "Issuer の文書を読む" .-> mcpWorker
-  sts -. "Issuer の文書を読む" .-> consoleWorker
-  consoleWorker --> logs
-  logs -. "mise run console:reconcile" .- trail
 ```
 
 ### MCP の中継
@@ -174,48 +116,14 @@ STS は https://awsbridge-oidc-mcp.example.com/.well-known/* を読む（公開�
 対象のアカウントごと: infra/aws/awsbridge.yaml（IAM の OIDC プロバイダー + MCP 用のロール 2 つ）
 ```
 
-
-### コンソールログイン
-
-```
-人のブラウザか端末
-  │
-  ▼
-Cloudflare Access（入口のアプリと、/t/<チーム> ごとのチームのアプリ。
-                  Admin の階層のチームのアプリはセッションが短い）
-  │
-  ▼
-コンソールの Worker（wrangler.console.jsonc）。両方の階層で 1 つ
-  │ ポータル https://awsbridge-console.example.com                  入口・一覧・/t/<チーム> での発行
-  │ issuer   https://awsbridge-oidc-console.example.com/console     discovery と JWKS だけ
-  │ 鍵       境界ごとの secret_key（CONSOLE_KEY_*）。両方の階層で使う
-  │ 1. Access JWT を確かめ（aud はちょうど 1 つ）、AUD からチームを（チームから階層を）決める
-  │ 2. 5 分の JWT に署名（aud awsbridge-console、チームをセッションタグに）
-  ▼
-対象アカウントの STS AssumeRoleWithWebIdentity
-  │ 信頼ポリシー: コンソールのプロバイダー・aud awsbridge-console・チームのタグ（ロールの階層のチームだけ）・SourceIdentity 必須
-  ▼
-getSigninToken ─▶ AWS マネジメントコンソール（か aws login）
-
-対象アカウントごと: 必須のスタック infra/aws/console/base.yaml（境界ごとに OIDC プロバイダー 1 つ + 両階層の守りの部品）
-                    + 設定から生成するロールのスタック（kind.<kind>.yaml）。Administrator のロールは別スタック
-発行記録（console_issue）─▶ Workers Logs ─▶ mise run console:reconcile（CloudTrail と突き合わせ）
-```
-
-- Worker がチームを決めるのは、要求が通ってきた Access のアプリの AUD からだけで、そのチームをセッションタグに入れます。誰がどのロールに入れるかは、AWS がロールの信頼ポリシーで決めます。チームと種類（アカウントの種類）とロールの対応は、コンソールの設定ファイルとロールのスタックにあり、Worker にはありません。
-- 境界は信頼の境界です（`managed`、管理外の先方は `partner:<id>`）。境界ごとに issuer・鍵・プロバイダーを持ち、Standard と Admin の階層で同じものを使います。
-- 階層はチームとロールの区分として残ります。階層が決めるのは、チームの Access のアプリ（Admin の階層のチームはセッションが短く、Worker もその Access JWT の経過時間を絞ります）、ロールのパス（`/awsbridge-console/std/` か `/awsbridge-console/admin/`）、ロールの形（Admin の階層は `MaxSessionDuration` がちょうど 1 時間で、`aws login --remote` なし）、守りの部品、確認画面、突き合わせでの扱いです。
-
 ### ホスト
 
 | ホスト（例） | Worker | 用途 | Access |
 |---|---|---|---|
 | `awsbridge-mcp.example.com` | MCP | MCP の接続先（`/mcp`） | 守る。アプリの AUD が Worker の `ACCESS_AUD` |
 | `awsbridge-oidc-mcp.example.com` | MCP | MCP の issuer（`/.well-known/*`） | 公開（STS が読む）。ほかのパスは 401 |
-| `awsbridge-console.example.com` | コンソール | ポータル（入口と、両階層のチームの `/t/<チーム>`） | 入口とチームのアプリ。Cookie Path を有効にする |
-| `awsbridge-oidc-console.example.com` | コンソール | コンソールの issuer（`/console`。管理外の先方は `/p/<id>/console`） | Access のアプリを置かない（STS が読む）。issuer の文書以外のパスは 404 |
 
-- 本番の設定（コンソールの Worker と、MCP の Worker の `env.prod`）は、Cloudflare のアカウントにあるゾーンの Custom Domain を使い、`workers_dev` と `preview_urls` を `false` にして、Access を経由しない入口を閉じます。workers.dev を使うのは MCP の試用の設定 `env.dev` だけです。
+- 本番の設定（MCP の Worker の `env.prod`）は、Cloudflare のアカウントにあるゾーンの Custom Domain を使い、`workers_dev` と `preview_urls` を `false` にして、Access を経由しない入口を閉じます。workers.dev を使うのは試用の設定 `env.dev` だけです。
 - 接頭辞 `awsbridge-oidc-` は、issuer だけのホストの目印で、持ち主も示します。同じドメインで別の仕組みの OIDC を立てたときに、issuer ごとの持ち主が分かるようにするためです。
 - **issuer のホストは、IAM の OIDC プロバイダーが信頼する相手です。** これを乗っ取った者は、AWS が受け付けるトークンを発行できます。ドメインの自動更新を有効にし、レジストラでドメインをロックし、ゾーン（DNS・Routes・Custom Domain）の編集と Worker のデプロイができる人を絞ってください。
 
@@ -227,8 +135,7 @@ getSigninToken ─▶ AWS マネジメントコンソール（か aws login）
 
 1. 下流リポジトリを作り、ファイルを足します（下の手順 1〜4）。
 2. MCP の中継: 「MCP の中継のセットアップ」の「初回の順序」に従います。
-3. コンソールログイン（任意。あとからでもよい）: 「コンソールログインのセットアップ」の「初回の順番（コンソールログイン）」に従います。まず Standard の階層（Viewer）だけを組み、Admin の階層は [本番でのコンソールログインの導入](docs/console-production-rollout_ja.md) の確認を済ませてから足します。
-4. コンソールログインが動き始めたら、「日々の運用」の毎日の確認を始めます。
+3. 動き始めたら、署名鍵を「鍵の差し替え」の手順で、間隔を決めて差し替えます。
 
 ### 手順
 
@@ -264,8 +171,6 @@ git remote add origin <private リポジトリの URL>   # 下流の push 先
 
    `deploy/profiles.json` の形式は「マルチアカウント」の JSON と同じです（コミットする。ロール ARN は秘密ではない）。上流の `config/profiles.example.json` をコピーして書き換えると早いです。
 
-   コンソールログインを使うなら、同じやり方で `wrangler.<name>-console.jsonc` を足します。上流の `wrangler.console.jsonc` を元にし、`routes` と `vars` を自分の値にします（`alias` は `.generated/console/` の生成物に向けたままにします）。設定ファイル（例 `deploy/console.json`。`config/console.example.json` か `config/console.company.example.json` を元にする）も足します。詳しくは「コンソールログインのセットアップ」です。
-
 3. 下流用の mise 設定ファイルを足す。`mise.<name>.toml` と、それを有効にする `.miserc.toml` の 2 つです（どちらもコミットする。秘密値は入れない）。
 
 ```toml
@@ -277,9 +182,6 @@ AWSBRIDGE_STACK_NAME = "awsbridge-mcp"
 AWSBRIDGE_KEY_FILE = ".secrets/awsbridge-mcp-signing-key.json"   # 環境ごとに別の鍵にする
 # AWS_PROFILE = "<デプロイに使う AWS CLI プロファイル>"
 # AWSBRIDGE_AUDIENCE = "awsbridge"               # 変える場合は Worker の var STS_AUDIENCE も揃える
-# コンソールログイン（使うときだけ）
-# AWSBRIDGE_CONSOLE_CONFIG = "deploy/console.json"
-# AWSBRIDGE_CONSOLE_WRANGLER_CONFIG = "wrangler.awsbridge-mcp-console.jsonc"
 ```
 
 ```toml
@@ -287,7 +189,7 @@ AWSBRIDGE_KEY_FILE = ".secrets/awsbridge-mcp-signing-key.json"   # 環境ごと�
 env = ["awsbridge-mcp"]
 ```
 
-4. 秘密値と環境固有値を `mise.local.toml`（gitignore。コミットしない）に書く。`AWSBRIDGE_ISSUER`（issuer の URL。例 `https://awsbridge-oidc-mcp.example.com`）、`AWSBRIDGE_ALLOWED_SUBJECTS`、`AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS`、`AWSBRIDGE_ACCESS_TEAM_DOMAIN`、`AWSBRIDGE_ACCESS_AUD` など（「`mise.local.toml` の変数」を参照）と、コンソールログインの各節に書いた道具の変数です。プロファイル一覧は `mise.local.toml` ではなく `deploy/profiles.json` に置きます。
+4. 秘密値と環境固有値を `mise.local.toml`（gitignore。コミットしない）に書く。`AWSBRIDGE_ISSUER`（issuer の URL。例 `https://awsbridge-oidc-mcp.example.com`）、`AWSBRIDGE_ALLOWED_SUBJECTS`、`AWSBRIDGE_DEBUG_ALLOWED_SUBJECTS`、`AWSBRIDGE_ACCESS_TEAM_DOMAIN`、`AWSBRIDGE_ACCESS_AUD` など（「`mise.local.toml` の変数」を参照）です。プロファイル一覧は `mise.local.toml` ではなく `deploy/profiles.json` に置きます。
 
 5. MCP の中継をデプロイする（初回）。Cloudflare Access を含む全体の順は、「MCP の中継のセットアップ」の「初回の順序」です。
 
@@ -309,7 +211,7 @@ git pull --no-rebase upstream main
 - **署名鍵は環境ごとに分ける。** 上流の開発用デプロイと同じ鍵・同じ issuer を使い回さないでください（`AWSBRIDGE_KEY_FILE` を別パスにする）。鍵の入れ替えは「署名鍵のローテーション（MCP の中継）」の手順（`mise run key:prepare` → `secrets` → 待つ → `key:activate` → `secrets` → 待つ → `key:retire` → `secrets`）で止めずに行えます。
 - **issuer（issuer の URL）が環境ごとに変わる**ので、IAM OIDC プロバイダーとロールを作る CloudFormation スタックも環境ごとに別です（`AWSBRIDGE_STACK_NAME` を分ける）。同じアカウントに複数の環境を置くときはロール名も分ける（`AWSBRIDGE_READONLY_ROLE_NAME` / `AWSBRIDGE_DEBUG_ROLE_NAME`）。
 - mise は `mise.<name>.toml` を `mise.toml` より、`mise.local.toml` を `mise.<name>.toml` より優先します。`.config/mise/conf.d/*.toml` は `mise.toml` に負けるので使えません。
-- 上流の `wrangler.jsonc`（`name: awsbridge` / `env.dev`）は上流の開発用です。下流では使いません。上流の `wrangler.console.jsonc` も例なので、下流では使いません。
+- 上流の `wrangler.jsonc`（`name: awsbridge` / `env.dev`）は上流の開発用です。下流では使いません。
 
 ### セットアップ用スキル（Claude Code）
 
@@ -321,13 +223,13 @@ cd <下流リポジトリ名> && claude
 /setup-downstream <下流リポジトリ名>
 ```
 
-スキルは、リモートの付け替え（`origin` → `upstream`）・下流リポジトリの作成・Worker のデプロイ・CloudFormation・Cloudflare Access/Portal・動作確認を順に案内します。扱うのは MCP の中継だけで、コンソールログインは扱いません。外部に影響する操作は、各段階で実行前に確認します。スキルはコードと一緒に版管理されるので、`git pull --no-rebase upstream main` で下流にも更新が届きます。
+スキルは、リモートの付け替え（`origin` → `upstream`）・下流リポジトリの作成・Worker のデプロイ・CloudFormation・Cloudflare Access/Portal・動作確認を順に案内します。外部に影響する操作は、各段階で実行前に確認します。スキルはコードと一緒に版管理されるので、`git pull --no-rebase upstream main` で下流にも更新が届きます。
 
 ## Worker のデプロイの経路（既定と明示）
 
 `scripts/wrangler.sh deploy` は、指定がなければ**既定の経路**を通ります。`wrangler versions upload` を流し、出力から Version ID を取り出して `wrangler versions deploy <version-id>@100% --yes` を流します。変わるのは Worker のコード・vars・バインディングだけです。Custom Domain と Route（triggers）は同期しないので、トークンにゾーンの権限は要りません。日常のデプロイは「その Worker だけの Individual Workers Editor で、ゾーンの権限なし」のトークンで足ります。作り方は[日常のデプロイ用のトークンの作り方](#日常のデプロイ用のトークンの作り方)に書きました。
 
-これはすべての Worker に効きます。MCP の Worker は `mise run deploy:worker` がこれを使います。コンソールログインの Worker をデプロイする mise のタスクはありません。「コンソールログインのセットアップ」に書いたとおり、コンソール用の wrangler の設定を指定して `scripts/wrangler.sh` を流します（`AWSBRIDGE_WRANGLER_CONFIG=<コンソール用の wrangler の設定> AWSBRIDGE_WRANGLER_ENV= bash scripts/wrangler.sh deploy`）。
+MCP の Worker は `mise run deploy:worker` がこれを使います。
 
 - 理由: ゾーンの Workers Routes Write を持つトークンは、ほかの Worker の Custom Domain のホストに Route を足して応答を奪えるためです。日常のデプロイは、その権限を持たないトークンで行います。
 - 引数: `--var`・`--message`・`--tag`・`--outdir`・`--minify`・`--keep-vars` など、`wrangler versions upload` が受け付けるものを引き継ぎます。`--config` と `--env` は、これまでどおり `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` で渡します。`versions upload` が受け付けない引数（`--routes` など）が来たら、黙って捨てずにエラーで止めます。出力から Version ID が取れなければ exit 1 で、`versions deploy` は流しません。
@@ -464,7 +366,7 @@ mise run deploy:worker                                        # 2 回目から: 
 
 ### AWS 側（対象アカウントごと）
 
-[infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml) を流すだけです。Worker の issuer の URL を issuer とする IAM OIDC プロバイダーと、Worker 発行の JWT で引き受ける 2 つのロール（読み取り専用 `FederatedAwsBridgeMcpViewer`、デバッグ `FederatedAwsBridgeMcpDebugger`）を作ります。この MCP 用ロールは、人のコンソールログインのロール（Viewer / Administrator）とは独立した別のロールで、人にコンソールのロールを与えても MCP 用ロールの権限は変わりません。Viewer（`FederatedAwsBridgeMcpViewer`）は全員が使えます。Debugger（`FederatedAwsBridgeMcpDebugger`）を誰に渡すかは、下流の設定（`DebugAllowedSubjects`）で決めます（上流は規則を持ちません）。渡すときの注意: Debugger はリモートシェルなどで実行先のロールの権限を得られ、その権限には MCP 経由の条件が付きません。
+[infra/aws/awsbridge.yaml](infra/aws/awsbridge.yaml) を流すだけです。Worker の issuer の URL を issuer とする IAM OIDC プロバイダーと、Worker 発行の JWT で引き受ける 2 つのロール（読み取り専用 `FederatedAwsBridgeMcpViewer`、デバッグ `FederatedAwsBridgeMcpDebugger`）を作ります。Viewer（`FederatedAwsBridgeMcpViewer`）は全員が使えます。Debugger（`FederatedAwsBridgeMcpDebugger`）を誰に渡すかは、下流の設定（`DebugAllowedSubjects`）で決めます（上流は規則を持ちません）。渡すときの注意: Debugger はリモートシェルなどで実行先のロールの権限を得られ、その権限には MCP 経由の条件が付きません。
 
 ```
 AWS_PROFILE=<対象> mise run deploy:aws    # CloudFormation をデプロイ（何度でも別アカウントに流せる）
@@ -598,251 +500,11 @@ var（任意。既定値を上書きするときだけ）: `ISSUER`（deploy 時
 
 下流リポジトリは上流の `wrangler.jsonc` を編集せず、自分の `wrangler.<name>.jsonc` の `alias` で自前の JSON（例 `deploy/profiles.json`）に向けます（「下流リポジトリでの運用」参照）。詳細は `docs/specs/architecture.md` の「マルチアカウント（aws_profile）」を参照してください。
 
-## コンソールログインのセットアップ
+## 鍵の差し替え
 
-本番に入れるときは、[本番でのコンソールログインの導入](docs/console-production-rollout_ja.md) の段の順序・確認と期待値・Administrator を入れる前のチェックリストに従います。
+MCP の Worker の署名鍵は、間隔を決めて差し替えます。
 
-### 初回の順番（コンソールログイン）
-
-各段の中身は下の節に書きました。鍵と CSRF の鍵の道具は、人が手元から実行します。CI からは実行しません。**コンソールの Worker のデプロイと鍵の操作は、最初のデプロイから、Administrator を発行してよい人だけが行います**（受容 b）。Viewer だけを設定している間も同じです。
-
-1. **設定**: 設定ファイルを書き、`mise run console:config:check` で検査します（「設定ファイルと生成物」）。初回は Admin の階層のチームと Administrator のロールを入れません。
-2. **Access**: 入口のアプリとチームのアプリを Cookie Path を有効にして作り、AUD を保存します（「コンソールログインの Access アプリ（Cookie Path）」）。
-3. **生成**: 初回は `mise run console:config:generate -- --ledger-init`（比べる台帳がまだ無いため。「退役したチーム名の台帳」）、2 回目からは `mise run console:config:generate` です。チームの AUD が要ります。入口の AUD は、Standard のチームが 2 つ以上のときに要ります。そのあと、生成物の `access.json` を読む `mise run console:access:inspect` で Access のアプリを確かめます。最初のデプロイの前に、対象のアカウントごとに `mise run console:inspect -- --profile=<p>` を回します（`--ledger-init` のあとは必須）。コンソールのロールもプロバイダーもまだ無いアカウントでは、期待する誤りは `role_missing` と `provider_missing` だけです。`trust_team_retired`・`trust_team_tier`・`unlisted_role` が出たら、説明がつくまで先へ進みません。
-4. **Worker**: デプロイし、境界ごとの署名鍵と CSRF の鍵を入れ、鍵の vars を書いてもう一度デプロイし、`mise run console:key:check` を回します（「コンソールログインの署名鍵」）。issuer が公開されるのは、この段のあとです。
-5. **base のスタック**を対象のアカウントごとに配ります。issuer が公開されてから配ります。IAM はプロバイダーを作るときに issuer の discovery を読むためです。これは以前の階層ごとの Admin の issuer と同じ仕組みからの推論で、1 つの issuer では実測していません（「コンソールログインの必須のスタック（base）」）。
-6. **ロールのスタック**を、生成した `kind.<kind>.yaml` から配ります（「ロールのスタック」）。
-7. **確認**: アカウントごとに `mise run console:inspect -- --profile=<p>`（誤り 0）、そして `mise run console:exposure-check` を回し、「日々の運用」の毎日の確認を始めます。
-8. **Admin の階層**（Administrator を配るときだけ。本番では導入の文書の段を済ませてから）: 「Admin の階層と Administrator を足す」に従います。
-
-### 設定ファイルと生成物
-
-どんなチームがいて、どんなロールを用意し、どの種類のアカウントでどのチームがどのロールに入れるかは、1 つの設定ファイルで決めます。上流が持つのはスキーマ（`src/console/config.ts`）・例・道具だけで、実際の値は下流に置きます（`docs/specs/console-login-portal.md` §11）。
-
-- 例: [`config/console.example.json`](config/console.example.json)（個人用の最小構成。チーム 1 つ・Viewer・アカウント 1 つ）と [`config/console.company.example.json`](config/console.company.example.json)（Admin の階層を持つ会社用の形）。どちらかを `config/console.json`（上流の開発用。gitignore）か、下流のファイル（例 `deploy/console.json`。`AWSBRIDGE_CONSOLE_CONFIG` で渡す）にコピーします。
-- 入力（環境変数。既定値は `scripts/console/config.ts` が補います）: `AWSBRIDGE_CONSOLE_CONFIG`（既定 `config/console.json`）、`AWSBRIDGE_CONSOLE_AUD_FILE`（Terraform の出力 `{ "teams": { <チーム>: <AUD> }, "entry": <AUD> }`。任意。Terraform を使わない個人の構成では、代わりに設定ファイルに `access.aud` を書けます）、`AWSBRIDGE_CONSOLE_INVENTORY_FILE`（`placement: ou` の Organization のアカウント。任意。email を含むのでコミットしない）、`AWSBRIDGE_CONSOLE_OUT_DIR`（既定 `.generated/console`。gitignore）、`AWSBRIDGE_CONSOLE_SOURCE_REVISION`（任意。生成物に記録する設定のコミット）。
-- どちらのタスクも AWS・Cloudflare・Terraform を呼びません。設定の誤りは生成の時点で止めます（出力はキーのパスと誤りの種別だけで、値は出しません）。
-
-| 生成物 | 使う側 |
-|---|---|
-| `worker.json` | コンソールの Worker（`alias`）。両階層のチームの AUD と階層・ロールの ARN・境界の issuer |
-| `display.json` | コンソールの Worker（`alias`）。入口の一覧だけが読む。Administrator の行は表示用で、email・AUD・ARN を持たない |
-| `stacksets.json` | base のスタック（`providers`）と、種類ごとのロールのスタックのパラメーター、退役したチーム名の台帳 |
-| `access.json` | `mise run console:access:inspect` と、CI での Terraform との突き合わせ |
-| `kind.<kind>.yaml` | 種類ごとのロールのテンプレート（参考の形。「ロールのスタック」） |
-
-```bash
-cp config/console.example.json config/console.json   # 上流の開発用。下流は自前のファイルと AWSBRIDGE_CONSOLE_CONFIG
-mise run console:config:check      # スキーマ・参照・重複・階層（AWSBRIDGE_CONSOLE_AUD_FILE を渡せば AUD の対応も）。何も書かない
-mise run console:config:generate   # 生成物を AWSBRIDGE_CONSOLE_OUT_DIR に書く（初回は -- --ledger-init）
-```
-
-#### 退役したチーム名の台帳
-
-- 比べる相手は、出力先の前回の生成物（`stacksets.json`）と、渡したときは `--ledger-baseline <path>`（保管しておいた `stacksets.json`）です。両方を渡したら、どちらにも通ることを要します。読めない・形が違う baseline は誤りです。
-- 比べる台帳が無い生成（前回の生成物も baseline も無い・前回がコンソールを 1 つの Worker・issuer・プロバイダーにする前の形）は誤りです。初めての生成とその前の形からの移行だけ、`mise run console:config:generate -- --ledger-init`（初回の指定）で通します。前回か baseline に台帳があるのに付けると誤りです。通したことは標準出力と `stacksets.json` の meta（`ledgerInit`）に残ります（次の生成で消えます）。
-- `--ledger-init` を使ったら、デプロイの前に `mise run console:inspect` を回します（信頼ポリシーに古いチームや退役したチームの名前が残っていないか）。
-- 前回の生成物（`.generated/console/stacksets.json`）か baseline を保管します（生成物は gitignore です。新しいチェックアウトでは `--ledger-baseline <path>` で渡します）。
-- `mise run console:config:check` は今のまま、前回が無ければ黙り、あれば比べます。
-
-### コンソールログインの Access アプリ（Cookie Path）
-
-コンソールログインのポータル（入口の画面）は Cloudflare Access のアプリの背後に置きます。ポータルのホストの入口のアプリと、`<ホスト>/t/<チーム>` のチームごとのアプリです。パスでチームを分ける構成（`portal.routing: path`。既定）では、**入口のアプリとすべてのチームのアプリで Cookie Path（`path_cookie_attribute`）を有効にする**ことが要件です（Standard と Admin の階層のチームは同じホストの `/t/<チーム>` に並びます）。無効だと、同じホストの別のアプリの AUD も Access JWT の `aud` に入り、Worker の「`aud` はちょうど 1 つ」の検査で断られます（ログインができなくなります）。ホストでチームを分ける構成（`routing: host`）では Cookie もホストで分かれるので、警告にとどめます。Worker は Cookie Path を強制しません。次の 2 つで見ます。
-
-- 参考の Terraform: [`infra/cloudflare/console/`](infra/cloudflare/console/)（MCP 用の `infra/cloudflare/` とは別の state）。入口のアプリ（1 つ）とチームのアプリ（`for_each`）を作り、`path_cookie_attribute = true` に固定します（変数にしません）。Admin の階層のチームのアプリはセッションを短くします（`admin_session_duration`。既定 15 分）。apply は検証していない例です。`terraform output -json console_aud` を `AWSBRIDGE_CONSOLE_AUD_FILE` に保存して使えます。
-- 検査: `mise run console:access:inspect`。先に `mise run console:config:generate` で `access.json` を作り、Cloudflare API を読んで（GET だけ。書き込みません）、入口とチームの AUD に当たるアプリが在るか・種類が `self_hosted` か・対象が `<ホスト>/t/<チーム>` か・Cookie Path が有効かを確かめます。R-P では Cookie Path の無効（false・欠落）を誤り（終了コード 1）、設定に無い `/t/` 配下のアプリを警告にします。出力に AUD・トークン・アカウント ID を出しません。
-- トークンは読み取り専用の専用トークン（Access: Apps and Policies の Read だけ）を `AWSBRIDGE_CONSOLE_ACCESS_READ_TOKEN` に、アカウント ID を `AWSBRIDGE_CONSOLE_ACCESS_CF_ACCOUNT_ID` に `mise.local.toml` で与えます。`wrangler login` の OAuth には落とさず、ほかの道具のトークンも読みません。
-- 誤り 0 が保証しないもの: アプリのポリシーが誰を許すか（include・require・exclude の規則）、セッションの長さ、同じパスを覆うほかのアプリ・Allow のポリシー・Bypass の規則。Admin の階層のアプリの設定を誤ると、正しい Admin の階層の AUD で人を通してしまい、Worker では断れません。Admin の階層のアプリのポリシーとセッションの設定は、人が見て記録します。
-- issuer のホストには Access のアプリを作りません。IAM と STS が認証なしで取りに来るためです。
-
-### コンソールログインの署名鍵
-
-コンソールログインの Worker（`wrangler.console.jsonc`。Viewer と Administrator の両方を発行する 1 つの Worker）は、境界（`managed`・`partner:<id>`）ごとに、Workers の `secret_key` 型のバインディング（取り出せない `CryptoKey`。RSASSA-PKCS1-v1_5 / SHA-256、usages は `sign` だけ）で STS に渡す JWT に署名します。境界の鍵は Viewer と Administrator の両方に使います（受容 a）。文字列の秘密鍵 JWK を secret に入れる形は使いません。
-
-- 鍵は `mise run console:key:put -- --boundary <境界>` が手元のメモリの中で作り、Cloudflare API で入れます。ファイルに書かず、出力もしません。CI やログを通しません。実行するのは人で、手元からだけです。wrangler には `secret_key` を入れるコマンドがありません。
-- バインディングの名前は `CONSOLE_KEY_<kid の先頭 8 バイトの 16 進>` で、kid から決まります（境界の名前は入りません）。道具は同じ名前への投入を断ります。差し替えは必ず別の名前で入れます。
-- Worker は vars の `CONSOLE_CURRENT_KEYS`（境界 → 今の鍵の名前と kid）と `CONSOLE_PUBLIC_JWKS`（境界 → 公開鍵。新旧 2 つまで）を読みます。どちらかが空・壊れている、今の kid がその境界の公開鍵に無い、同じ鍵が 2 つの境界にある、ときはどの経路も `500 server_misconfigured` です。署名の前にその境界のバインディングを確かめ（`CryptoKey`・取り出せない・`sign` だけ・`exportKey` が失敗する）、タグのチームの階層とロールの ARN のパスの階層が同じことを確かめ、署名した JWT を vars の公開鍵で確かめます。合わなければその境界の発行は `503 signing_unavailable` です。境界の issuer の JWKS は、その境界の vars の公開鍵だけを出します。
-- 鍵を入れるまで（vars が空のあいだ）は、どの経路も `500` です。初回は「Worker をデプロイ → 鍵と CSRF の鍵を入れる → vars を書いてデプロイ」の順にします。
-- CSRF の鍵 `CONSOLE_CSRF_KEY` は `secret_text` のままです。`mise run console:secrets -- --yes` が 32 バイトの乱数を手元で作って入れます（ファイルに書かず、表示しません）。作り直すと、開いている画面のフォームは開き直しが要ります。
-- トークン: `AWSBRIDGE_CONSOLE_CF_API_TOKEN` には、コンソールの Worker だけを書けるトークン（ゾーンの権限なし）を使います（無ければ `wrangler login` の OAuth をメモリの中だけで使います）。**デプロイと鍵の操作は、Administrator を発行してよい人だけが行います**（受容 b）。鍵を取り出せなくても、Worker のコードや secret を書き換えられる人は任意の JWT に署名できます。
-- 停止: vars `LOGIN_DISABLED` を `true` にすると全体の、`ADMIN_LOGIN_DISABLED` を `true` にすると Admin の階層のチームだけの新しい発行を止めます（どちらも `false`・`0`・空・未設定以外は止める側に倒します）。発行済みのセッションは止まりません（revoke）。Admin の階層のチームの Access JWT の経過時間の上限は vars `ADMIN_ACCESS_MAX_AGE_SECONDS`（秒。60〜86400。既定 `900`）です。
-- 更新の経路: `secret_key` のバインディングは、`wrangler deploy`、別の secret を更新する `wrangler secret put`・`wrangler secret bulk`・`wrangler secret delete`、`wrangler versions secret put / bulk` → `versions deploy` のあとも残ることを開発環境で確かめました（試験用の Worker で測定）。ダッシュボードや Terraform で Worker のバインディングを管理する経路は測っていないので使いません。
-- 変数（`mise.local.toml`）: `AWSBRIDGE_CONSOLE_CF_ACCOUNT_ID`（または wrangler の設定の `account_id`）、`AWSBRIDGE_CONSOLE_CF_API_TOKEN`（任意）、`AWSBRIDGE_CONSOLE_WRANGLER_CONFIG`（既定 `wrangler.console.jsonc`）、`AWSBRIDGE_CONSOLE_ACCESS_TOKEN`（任意。`check` の key-check に使う Access のトークン。`--team <チーム>` で Admin の階層のチームのパスでも開けます）。
-- Worker のほかの vars: `ACCESS_TEAM_DOMAIN`、`STS_REGION`（CloudTrail の `AssumeRoleWithWebIdentity` はこのリージョンに残ります）。発行記録は Workers Logs に出し、wrangler の設定は `observability.head_sampling_rate` を `1` に固定しています。
-
-バンドルの確認・手元の起動・デプロイ（先に `mise run console:config:generate` が要る。wrangler の設定は `AWSBRIDGE_CONSOLE_WRANGLER_CONFIG`、既定 `wrangler.console.jsonc`。MCP 用の `AWSBRIDGE_WRANGLER_CONFIG` / `AWSBRIDGE_WRANGLER_ENV` はこれらのタスクでは読まない）:
-
-```bash
-mise run console:build   # wrangler deploy --dry-run --outdir dist/console（鍵の vars が空でもバンドルできる）
-mise run console:dev     # wrangler dev（手元用。secret_key のバインディングは作れないので、鍵の vars が空なら全経路 500）
-# デプロイは承認したあと手で行う（routes と vars を先に確かめる）。初回と Custom Domain を変えるときは明示の経路:
-#   例: AWSBRIDGE_WRANGLER_CONFIG=wrangler.console.jsonc AWSBRIDGE_WRANGLER_ENV= AWSBRIDGE_WRANGLER_DEPLOY_MODE=deploy bash scripts/wrangler.sh deploy
-# 2 回目から（vars を変えたときなど）は既定の経路: AWSBRIDGE_WRANGLER_DEPLOY_MODE を外す
-# （versions upload のあとも鍵が残ることは、以前の階層ごとの Admin の Worker で 1 回測った〈記録は docs/specs/console-login-admin.md〉。
-#  1 つのコンソールの Worker では同じ仕組みからの推論なので、デプロイのあと mise run console:key:check を回す）
-```
-
-初回の投入（境界ごと）:
-
-```bash
-mise run console:key:put -- --boundary managed            # 何をするかの表示だけ（API を呼ばない）
-mise run console:key:put -- --boundary managed --yes      # 鍵を作って secret_key として入れる。名前・kid・公開鍵と、次に入れる vars を表示する
-# put は wrangler の設定の vars を読んで、その境界だけを入れ替えた vars を表示する。
-# 次の境界へ進む前に、表示された CONSOLE_PUBLIC_JWKS と CONSOLE_CURRENT_KEYS を wrangler の設定の vars に書く（書かずに続けると前の境界が抜ける）
-mise run console:key:put -- --boundary partner:partner-x --yes
-# 同じく、表示された vars を wrangler の設定に書く
-mise run console:secrets -- --yes                         # CSRF の鍵（secret_text）
-# vars をすべての境界で書いたらデプロイする
-mise run console:key:check     # 境界ごとのバインディングの型・discovery と JWKS・key-check（取り出せない・exportKey が失敗する・自己検証）
-```
-
-差し替えは「日々の運用」の「鍵の差し替え」に書きました。
-
-### コンソールログインの必須のスタック（base）
-
-[`infra/aws/console/base.yaml`](infra/aws/console/base.yaml)（StackSet `awsbridge-console-base`）は、コンソールログインの IAM の OIDC プロバイダー（1 つ。Viewer と Administrator で同じ）と、階層ごとの守りの部品（顧客管理ポリシー。明示の Deny だけ）を作ります。ロールは作りません（参考のロールのテンプレートは [`infra/aws/console/kind.example.yaml`](infra/aws/console/kind.example.yaml)。生成器を変えたら `mise run console:template:example` で作り直します）。設計は `docs/specs/console-login.md` §4.2・§4.8 です。アカウントごとのパラメーターは生成物の `stacksets.json`（`providers`）にあります。
-
-| パラメーター | 既定 | 内容 |
-|---|---|---|
-| `IssuerHost` | なし（必須） | issuer のホスト（例 `awsbridge-oidc-console.example.com`） |
-| `IssuerPath` | `console` | issuer のパス。issuer は `https://<IssuerHost>/<IssuerPath>`（管理外の先方は `p/<id>/console`） |
-| `Audience` | `awsbridge-console` | 固定 |
-
-- プロバイダーは境界ごとに 1 つで、Standard と Admin の階層のロールの両方が同じプロバイダーを信頼します。Viewer と Administrator を分けるのは、ロールの信頼ポリシーのチームの条件（`aws:RequestTag/awsbridge_team`）だけです（受容 d）。
-- Admin の守りの部品（`AwsbridgeConsoleGuardAdmin`。`aws login --remote` の Deny を含む）と、その Export は、どのアカウントでもいつも作ります。Administrator を配るかどうかは、Administrator のロールのスタック（別スタック）を作るかどうかだけで決まります。
-- 両方の部品が、コンソール用のプロバイダー（`<IssuerHost>` の下のすべてのパス）への書き込み（作成・削除・ClientID の追加など）を Deny します。1 つのホストにした Deny の文は、まだ実物で測っていません（未検証。下流の本番の導入で測ります）。検査の道具（`mise run console:inspect`）は、この形の部品を期待します（違えば `guard_version_mismatch`）。
-- **`mise run console:inspect` は、Administrator のロールを作った直後と、チームかロールの設定を変えたあとに必ず回します**（[下流の本番の導入](docs/console-production-rollout_ja.md)では、段 4（Admin の階層を入れる段）でも回します）。信頼ポリシーのチームの値がロールの階層のチームでなければ `trust_team_tier`、退役したチーム名が残っていれば `trust_team_retired`（どちらも誤り）です。
-- 順序: issuer（コンソールの Worker の discovery と JWKS）を公開してから、このスタックを配ります。IAM はプロバイダーを作るときに discovery を読みます。この順はその仕組みからの推論で、1 つの issuer では実測していません。
-- 配布と更新は、コンソール用のロール以外の主体（StackSets の実行ロールなど）で行います。部品が付いたコンソール用のロールのセッションからは、このスタックを更新できません。
-- プロバイダーの ARN は Output に出しますが Export しません。ロールのテンプレートは `IssuerHost`・`IssuerPath` とアカウント ID（`AWS::AccountId`）から ARN を組むので、ロールのスタックのパラメーターにアカウント ID は入りません。
-- プロバイダーの削除（L2）は CloudFormation の外で行い、Viewer も止まります。「発行を Cloudflare に頼らずに止める（L2 と信頼ポリシーの拒否）」を見てください。
-
-### ロールのスタック
-
-`mise run console:config:generate` は、種類ごとのロールのテンプレート（`kind.<kind>.yaml`。設定の `roles` から生成）と、そのパラメーター（`stacksets.json`。ロールごとに受け付けるチームを `<ロール>Teams` で持つ。例 `ViewerTeams`）を書きます。パラメーターが空のロールは作りません。各ロールには、その境界のコンソールのプロバイダーの信頼ポリシー（`<ロール>Teams` のチームのタグ。`<ロール>Teams` の `AllowedPattern` は、その種類でそのロールに割り当てたチームだけを受け付けます。`TagKeys`・SourceIdentity 必須）、`aws login` のポリシー（Standard は同じ端末と `--remote`、Admin は同じ端末だけ）、その階層の守りの部品が付きます。参考の出力は [`infra/aws/console/kind.example.yaml`](infra/aws/console/kind.example.yaml) です。生成器を変えたら `mise run console:template:example` で作り直します。
-
-- テンプレートは参考の形です。ロールを手で書いてもかまいませんが、構造の要件（階層・パス `/awsbridge-console/<tier>/`・信頼ポリシーの形・停止が効くこと。`docs/specs/console-login.md` §4.8）は守ります。手で作ったロールの強さは下流の責任です。
-- 種類のスタック（名前の型 `awsbridge-console-kind-<kind>`）は、StackSets か、単独のアカウントなら CloudFormation で、コンソール用のロール以外の主体で配ります。
-- Administrator のロールは別のスタックに置きます。「Admin の階層と Administrator を足す」を見てください。
-
-
-### Admin の階層と Administrator を足す
-
-Admin 専用の Worker・issuer・鍵・ホストはありません。Admin の階層のチームは同じポータルのホストに自分の Access のアプリを持ち、コンソールの Worker が `/t/<チーム>` で発行します。本番では [本番でのコンソールログインの導入](docs/console-production-rollout_ja.md) の順に足します。まず Administrator を持たない弱い Admin の階層のロール（段 4）、人が承認したあとで Administrator のロール（段 5）です。
-
-- Admin の階層のチームには、Standard のチームが使っていない・使ったことのない新しい名前を付けます（受容 d。生成器も、台帳の名前と、同じ名前の階層の変更を断ります）。
-- その Access のアプリはセッションを短くし（参考の Terraform の `admin_session_duration`。既定 15 分）、vars `ADMIN_ACCESS_MAX_AGE_SECONDS`（既定 `900`）をそれに揃えます。
-- `ADMIN_LOGIN_DISABLED` は Admin の階層のチームの新しい発行だけを止めます。`LOGIN_DISABLED` は全部を止めます。
-
-Administrator を配る順（**まだ実行していない例**で、下流の本番の導入で確かめます）: 設定に Admin の階層のチーム（Access のアプリ。セッションは短く）とロールを足して `mise run console:config:generate` を回し、`ADMIN_LOGIN_DISABLED` を `"true"` にして Worker をデプロイしてから、Administrator のロールを Viewer のスタック（`awsbridge-console-kind-default` など）と**別のスタック**で、同じ種類のテンプレート（生成の `kind.<kind>.yaml`）から作ります（止めている間も Viewer のスタックを更新でき、中断はスタックの削除 1 回で済みます）。条件:
-
-- スタック名は型 `awsbridge-console-kind-<kind>` に当たらない名前にします（例 `awsbridge-console-admin-default`）。偽の種類の名前は、SCP と CI の条件（種類のスタックの名前の型）に当たりうるためです。
-- パラメーターは、Admin のスタックでは `AdministratorTeams` だけに値を入れ、ほかのチームのパラメーターは空にします。**Viewer のスタックの `AdministratorTeams` は空のまま**にします（同じ名前のロールを 2 つのスタックで作らない）。`AdministratorTeams` の `AllowedPattern` は、その種類で Administrator に割り当てた Admin の階層のチームだけを受け付けます（Standard のチームは渡せません）。
-- 作成の change set を見て、変更が **`AdministratorRole` の `Add` だけ**であることを確かめてから実行します。
-- 作成の直後・最初の発行の前に、`aws iam get-role` で信頼ポリシーがコンソールのプロバイダーを名指し、チームの条件が Admin の階層のチームだけであること、`aws iam list-attached-role-policies` で Admin の守りの部品が付いていることを確かめ、`mise run console:inspect` を回します（Administrator の棚卸しの節のコマンド）。これらが通ってから `ADMIN_LOGIN_DISABLED` を `"false"` に戻してデプロイします（導入の文書の段 5）。
-- Viewer のスタックを更新するときは、必ず change set を見ます。**`AdministratorRole` が出たら実行しません**（Viewer のスタックの `AdministratorTeams` が空でなくなっている）。
-- 中断するときは、**Admin のスタックを消し、かつ設定から Administrator を外して生成し直します**（生成物とポータルの一覧に Administrator を残さない）。そのあと Worker をデプロイし、ポータルに Administrator が出なくなったことを確かめます。
-
-### aws login で使う（コンソールログイン）
-
-ポータルに `aws login` の手順の画面はありません。ポータルでそのロールのコンソールを開いたあと、端末で `aws login` を実行し、AWS が開くブラウザでセッションを選びます。
-
-1. 前提: AWS CLI 2.32.0 以降。そのロールのコンソールを、既定のブラウザで開いてあること。
-2. `~/.aws/config` にプロファイルを足します（名前は自由。リージョンはポータルで選んだもの）。
-
-   ```ini
-   [profile <プロファイル名>]
-   region = <リージョン>
-   ```
-
-3. `aws login --profile <プロファイル名>` を実行します。開いたブラウザの一覧から、セッション `<アカウント ID> / <ロール名> / console-<あなたのメールアドレス>` を選びます。既定のブラウザが別なら、CLI が表示した URL を、コンソールを開いたブラウザに貼ります。
-4. `aws sts get-caller-identity --profile <プロファイル名>` で確かめます。認証情報は 15 分ごとに更新され、最長でロールのセッションの長さまで使えます。終わったら `aws logout --profile <プロファイル名>` を実行します。
-
-- Viewer（Standard の階層）は、ブラウザのない端末で `aws login --remote` も使えます。Administrator（Admin の階層）は同じ端末の `aws login` だけです。`--remote` は Admin の守りの部品が Deny します。
-- **自分で始めた URL だけを開き、表示されたコードを人に渡さないでください。** 誰かが始めた `aws login --remote` の URL をあなたが開いてコードを渡すと、その人はロールのセッションの長さまで、そのロールの権限を使えます。一覧で選ぶセッションのアカウントとロールを必ず確かめてください。
-- 共有の端末では、使い終えたら `aws logout` を実行してください。`aws login` はキャッシュとリフレッシュトークンを端末に残します。
-- `--remote` の発行の通知は事後の検知で、防止ではありません。`docs/specs/console-login.md`（§4.4 と脅威 T15）を見てください。
-
-## 日々の運用
-
-コンソールログインが動き始めたら、毎日 2 つの確認を回します。発行記録と CloudTrail の突き合わせ（`console:reconcile`）と、コンソールの issuer の外からの確認（`console:exposure-check`）です。署名鍵は間隔を決めて差し替えます。
-
-### コンソールログインの突き合わせ（発行記録 × CloudTrail）
-
-`mise run console:reconcile` は、コンソールの Worker の発行記録（構造化ログ `console_issue`）と、プロファイルのアカウントの CloudTrail の `AssumeRoleWithWebIdentity` を、JWT の `jti`（= `requestParameters.webIdentityTokenId`）で突き合わせます。**記録に無い引き受け**（作られた JWT か、Worker の外からの発行）を誤りとして知らせます。突き合わせは検知の材料で、完全性の証明ではありません（侵害された Worker は偽の記録も書けます）。**発行記録はコンソールの Worker 自身が書きます。コンソールの Worker に書ける者（Viewer だけを扱う人を含む）に対しては、照合は独立の検知ではありません**（受容した限界です。冒頭の受容の節）。
-
-- 1 回で 1 アカウント（`--profile` が要る）。CloudTrail は、そのアカウントの**有効な全リージョン**を読みます（`account list-regions`。使えなければ `ec2 describe-regions`）。読めなかったリージョンは誤りです。
-- 呼ぶ aws のコマンドは照会の 4 種類だけです: `sts get-caller-identity`・`account list-regions`・`ec2 describe-regions`・`cloudtrail lookup-events`。プロファイルに要る権限は `sts:GetCallerIdentity`・`account:ListRegions`（または `ec2:DescribeRegions`）・`cloudtrail:LookupEvents` です。
-- コンソールの引き受けだけを見ます（ロールのパスが `/awsbridge-console/`、またはプロバイダーのホストが設定の issuer のホスト）。MCP の引き受けは数えません。コンソールのロールを設定に無いプロバイダーで引き受けたものは誤りです。
-- 除外した引き受け: どちらにも当たらず照合の対象から外した `AssumeRoleWithWebIdentity` の件数を `excluded assumes (not console): <n>` に出します（所見にはせず、終了コードは変わりません）。期待値は、MCP を同じアカウントで使っていなければ 0 です。初回と、0 でない日は次を確かめます: CloudTrail でそのイベントのロール ARN とプロバイダー（`userIdentity.identityProvider`）を見て、MCP 用のロール（`FederatedAwsBridgeMcpViewer` など）と MCP の issuer のものか。そうでなければ、パスの外のロールを設定に無いプロバイダーで引き受けたもの（たとえば Administrator が残した入口。Administrator の棚卸しの節）でないかを調べ、技術の判断者に上げます。
-- 発行記録の入力は 2 つです。どちらか 1 つを渡します。
-  - `--records <file|dir>`: NDJSON（生の行・Logpush の Trace Events の包み・Workers Logs のイベント。`.gz` も読みます）。
-  - `--logs-api`: Cloudflare の API（`POST /accounts/{account_id}/workers/observability/telemetry/query`）から Workers Logs を読みます。道具が呼ぶ Cloudflare の API はこの照会だけです。窓ごとに、まず一致するイベントの件数（`calculations` の view。`abr_level` が 1 で `sampleInterval` が 1 のときだけ信用する）を得てから、イベントを読みます。長い窓では読み取りが間引かれる（`abr_level` が 1 より大きい）ことがあるので、読んだ行が件数に届かないときや間引かれたときは、窓を半分に割って読み直します。1 分の窓でも届かなければ `record_read_incomplete`（誤り）を出し、終了コード 1 で、state を進めません。
-- 発行記録の置き場所（段階 2 の個人の環境）は Workers Logs です（保持は Workers Paid で 7 日）。コンソールの Worker の wrangler の設定は、間引きで記録が落ちないよう `observability.head_sampling_rate` を `1` に固定しています。
-- 保持の窓: 既定のさかのぼりは 6 日です（保持の 7 日より短く。`--init` の初回の読み始めで、状態があっても読み始めはこれより前に戻りません。下の「読み始め」）。記録の保持より古く記録の無い引き受けは「検証できない（`unverifiable`）」として別に数えます。さかのぼりを保持より長くすると警告です（`--retention-days` で保持の日数を変えられます）。
-- 切られた記録の行（`$cloudflare.truncated` など）と読めない行は、位置だけを出して誤りにします。
-- 時間の検査: 対になった引き受けの時刻が、発行の時刻（`jwt.iat`。無ければ記録の時刻）から「JWT の寿命 300 秒＋時計ずれ」を超えて後なら `assume_time_gap`（誤り。終了コード 1）。引き受けが発行より時計ずれを超えて前でも同じ所見です（時計の異常か、作られた JWT に記録を合わせた形。向きは詳細の `+NNNs` / `-NNNs` で見分けます）。時計ずれの既定は 60 秒で、`--clock-skew-seconds <n>` で変えられます。段階 2 の実測で正規の差がこの範囲に収まったので、警告から誤りに上げました。出力の `time from issue: standard n=<件数> min <秒>s max <秒>s, admin …` に、対になった引き受けの発行からの時間差の、階層ごとの件数・最小・最大を出します（しきい値を見直すときの記録に使います）。
-- 利用者の検査: 発行記録の利用者（SourceIdentity に使った値）と、CloudTrail の SourceIdentity が**両方あるとき**だけ、伏せ字（`a***@***.com`）どうしで比べ、食い違えば `identity_mismatch`（誤り。終了コード 1）です。発行記録は email を伏せて残すため、比較は弱い一致です（先頭 1 文字と末尾のドメインだけ）。**見つかるのは別のドメインか別の頭文字だけ**で、同じ頭文字・同じドメインの別の人は見分けられません（一致は同じ人を証明しません）。どちらかが無い対は、黙って飛ばさず `identity: compared <n>, not compared <m> (admin <k>)` と `identity_not_compared`（注記）に件数を出します。Administrator の階層（Admin の階層のロール。記録の階層・記録のチームの階層・ロールのパス `/awsbridge-console/admin/` のどれかが Admin の対。プロバイダーは両階層で 1 つなので階層を決めない）で比べられなかった対は、対ごとに `identity_not_compared_admin`（誤り。終了コード 1）です。この階層は Administrator だけでなく Admin の階層のロール全部を含むので、弱い Admin のロールの引き受けでも、比べられなければ誤りになります。
-- 階層の検査: 記録の階層とロールのパスの階層が違えば `tier_mismatch`、記録のチームの設定での階層が記録の階層かロールのパスの階層と違えば `team_tier_mismatch`、設定に無いチームの記録は `team_not_in_config`（どれも誤り）。
-- Administrator の階層の発行: `admin issues: <n> (<時刻> <結果>, …)` に、読んだ期間の Admin の階層の発行記録の件数と、各時刻（UTC）と結果を出します。毎日の照合で、覚えのない発行が無いかを見ます。Admin の発行の即時の通知はありません（段階 3 で扱います）。
-- 確認済みの区間: アカウントごとの行を状態のファイル（`--state <file>`。既定 `.secrets/console-reconcile-state.json`。`.secrets/` は gitignore 済み）に残します。今回の読み始めが確認済みの区間の終わりより後（間に読んでいない区間がある）なら `coverage_gap`（誤り。終了コード 1）です。ファイルにはアカウント ID・時刻・code ごとの件数だけを書き、トークン・email・`jti`・受け入れの理由の本文は書きません。**区間を進めるのは終了コード 0 の実行だけ**です（終わりは「今回の終わり − 反映の遅れ」）。誤りのある実行は区間を進めず、所見を状態に残します（下の「未解決の所見」）。壊れた状態のファイルと知らない形は初回として扱わず、実行しません（終了コード 2）。版 1 のファイル（確認済みの区間だけ）は未解決の所見なしとして読み、書くときは版 2 にします。穴の誤りを直すには、調べたうえで `--since` を前回の終わり以前に戻して回します（`coverage_gap` は状態に残さないので、その実行で誤りが 0 なら区間が進みます）。読み直せない穴を受け入れるときは、下の受け入れを使います（状態のファイルを手で作り直しません）。
-- 状態の行が無いとき: このアカウントの行が無い（ファイルが無いことを含む）と、黙って初回にせず `state_missing`（終了コード 2）で止まります。ファイルが無ければ aws も Cloudflare も呼びません（ファイルはあるがこのアカウントの行が無いときは、アカウントを知るための `sts get-caller-identity` だけを呼びます）。道は 2 つです: 前のマシンで回していたなら、状態のファイルをファイルごと移します。本当に初回なら、人が `--init` を付けて 1 回回します。行があるのに `--init` を付けると終了コード 2 です。`--init` の実行は結果によらず行を書き（終了コード 0 なら確認済みの区間、0 でなければ未解決の所見だけ）、出力に `coverage: first run (explicit --init)` と出します。`--init` の実行は、終了コード 0 なら確認済みの区間（`coveredUntil`）だけを書き、0 でない（確認済みにならない）ときだけ、その行に見張りの始まり（`watchStart`）を 1 つ書きます（以後動きません）。`--init` に `--since` を付ければその読み始め、`--since` なしの `--init` は、その実行の時刻から見張りを始めます（前の 6 日は読みますが約束しません）。確認済みの区間の無い行の次の実行は 6 日を読み直し（出力は `coverage: unconfirmed`）、確認済みにできるのは、見張りの始まり以前から読んだ誤り 0 の実行だけです。`--since` で見張りの始まりより後から読むと `unconfirmed_not_covered`（誤り。受け入れでも下げません）です。既定の読み始め（今 − 6 日）が見張りの始まりを過ぎると、毎回 `untimed_not_covered`（誤り。受け入れの対象）で、出口は `--since` を見張りの始まり以前にして読み直すか、受け入れです（既定の読み始めは 6 日より前に伸ばしません）。`--init` の実行そのものは対象外です。`--init` は mise のタスクにも定期実行にも入れません（行があれば誤りで止まります）。
-- 未解決の所見: 終了コード 1 の実行は、確認済みの区間を進めずに所見を状態に残します。時刻を持つ誤り（`assume_without_record`・`provider_not_in_config`・`tier_mismatch`・`role_mismatch`・`team_tier_mismatch`・`assume_time_gap`・`identity_mismatch`・`identity_not_compared_admin`・`team_not_in_config`）は錨として、最も古い時刻・最も新しい時刻・code ごとの件数・最初に見つけた時刻を残します。時刻を持たない誤り（`record_read_incomplete`・`region_unread`・`record_line_truncated`・`record_line_unreadable`、検証できない引き受け）は件数だけを、code ごとの最大で残します（足し合わせません。件数は 1000000 で頭打ちにします）。区間が進まないので次の実行は同じ区間を読み直し、誤り 0 の実行でだけ消えます（ほかの誤りだけの実行では消えません）。`coverage_gap` は残しません。錨がある間、読み始めは「確認済みの区間の終わり − 重なり」と「最も古い錨 − 重なり」の早いほうで、今 − 6 日で切ります。`--overlap-seconds` を短くしても錨は読み直します。読み始めが最も古い錨より後なら誤りです。錨が今 − 6 日より前なら `unresolved_out_of_window`（もう読み直せないので、受け入れるまで毎回）、そうでなければ `unresolved_not_covered`（`--since` で後ろから始めたとき）です。錨が消えるのは、その時刻を含む窓を読んで誤り 0 の実行か、人の受け入れだけです（状態を書くときも、判定した範囲（読み始めから `--until` − 反映の遅れまで。最後の反映の遅れの間は `pending` で判定していません）が最も古い錨から最も新しい錨までを含むかを確かめます）。時刻を持たない誤りの件数も、それを記録した実行が読もうとした範囲（窓の始まりと判定した終わり）を読み直した誤り 0 の実行か受け入れでだけ消え、既定の実行はその窓の始まりまで戻して読みます。その窓の始まりが既定の窓（今 − 6 日）より前になって読み直せなくなると、毎回 `untimed_not_covered`（誤り。受け入れの対象）です。錨には、作ったときの判定条件（`--clock-skew-seconds` と `--lag-seconds`。どちらも大きいほど緩い）を残し、足すときは厳しい方を保ちます。今回の値がそれより緩い実行は、誤り 0 でも `unresolved_criteria_looser`（誤り。終了コード 1）で、判定条件が緩いので解決にしません（出口は記録した値で回し直すか、理由つきの受け入れです）。設定・Worker の名前・`--records` と `--logs-api` の切り替えは、この判定条件に含めません。毎回の出力に `unresolved:` と `accepted intervals:` の行を出します。誤りのある実行は `oldest error finding:` の行に、時刻を持つ誤りの最も古い時刻と、それが既定の窓から外れる時刻を出します。
-- 受け入れ（`--accept-unresolved --reason <理由>`）: 調べても解決できない所見を人が受け入れる指定で、照合の実行と一体です（読んだ窓は通常どおり突き合わせます）。**受け入れは所見ではなく区間に対して行います**: 受け入れた区間の中の時刻を持つ誤りは、記録に無かったものを含めて、以後の実行で誤りになりません。区間は、前の実行までに記録した錨と今回の `coverage_gap` から決めます。区間の始まりは最も古い錨（今回 `coverage_gap` なら前回の終わりとの早いほう）、終わりは最も新しい錨（その間を読んでいなければ今回の読み始めとの遅いほう）です。区間の中の時刻を持つ誤りのうち、記録した code と件数の分だけを注記（`(accepted)`）に下げます。区間の外・時刻を持たない誤り・記録に無い code や記録より多い件数は下げず、下げても誤りが残れば終了コード 1 で、受け入れを適用しません。この code と件数の検査は取り違えへの守りで、同一性の保証ではありません（状態に `jti` を残さないので、記録した所見が消えて同じ code の新しい所見が区間の中に同じ件数だけ出れば、見分けられずに受け入れます）。終了コード 0 なら、受け入れた区間と区間の幅と理由を出力し（幅が重なり（既定 24 時間）を超えれば警告の 1 行を出します）、状態に `accepted`（区間・時刻・理由の有無・code ごとの件数。理由の本文は書きません）を追記し、確認済みの区間は通常どおり進みます。受け入れた区間は確認済みとは別に残り、消えません。受け入れで時刻を持たない誤りの件数が消えるのは、その実行が記録した範囲を読み直したときか、`untimed_not_covered` を受け入れたとき（受け入れた区間に、記録した窓の始まりか見張りの始まりから今回の読み始めまでが入ります）だけで、それ以外は残ります。以後の実行でも、受け入れた区間の中の時刻を持つ誤りは注記のままです。受け入れるものが無い・理由が無いか空・`--init` と同時は、どれも終了コード 2 です。**限界: 受け入れた区間に遅れて現れた引き受けは誤りになりません。** 受け入れは人が打ちます。エージェントは打たず、定期実行に入れません。受け入れの実行に `--until` は付けられません（`--accept-unresolved` と同時は終了コード 2）。
-- 読み始め: `--since` を渡さなければ、読み始めは「確認済みの区間の終わり − 重なり」と「今 − 6 日」の遅いほうです（未解決の所見があれば、上のとおり「最も古い錨 − 重なり」まで戻します）。重なりは `--overlap-seconds <n>`（既定 `86400` = 24 時間、下限 `3600` = 1 時間。下限より短いと実行しません。終了コード 2）で、反映の遅れ（`--lag-seconds`）とは別の値です。前回の終わりより前の引き受けが CloudTrail に遅れて出ても、重なりの中なら読み直して突き合わせます（記録が無ければ `assume_without_record`）。`--init` の初回は 6 日のままで、`coverage_gap` の判定も変わりません（状態から決めた読み始めは前回の終わり以前なので穴になりません。前回の終わりが 6 日より前なら今までどおり `coverage_gap` です）。出力の `read start:` の行に、読み始めの時刻と決め方（`from the state`・`from the unresolved findings`・`default lookback`・`--since`）を出します。`--since` を渡せばそれが勝ちます。全部を読み直す監査には `--since 6d` を使います。`--since` と `--overlap-seconds` を一緒に渡すと、`--overlap-seconds` を使わないことを 1 行出します。`--until` だけを過去にして、状態から決めた読み始めが `--until` 以後になると実行しません（終了コード 2）。
-  - 終了コード 0 は、重なりの外に遅れて出た引き受けが無いことの証明ではありません（読み始めが 6 日で切り詰められたときも同じです）。重なりの 24 時間と下限の 1 時間は、推測の値と設定の下限で、安全を裏付けた値ではありません。重なりを短くする条件は、実測（遅れの分布）で決めます（導入の段 2 で記録します）。
-  - 理由: 状態があっても毎回 6 日を読み直していたとき、古い区間を含む照会で件数が間引かれ（`sampleInterval` が 1 より大きい）、`record_read_incomplete` と、読めなかった記録に当たる `assume_without_record` の誤りになりました。間引かれたのが保存のときか照会のときかは確かめていません。読み始めを状態から決めるのは緩和策です。偽の API の試験では避けられました。実物で効くかは、導入の段 2 で確かめます。重なりの 24 時間も推測の値です（実測で直します）。
-- **限界（状態のファイル）**: 状態のファイルを書ける者は、確認済みの区間の終わりを先へ進めて、読み始めを後ろにずらし、その間を読み飛ばさせられます（`coverage_gap` も出ません）。状態のファイルは照合を回す人だけが書ける場所に置きます。照合はこれを見つけません。`--init` の守り（行が無ければ止まる）は取り違えへの守りで、ファイルを消して `--init` を打てる者への守りではありません。同じ状態のファイルで同時に回しません。道具は状態を読む前に、状態のファイルの隣にロック（`<state>.lock`。中身は pid と開始時刻だけ）を作り、作れなければ何も読まずに終了コード 2 で止まります（正常・誤り・実行できない終わり方と、SIGINT・SIGTERM では消します。SIGKILL や電源断などで残ったときは、中の pid の照合が動いていないことを確かめてから消します。他の実行のロックは消しません）。書く前にも読み直し、最初に読んだ内容と違えば、今回の所見を出してから書かずに終了コード 2 で止まります。
-- 出力は伏せ字です（`jti` は先頭 8 文字、email は出さない、アカウント ID は末尾 4 桁）。要約に、読んだ期間・リージョン数・検証できない件数・切られた行・記録をどこから読んだか（`source: api` か `file`）を出します。
-- 終了コード: `0` 誤りなし / `1` 誤りあり、または検証できない引き受けが 1 件以上（誤りが 0 でも 0 で終わらせない）/ `2` 実行できない（入力・aws・API の失敗）。
-- 変数（`mise.local.toml`）: `AWSBRIDGE_CONSOLE_LOGS_TOKEN`（`--logs-api` の API のトークン。環境変数だけ）、`AWSBRIDGE_CONSOLE_LOGS_ACCOUNT_ID`（Cloudflare のアカウント ID）、`AWSBRIDGE_CONSOLE_LOGS_WORKERS`（任意。Worker の名前。既定 `awsbridge-console`）、`AWSBRIDGE_CONSOLE_CONFIG`（設定ファイル）。
-- トークン: 読み取りだけのトークンが望ましいですが、Cloudflare の API の仕様では `telemetry/query` は「Workers Observability Write」の権限しか受け付けません。読み取り（Read）だけで通るかは段階 2 で確かめます。トークンは Workers Observability だけに絞り、Worker や secret を書ける権限を付けません。
-
-```bash
-mise run console:reconcile -- --profile <プロファイル> --logs-api               # Workers Logs から（読み始めは状態から。行が無ければ止まる）
-mise run console:reconcile -- --profile <プロファイル> --records ./issue-logs/   # 取り出したファイルから
-mise run console:reconcile -- --profile <プロファイル> --logs-api --since 2026-11-10T00:00:00Z
-mise run console:reconcile -- --profile <プロファイル> --logs-api --since 6d     # 全部を読み直す（監査用）
-```
-
-運用:
-
-- **突き合わせは毎日回します。Administrator の発行の有無に関係なく回します**。回せない日があっても、6 日以内に回せば検証の穴はできません。発行記録の保持は 7 日なので、**7 日以内に突き合わせなかった発行は、あとから検証できません**。回さなかった区間は、道具が `coverage_gap`（誤り。終了コード 1）で知らせます。ただし、空けた日数だけ読む窓が長くなり（読み始めは前回の終わり − 重なり）、古い区間を含む照会は間引かれて `record_read_incomplete` になることがあります。**空けた日数が、間引かれずに読めると実測で確かめた期間を超えると、今の道具の読み方では、その間を完全に読めたことを確かめられません**（その期間はまだ確かめていません）。空けずに毎日回します。
-- **初回とマシンの移動**: 照合を初めて回すアカウントだけ、人が `--init` を付けて回します（例: `mise run console:reconcile -- --profile <プロファイル> --logs-api --init`）。照合を回すマシンを替えるときは、状態のファイルをファイルごと移します。ファイルを失ったときは、失ったもの（確認済みの区間と未解決の所見。前の出力の `read start:`・`unresolved:`・`accepted intervals:` の行）を道具の外に記録してから `--init` を打ちます。状態を失って `--init` し直すときも、失った区間を拾うなら `--since` を付けます（付けなければ見張りはその実行の時刻から始まります）。`--init` は人が打ちます（エージェントが打つのは、利用者が指示した初回だけです）。**限界: `--init` の守りは取り違えへの守りで、ファイルを消して `--init` を打てる者への守りではありません。**
-- **誤りが出た実行は区間を進めません**。所見は状態に残り（未解決の所見）、解決か受け入れまで消えません。誤りを調べて決着したら、`--since` を前回の終わり以前に戻して回し直し、区間を進めます（未解決の所見があれば、`--since` を付けなくても読み始めは最も古い錨まで戻ります）。ただし記録の保持の 7 日を過ぎた分は検証できません。放置すると、次の実行から `coverage_gap` が重なって出ます。誤りが出たら、その日のうちに、所見を道具の外に記録します（時刻・code・`jti` の先頭・ロール。状態には `jti` を残さないので、どの引き受けかは道具の外の記録にしか残りません）。原因が分かるまで `--overlap-seconds` と `--since` を変えず、状態のファイルを作り直しません。解決か受け入れを記録してから再開します（解決した日も、解決の記録を残します）。
-- **状態が進まず、窓が古くなって読めなくなったとき**: 誤りが続いて区間が進まないと、読み始めは前回の終わり − 重なりのままで、窓は日ごとに長くなります。古い区間を含む照会が間引かれて `record_read_incomplete` が続き、読めなくなったら、次の順に進めます。(1) 保持の期限（7 日）の内に証拠を残します: どの区間を検証できなかったかを記録します（前回の終わりと、出力の `read start:`・`window:` の時刻）。所見と出力もそのまま残します。(2) 短い窓で読み直します: `--since` と `--until` で窓を短く区切って回します（毎日の状態のファイルを動かさないよう、`--state` に別のファイルを渡します。`--init` を付けるのは、そのファイルでの最初の 1 回だけです）。(3) それでも読めない区間が残ったときだけ、受け入れるかを人が判断します。再開は 2 つを言葉で分けます。**検証して再開**は、短い窓をすべて終了コード 0 で読み終えたときで、読み終えた終わりまで状態のファイルを作り直します。**検証できないまま受け入れて再開**は、読めない区間を人が受け入れたときで、状態のファイルを手で作り直さず、`--accept-unresolved --reason <理由>` に読める区間の始まりを `--since` で渡して回します（前回の終わりからその始まりまでが、`coverage_gap` の受け入れとして状態の `accepted` に、確認済みとは別に残ります）。あわせて、道具の外の消えない記録に次を残します: 対象のアカウント・検証できなかった区間・受け入れた区間の幅・未解決の所見・受け入れの理由・判断した人と日時・状態のファイルの変更の前後。状態のファイルを黙って消しません（消すと次の実行は `state_missing` で止まり、`--init` で回し直すと、検証できなかった区間と未解決の所見がどこにも残りません）。
-- **`assume_time_gap`・`identity_mismatch`・`identity_not_compared_admin` が出たら**: 停止スイッチ（Admin の発行なら vars `ADMIN_LOGIN_DISABLED`、それ以外は `LOGIN_DISABLED` を `true`）で発行を止め、該当の発行と引き受け（発行記録と CloudTrail のイベント）を調べ、技術の判断者に上げます。誤りが残る間、区間は進みません。発行記録（Workers Logs）の保持は 7 日で、過ぎると該当の発行を調べられなくなるので、放置しません。
-- **`--since` を渡すとき、`--since` は回す間隔より 5 分以上長くします**（確認済みの区間の終わりが「今回の終わり − 反映の遅れ（既定 300 秒）」になるため、ちょうどの長さでは穴が出ます）。例: 毎日回すなら既定の 6 日のままにします（`--since` を付けません。6 日は読み始めの上限で、状態があれば読み始めは状態から決まります）。
-- 毎日の実行は awsbridge の外（MCP 経由のエージェントなど）で行います。awsbridge には定期の実行の仕組みを入れません。通知も awsbridge の外で、仕組みは利用者が決めます。
-- 実物での確認の状況（確かめ済みのものと、まだ確かめていないもの）:
-  - **確かめ済み（Cloudflare の API）**: 応答の形（`events`・`$metadata.id` のカーソル・`count` の意味）は、API の仕様（OpenAPI）と実物の応答（2026-11-16）で確かめました。結果は `scripts/console/reconcile-cf.ts` の冒頭に並べています（たとえば `count` は返したページの行数で全件の数ではなく、`$metadata.id` は一意ではありません）。
-  - **確かめ済み（CloudTrail）**: `AssumeRoleWithWebIdentity` の `requestParameters.webIdentityTokenId`（発行記録の `jti`）と `userIdentity.identityProvider` は、実物の発行と引き受けの 1 対 1 の突き合わせ（誤り 0）で確かめました。`SourceIdentity` も実物のイベントから読めて比べられています。ただし、`requestParameters` と `responseElements` のどちらにあるかまでは区別して確かめていません。
-  - **まだ確かめていないもの**: 切られた印が `$workers.truncated` か `$cloudflare.truncated` か（道具は両方を見ます）、同じ `$metadata.id` の行が複数あるときにカーソルがどこから続くか。CloudTrail の `responseElements` のうち `credentials.accessKeyId`・`assumedRoleUser.assumedRoleId`、および `requestID`・`eventID`・`recipientAccountId` のフィールド名。
-  - 実物と違えば `scripts/console/reconcile-cf.ts`・`src/console/reconcile-input.ts` とフィクスチャを直します。
-
-### コンソールログインの issuer の外からの確認（毎日）
-
-`mise run console:exposure-check` は、コンソールの issuer の `/.well-known/openid-configuration` と `jwks.json` を**外から取り**、設定の公開鍵と比べます。AWS の IAM の OIDC プロバイダーは issuer のホストが返す JWKS を信頼するので、Route などでそのホストの応答を差し替えられると、作られた JWT（たとえば Administrator）が通りえます。これは「awsbridge が出しているものが正しいこと」の毎日の確認で、`console:reconcile` と合わせて毎日の確認の 2 つになります: (i) この外からの比較、(ii) 上の突き合わせ。
-
-- **対象**: 境界ごとの issuer（Viewer と Administrator で同じ issuer）。
-- **比べる相手**: wrangler の設定の vars の公開鍵（`CONSOLE_PUBLIC_JWKS`。`console:key:check` が読むのと同じファイル）と、生成物 `worker.json` の境界の issuer の URL。`kid` だけでなく、鍵の中身（`kty`・`n`・`e`・`alg`・`use`・余分なメンバー）、discovery の `issuer` と `jwks_uri`、HTTP の状態（200 だけ）を比べます。
-- **誤りにするもの**（すべて合ったときだけ「一致」）: 200 以外の状態、**リダイレクト（追わずに誤り）**、取得の失敗・タイムアウト、JSON でない・形が違う応答、`issuer` / `jwks_uri` の違い、欠けた鍵、**余分な鍵**、中身の違う鍵、`kid` の重複。
-- **取り方**: 手元の DNS（否定のキャッシュを含む）に左右されないよう、公開の DNS over HTTPS（`https://cloudflare-dns.com/dns-query`。A と AAAA）でホストを引き、その IP に TLS で接続します。SNI と `Host` はもとのホスト名で、証明書もホスト名で検査します。文書ごとに GET は 1 回、再試行なし、タイムアウト 10 秒。**Cloudflare・AWS のトークンは使わず**、`Authorization` も送りません（公開の HTTP の GET だけ）。
-- **出力と終了コード**: issuer ごとの `[OK]` / `[NG]` の行と結論。応答の値（`n`、知らない鍵の `kid`）は出さず、アカウント ID・email は伏せます。`0` すべて一致 / `1` 不一致あり / `2` 実行できない（設定が読めない・期待する鍵を得られない など）。
-- 変数（鍵の道具と同じ。`mise.local.toml` に置く）: `AWSBRIDGE_CONSOLE_OUT_DIR`（既定 `.generated/console`）、`AWSBRIDGE_CONSOLE_WRANGLER_CONFIG`（既定 `wrangler.console.jsonc`）。先に `mise run console:config:generate` を回します。
-
-```bash
-mise run console:exposure-check
-```
-
-限界と、ゾーンの持ち主が持つもの:
-
-- **ゾーンの設定の見張りは、ゾーンの持ち主の運用で持ちます**。awsbridge はゾーンを読めるトークンを持ちません。見るべきもの: **コンソールの 2 つのホスト（ポータルと issuer）に当たる Route が無いこと**。`*.<zone>/*` のようなワイルドカードで当たるものも数えます。確かめ方の例: Zone Read などを持つトークンをその場で使い、`GET /zones/{zone_id}/workers/routes` を**全ページ**読みます。**一覧が取れない・途中で終わったときは、0 本とみなしません**。awsbridge はこのためのトークンを常には持ちません。Custom Domain を変えたときは、そのとき使ったトークンを消す前に、同じトークンで 1 回確かめます。
-- **外からの比較は検知であって、予防ではありません**。残っている差し替えは次の確認で見つかりますが、確認の間に足して外したものは見つかりません。ポータルのホストに Route を重ねられると、ログイン済みの利用者として発行されうり、その発行は突き合わせでは正常に見えます（推測。測っていません）。
-
-### 鍵の差し替え
-
-#### 署名鍵のローテーション（MCP の中継）
+### 署名鍵のローテーション（MCP の中継）
 
 MCP の Worker の署名鍵（secret `SIGNING_JWK`）を、止めずに入れ替える手順です。STS は JWKS をキャッシュするので、単純に差し替えると切り替え直後に検証が失敗します。そこで、新しい鍵の公開鍵を先に JWKS（`/.well-known/jwks.json`）へ載せ、STS が取り込んでから署名を切り替えます。
 
@@ -862,137 +524,6 @@ mise run secrets        #    古い公開鍵を JWKS から外す
 - 鍵ファイルは 0600 で作り、上書きしません。各タスクは操作の前に存在を確認し、条件に合わなければ何も動かさず中止します（`key:prepare`: NEXT が既にある、`key:activate`: NEXT が無い・PREVIOUS が既にある）。`key:retire` は PREVIOUS が無ければ何もしません。
 - `ADDITIONAL_PUBLIC_JWKS` の**要素**が不正（短い鍵・壊れた base64url・RSA 以外など）なら、Worker はその要素だけを捨てて `jwks: invalid additional key skipped (index=<n>)` を warn で出し、署名鍵の公開鍵と正しい追加鍵は返します（JWKS 全体は止まりません）。JSON として壊れている・配列でない場合も、追加鍵なしで 200 を返します。`SIGNING_JWK` が不正なときだけ 500 `server_misconfigured` です。なお捨てられた鍵で署名しても STS は検証できないので、`mise run secrets` は next / previous の鍵ファイルを同じ検証にかけ、通らなければ登録せずに止まります。
 - 仕組みの詳細は `docs/specs/architecture.md` の「署名鍵のローテーション」を参照してください。
-
-#### コンソールログインの署名鍵
-
-境界ごと。90 日以下を目安に。侵害の疑いがあれば必ず替え、旧い kid を外す。1 つの鍵なので Viewer と Administrator の両方に効く:
-
-```bash
-mise run console:key:put -- --boundary managed --yes      # 1. 新しい鍵を別の名前で入れる
-# 2. vars CONSOLE_PUBLIC_JWKS のその境界を新旧 2 つにしてデプロイする（JWKS に並べる）
-# ── 最低 1 時間（安全側に 24 時間）待つ: STS の JWKS キャッシュが切れるまで ──
-# 3. vars CONSOLE_CURRENT_KEYS のその境界を新しい鍵にしてデプロイし、mise run console:key:check
-# 4. JWT の有効期限（5 分）より長く待ってから、旧い公開鍵を CONSOLE_PUBLIC_JWKS から外してデプロイする
-mise run console:key:retire -- --binding CONSOLE_KEY_<旧い鍵> --yes   # 5. 旧い鍵を消す（今の鍵・vars と JWKS に残る鍵・CSRF の鍵は断る）
-```
-
-## 発行を止める（コンソールログイン）
-
-| 手段 | やり方 | 止まるもの |
-|---|---|---|
-| 停止スイッチ | コンソールの Worker の vars `LOGIN_DISABLED` を `true` にしてデプロイする（発行は `503 login_disabled` になる） | すべてのチームの新しい発行 |
-| Admin の停止スイッチ | vars `ADMIN_LOGIN_DISABLED` を `true` にしてデプロイする（Admin の階層のチームだけ、同じ `503 login_disabled`） | Admin の階層のチームの新しい発行 |
-| kid を外す | `CONSOLE_PUBLIC_JWKS` のその境界から kid を外してデプロイする（今の鍵の kid なら、Worker は vars の誤りとみなし、どの経路も `500 server_misconfigured` を返す） | その鍵での発行。Viewer も Administrator も（鍵は境界ごとに 1 つ）。今の kid を外すと、すべての境界・両方の階層のどの経路も止まる |
-| プロバイダーの削除（L2） | 下の「発行を Cloudflare に頼らずに止める（L2 と信頼ポリシーの拒否）」。Cloudflare に頼らない | そのアカウントのすべてのコンソールのロールの新しい引き受け。Viewer も止まる |
-| 信頼ポリシーでの拒否 | 下の「ロールの信頼ポリシーでの拒否」。Cloudflare に頼らない | そのロールの新しい引き受け（Administrator だけを止める手段） |
-| Administrator のスタックの削除 | そのアカウントの Administrator の別スタックを消す。Cloudflare に頼らない | そのアカウントでの Administrator の新しい引き受け（発行済みのセッションも終わるかは未測定） |
-| revoke（L3） | ロールのセッションの失効（IAM の「アクティブなセッションを取り消す」） | そのロールで発行済みのセッション |
-| 1 人停止（L3-1） | 下の「コンソールログインの 1 人停止」 | その人の発行済みと新しいセッション |
-
-- 発行済みの AWS のセッションを止めるのは、revoke（L3）と 1 人停止（L3-1）だけです。ほかの手段が止めるのは、新しい発行か新しい引き受けだけです。
-- revoke も 1 人停止の Deny も、`aws login` のリフレッシュトークンを無効にしません。外すと、`aws login` は次の更新で再ログインなしに新しい認証情報を取ります。外す時機は `docs/specs/console-login.md` §6.3 です。
-- どの停止も、固定の時間を待って完了にせず、拒否されたことを確かめて完了にします（`docs/specs/console-login.md` §6.1）。
-- **Worker で止められないとき**: Worker をデプロイできない、`503 login_disabled` を確かめられない、Worker を信用できない（コード・secret・デプロイの権限・依存物が侵害されたかもしれない）ときは、停止スイッチを試し続けません。AWS の側で止めます。下の「発行を Cloudflare に頼らずに止める（L2 と信頼ポリシーの拒否）」のとおり、信頼ポリシーでの拒否、Administrator のスタックの削除、プロバイダーの削除（Viewer も止まる）です。発行済みのセッションには revoke（L3）を足します。
-
-### コンソールログインの 1 人停止
-
-1 人だけを止めるときは、その人の SourceIdentity（既定は email）を、コンソールログイン用のロールのインラインポリシーの予約名 `AwsbridgeConsoleDenySourceIdentity` に Deny として書きます（`aws:SourceIdentity` が一致するセッションの全操作の Deny。設計は `docs/specs/console-login.md` §6.3）。書くのは停止の道具です。
-
-- 停止の一覧は検査の `--stops` と同じ形のファイル（`{ "sourceIdentities": ["..."] }`）で、これが「止めている一覧」の正本です。**email を含むので、`.secrets/` か下流のリポジトリに置き、公開リポジトリにコミットしません。**
-- `console:stop:apply` は、対象の全ロールの予約名の中身をファイルの一覧に合わせます。対象は、設定のロール（アカウントにあるもの）、`/awsbridge-console/` のパスのロール、パスの外でコンソールのプロバイダーを信頼する設定に無いロール（計画の表示で「設定に無いロール」と出ます。出どころは `unlisted`）です。
-- `--yes` が無ければ計画の表示だけです。ただし今の状態との差を出すため、IAM の読み取りと `sts get-caller-identity` は呼びます（鍵の道具の「`--yes` なしは API を使わない」とは違います）。書き込みは `iam put-role-policy` と `iam delete-role-policy` の 2 種類だけです。
-- `--allow-remove` が無ければ足すだけです。各ロールの予約名を「今の値とファイルの値を合わせたもの」にします。ファイルに無い値がロールに残っていても消さず、件数だけを余分（`EXTRA`）として表示します。余分があるだけなら終了コードは 0 です。足す値が 1 つも無く外す値だけがある実行（解除だけ）は、`--allow-remove` が無ければ何も書かずに終了コード 2 で止まります。
-- `--allow-remove` を付けると、ファイルの一覧にそろえます（停止の解除）。全ロールに足し終えてから外すので、外す側の失敗が足す側を止めません。§6.3 の解除の条件（そのロールの `MaxSessionDuration` が切れるまで外さない、原因の除去、古い鍵の排除、新規の発行ができないことの確認）を表示します。道具はこれらを確かめられないので、人が確かめます。設定に無いロールからも外します。
-- どちらでも 1 つのロールのために全体を止めません。予約名に停止の形でない文書があるロール・インラインの合計が 10,240 文字を超えるロール・書き込みに失敗したロールは書かずに報告し、ほかのロールには書いて、終了コード 1 で終わります。
-- `--reason` は必須です。実行の結果を 1 行の JSON（時刻・アカウントの末尾 4 桁・ロール・件数の変化・理由。値は入れません）で標準出力に出すので、運用者が保管します。出力に email の値と全桁のアカウント ID は出しません。
-- コンソール用のロール（設定のロール名か `/awsbridge-console/` のパス）のセッションからは実行しません（守りの部品が書き込みを Deny するため）。IAM Identity Center など別の入口から実行します。
-
-```bash
-mise run console:stop:show -- --profile=<p> --stops=.secrets/console-stops.json      # 読み取りだけ。ロールごとの件数と、足りない・余分
-mise run console:stop:apply -- --profile=<p> --stops=.secrets/console-stops.json --reason="<理由>"         # 計画の表示
-mise run console:stop:apply -- --profile=<p> --stops=.secrets/console-stops.json --reason="<理由>" --yes   # 書き込む
-mise run console:inspect -- --profile=<p> --stops=.secrets/console-stops.json        # 書いたあと、設定のロールを確かめる
-```
-
-`console:inspect --stops` が確かめるのは設定のロールです。設定に無いロールとパスの外のロールは、停止の道具が書いたあとの読み直しで確かめます（結果は道具の出力の表）。
-
-終了コード: 0 書き終えた（または変更なし。余分が残るだけなら 0）/ 1 書けなかったロールがある / 2 実行しなかった（入力の誤り・読み取りの失敗・呼び出し元・`--allow-remove` が無い解除だけの実行）。
-
-### 発行を Cloudflare に頼らずに止める（L2 と信頼ポリシーの拒否）
-
-**Administrator だけを止める L2 はありません**（受容 e）。プロバイダーは Viewer と Administrator で 1 つなので、プロバイダーの削除（L2）は Viewer も止めます。Administrator だけを Cloudflare に頼らずに止めるのは、Administrator のロールの信頼ポリシーでの拒否（下）と、Administrator のスタックの削除です。発行済みの AWS のセッションはどれも止まらないので、revoke（L3）と合わせます。**CloudFormation の外で行います。** 下の削除と戻す手順は、段階 2 の個人の環境で（コンソールのプロバイダーを 1 つにする前の、階層ごとの Admin のプロバイダーで。仕組みは同じです）実行しました: 消したあとの発行はポータルで `upstream_auth_failed`（「このアカウントは現在ログインを受け付けていません」）になり、消す前の CLI のセッションは続きました。同じ URL・client ID・タグで作り直すと ARN も同じで、作り直しのあとに届いた最初の発行（約 2 分後）は通りました。
-
-1. コンソール用のロール以外の主体で、対象のアカウントのコンソールのプロバイダーを削除します（部品の Deny は、コンソール用のロールからの書き込みだけを塞ぎます）。Viewer も止まります。
-
-   ```sh
-   aws iam delete-open-id-connect-provider --profile <運用者のプロファイル> \
-     --open-id-connect-provider-arn arn:aws:iam::<アカウントID>:oidc-provider/awsbridge-oidc-console.example.com/console
-   ```
-
-2. **止めている間は、base のスタック（そのアカウントのスタックインスタンス）を更新しません。** プロバイダーはスタックから見てドリフトになっていて、その間の更新の挙動（失敗するか、作り直すか）は未測定です。作り直されると、止めた意味が無くなります。
-3. 戻すときは、同じ URL・同じ client ID・同じタグでプロバイダーを作り直します。ARN は URL で決まるので、ロールの信頼ポリシーは変えません。
-
-   ```sh
-   aws iam create-open-id-connect-provider --profile <運用者のプロファイル> \
-     --url https://awsbridge-oidc-console.example.com/console \
-     --client-id-list awsbridge-console \
-     --tags Key=project,Value=awsbridge
-   ```
-
-4. 作り直したら、発行を 1 回通し、スタックのドリフトの検出で差が無いことを確かめてから、スタックの更新を再開します。作り直したプロバイダーはドリフトが残りません（その実行では、作り直したプロバイダーの指紋も元と同じで、base のドリフトの検出が IN_SYNC）。
-
-未測定のまま: 止めている間の base のスタックの更新の挙動（その実行では行っていません）。消してから引き受けが止まるまでの時間は、Standard の形で約 12 秒の測定（`docs/specs/console-login.md` §6.1）だけです。
-
-#### ロールの信頼ポリシーでの拒否
-
-Cloudflare に頼らないもう 1 つの発行の停止で、Administrator だけを止められる手段です。止めたいロールの信頼ポリシーに、`sts:AssumeRoleWithWebIdentity` の `Deny` の文を足します（コンソール用のロール以外の主体で、手で行います）。同じ段階 2 の実行（Admin の階層のロール）では、足したあとの発行はポータルで `sts_denied`（「このロールに入れませんでした」。CloudTrail は `AccessDenied`）になり、プロバイダーの削除（`upstream_auth_failed`）と区別できました。既存の CLI のセッションは続きました（止めるのは revoke）。
-
-- **信頼ポリシーの Deny は CloudFormation の管理の外にあります。止めている間はロールのスタックを更新しません。戻しは手で行い、発行 1 回とドリフト検出で確かめます。**
-- 測った 2 通りの更新（変更なしの更新、スタックのタグだけを変える更新）では、Deny は消えませんでした（CloudFormation はテンプレートの信頼ポリシーを書き戻しませんでした）。信頼ポリシー自体が変わる更新で Deny が消えるかは未測定です（チームの割り当ての変更など）。未測定なので、止めている間は更新しません。
-
-## コンソールログインの Administrator の残った権限の棚卸し
-
-Administrator は対象のアカウントの全権なので、アクセスキー・ロール・プロバイダー・信頼ポリシーの変更などで、コンソールログインを止めたあとも使える入口を残せます。revoke（L3）や 1 人停止（L3-1）ではこれらは止まりません（`docs/specs/console-login-admin.md` §7）。止めたあと（または定期の確認で）、次の手順で棚卸しし、残ったものを個別に消します。**下のコマンドはまだ実行していない例**で、停止の訓練（段階 2 と、[本番の導入](docs/console-production-rollout_ja.md)の訓練）で確かめます。読み取りだけの例で、消す操作はここに書きません。コンソール用のロール以外の主体（IAM Identity Center など）のプロファイルで実行します。 **この棚卸しは完全な復旧を保証しません**。見つかるのは、ここに挙げた読み取りで見えるものだけです。
-
-1. **コンソール用のロールそのもの**: `mise run console:inspect -- --profile=<p>` で、信頼ポリシー・管理ポリシー（守りの部品とその版を含む）・インラインポリシー・`MaxSessionDuration`・プロバイダーを、設定から作った期待の形と比べます。道具を使わずに見るときは次のとおりです。
-
-   ```sh
-   aws iam get-role --role-name FederatedAwsBridgeAdministrator --profile <p>                     # 信頼ポリシー（AssumeRolePolicyDocument）・パス・MaxSessionDuration
-   aws iam list-attached-role-policies --role-name FederatedAwsBridgeAdministrator --profile <p>  # 管理ポリシー（AdministratorAccess と Admin の守りの部品だけか）
-   aws iam list-role-policies --role-name FederatedAwsBridgeAdministrator --profile <p>           # インラインポリシーの名前（AwsLogin・予約名の停止など）
-   aws iam get-role-policy --role-name FederatedAwsBridgeAdministrator --policy-name <名前> --profile <p>
-   ```
-
-2. **プロバイダー**: OIDC プロバイダーの一覧が、MCP 用とコンソール用（境界の issuer。Viewer と Administrator で 1 つ）だけかを見ます。URL・client ID・タグを、base のスタックが作るものと比べます。SAML プロバイダーも見ます。
-
-   ```sh
-   aws iam list-open-id-connect-providers --profile <p>
-   aws iam get-open-id-connect-provider --open-id-connect-provider-arn <ARN> --profile <p>
-   aws iam list-saml-providers --profile <p>
-   ```
-
-3. **その人のセッションが行った書き込み**: CloudTrail の管理イベントから、`userIdentity.sessionContext.sourceIdentity` がその人の SourceIdentity（既定は email）のものを拾います。`lookup-events` は過去 90 日・1 リージョンずつで、絞り込みの属性は 1 回に 1 つだけです。SourceIdentity では絞り込めないので、`EventSource` などで絞ってから、`CloudTrailEvent`（JSON の文字列）の中身で絞ります。IAM のイベントは基本的に us-east-1 に記録されます（CloudTrail の文書の「Global service events」。ほかのリージョンに記録されるグローバルサービスのイベントもあるとされる）。ほかのサービスも含め、有効なリージョンごとに見ます。**引き受けたあとの操作のイベントに `sourceIdentity` が残るか（`docs/specs/console-login.md` で未確認の項目）は、このリポジトリではまだ確かめていません**。段階 2 で確かめ、残らなければこの手順を直します（RoleSessionName の `console-<email>` で拾う形など）。
-
-   ```sh
-   aws cloudtrail lookup-events --region us-east-1 --profile <p> \
-     --lookup-attributes AttributeKey=EventSource,AttributeValue=iam.amazonaws.com \
-     --start-time 2026-11-01T00:00:00Z --output json \
-     | jq '.Events[].CloudTrailEvent | fromjson
-           | select(.userIdentity.sessionContext.sourceIdentity == "user@example.com")
-           | {eventTime, eventName, requestParameters}'
-   ```
-
-   見る操作の例: `CreateUser`・`CreateAccessKey`・`CreateLoginProfile`・`CreateRole`・`UpdateAssumeRolePolicy`・`PutRolePolicy`・`AttachRolePolicy`・`PutUserPolicy`・`AttachUserPolicy`・`CreatePolicyVersion`・`CreateOpenIDConnectProvider`・`AddClientIDToOpenIDConnectProvider`・`CreateSAMLProvider`。IAM の外でも、リソースポリシー（S3 のバケットポリシー・KMS のキーポリシー・Lambda の関数の権限や関数 URL など）を他の主体に開く変更を見ます。
-
-4. **CloudTrail に頼らない一覧**: CloudTrail を止められた・消された可能性もあるので、IAM の今の状態を一覧にして、前回の一覧（または期待する状態）と比べます。 IAM の外も同じです。使っているサービスごとに今のリソースポリシー（例: S3 のバケットポリシー、KMS のキーポリシー、Lambda の関数のポリシーと関数 URL）を取り、Administrator を使う前に取った基準と比べます。
-
-   ```sh
-   aws iam get-account-authorization-details --profile <p> > authz-<日付>.json   # ユーザー・ロール・グループ・ポリシーの全体（中身にアカウント ID を含むので公開リポジトリに置かない）
-   aws iam list-users --profile <p>
-   aws iam list-access-keys --user-name <ユーザー> --profile <p>
-   ```
-
-5. 見つけたものを、原因を確かめてから個別に消し、消したものと時刻を記録します。消し終えるまで、そのアカウントでの停止（L3・L3-1）は外しません（`docs/specs/console-login.md` §6.3 の解除の条件）。
 
 ## MCP の中継の既存のデプロイの移行
 
