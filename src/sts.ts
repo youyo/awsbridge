@@ -1,11 +1,6 @@
 // 本番用の STS AssumeRoleWithWebIdentity クライアント。署名不要なので fetch + XML パースだけで呼ぶ。
 // 設計: docs/specs/architecture.md（決定事項の STS 行、PoC 結果のエラー分類）。
-import {
-  parseAssumedRoleId,
-  parseAssumeRoleResponse,
-  parseRequestId,
-  parseStsError,
-} from "./sts-xml";
+import { parseAssumeRoleResponse, parseStsError } from "./sts-xml";
 
 export type StsErrorKind = "invalid_token" | "forbidden" | "transient";
 
@@ -71,33 +66,11 @@ export type AssumeRoleOptions = {
   /** 既定は https://sts.<region>.amazonaws.com/。E2E で擬似 STS を指すときに上書きする。 */
   endpoint?: string;
   fetch?: typeof fetch;
-  /**
-   * fetch の redirect。渡したときだけ init に入れる（コンソールログインは manual を渡してリダイレクトを追わない。
-   * MCP の中継は渡さないので振る舞いを変えない。cto の決裁 2026-11-17 の c2）。
-   */
-  redirect?: "manual" | "follow" | "error";
-};
-
-/**
- * 認証情報に、CloudTrail との突き合わせに使う ID を添えたもの（コンソールログインの発行記録用）。
- * `requestId` は応答ヘッダー x-amzn-RequestId、なければ本文の RequestId。
- */
-export type AssumedRoleDetails = {
-  credentials: AssumedCredentials;
-  assumedRoleId?: string;
-  requestId?: string;
 };
 
 export async function assumeRoleWithWebIdentity(
   opts: AssumeRoleOptions,
 ): Promise<AssumedCredentials> {
-  return (await assumeRoleWithWebIdentityDetailed(opts)).credentials;
-}
-
-/** assumeRoleWithWebIdentity と同じ呼び出しで、AssumedRoleId と RequestId も返す。 */
-export async function assumeRoleWithWebIdentityDetailed(
-  opts: AssumeRoleOptions,
-): Promise<AssumedRoleDetails> {
   const doFetch = opts.fetch ?? fetch;
   const endpoint = opts.endpoint ?? `https://sts.${opts.region}.amazonaws.com/`;
   const body = new URLSearchParams({
@@ -116,7 +89,6 @@ export async function assumeRoleWithWebIdentityDetailed(
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: body.toString(),
-      ...(opts.redirect !== undefined ? { redirect: opts.redirect } : {}),
     });
     xml = await res.text();
   } catch {
@@ -130,13 +102,7 @@ export async function assumeRoleWithWebIdentityDetailed(
   if (res.ok) {
     const creds = parseAssumeRoleResponse(xml);
     if (!creds) throw new StsError("transient", res.status);
-    const assumedRoleId = parseAssumedRoleId(xml);
-    const requestId = res.headers.get("x-amzn-RequestId") || parseRequestId(xml);
-    return {
-      credentials: creds,
-      ...(assumedRoleId !== undefined ? { assumedRoleId } : {}),
-      ...(requestId ? { requestId } : {}),
-    };
+    return creds;
   }
   const err = parseStsError(xml);
   if (!err) throw new StsError("transient", res.status);

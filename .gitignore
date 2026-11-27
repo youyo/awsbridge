@@ -13,13 +13,16 @@ coverage/
 mise.local.toml
 # プロファイル一覧（アカウント ID を含む。config/profiles.example.json をコピーして作る）
 config/profiles.json
-# コンソールログインの設定ファイル（config/console.example.json などをコピーして作る）と、その生成物（AUD・email を含む）
+# コンソールログインは外した。手元に残った設定ファイルと生成物（AUD・email を含む）を誤って追跡しないため
 config/console.json
 .generated/
 
-# Terraform
-infra/cloudflare/.terraform/
-scripts/poc/human/portal/access/.terraform/
+# Terraform（どのディレクトリの .terraform/ も無視する。手元に残った PoC やコンソールの作業ディレクトリのものも含む）
+.terraform/
 *.tfstate
 *.tfstate.*
 terraform.tfvars
+# 値入りの変数ファイルと crash.log（手元に残ったものを誤って追跡しないため）。*.tfvars.example は追跡する
+*.tfvars
+!*.tfvars.example
+crash.log

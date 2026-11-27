@@ -6,7 +6,8 @@ import { copyFileSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { root } from "./console-e2e-kit";
+
+const root = new URL("../../", import.meta.url).pathname;
 
 const dirs: string[] = [];
 afterAll(() => {
