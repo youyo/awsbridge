@@ -986,3 +986,133 @@ describe("README の構成の節の全体図（Mermaid）", () => {
       for (const w of words) expect(diagram, w).toContain(w);
     });
 });
+
+// コンソールログインを上流から外す予定の案内と、使っていた下流の片付けの手順（コンソールログインの廃止の案内）。
+describe("README のコンソールログインの廃止の案内と片付け", () => {
+  const section = (f: string, heading: string, next: string) => {
+    const text = read(f);
+    const i = text.indexOf(`\n${heading}\n`);
+    expect(i, heading).toBeGreaterThan(0);
+    const j = text.indexOf(`\n${next}\n`, i + 1);
+    expect(j, next).toBeGreaterThan(i);
+    return { text: text.slice(i, j), before: text.slice(0, i) };
+  };
+  const cases: [string, string, string, string, string[]][] = [
+    [
+      "README.md",
+      "## What awsbridge does",
+      "## Retiring console login and cleaning up",
+      "## Before using console login (accepted limits)",
+      [
+        // 1. 外す予定と、MCP の中継が変わらないこと
+        "Console login will be removed from upstream.",
+        "The MCP relay does not change",
+        // 2. 順序の 4 段
+        "do not pull upstream `main`",
+        "git fetch upstream --tags && git merge console-login-final",
+        "Make your own backup tag",
+        "Clean up on that version",
+        "Only after the cleanup is done, merge upstream `main`",
+        "in your downstream repository, not in a checkout of the upstream tag",
+        // 3. 片付けの骨子（8 段）
+        "`LOGIN_DISABLED`",
+        "then wait at least the JWT lifetime (300 seconds) plus the clock skew (60 seconds, the default of the reconciliation)",
+        "is not accepted by STS after that (`exp` = `iat` + 300)",
+        "This is a margin, not a guarantee",
+        "step 3 gives the guarantee",
+        "the wait before the revoke in step 2 is only a margin",
+        "revoke the sessions already issued, before deleting anything on the AWS side",
+        "no `AssumeRoleWithWebIdentity` of a console role in CloudTrail after the time of the last revoke",
+        "revoke again for that role and run the reconciliation again",
+        "last reconciliation and the external check",
+        // 3 段目の完了の条件（照合の確認済みの区間の終わりは反映の遅れだけ手前になる）
+        "at least the reflection delay (300 seconds by default) after the time you stopped new issuance",
+        "the end of the confirmed interval is past the time you stopped issuance",
+        "no unresolved findings (resolved, or explicitly accepted)",
+        "Take inventory of the permissions left",
+        "the separate Administrator stacks, then the role stacks of each kind, then the base StackSet",
+        "first delete the stack instances in every target account without retaining the stacks",
+        "and only then delete the StackSet itself",
+        "all the console IAM OIDC providers are gone and that providers for other uses, such as the MCP one, are unchanged",
+        "Delete the console Worker",
+        "Delete the Access applications and the DNS records",
+        "Clean up the generated files, state files, and tokens",
+        // 4. 不変条件・決まり
+        "Do not give up the issuer host (the Worker, the Custom Domain, and the DNS records) until you have deleted the IAM OIDC provider and confirmed it is gone.",
+        "Do not wait a fixed time",
+        "`DeleteConflict`",
+        "Do not remove the stop policies (the revoke and the one-person-stop Deny) until the longest session of that role (`MaxSessionDuration`) has expired, counted from the later of the time you confirmed that new issuance is stopped (`503 login_disabled`) and the time of the last revoke (if you revoked again, the time of that one)",
+        "Just before you remove them, confirm again that new issuance is not possible (`503 login_disabled`)",
+        "retry the stack deletion right away and confirm the role is gone",
+        "leave the role whose deletion stopped in place with its stop policies attached",
+        "the cleanup is not finished",
+        "Deny of `sts:AssumeRoleWithWebIdentity` to that role's trust policy",
+        "whether such a role can keep the base StackSet from being deleted",
+        // 5. 確かめたことと未確認
+        "once in one personal test environment",
+        "Not confirmed",
+        "has not been run end to end",
+      ],
+    ],
+    [
+      "README_ja.md",
+      "## awsbridge でできること",
+      "## コンソールログインの廃止と片付け",
+      "## コンソールログインを使う前に（受容する限界）",
+      [
+        "コンソールログインは上流から外す予定です。",
+        "MCP の中継は変わりません",
+        "upstream の `main` を pull せず",
+        "git fetch upstream --tags && git merge console-login-final",
+        "自分の退避タグを打ちます",
+        "その版で片付けます",
+        "片付けが終わってから、upstream の `main` を取り込みます",
+        "上流のタグの作業ツリーではなく、下流のリポジトリで行います",
+        "`LOGIN_DISABLED`",
+        "JWT の寿命 300 秒と時計のずれ（照合の既定 60 秒）を足した長さ以上待ち",
+        "その長さを過ぎると STS が受け付けません（`exp` = `iat` + 300）",
+        "目安であって保証ではありません",
+        "保証は次の段の最後の照合が担います",
+        "2 段目の revoke の前の待ちは目安です",
+        "AWS 側の削除の前に、発行済みのセッションを revoke し",
+        "最後の revoke の時刻より後に、コンソール用のロールの `AssumeRoleWithWebIdentity` が CloudTrail に無いこと",
+        "そのロールで revoke をやり直し、照合をやり直します",
+        "最後の照合と外からの確認",
+        "新しい発行を止めた時刻から、反映の遅れ（既定 300 秒）以上たってから",
+        "確認済みの区間の終わりが、停止の時刻を越えた",
+        "未解決の所見が無い（解決するか、明示して受け入れる）",
+        "残った権限の棚卸し",
+        "Administrator の別スタック → 種類のロールのスタック → base の StackSet",
+        "スタックインスタンスを、スタックを残さない形で消し",
+        "StackSet 本体を消します",
+        "コンソール用の OIDC プロバイダーがすべて無くなり、MCP 用など他の用途のプロバイダーは変わっていないことを確かめます",
+        "コンソールの Worker を消します",
+        "Access のアプリと DNS のレコードを消します",
+        "生成物・状態ファイル・トークンを片付けます",
+        "IAM の OIDC プロバイダーを消して、不在を確かめるまで、issuer のホスト（Worker・Custom Domain・DNS のレコード）を手放しません。",
+        "固定の時間を待たず",
+        "`DeleteConflict`",
+        "停止のためのインラインポリシー（revoke と 1 人停止の Deny）は、そのロールの最長のセッション（`MaxSessionDuration`）が切れるまで外しません。起点は、新しい発行の停止を確かめた時刻（`503 login_disabled` の確認）と、最後の revoke の時刻（やり直したなら、やり直したときの時刻）の、遅いほうです",
+        "外す直前に、新しい発行ができないこと（`503 login_disabled`）をもう一度確かめます",
+        "すぐにスタックの削除をやり直して、ロールが無いことを確かめます",
+        "削除が止まったロールは、停止のポリシーを付けたまま残します",
+        "片付けは未完了です",
+        "そのロールの信頼ポリシーに `sts:AssumeRoleWithWebIdentity` の Deny を足し",
+        "そのロールのせいで base の StackSet が消せない場合があるかは未確認です",
+        "個人の検証環境で 1 回",
+        "未確認",
+        "通しでは試していません",
+      ],
+    ],
+  ];
+  for (const [f, prev, heading, next, phrases] of cases) {
+    it(`${f}: 「${heading}」が「${prev}」の直後・受容の節の前にあり、タグ名・順序の 4 段・片付けの骨子・決まり・未確認を載せる`, () => {
+      const { text, before } = section(f, heading, next);
+      // 直前の節は「できること」: その節の見出しが、この節より前で最後の「## 」
+      expect(before.split("\n## ").pop()?.startsWith(prev.slice(3))).toBe(true);
+      expect(text).toContain("`console-login-final`");
+      expect(text).toContain("`archive/console-login`");
+      for (const p of phrases) expect(text, p).toContain(p);
+    });
+  }
+});
