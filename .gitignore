@@ -22,3 +22,7 @@ config/console.json
 *.tfstate
 *.tfstate.*
 terraform.tfvars
+# 値入りの変数ファイルと crash.log（手元に残ったものを誤って追跡しないため）。*.tfvars.example は追跡する
+*.tfvars
+!*.tfvars.example
+crash.log
