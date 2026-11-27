@@ -987,7 +987,7 @@ describe("README の構成の節の全体図（Mermaid）", () => {
     });
 });
 
-// コンソールログインを上流から外す予定の案内と、使っていた下流の片付けの手順（PR ⓪）。
+// コンソールログインを上流から外す予定の案内と、使っていた下流の片付けの手順（コンソールログインの廃止の案内）。
 describe("README のコンソールログインの廃止の案内と片付け", () => {
   const section = (f: string, heading: string, next: string) => {
     const text = read(f);
@@ -1018,6 +1018,10 @@ describe("README のコンソールログインの廃止の案内と片付け", 
         "`LOGIN_DISABLED`",
         "Revoke the sessions already issued, before deleting anything on the AWS side",
         "last reconciliation and the external check",
+        // 3 段目の完了の条件（照合の確認済みの区間の終わりは反映の遅れだけ手前になる）
+        "at least the reflection delay (300 seconds by default) after the time you stopped new issuance",
+        "the end of the confirmed interval is past the time you stopped issuance",
+        "no unresolved findings (resolved, or explicitly accepted)",
         "Take inventory of the permissions left",
         "the separate Administrator stacks, then the role stacks of each kind, then the base StackSet",
         "Delete the console Worker",
@@ -1027,6 +1031,13 @@ describe("README のコンソールログインの廃止の案内と片付け", 
         "Do not give up the issuer host (the Worker, the Custom Domain, and the DNS records) until you have deleted the IAM OIDC provider and confirmed it is gone.",
         "Do not wait a fixed time",
         "`DeleteConflict`",
+        "Do not remove the stop policies (the revoke and the one-person-stop Deny) until the longest session of that role (`MaxSessionDuration`) has expired, counted from the later of the time you confirmed that new issuance is stopped (`503 login_disabled`) and the time of the revoke",
+        "Just before you remove them, confirm again that new issuance is not possible (`503 login_disabled`)",
+        "retry the stack deletion right away and confirm the role is gone",
+        "leave the role whose deletion stopped in place with its stop policies attached",
+        "the cleanup is not finished",
+        "Deny of `sts:AssumeRoleWithWebIdentity` to that role's trust policy",
+        "whether such a role can keep the base StackSet from being deleted",
         // 5. 確かめたことと未確認
         "once in one personal test environment",
         "Not confirmed",
@@ -1050,6 +1061,9 @@ describe("README のコンソールログインの廃止の案内と片付け", 
         "`LOGIN_DISABLED`",
         "AWS 側の削除の前に、発行済みのセッションを revoke します",
         "最後の照合と外からの確認",
+        "新しい発行を止めた時刻から、反映の遅れ（既定 300 秒）以上たってから",
+        "確認済みの区間の終わりが、停止の時刻を越えた",
+        "未解決の所見が無い（解決するか、明示して受け入れる）",
         "残った権限の棚卸し",
         "Administrator の別スタック → 種類のロールのスタック → base の StackSet",
         "コンソールの Worker を消します",
@@ -1058,6 +1072,13 @@ describe("README のコンソールログインの廃止の案内と片付け", 
         "IAM の OIDC プロバイダーを消して、不在を確かめるまで、issuer のホスト（Worker・Custom Domain・DNS のレコード）を手放しません。",
         "固定の時間を待たず",
         "`DeleteConflict`",
+        "停止のためのインラインポリシー（revoke と 1 人停止の Deny）は、そのロールの最長のセッション（`MaxSessionDuration`）が切れるまで外しません。起点は、新しい発行の停止を確かめた時刻（`503 login_disabled` の確認）と revoke の時刻の、遅いほうです",
+        "外す直前に、新しい発行ができないこと（`503 login_disabled`）をもう一度確かめます",
+        "すぐにスタックの削除をやり直して、ロールが無いことを確かめます",
+        "削除が止まったロールは、停止のポリシーを付けたまま残します",
+        "片付けは未完了です",
+        "そのロールの信頼ポリシーに `sts:AssumeRoleWithWebIdentity` の Deny を足し",
+        "そのロールのせいで base の StackSet が消せない場合があるかは未確認です",
         "個人の検証環境で 1 回",
         "未確認",
         "通しでは試していません",
