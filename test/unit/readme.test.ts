@@ -986,3 +986,92 @@ describe("README の構成の節の全体図（Mermaid）", () => {
       for (const w of words) expect(diagram, w).toContain(w);
     });
 });
+
+// コンソールログインを上流から外す予定の案内と、使っていた下流の片付けの手順（PR ⓪）。
+describe("README のコンソールログインの廃止の案内と片付け", () => {
+  const section = (f: string, heading: string, next: string) => {
+    const text = read(f);
+    const i = text.indexOf(`\n${heading}\n`);
+    expect(i, heading).toBeGreaterThan(0);
+    const j = text.indexOf(`\n${next}\n`, i + 1);
+    expect(j, next).toBeGreaterThan(i);
+    return { text: text.slice(i, j), before: text.slice(0, i) };
+  };
+  const cases: [string, string, string, string, string[]][] = [
+    [
+      "README.md",
+      "## What awsbridge does",
+      "## Retiring console login and cleaning up",
+      "## Before using console login (accepted limits)",
+      [
+        // 1. 外す予定と、MCP の中継が変わらないこと
+        "Console login will be removed from upstream.",
+        "The MCP relay does not change",
+        // 2. 順序の 4 段
+        "do not pull upstream `main`",
+        "git fetch upstream --tags && git merge console-login-final",
+        "Make your own backup tag",
+        "Clean up on that version",
+        "Only after the cleanup is done, merge upstream `main`",
+        "in your downstream repository, not in a checkout of the upstream tag",
+        // 3. 片付けの骨子（8 段）
+        "`LOGIN_DISABLED`",
+        "Revoke the sessions already issued, before deleting anything on the AWS side",
+        "last reconciliation and the external check",
+        "Take inventory of the permissions left",
+        "the separate Administrator stacks, then the role stacks of each kind, then the base StackSet",
+        "Delete the console Worker",
+        "Delete the Access applications and the DNS records",
+        "Clean up the generated files, state files, and tokens",
+        // 4. 不変条件・決まり
+        "Do not give up the issuer host (the Worker, the Custom Domain, and the DNS records) until you have deleted the IAM OIDC provider and confirmed it is gone.",
+        "Do not wait a fixed time",
+        "`DeleteConflict`",
+        // 5. 確かめたことと未確認
+        "once in one personal test environment",
+        "Not confirmed",
+        "has not been run end to end",
+      ],
+    ],
+    [
+      "README_ja.md",
+      "## awsbridge でできること",
+      "## コンソールログインの廃止と片付け",
+      "## コンソールログインを使う前に（受容する限界）",
+      [
+        "コンソールログインは上流から外す予定です。",
+        "MCP の中継は変わりません",
+        "upstream の `main` を pull せず",
+        "git fetch upstream --tags && git merge console-login-final",
+        "自分の退避タグを打ちます",
+        "その版で片付けます",
+        "片付けが終わってから、upstream の `main` を取り込みます",
+        "上流のタグの作業ツリーではなく、下流のリポジトリで行います",
+        "`LOGIN_DISABLED`",
+        "AWS 側の削除の前に、発行済みのセッションを revoke します",
+        "最後の照合と外からの確認",
+        "残った権限の棚卸し",
+        "Administrator の別スタック → 種類のロールのスタック → base の StackSet",
+        "コンソールの Worker を消します",
+        "Access のアプリと DNS のレコードを消します",
+        "生成物・状態ファイル・トークンを片付けます",
+        "IAM の OIDC プロバイダーを消して、不在を確かめるまで、issuer のホスト（Worker・Custom Domain・DNS のレコード）を手放しません。",
+        "固定の時間を待たず",
+        "`DeleteConflict`",
+        "個人の検証環境で 1 回",
+        "未確認",
+        "通しでは試していません",
+      ],
+    ],
+  ];
+  for (const [f, prev, heading, next, phrases] of cases) {
+    it(`${f}: 「${heading}」が「${prev}」の直後・受容の節の前にあり、タグ名・順序の 4 段・片付けの骨子・決まり・未確認を載せる`, () => {
+      const { text, before } = section(f, heading, next);
+      // 直前の節は「できること」: その節の見出しが、この節より前で最後の「## 」
+      expect(before.split("\n## ").pop()?.startsWith(prev.slice(3))).toBe(true);
+      expect(text).toContain("`console-login-final`");
+      expect(text).toContain("`archive/console-login`");
+      for (const p of phrases) expect(text, p).toContain(p);
+    });
+  }
+});

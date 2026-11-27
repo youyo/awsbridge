@@ -25,6 +25,51 @@ The MCP roles (`FederatedAwsBridgeMcpViewer` / `FederatedAwsBridgeMcpDebugger`) 
 
 Stages in this README follow the rollout plan in `docs/specs/console-login.md` §7: stage 1 completes the code, stage 2 is a trial in a personal environment, and stage 3 is the rollout to a company. The steps of a production rollout in a downstream repository are in [Rolling out console login in production](docs/console-production-rollout.md).
 
+## Retiring console login and cleaning up
+
+Console login will be removed from upstream. The MCP relay does not change: its settings, secret names, IAM OIDC provider and audience, stacks, and task names stay the same. If you only use the MCP relay, you have nothing to do.
+
+The last version that still has console login is kept as the annotated tag `console-login-final` and the branch `archive/console-login`. This notice is added first; the code, tests, tools, docs, and specs for console login are removed in a later change. The sections about console login below stay on that tag.
+
+**If you ran console login in a downstream repository, you must clean up before you take the removal.** The deployed console Worker, the Access applications, and the IAM OIDC provider and roles stay after the code is gone, and the roles keep trusting the console issuer. Merging the removal also deletes the tools you need for cleanup (the stop, reconciliation, external check, and key tasks).
+
+The order for a downstream repository:
+
+1. Before anything else, do not pull upstream `main`. Fetch the tags and merge only up to the tag, then stop:
+
+   ```sh
+   git fetch upstream --tags && git merge console-login-final
+   ```
+
+2. Make your own backup tag in the downstream repository.
+3. Clean up on that version (the outline below).
+4. Only after the cleanup is done, merge upstream `main`.
+
+Do the cleanup in your downstream repository, not in a checkout of the upstream tag: it needs your downstream config, state files, and mise settings.
+
+The outline of the cleanup. Each step has a section above or below that gives the commands ("Stopping issuance (console login)", "Inventory of what an Administrator left behind (console login)", "Reconciling console logins (issue records x CloudTrail)", "Checking the console issuers from outside (daily)", "Required stack for console login (base)", "Role stacks"):
+
+1. Stop new issuance: set the Worker var `LOGIN_DISABLED` to `true`, deploy, and confirm `503 login_disabled`.
+2. Revoke the sessions already issued, before deleting anything on the AWS side, and confirm by a denial that they stopped.
+3. Run the last reconciliation and the external check, and keep the record.
+4. Take inventory of the permissions left in every account where you handed out Administrator.
+5. Delete the AWS side, in this order: the separate Administrator stacks, then the role stacks of each kind, then the base StackSet. Then confirm that the console IAM OIDC provider is gone and only the MCP provider remains.
+6. Delete the console Worker, and confirm its secrets and Custom Domain are gone.
+7. Delete the Access applications and the DNS records, and confirm no record of the portal or issuer host is left.
+8. Clean up the generated files, state files, and tokens on your machine (for example the generated files, the reconciliation state, the stop list, and the tokens of the Logs API and of the key tools).
+
+Rules:
+
+- Do not give up the issuer host (the Worker, the Custom Domain, and the DNS records) until you have deleted the IAM OIDC provider and confirmed it is gone. While the provider exists, the roles trust that host by URL, so whoever gets the host can issue tokens that the roles accept.
+- Do not wait a fixed time at any step. Finish a step when you have confirmed the denial or the absence.
+- If a stack deletion stops with `DeleteConflict`, first remove the inline policies that were added outside CloudFormation (for example the reserved inline policy of the one-person stop).
+
+What is confirmed and what is not:
+
+- Confirmed once in one personal test environment (confirm it again in each of your environments): the Custom Domain is deleted together with the Worker, and inline policies outside the template do not stop the deletion of the stack.
+- Not confirmed: how long the sessions already issued and the `aws login` refresh tokens stay usable after the roles and the provider are deleted. Revoking and a Deny do not invalidate refresh tokens.
+- This order has not been run end to end. Take it as an outline and check each step in your own environment.
+
 ## Before using console login (accepted limits)
 
 > **Anyone who can deploy the console Worker, or who can touch its secrets or dependencies, holds full control of every account where Administrator is deployed.**
